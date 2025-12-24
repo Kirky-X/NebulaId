@@ -7,6 +7,7 @@ authors = ["Tech Team"]
 
 [dependencies]
 async-trait = "0.1"
+arc-swap = "1.6"
 base64 = "0.21"
 bytes = "1"
 chrono = { version = "0.4", features = ["std"] }
@@ -14,6 +15,7 @@ crossbeam = "0.8"
 dashmap = "6"
 derive_more = { version = "1", features = ["display", "error", "from"] }
 either = "1"
+etcd-client = "0.13"
 futures = "0.3"
 hex = "0.4"
 hmac = "0.12"

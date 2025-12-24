@@ -1,11 +1,11 @@
 use crate::rate_limit::RateLimiter;
+use axum::middleware::Next;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
     response::IntoResponse,
     response::Response,
 };
-use axum::middleware::Next;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -18,15 +18,12 @@ impl RateLimitMiddleware {
         Self { rate_limiter }
     }
 
-    pub async fn rate_limit_middleware(
-        &self,
-        req: Request<Body>,
-        next: Next,
-    ) -> Response {
+    pub async fn rate_limit_middleware(&self, req: Request<Body>, next: Next) -> Response {
         let workspace_id = req.extensions().get::<String>().cloned();
         let client_ip = get_client_ip(&req);
 
-        let key = workspace_id.unwrap_or_else(|| client_ip.unwrap_or_else(|| "anonymous".to_string()));
+        let key =
+            workspace_id.unwrap_or_else(|| client_ip.unwrap_or_else(|| "anonymous".to_string()));
 
         let result = self.rate_limiter.check_rate_limit(&key, None, None).await;
 

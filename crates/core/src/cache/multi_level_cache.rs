@@ -311,7 +311,8 @@ impl DoubleBuffer {
 
 impl DoubleBufferCache {
     pub fn new(capacity: usize, _buffer_count: usize) -> Self {
-        let (producer_tx, mut producer_rx) = mpsc::channel::<(String, Vec<u64>, mpsc::Sender<()>)>(100);
+        let (producer_tx, mut producer_rx) =
+            mpsc::channel::<(String, Vec<u64>, mpsc::Sender<()>)>(100);
         let (consumer_tx, mut consumer_rx) =
             mpsc::channel::<(String, usize, mpsc::Sender<Vec<u64>>)>(100);
 

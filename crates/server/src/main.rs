@@ -1,19 +1,19 @@
 use nebula_core::algorithm::{AlgorithmRouter, IdGenerator};
 use nebula_core::config::Config;
 use nebula_core::types::Result;
-use nebula_server::grpc::GrpcServer;
+use nebula_server::audit::AuditLogger;
 use nebula_server::grpc::nebula_id::nebula_id_service_server::NebulaIdServiceServer;
+use nebula_server::grpc::GrpcServer;
 use nebula_server::handlers::ApiHandlers;
 use nebula_server::middleware::ApiKeyAuth;
 use nebula_server::rate_limit::RateLimiter;
-use nebula_server::audit::AuditLogger;
 use nebula_server::router::create_router;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tonic::transport::Server;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
-use tonic::transport::Server;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -82,10 +82,7 @@ async fn start_http_server(
     Ok(())
 }
 
-async fn start_grpc_server(
-    _config: ServerConfig,
-    handlers: Arc<ApiHandlers>,
-) -> Result<()> {
+async fn start_grpc_server(_config: ServerConfig, handlers: Arc<ApiHandlers>) -> Result<()> {
     let grpc_addr = SocketAddr::from(([0, 0, 0, 0], DEFAULT_GRPC_PORT));
     info!("Starting gRPC server on {}", grpc_addr);
 
@@ -100,7 +97,9 @@ async fn start_grpc_server(
         .add_service(NebulaIdServiceServer::new(grpc_server))
         .serve_with_shutdown(grpc_addr, shutdown)
         .await
-        .map_err(|e| nebula_core::types::CoreError::InternalError(format!("gRPC server error: {}", e)))?;
+        .map_err(|e| {
+            nebula_core::types::CoreError::InternalError(format!("gRPC server error: {}", e))
+        })?;
 
     Ok(())
 }
@@ -163,11 +162,11 @@ async fn main() -> Result<()> {
     info!("Server initialized, starting HTTP and gRPC servers...");
 
     let http_server = tokio::spawn(start_http_server(
-        server_config.clone(), 
-        handlers.clone(), 
-        auth.clone(), 
+        server_config.clone(),
+        handlers.clone(),
+        auth.clone(),
         rate_limiter.clone(),
-        audit_logger.clone()
+        audit_logger.clone(),
     ));
     let grpc_server = tokio::spawn(start_grpc_server(server_config, handlers));
 
@@ -248,8 +247,9 @@ mod tests {
             shutdown_timeout_secs: 1,
         };
 
-        let server =
-            tokio::spawn(async move { start_http_server(server_config, handlers, auth, rate_limiter, audit_logger).await });
+        let server = tokio::spawn(async move {
+            start_http_server(server_config, handlers, auth, rate_limiter, audit_logger).await
+        });
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 

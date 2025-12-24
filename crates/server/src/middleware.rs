@@ -1,10 +1,10 @@
+use axum::middleware::Next;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
     response::IntoResponse,
     response::Response,
 };
-use axum::middleware::Next;
 use base64::Engine;
 use sha2::Digest;
 use std::collections::HashMap;
@@ -74,11 +74,7 @@ impl ApiKeyAuth {
         hex::encode(hasher.finalize())
     }
 
-    pub async fn auth_middleware(
-        &self,
-        mut req: Request<Body>,
-        next: Next,
-    ) -> Response {
+    pub async fn auth_middleware(&self, mut req: Request<Body>, next: Next) -> Response {
         let auth_header = req.headers().get("authorization").cloned();
 
         if let Some(header) = auth_header {

@@ -1,8 +1,5 @@
 use crate::handlers::ApiHandlers;
-use crate::models::{
-    BatchGenerateRequest, GenerateRequest,
-    ParseRequest,
-};
+use crate::models::{BatchGenerateRequest, GenerateRequest, ParseRequest};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,9 +11,10 @@ pub mod nebula_id {
 
 use nebula_id::nebula_id_service_server::NebulaIdService;
 use nebula_id::{
-    BatchGenerateRequest as GrpcBatchGenerateRequest, BatchGenerateResponse as GrpcBatchGenerateResponse,
-    GenerateRequest as GrpcGenerateRequest, GenerateResponse as GrpcGenerateResponse,
-    ParseRequest as GrpcParseRequest, ParseResponse as GrpcParseResponse,
+    BatchGenerateRequest as GrpcBatchGenerateRequest,
+    BatchGenerateResponse as GrpcBatchGenerateResponse, GenerateRequest as GrpcGenerateRequest,
+    GenerateResponse as GrpcGenerateResponse, ParseRequest as GrpcParseRequest,
+    ParseResponse as GrpcParseResponse,
 };
 
 pub struct GrpcServer {
@@ -54,7 +52,7 @@ impl NebulaIdService for GrpcServer {
                     worker_id: 0,
                     algorithm: resp.algorithm,
                 }))
-            },
+            }
             Err(e) => Err(Status::new(Code::Internal, e.to_string())),
         }
     }
@@ -76,16 +74,20 @@ impl NebulaIdService for GrpcServer {
         match self.handlers.batch_generate(batch_req).await {
             Ok(resp) => {
                 let timestamp = resp.timestamp.parse().unwrap_or(0);
-                let ids = resp.ids.into_iter().map(|id| GrpcGenerateResponse {
-                    id,
-                    timestamp,
-                    sequence: 0,
-                    worker_id: 0,
-                    algorithm: resp.algorithm.clone(),
-                }).collect();
+                let ids = resp
+                    .ids
+                    .into_iter()
+                    .map(|id| GrpcGenerateResponse {
+                        id,
+                        timestamp,
+                        sequence: 0,
+                        worker_id: 0,
+                        algorithm: resp.algorithm.clone(),
+                    })
+                    .collect();
 
                 Ok(Response::new(GrpcBatchGenerateResponse { ids }))
-            },
+            }
             Err(e) => Err(Status::new(Code::Internal, e.to_string())),
         }
     }
@@ -108,12 +110,17 @@ impl NebulaIdService for GrpcServer {
                 let timestamp = resp.timestamp.parse().unwrap_or(0);
                 let metadata: HashMap<String, String> = vec![
                     ("timestamp".to_string(), resp.metadata.timestamp.to_string()),
-                    ("datacenter_id".to_string(), resp.metadata.datacenter_id.to_string()),
+                    (
+                        "datacenter_id".to_string(),
+                        resp.metadata.datacenter_id.to_string(),
+                    ),
                     ("worker_id".to_string(), resp.metadata.worker_id.to_string()),
                     ("sequence".to_string(), resp.metadata.sequence.to_string()),
                     ("algorithm".to_string(), resp.metadata.algorithm),
                     ("biz_tag".to_string(), resp.metadata.biz_tag),
-                ].into_iter().collect();
+                ]
+                .into_iter()
+                .collect();
 
                 Ok(Response::new(GrpcParseResponse {
                     id: resp.original_id,
@@ -123,7 +130,7 @@ impl NebulaIdService for GrpcServer {
                     algorithm: resp.algorithm,
                     metadata,
                 }))
-            },
+            }
             Err(e) => Err(Status::new(Code::InvalidArgument, e.to_string())),
         }
     }

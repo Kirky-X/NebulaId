@@ -188,7 +188,9 @@ impl IdAlgorithm for SnowflakeAlgorithm {
         }
 
         if ids.is_empty() {
-            return Err(CoreError::InternalError("Failed to generate IDs after max retries".to_string()));
+            return Err(CoreError::InternalError(
+                "Failed to generate IDs after max retries".to_string(),
+            ));
         }
 
         Ok(IdBatch::new(ids, AlgorithmType::Snowflake, String::new()))
@@ -403,16 +405,13 @@ mod tests {
         let id = algo.construct_id(1000, 5);
         let value = id.as_u128();
 
-        let timestamp_bits = algo.config.datacenter_id_bits
-            + algo.config.worker_id_bits
-            + algo.config.sequence_bits;
+        let timestamp_bits =
+            algo.config.datacenter_id_bits + algo.config.worker_id_bits + algo.config.sequence_bits;
         let worker_shift = algo.config.sequence_bits;
         let dc_shift = algo.config.worker_id_bits + algo.config.sequence_bits;
 
-        let expected = (1000u128 << timestamp_bits)
-            | (1u128 << dc_shift)
-            | (1u128 << worker_shift)
-            | 5u128;
+        let expected =
+            (1000u128 << timestamp_bits) | (1u128 << dc_shift) | (1u128 << worker_shift) | 5u128;
         assert_eq!(value, expected);
     }
 

@@ -3,8 +3,8 @@ use nebula_core::types::Result;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use tokio::fs;
-use tokio::time::{Duration, interval};
-use tracing::{info, warn, error};
+use tokio::time::{interval, Duration};
+use tracing::{error, info, warn};
 
 #[derive(Clone)]
 pub struct HotReloadConfig {
@@ -30,32 +30,33 @@ impl HotReloadConfig {
     where
         F: Fn(Config) + Send + Sync + 'static,
     {
-        self.reload_callbacks.write().unwrap().push(Box::new(callback));
+        self.reload_callbacks
+            .write()
+            .unwrap()
+            .push(Box::new(callback));
     }
 
     async fn reload_config(&self) -> Result<bool> {
         match fs::read_to_string(&self.config_path).await {
-            Ok(content) => {
-                match toml::from_str::<Config>(&content) {
-                    Ok(new_config) => {
-                        let mut config = self.config.write().unwrap();
-                        *config = new_config.clone();
-                        drop(config);
+            Ok(content) => match toml::from_str::<Config>(&content) {
+                Ok(new_config) => {
+                    let mut config = self.config.write().unwrap();
+                    *config = new_config.clone();
+                    drop(config);
 
-                        let callbacks = self.reload_callbacks.read().unwrap();
-                        for callback in callbacks.iter() {
-                            callback(new_config.clone());
-                        }
+                    let callbacks = self.reload_callbacks.read().unwrap();
+                    for callback in callbacks.iter() {
+                        callback(new_config.clone());
+                    }
 
-                        info!("Configuration hot-reloaded from {}", self.config_path);
-                        Ok(true)
-                    }
-                    Err(e) => {
-                        error!("Failed to parse config file: {}", e);
-                        Ok(false)
-                    }
+                    info!("Configuration hot-reloaded from {}", self.config_path);
+                    Ok(true)
                 }
-            }
+                Err(e) => {
+                    error!("Failed to parse config file: {}", e);
+                    Ok(false)
+                }
+            },
             Err(e) => {
                 warn!("Failed to read config file: {}", e);
                 Ok(false)
@@ -286,19 +287,16 @@ enabled = true
 default_rps = 10000
 burst_size = 100
 "#;
-            std::fs::write(&config_path, updated_content).unwrap();
+        std::fs::write(&config_path, updated_content).unwrap();
 
-            hot_config.reload_from_file().await.unwrap();
+        hot_config.reload_from_file().await.unwrap();
 
-            assert!(*callback_triggered.lock().unwrap());
-        }
+        assert!(*callback_triggered.lock().unwrap());
+    }
 
     #[tokio::test]
     async fn test_get_config() {
-        let hot_config = HotReloadConfig::new(
-            Config::default(),
-            "config.toml".to_string(),
-        );
+        let hot_config = HotReloadConfig::new(Config::default(), "config.toml".to_string());
 
         let config = hot_config.get_config();
         assert_eq!(config.app.name, "nebula-id");
@@ -306,10 +304,7 @@ burst_size = 100
 
     #[tokio::test]
     async fn test_update_config() {
-        let hot_config = HotReloadConfig::new(
-            Config::default(),
-            "config.toml".to_string(),
-        );
+        let hot_config = HotReloadConfig::new(Config::default(), "config.toml".to_string());
 
         let mut new_config = Config::default();
         new_config.app.name = "new-name".to_string();

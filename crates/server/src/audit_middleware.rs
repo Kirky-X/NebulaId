@@ -16,7 +16,11 @@ pub struct AuditMiddleware {
 }
 
 impl AuditMiddleware {
-    pub fn new(audit_logger: Arc<AuditLogger>, auth: Arc<ApiKeyAuth>, rate_limiter: Arc<RateLimiter>) -> Self {
+    pub fn new(
+        audit_logger: Arc<AuditLogger>,
+        auth: Arc<ApiKeyAuth>,
+        rate_limiter: Arc<RateLimiter>,
+    ) -> Self {
         Self {
             audit_logger,
             auth,
@@ -24,7 +28,11 @@ impl AuditMiddleware {
         }
     }
 
-    pub async fn audit_middleware(&self, req: Request<Body>, next: axum::middleware::Next) -> Response {
+    pub async fn audit_middleware(
+        &self,
+        req: Request<Body>,
+        next: axum::middleware::Next,
+    ) -> Response {
         let start = std::time::Instant::now();
         let path = req.uri().path().to_string();
         let method = req.method().to_string();

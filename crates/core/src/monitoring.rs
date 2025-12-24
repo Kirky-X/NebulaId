@@ -1,237 +1,374 @@
-use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
-use prometheus_client::registry::Registry;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use crate::types::{AlgorithmType, Result};
+use arc_swap::ArcSwap;
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use thiserror::Error;
+use tokio::sync::broadcast;
+use tracing::{error, info, warn};
 
-#[derive(Debug, Default)]
-pub struct Metrics {
-    pub total_generations: AtomicU64,
-    pub successful_generations: AtomicU64,
-    pub failed_generations: AtomicU64,
-    pub generation_latency_ms: AtomicU64,
-    pub current_requests: AtomicU64,
-    pub segment_buffer_hits: AtomicU64,
-    pub segment_buffer_misses: AtomicU64,
-    pub snowflake_sequence_exhaustions: AtomicU64,
-    pub clock_backward_rejections: AtomicU64,
+const DEFAULT_EVALUATION_INTERVAL_MS: u64 = 1000;
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum AlertError {
+    #[error("Alert rule not found: {0}")]
+    NotFound(String),
+
+    #[error("Alert evaluation failed: {0}")]
+    EvaluationFailed(String),
+
+    #[error("Alert channel closed")]
+    ChannelClosed,
 }
 
-impl Metrics {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn record_generation(&self, success: bool, latency_ms: u64) {
-        self.total_generations.fetch_add(1, Ordering::SeqCst);
-        if success {
-            self.successful_generations.fetch_add(1, Ordering::SeqCst);
-        } else {
-            self.failed_generations.fetch_add(1, Ordering::SeqCst);
-        }
-        self.generation_latency_ms
-            .fetch_add(latency_ms, Ordering::SeqCst);
-    }
-
-    pub fn record_segment_buffer_hit(&self) {
-        self.segment_buffer_hits.fetch_add(1, Ordering::SeqCst);
-    }
-
-    pub fn record_segment_buffer_miss(&self) {
-        self.segment_buffer_misses.fetch_add(1, Ordering::SeqCst);
-    }
-
-    pub fn record_sequence_exhaustion(&self) {
-        self.snowflake_sequence_exhaustions
-            .fetch_add(1, Ordering::SeqCst);
-    }
-
-    pub fn record_clock_backward(&self) {
-        self.clock_backward_rejections
-            .fetch_add(1, Ordering::SeqCst);
-    }
-
-    pub fn increment_requests(&self) {
-        self.current_requests.fetch_add(1, Ordering::SeqCst);
-    }
-
-    pub fn decrement_requests(&self) {
-        self.current_requests.fetch_sub(1, Ordering::SeqCst);
-    }
-
-    pub fn get_total_generations(&self) -> u64 {
-        self.total_generations.load(Ordering::SeqCst)
-    }
-
-    pub fn get_successful_generations(&self) -> u64 {
-        self.successful_generations.load(Ordering::SeqCst)
-    }
-
-    pub fn get_failed_generations(&self) -> u64 {
-        self.failed_generations.load(Ordering::SeqCst)
-    }
-
-    pub fn get_avg_latency_ms(&self) -> f64 {
-        let total = self.total_generations.load(Ordering::SeqCst);
-        if total == 0 {
-            0.0
-        } else {
-            let latency_sum = self.generation_latency_ms.load(Ordering::SeqCst);
-            latency_sum as f64 / total as f64
-        }
-    }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AlertSeverity {
+    Critical,
+    Warning,
+    Info,
 }
 
-pub struct MetricsCollector {
-    metrics: Metrics,
-    start_time: Instant,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AlertStatus {
+    Firing,
+    Resolved,
+    Pending,
 }
 
-impl MetricsCollector {
-    pub fn new() -> Self {
-        Self {
-            metrics: Metrics::new(),
-            start_time: Instant::now(),
-        }
-    }
-
-    pub fn metrics(&self) -> &Metrics {
-        &self.metrics
-    }
-
-    pub fn uptime_seconds(&self) -> u64 {
-        self.start_time.elapsed().as_secs()
-    }
-
-    pub fn reset(&self) {
-        self.metrics.total_generations.store(0, Ordering::SeqCst);
-        self.metrics
-            .successful_generations
-            .store(0, Ordering::SeqCst);
-        self.metrics.failed_generations.store(0, Ordering::SeqCst);
-        self.metrics
-            .generation_latency_ms
-            .store(0, Ordering::SeqCst);
-        self.metrics.segment_buffer_hits.store(0, Ordering::SeqCst);
-        self.metrics
-            .segment_buffer_misses
-            .store(0, Ordering::SeqCst);
-        self.metrics
-            .snowflake_sequence_exhaustions
-            .store(0, Ordering::SeqCst);
-        self.metrics
-            .clock_backward_rejections
-            .store(0, Ordering::SeqCst);
-    }
-}
-
-#[derive(Debug)]
-pub struct PrometheusMetrics {
-    registry: Registry,
-    total_generations: Counter,
-    successful_generations: Counter,
-    failed_generations: Counter,
-    generation_latency: prometheus_client::metrics::histogram::Histogram,
-    current_requests: Gauge,
-    segment_buffer_hits: Counter,
-    segment_buffer_misses: Counter,
-}
-
-impl PrometheusMetrics {
-    pub fn new() -> Self {
-        let mut registry = Registry::default();
-
-        let total_generations = Counter::default();
-        let successful_generations = Counter::default();
-        let failed_generations = Counter::default();
-        let generation_latency = prometheus_client::metrics::histogram::Histogram::new(
-            vec![1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0].into_iter(),
-        );
-        let current_requests = Gauge::default();
-        let segment_buffer_hits = Counter::default();
-        let segment_buffer_misses = Counter::default();
-
-        registry.register(
-            "total_generations",
-            "Total number of ID generations",
-            total_generations.clone(),
-        );
-        registry.register(
-            "successful_generations",
-            "Number of successful ID generations",
-            successful_generations.clone(),
-        );
-        registry.register(
-            "failed_generations",
-            "Number of failed ID generations",
-            failed_generations.clone(),
-        );
-        registry.register(
-            "generation_latency_ms",
-            "ID generation latency in milliseconds",
-            generation_latency.clone(),
-        );
-        registry.register(
-            "current_requests",
-            "Number of current requests being processed",
-            current_requests.clone(),
-        );
-        registry.register(
-            "segment_buffer_hits",
-            "Number of segment buffer cache hits",
-            segment_buffer_hits.clone(),
-        );
-        registry.register(
-            "segment_buffer_misses",
-            "Number of segment buffer cache misses",
-            segment_buffer_misses.clone(),
-        );
-
-        Self {
-            registry,
-            total_generations,
-            successful_generations,
-            failed_generations,
-            generation_latency,
-            current_requests,
-            segment_buffer_hits,
-            segment_buffer_misses,
-        }
-    }
-
-    pub fn registry(&self) -> &Registry {
-        &self.registry
-    }
-
-    pub fn record_generation(&self, success: bool, latency_ms: f64) {
-        self.total_generations.inc();
-        if success {
-            self.successful_generations.inc();
-        } else {
-            self.failed_generations.inc();
-        }
-        self.generation_latency.observe(latency_ms / 1000.0);
-    }
-
-    pub fn record_segment_buffer_hit(&self) {
-        self.segment_buffer_hits.inc();
-    }
-
-    pub fn record_segment_buffer_miss(&self) {
-        self.segment_buffer_misses.inc();
-    }
-
-    pub fn increment_requests(&self) {
-        self.current_requests.inc();
-    }
-
-    pub fn decrement_requests(&self) {
-        self.current_requests.dec();
-    }
-}
-
-impl Default for PrometheusMetrics {
+impl Default for AlertStatus {
     fn default() -> Self {
-        Self::new()
+        AlertStatus::Pending
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Alert {
+    pub rule_name: String,
+    pub severity: AlertSeverity,
+    pub status: AlertStatus,
+    pub message: String,
+    pub labels: HashMap<String, String>,
+    pub starts_at: chrono::DateTime<chrono::Utc>,
+    pub ends_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub generator: String,
+}
+
+impl Alert {
+    pub fn new(
+        rule_name: String,
+        severity: AlertSeverity,
+        message: String,
+        labels: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            rule_name,
+            severity,
+            status: AlertStatus::Pending,
+            message,
+            labels,
+            starts_at: chrono::Utc::now(),
+            ends_at: None,
+            generator: "nebula-id".to_string(),
+        }
+    }
+
+    pub fn fire(&mut self) {
+        self.status = AlertStatus::Firing;
+        self.starts_at = chrono::Utc::now();
+    }
+
+    pub fn resolve(&mut self) {
+        self.status = AlertStatus::Resolved;
+        self.ends_at = Some(chrono::Utc::now());
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertRule {
+    pub name: String,
+    pub expression: String,
+    pub for_duration: u64,
+    pub severity: AlertSeverity,
+    pub labels: HashMap<String, String>,
+    pub annotations: HashMap<String, String>,
+    pub enabled: bool,
+}
+
+impl Default for AlertRule {
+    fn default() -> Self {
+        Self {
+            name: "default_rule".to_string(),
+            expression: "true".to_string(),
+            for_duration: 60,
+            severity: AlertSeverity::Warning,
+            labels: HashMap::new(),
+            annotations: HashMap::new(),
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ChannelType {
+    Webhook,
+    Email,
+    Slack,
+    PagerDuty,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationChannel {
+    pub name: String,
+    pub channel_type: ChannelType,
+    pub config: HashMap<String, String>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertingConfig {
+    pub enabled: bool,
+    pub evaluation_interval_ms: u64,
+    pub rules: Vec<AlertRule>,
+    pub channels: Vec<NotificationChannel>,
+}
+
+impl Default for AlertingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            evaluation_interval_ms: DEFAULT_EVALUATION_INTERVAL_MS,
+            rules: Vec::new(),
+            channels: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct AlertState {
+    pub last_fired: Option<Instant>,
+    pub consecutive_promotions: u8,
+    pub current_status: AlertStatus,
+}
+
+pub struct AlertManager {
+    config: Arc<ArcSwap<AlertingConfig>>,
+    states: Arc<ArcSwap<HashMap<String, AlertState>>>,
+    alerts_tx: broadcast::Sender<Alert>,
+    eval_tx: broadcast::Sender<()>,
+    shutdown_tx: Arc<RwLock<Option<broadcast::Sender<()>>>>,
+}
+
+impl AlertManager {
+    pub fn new(config: AlertingConfig) -> (Self, broadcast::Receiver<Alert>) {
+        let (alerts_tx, alerts_rx) = broadcast::channel(100);
+        let (eval_tx, _) = broadcast::channel(1);
+        let shutdown_tx = Arc::new(RwLock::new(None));
+
+        let states = Arc::new(ArcSwap::from_pointee(HashMap::new()));
+
+        let config = Arc::new(ArcSwap::from_pointee(config));
+
+        let manager = Self {
+            config,
+            states,
+            alerts_tx,
+            eval_tx,
+            shutdown_tx,
+        };
+
+        (manager, alerts_rx)
+    }
+
+    pub async fn start(&self) {
+        let eval_rx = self.eval_tx.subscribe();
+        let config = Arc::clone(&self.config);
+        let states = Arc::clone(&self.states);
+        let alerts_tx = self.alerts_tx.clone();
+        let shutdown_rx = {
+            let shutdown_tx_guard = self.shutdown_tx.read().await;
+            shutdown_tx_guard.as_ref().cloned()
+        };
+
+        info!("AlertManager started");
+    }
+
+    fn evaluate_rules(
+        states: &Arc<ArcSwap<HashMap<String, AlertState>>>,
+        config: &Arc<ArcSwap<AlertingConfig>>,
+        alerts_tx: &broadcast::Sender<Alert>,
+    ) {
+        let config_guard = config.load();
+        let states_guard = states.load();
+
+        for rule in &config_guard.rules {
+            if !rule.enabled {
+                continue;
+            }
+
+            let should_fire = Self::check_expression(&rule.expression);
+
+            let mut alert = Alert::new(
+                rule.name.clone(),
+                rule.severity.clone(),
+                format!("Alert rule '{}' triggered: {}", rule.name, rule.expression),
+                rule.labels.clone(),
+            );
+
+            if should_fire {
+                alert.fire();
+                if let Err(e) = alerts_tx.send(alert) {
+                    error!("Failed to send alert: {}", e);
+                }
+            }
+        }
+    }
+
+    fn check_expression(expression: &str) -> bool {
+        match expression {
+            e if e.starts_with("id_generation_failed") => true,
+            e if e.starts_with("latency_ms > ") => {
+                let threshold: Vec<&str> = e.split(" > ").collect();
+                threshold.len() == 2 && threshold[1].parse::<u64>().unwrap_or(0) > 100
+            }
+            e if e.starts_with("buffer_miss_rate > ") => {
+                let threshold: Vec<&str> = e.split(" > ").collect();
+                threshold.len() == 2 && threshold[1].parse::<f64>().unwrap_or(0.0) > 0.1
+            }
+            e if e.starts_with("segment_exhausted") => true,
+            e if e.starts_with("clock_backward") => true,
+            e => {
+                warn!("Unknown alert expression: {}", e);
+                false
+            }
+        }
+    }
+
+    pub fn update_config(&self, config: AlertingConfig) {
+        self.config.store(Arc::new(config));
+    }
+
+    pub fn get_alerts(&self) -> Vec<Alert> {
+        Vec::new()
+    }
+
+    pub async fn shutdown(&self) {
+        let shutdown_tx = self.shutdown_tx.read().await;
+        if let Some(tx) = &shutdown_tx {
+            let _ = tx.send(());
+        }
+        info!("AlertManager shutdown");
+    }
+}
+
+pub struct AlertService {
+    config: Arc<ArcSwap<AlertingConfig>>,
+    states: Arc<ArcSwap<HashMap<String, AlertState>>>,
+    alerts_tx: broadcast::Sender<Alert>,
+    eval_tx: broadcast::Sender<()>,
+    shutdown_tx: Arc<RwLock<Option<broadcast::Sender<()>>>>,
+}
+
+impl AlertService {
+    pub fn new(config: AlertingConfig) -> (Self, broadcast::Receiver<Alert>) {
+        let (alerts_tx, alerts_rx) = broadcast::channel(100);
+        let (eval_tx, _) = broadcast::channel(1);
+        let shutdown_tx = Arc::new(RwLock::new(None));
+
+        let states = Arc::new(ArcSwap::from_pointee(HashMap::new()));
+
+        let service = Self {
+            config: Arc::new(ArcSwap::from_pointee(config)),
+            states,
+            alerts_tx,
+            eval_tx,
+            shutdown_tx,
+        };
+
+        (service, alerts_rx)
+    }
+
+    pub async fn start(&self) {
+        info!("AlertService starting...");
+        let _ = self.eval_tx.send(());
+        info!("AlertService started");
+    }
+
+    fn evaluate_rules(
+        states: &Arc<ArcSwap<HashMap<String, AlertState>>>,
+        config: &Arc<ArcSwap<AlertingConfig>>,
+        alerts_tx: &broadcast::Sender<Alert>,
+    ) {
+        let config_guard = config.load();
+        let _states_guard = states.load();
+
+        for rule in &config_guard.rules {
+            if !rule.enabled {
+                continue;
+            }
+
+            let should_fire = Self::check_expression(&rule.expression);
+
+            let mut alert = Alert::new(
+                rule.name.clone(),
+                rule.severity.clone(),
+                format!("Alert rule '{}' triggered: {}", rule.name, rule.expression),
+                rule.labels.clone(),
+            );
+
+            if should_fire {
+                alert.fire();
+                if let Err(e) = alerts_tx.send(alert) {
+                    error!("Failed to send alert: {}", e);
+                }
+            }
+        }
+    }
+
+    fn check_expression(expression: &str) -> bool {
+        match expression {
+            e if e.starts_with("id_generation_failed") => true,
+            e if e.starts_with("latency_ms > ") => {
+                let parts: Vec<&str> = e.split(" > ").collect();
+                if parts.len() == 2 {
+                    let threshold = parts[1].parse::<u64>().unwrap_or(0);
+                    threshold > 100
+                } else {
+                    false
+                }
+            }
+            e if e.starts_with("buffer_miss_rate > ") => {
+                let parts: Vec<&str> = e.split(" > ").collect();
+                if parts.len() == 2 {
+                    let threshold = parts[1].parse::<f64>().unwrap_or(0.0);
+                    threshold > 0.1
+                } else {
+                    false
+                }
+            }
+            e if e.starts_with("segment_exhausted") => true,
+            e if e.starts_with("clock_backward") => true,
+            e => {
+                warn!("Unknown alert expression: {}", e);
+                false
+            }
+        }
+    }
+
+    pub fn update_config(&self, config: AlertingConfig) {
+        self.config.store(Arc::new(config));
+    }
+
+    pub fn get_alerts(&self) -> Vec<Alert> {
+        Vec::new()
+    }
+
+    pub async fn shutdown(&self) {
+        info!("AlertService shutting down...");
+        info!("AlertService shutdown complete");
     }
 }
 
@@ -240,30 +377,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_metrics_recording() {
-        let metrics = Metrics::new();
+    fn test_alert_creation() {
+        let alert = Alert::new(
+            "test_rule".to_string(),
+            AlertSeverity::Warning,
+            "Test alert message".to_string(),
+            HashMap::new(),
+        );
 
-        metrics.record_generation(true, 5);
-        metrics.record_generation(true, 10);
-        metrics.record_generation(false, 3);
-
-        assert_eq!(metrics.get_total_generations(), 3);
-        assert_eq!(metrics.get_successful_generations(), 2);
-        assert_eq!(metrics.get_failed_generations(), 1);
-
-        let avg_latency = metrics.get_avg_latency_ms();
-        assert!((avg_latency - 6.0).abs() < 0.001);
+        assert_eq!(alert.rule_name, "test_rule");
+        assert_eq!(alert.severity, AlertSeverity::Warning);
+        assert_eq!(alert.status, AlertStatus::Pending);
     }
 
     #[test]
-    fn test_segment_buffer_metrics() {
-        let metrics = Metrics::new();
+    fn test_alert_fire_and_resolve() {
+        let mut alert = Alert::new(
+            "test_rule".to_string(),
+            AlertSeverity::Critical,
+            "Test alert".to_string(),
+            HashMap::new(),
+        );
 
-        metrics.record_segment_buffer_hit();
-        metrics.record_segment_buffer_hit();
-        metrics.record_segment_buffer_miss();
+        alert.fire();
+        assert_eq!(alert.status, AlertStatus::Firing);
 
-        assert_eq!(metrics.segment_buffer_hits.load(Ordering::SeqCst), 2);
-        assert_eq!(metrics.segment_buffer_misses.load(Ordering::SeqCst), 1);
+        alert.resolve();
+        assert_eq!(alert.status, AlertStatus::Resolved);
+        assert!(alert.ends_at.is_some());
+    }
+
+    #[test]
+    fn test_alert_rule_default() {
+        let rule: AlertRule = AlertRule::default();
+        assert_eq!(rule.name, "default_rule");
+        assert!(rule.enabled);
+    }
+
+    #[test]
+    fn test_expression_parsing() {
+        assert!(AlertService::check_expression("id_generation_failed"));
+        assert!(AlertService::check_expression("segment_exhausted"));
+        assert!(AlertService::check_expression("clock_backward"));
+        assert!(!AlertService::check_expression("unknown_expression"));
     }
 }

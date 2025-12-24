@@ -1,7 +1,7 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
-use std::collections::HashMap;
 
 #[derive(Clone)]
 pub struct RateLimiter {
@@ -65,14 +65,20 @@ impl RateLimiter {
         }
     }
 
-    pub async fn check_rate_limit(&self, key: &str, custom_rate: Option<u32>, custom_burst: Option<u32>) -> RateLimitResult {
+    pub async fn check_rate_limit(
+        &self,
+        key: &str,
+        custom_rate: Option<u32>,
+        custom_burst: Option<u32>,
+    ) -> RateLimitResult {
         let mut buckets = self.buckets.lock().await;
-        
-        let bucket = buckets.entry(key.to_string())
-            .or_insert_with(|| TokenBucket::new(
+
+        let bucket = buckets.entry(key.to_string()).or_insert_with(|| {
+            TokenBucket::new(
                 custom_rate.unwrap_or(self.default_rate),
-                custom_burst.unwrap_or(self.default_burst)
-            ));
+                custom_burst.unwrap_or(self.default_burst),
+            )
+        });
 
         let allowed = bucket.try_consume();
         let remaining = bucket.remaining();

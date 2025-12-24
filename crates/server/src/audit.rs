@@ -421,7 +421,9 @@ mod tests {
 
         assert_eq!(logger.total_logged(), 1);
 
-        let events = logger.get_events_by_type(AuditEventType::IdGeneration).await;
+        let events = logger
+            .get_events_by_type(AuditEventType::IdGeneration)
+            .await;
         assert_eq!(events.len(), 1);
     }
 
@@ -451,10 +453,15 @@ mod tests {
 
         assert_eq!(logger.total_logged(), 2);
 
-        let auth_events = logger.get_events_by_type(AuditEventType::Authentication).await;
+        let auth_events = logger
+            .get_events_by_type(AuditEventType::Authentication)
+            .await;
         assert_eq!(auth_events.len(), 2);
         assert_eq!(auth_events[0].result, AuditResult::Success);
         assert_eq!(auth_events[1].result, AuditResult::Failure);
-        assert_eq!(auth_events[1].error_message, Some("Invalid API key".to_string()));
+        assert_eq!(
+            auth_events[1].error_message,
+            Some("Invalid API key".to_string())
+        );
     }
 }

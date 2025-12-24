@@ -1,0 +1,76 @@
+# Nebula ID Generator Configuration
+
+# Application Configuration
+app:
+  name: "nebula-id"
+  host: "0.0.0.0"
+  http_port: 8080
+  grpc_port: 9091
+  dc_id: 0
+  worker_id: 0
+
+# Database Configuration (PostgreSQL)
+database:
+  url: "postgresql://idgen:idgen123@postgres:5432/idgen"
+  max_connections: 100
+  min_connections: 10
+  acquire_timeout_seconds: 5
+  idle_timeout_seconds: 300
+
+# Redis Configuration
+redis:
+  url: "redis://redis:6379"
+  pool_size: 50
+  key_prefix: "nebula:id:"
+  ttl_seconds: 600
+
+# etcd Configuration
+etcd:
+  endpoints:
+    - "etcd:2379"
+  connect_timeout_ms: 5000
+  watch_timeout_ms: 5000
+
+# API Authentication
+auth:
+  enabled: true
+  cache_ttl_seconds: 300
+  api_keys:
+    - key: "test-api-key-12345"
+      workspace: "test-workspace"
+      rate_limit: 10000
+
+# Algorithm Configuration
+algorithm:
+  default: "segment"
+  segment:
+    base_step: 1000
+    min_step: 500
+    max_step: 100000
+    switch_threshold: 0.1
+  snowflake:
+    datacenter_id_bits: 3
+    worker_id_bits: 8
+    sequence_bits: 10
+    clock_drift_threshold_ms: 1000
+  uuid_v7:
+    enabled: true
+
+# Monitoring Configuration
+monitoring:
+  metrics_enabled: true
+  metrics_path: "/metrics"
+  tracing_enabled: false
+  otlp_endpoint: ""
+
+# Logging Configuration
+logging:
+  level: "info"
+  format: "json"
+  include_location: true
+
+# Rate Limiting
+rate_limit:
+  enabled: true
+  default_rps: 10000
+  burst_size: 100

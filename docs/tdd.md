@@ -11,7 +11,7 @@
 
 ## 一、系统架构设计
 
-### 1.1 总体架构 ⏳ 待实现
+### 1.1 总体架构
 
 ```mermaid
 graph TB
@@ -57,7 +57,7 @@ graph TB
     PROM --> GRAF
 ```
 
-### 1.2 服务内部架构 (修正版) ⏳ 待实现
+### 1.2 服务内部架构 (修正版)
 
 引入了三级缓存架构（RingBuffer -> DoubleBuffer -> Storage）和 API Key 认证模块。
 
@@ -99,7 +99,7 @@ graph LR
 
 ## 二、技术栈选型
 
-### 2.1 核心技术栈 ⏳ 待实现
+### 2.1 核心技术栈
 
 | 组件         | 技术选型   | 版本  | 选型理由                       |
 | ------------ | ---------- | ----- | ------------------------------ |
@@ -114,7 +114,7 @@ graph LR
 | **可视化**   | Grafana    | 10.0  | 仪表盘、告警、多数据源         |
 | **容器编排** | Kubernetes | 1.28+ | 自动扩缩容、服务发现、健康检查 |
 
-### 2.2 核心依赖库 ⏳ 待实现
+### 2.2 核心依赖库
 
 新增 `crossbeam` 用于无锁队列，`sha2` 用于 API Key 哈希。
 
@@ -163,7 +163,7 @@ sha2 = "0.10"           # 新增: API Key 哈希
 
 ## 三、核心模块设计
 
-### 3.1 算法引擎模块 ⏳ 待实现
+### 3.1 算法引擎模块
 
 #### 3.1.1 算法特征抽象
 
@@ -172,7 +172,7 @@ sha2 = "0.10"           # 新增: API Key 哈希
 pub enum Id {
     Numeric(u64),
     Uuid(uuid::Uuid),
-    Formatted(String), // 新增: 支持自定义格式化字符串
+    Formatted(String), // 支持自定义格式化字符串
 }
 
 #[async_trait]
@@ -196,14 +196,14 @@ pub struct GenerateContext {
     pub biz_tag: String, 
     pub datacenter_id: u8,
     pub worker_id: u16,
-    pub format_template: Option<String>, // 新增: 支持动态模板，如 "WB{YYYYMMDD}{SEQ}"
+    pub format_template: Option<String>, // 支持动态模板，如 "WB{YYYYMMDD}{SEQ}"
 }
 ```
 
-#### 3.1.2 Segment 号段算法 (DoubleBuffer) ⏳ 待实现
+#### 3.1.2 Segment 号段算法 (DoubleBuffer)
 
 **核心数据结构**:
-移除原有的 DashMap 方案，采用 `RingBuffer` + `DoubleBuffer` 架构。
+采用 `RingBuffer` + `DoubleBuffer` 架构，实现零停顿切换。
 
 ```rust
 pub struct SegmentAlgorithm {
@@ -217,49 +217,60 @@ pub struct SegmentAlgorithm {
 
 /// 双缓冲号段（Segment 算法核心）
 pub struct DoubleBuffer {
-    /// 当前正在使用的号段
-    current: Arc<AtomicSegment>,
+    /// 当前正在使用的号段 (原子引用切换)
+    current: Arc<AtomicCell<Arc<AtomicSegment>>>,
     
     /// 预加载的下一个号段
-    next: Arc<RwLock<Option<Segment>>>,
+    next: Arc<RwLock<Option<Arc<AtomicSegment>>>>,
     
-    /// 切换标志位
-    switch_threshold: f64,  // 默认 0.1 (10%)
+    /// 切换阈值 (剩余百分比，如 0.1)
+    switch_threshold: f64,
     
-    /// 异步加载任务
+    /// 异步加载器
     loader: Arc<SegmentLoader>,
 }
 
 impl DoubleBuffer {
     /// 获取 ID（快速路径）
     pub fn get_id(&self) -> Option<u64> {
-        let current = self.current.load();
-        let position = current.position.fetch_add(1, Ordering::Relaxed);
+        let current_seg = self.current.load();
+        let position = current_seg.position.fetch_add(1, Ordering::Relaxed);
         
-        // 检查是否需要切换
-        if self.should_switch(position, current.end) {
-            self.switch_buffer();
+        // 检查是否需要触发异步预加载 (L2 -> L3)
+        if self.should_preload(position, current_seg.end, current_seg.start) {
+            self.trigger_preload();
         }
         
-        if position < current.end {
+        if position < current_seg.end {
             Some(position)
         } else {
-            None
+            // 当前号段耗尽，尝试切换
+            self.try_switch_and_get()
         }
     }
     
-    /// 无缝切换号段
-    fn switch_buffer(&self) {
-        let mut next_lock = self.next.write().unwrap();
-        if let Some(next_segment) = next_lock.take() {
-            // 原子替换当前号段
-            self.current.store(next_segment);
-            
-            // 立即触发新的预加载
-            tokio::spawn(async move {
-                self.loader.preload_next_segment().await;
-            });
+    fn should_preload(&self, pos: u64, end: u64, start: u64) -> bool {
+        let remaining = end.saturating_sub(pos);
+        let total = end.saturating_sub(start);
+        (remaining as f64 / total as f64) < self.switch_threshold
+    }
+
+    fn trigger_preload(&self) {
+        let loader = self.loader.clone();
+        tokio::spawn(async move {
+            loader.preload_next_segment().await;
+        });
+    }
+
+    fn try_switch_and_get(&self) -> Option<u64> {
+        let mut next_lock = self.next.write();
+        if let Some(next_seg) = next_lock.take() {
+            self.current.store(next_seg.clone());
+            // 切换后立即从新号段取值
+            let pos = next_seg.position.fetch_add(1, Ordering::Relaxed);
+            return Some(pos);
         }
+        None // 下一个号段尚未就绪
     }
 }
 
@@ -288,7 +299,7 @@ next_step = base_step × (1 + α × velocity) × (1 + β × pressure)
 - max_step = base_step × 100
 ```
 
-#### 3.1.3 Snowflake 算法 (含时钟回拨处理) ⏳ 待实现
+#### 3.1.3 Snowflake 算法 (含时钟回拨处理)
 
 **ID 结构（64位）**:
 
@@ -380,7 +391,7 @@ impl SnowflakeAlgorithm {
 }
 ```
 
-#### 3.1.4 UUID v7 算法 ⏳ 待实现
+#### 3.1.4 UUID v7 算法
 
 ```rust
 pub struct UuidV7Algorithm {}
@@ -394,7 +405,7 @@ impl UuidV7Algorithm {
 }
 ```
 
-### 3.2 缓存层设计 (修正版) ⏳ 待实现
+### 3.2 缓存层设计 (修正版)
 
 #### 3.2.1 三级缓存架构
 
@@ -465,7 +476,7 @@ impl RingBuffer {
 }
 ```
 
-### 3.3 降级策略模块 ⏳ 待实现
+### 3.3 降级策略模块
 
 ```rust
 pub struct DegradationRouter {
@@ -506,11 +517,39 @@ impl DegradationRouter {
 }
 ```
 
+### 3.4 集群与分配模块 (新增)
+
+#### 3.4.1 Worker ID 自动分配 (etcd)
+
+为了保证 Snowflake 算法在集群环境下的唯一性，系统通过 etcd 实现 Worker ID 的自动分配和续期。
+
+1. **分配逻辑**:
+   - 服务启动时，尝试在 etcd 路径 `/idgen/workers/{dc_id}/` 下创建临时节点。
+   - 遍历 0-255，使用 `Txn` 保证原子性。
+   - 成功创建节点后，获取该 ID 作为 `worker_id`。
+2. **续期机制**:
+   - 绑定 etcd 租约 (Lease)，默认 TTL 为 30 秒。
+   - 启动后台协程，每 10 秒进行一次自动续期。
+3. **回收逻辑**:
+   - 服务正常关闭时，主动删除 etcd 节点释放 ID。
+   - 服务异常宕机后，租约到期 etcd 自动删除节点，ID 可被其他节点复用。
+
+#### 3.4.2 数据中心号段初始化
+
+各数据中心 (DC) 的号段通过数据库中的 `datacenter_id` 进行物理隔离。
+
+1. **自动初始化**:
+   - 服务检测到新 `biz_tag` 时，根据自身的 `DC_ID` 在 `segments` 表中创建记录。
+   - 每个 DC 分配独立的 ID 区间（如 DC0: 1-100亿, DC1: 101-200亿），通过配置中心下发区间规则。
+2. **容量监控**:
+   - 监控系统定期计算 `max_id - current_id`。
+   - 当剩余量不足 20% 时，触发扩容告警。
+
 ---
 
 ## 四、数据模型设计
 
-### 4.1 PostgreSQL 表结构 ⏳ 待实现
+### 4.1 PostgreSQL 表结构
 
 修正了表名（`names` -> `biz_tags`）并新增了 `api_keys` 表。
 
@@ -628,7 +667,7 @@ VALUES (
 ) ON CONFLICT (biz_tag_id, datacenter_id) DO NOTHING;
 ```
 
-### 4.3 SeaORM 实体定义 ⏳ 待实现
+### 4.3 SeaORM 实体定义
 
 ```rust
 use sea_orm::entity::prelude::*;
@@ -664,7 +703,7 @@ pub enum Relation {
 
 ## 五、API 接口设计
 
-### 5.1 RESTful API ⏳ 待实现
+### 5.1 RESTful API
 
 #### 5.1.1 生成 ID
 
@@ -741,7 +780,7 @@ X-API-Key: idgen_company-a_...
 GET /health
 ```
 
-### 5.2 gRPC API ⏳ 待实现
+### 5.2 gRPC API
 
 ```protobuf
 syntax = "proto3";
@@ -785,7 +824,9 @@ message BatchGenerateResponse {
 
 ## 六、安全性设计
 
-### 6.1 API Key 认证 ⏳ 待实现
+### 6.1 API Key 认证
+
+采用双级缓存架构（Local DashMap + Redis Cluster）以保证认证的高性能和分布式一致性。
 
 ```rust
 use axum::http::HeaderMap;
@@ -794,27 +835,36 @@ use sha2::{Sha256, Digest};
 #[derive(Clone)]
 pub struct ApiKeyAuth {
     db_pool: PgPool,
-    cache: Arc<DashMap<String, WorkspaceId>>,
+    redis_pool: RedisPool,
+    local_cache: Arc<DashMap<String, WorkspaceId>>, // L1: 本地内存缓存 (5min)
 }
 
 impl ApiKeyAuth {
     /// 验证 API Key
     pub async fn verify(&self, headers: &HeaderMap) -> Result<WorkspaceId> {
-        // 提取 API Key
+        // 1. 提取 API Key
         let api_key = headers
             .get("X-API-Key")
             .and_then(|v| v.to_str().ok())
             .ok_or(Error::MissingApiKey)?;
         
-        // 检查本地缓存
-        if let Some(workspace_id) = self.cache.get(api_key) {
+        // 2. 检查 L1 本地缓存 (极速路径)
+        if let Some(workspace_id) = self.local_cache.get(api_key) {
             return Ok(workspace_id.clone());
         }
         
-        // 计算哈希
+        // 3. 计算哈希 (避免数据库存储明文)
         let key_hash = self.hash_api_key(api_key);
         
-        // 查询数据库
+        // 4. 检查 L2 Redis 缓存 (分布式共享路径)
+        let redis_key = format!("auth:apikey:{}", key_hash);
+        if let Ok(Some(workspace_id)) = self.redis_get(&redis_key).await {
+            // 回填本地缓存
+            self.local_cache.insert(api_key.to_string(), workspace_id.clone());
+            return Ok(workspace_id);
+        }
+        
+        // 5. 查询数据库 (回退路径)
         let api_key_record: ApiKeyRecord = sqlx::query_as(
             "SELECT * FROM api_keys 
              WHERE key_hash = $1 AND enabled = TRUE 
@@ -825,19 +875,15 @@ impl ApiKeyAuth {
         .await
         .map_err(|_| Error::InvalidApiKey)?;
         
-        // 更新最后使用时间
-        sqlx::query("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1")
-            .bind(api_key_record.id)
-            .execute(&self.db_pool)
-            .await?;
+        // 6. 异步更新 Redis 和本地缓存
+        let workspace_id = api_key_record.workspace_id;
+        self.redis_set(&redis_key, &workspace_id, 3600).await?; // Redis 缓存 1 小时
+        self.local_cache.insert(api_key.to_string(), workspace_id.clone());
         
-        // 缓存结果（5分钟）
-        self.cache.insert(
-            api_key.to_string(),
-            api_key_record.workspace_id.clone(),
-        );
+        // 7. 异步记录审计流水
+        self.trigger_audit_log(api_key_record.id);
         
-        Ok(api_key_record.workspace_id)
+        Ok(workspace_id)
     }
     
     fn hash_api_key(&self, api_key: &str) -> String {
@@ -845,10 +891,18 @@ impl ApiKeyAuth {
         hasher.update(api_key.as_bytes());
         format!("{:x}", hasher.finalize())
     }
+
+    async fn redis_get(&self, key: &str) -> Result<Option<WorkspaceId>> {
+        // Redis GET 实现...
+    }
+
+    async fn redis_set(&self, key: &str, val: &WorkspaceId, ttl: u64) -> Result<()> {
+        // Redis SETEX 实现...
+    }
 }
 ```
 
-### 6.2 访问控制 ⏳ 待实现
+### 6.2 访问控制
 
 使用 `tower-governor` 实现基于令牌桶算法的限流。
 
@@ -867,7 +921,7 @@ pub fn rate_limit_layer() -> GovernorLayer {
 }
 ```
 
-### 6.3 审计日志 ⏳ 待实现
+### 6.3 审计日志
 
 ```rust
 pub struct AuditLog {
@@ -885,27 +939,25 @@ pub struct AuditLog {
 
 ## 七、性能优化策略
 
-### 7.1 百万级 QPS 优化路径 ⏳ 待实现
+### 7.1 百万级 QPS 优化路径
 
 **目标**: 单实例 QPS > 1,000,000
 
-1. **零拷贝 IO**:
+**关键优化点**:
 
+1. **零拷贝 IO**
    - 使用 `Bytes` 代替 `Vec<u8>`
    - 使用 `tokio::io::copy` 避免用户态拷贝
 
-2. **无锁并发**:
-
-   - RingBuffer 使用 `crossbeam::ArrayQueue` (CAS 操作)
+2. **无锁并发**
+   - RingBuffer 使用 CAS 操作
    - 避免全局锁，使用分片锁
 
-3. **异步批处理**:
-
+3. **异步批处理**
    - 批量从数据库获取号段（单次 10,000+）
    - 批量预生成 ID (RingBuffer 容量 1,000,000)
 
-4. **连接池优化**:
-
+4. **连接池优化**
    ```rust
    // PostgreSQL 连接池（百万级 QPS 配置）
    let pool = PgPoolOptions::new()
@@ -916,7 +968,11 @@ pub struct AuditLog {
        .await?;
    ```
 
-### 7.2 Worker ID 自动分配 (etcd) ⏳ 待实现
+5. **热点数据缓存**
+   - Redis 缓存预分配的号段（TTL 5分钟）
+   - 本地内存缓存当前使用的号段
+
+### 7.2 Worker ID 自动分配 (etcd)
 
 在 K8s 环境下，Pod IP 和名称是动态的，通过 etcd 的强一致性锁和租约机制，为每个节点分配唯一的 `worker_id` (0-255)。
 
@@ -1009,7 +1065,7 @@ impl WorkerIdAllocator {
 
 ## 九、部署方案
 
-### 9.1 Kubernetes 部署 ⏳ 待实现
+### 9.1 Kubernetes 部署
 
 **关键配置**:
 
@@ -1019,7 +1075,7 @@ impl WorkerIdAllocator {
 - **健康检查**: 存活探针 + 就绪探针
 - **自动扩容**: HPA 基于 CPU 和 QPS 指标
 
-### 9.2 高可用方案 ⏳ 待实现
+### 9.2 高可用方案
 
 ```mermaid
 graph TB
@@ -1050,7 +1106,7 @@ graph TB
 
 ## 十、关键技术决策记录
 
-### 决策 1: 选择 SeaORM 而非 SQLx ⏳ 待验证
+### 决策 1: 选择 SeaORM 而非 SQLx
 
 **理由**:
 
@@ -1061,7 +1117,7 @@ graph TB
 **风险**: 性能可能不如 SQLx  
 **应对**: 提前性能测试，必要时切换
 
-### 决策 2: 使用 Patroni 管理 PostgreSQL ⏳ 待实现
+### 决策 2: 使用 Patroni 管理 PostgreSQL
 
 **理由**:
 
@@ -1069,7 +1125,7 @@ graph TB
 - 基于 etcd 的分布式一致性
 - 支持流复制和同步复制
 
-### 决策 3: RingBuffer 使用 crossbeam::ArrayQueue ⏳ 待验证
+### 决策 3: RingBuffer 使用 crossbeam::ArrayQueue
 
 **理由**:
 
@@ -1077,7 +1133,7 @@ graph TB
 - 性能优秀（Pop < 50ns），无锁实现成熟
 - 避免手动管理 `unsafe` 指针
 
-### 决策 4: 时钟回拨采用非阻塞等待 ⏳ 待验证
+### 决策 4: 时钟回拨采用非阻塞等待
 
 **理由**:
 
@@ -1086,6 +1142,6 @@ graph TB
 
 ---
 
-**文档状态**: ⏳ 待评审  
-**下次评审日期**: 待定  
-**评审参与者**: 技术负责人、架构师、DBA
+**文档状态**: ✅ 已修正  
+**最后更新**: 2025-12-24  
+**架构师**: 技术团队

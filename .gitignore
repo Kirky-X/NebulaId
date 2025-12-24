@@ -1,0 +1,12 @@
+.DS_Store
+target/
+Cargo.lock
+*.log
+.env
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.trae/
+docs/

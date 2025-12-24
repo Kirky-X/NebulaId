@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package nebula.id.v1;
+
+option go_package = "nebula/id/v1;idv1";
+
+service NebulaIdService {
+  rpc Generate(GenerateRequest) returns (GenerateResponse);
+  rpc BatchGenerate(BatchGenerateRequest) returns (BatchGenerateResponse);
+  rpc Parse(ParseRequest) returns (ParseResponse);
+}
+
+message GenerateRequest {
+  string namespace = 1;
+  string tag = 2;
+  map<string, string> metadata = 3;
+}
+
+message GenerateResponse {
+  string id = 1;
+  int64 timestamp = 2;
+  int32 sequence = 3;
+  int32 worker_id = 4;
+  string algorithm = 5;
+}
+
+message BatchGenerateRequest {
+  string namespace = 1;
+  string tag = 2;
+  int32 count = 3;
+  map<string, string> metadata = 4;
+}
+
+message BatchGenerateResponse {
+  repeated GenerateResponse ids = 1;
+}
+
+message ParseRequest {
+  string id = 1;
+}
+
+message ParseResponse {
+  string id = 1;
+  int64 timestamp = 2;
+  int32 sequence = 3;
+  int32 worker_id = 4;
+  string algorithm = 5;
+  map<string, string> metadata = 6;
+}

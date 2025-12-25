@@ -6,8 +6,8 @@ description = "Core ID generation algorithms and types"
 authors = ["Tech Team"]
 
 [dependencies]
-async-trait = "0.1"
 arc-swap = "1.6"
+async-trait = "0.1"
 base64 = "0.21"
 bytes = "1"
 chrono = { version = "0.4", features = ["std"] }
@@ -15,17 +15,18 @@ crossbeam = "0.8"
 dashmap = "6"
 derive_more = { version = "1", features = ["display", "error", "from"] }
 either = "1"
-etcd-client = "0.13"
+etcd-client = "0.17"
 futures = "0.3"
 hex = "0.4"
 hmac = "0.12"
 parking_lot = "0.12"
-prost = "0.12"
-prost-types = "0.12"
+prost = "0.14"
+prost-types = "0.14"
 prometheus-client = "0.22"
 rand = "0.8"
 redis = { version = "0.25", features = ["tokio-comp", "aio"] }
 regex = "1"
+reqwest = { version = "0.11", features = ["json"] }
 sea-orm = { version = "1", features = ["runtime-tokio-rustls", "with-chrono", "with-uuid", "sqlx-sqlite"] }
 sea-orm-migration = "1"
 serde = { version = "1", features = ["derive"] }
@@ -41,6 +42,8 @@ validator = { version = "0.16", features = ["derive"] }
 winnow = "0.5"
 
 [dev-dependencies]
+mockall = "0.13"
 proptest = "1.4"
 quickcheck = "1"
 sea-orm = { version = "1", features = ["mock"] }
+tokio = { version = "1", features = ["test-util"] }

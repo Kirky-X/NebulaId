@@ -296,11 +296,13 @@ impl DoubleBuffer {
         }
     }
 
+    #[allow(dead_code)]
     fn is_empty(&self) -> bool {
         let active_len = futures::executor::block_on(async { self.active.read().await.len() });
         active_len == 0
     }
 
+    #[allow(dead_code)]
     async fn clear(&self) {
         self.active.write().await.clear();
         self.next.write().await.clear();

@@ -10,23 +10,29 @@ name = "nebula-id"
 path = "src/main.rs"
 
 [build-dependencies]
-tonic-build = "0.11"
+tonic-prost-build = "0.14"
 
 [dependencies]
+tonic-prost = "0.14"
 nebula-core = { path = "../core" }
 
-axum = { version = "0.7", features = ["json"] }
-axum-extra = { version = "0.9", features = ["typed-header"] }
+axum = { version = "0.8", features = ["json", "macros"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = { version = "0.4", features = ["full"] }
 tower-http = { version = "0.5", features = ["cors", "compression-gzip", "timeout", "limit", "trace"] }
 hyper = { version = "1", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
-tonic = { version = "0.11", features = ["tls"] }
-prost = "0.12"
+tokio-stream = "0.1"
+tonic = { version = "0.14", features = ["tls-native-roots"] }
+prost = "0.14"
+rustls = "0.22"
+tokio-rustls = "0.25"
+rustls-pemfile = "2"
+futures-util = "0.3"
 
 sqlx = { version = "0.7", features = ["runtime-tokio", "tls-native-tls", "postgres", "uuid", "chrono"] }
 redis = { version = "0.25", features = ["aio", "tokio-comp"] }
-etcd-client = "0.13"
+etcd-client = "0.17"
 
 reqwest = { version = "0.11", features = ["json"] }
 serde = { version = "1", features = ["derive"] }

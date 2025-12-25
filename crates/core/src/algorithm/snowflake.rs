@@ -258,6 +258,12 @@ impl Default for UuidV7Metrics {
     }
 }
 
+impl Default for UuidV7Algorithm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UuidV7Algorithm {
     pub fn new() -> Self {
         Self {
@@ -326,6 +332,12 @@ impl IdAlgorithm for UuidV7Algorithm {
 
 pub struct UuidV4Algorithm {
     metrics: Arc<UuidV7Metrics>,
+}
+
+impl Default for UuidV4Algorithm {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl UuidV4Algorithm {

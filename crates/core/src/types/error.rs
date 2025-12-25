@@ -70,6 +70,9 @@ pub enum CoreError {
     #[display("Internal error: {}", _0)]
     InternalError(String),
 
+    #[display("Invalid input: {}", _0)]
+    InvalidInput(String),
+
     #[display("Unknown error")]
     #[from(ignore)]
     Unknown,

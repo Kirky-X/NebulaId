@@ -1,12 +1,173 @@
 use crate::algorithm::{AlgorithmMetricsSnapshot, GenerateContext, HealthStatus, IdAlgorithm};
 use crate::config::{Config, SegmentAlgorithmConfig};
+use crate::coordinator::EtcdClusterHealthMonitor;
+use crate::database::SegmentRepository;
 use crate::types::{AlgorithmType, CoreError, Id, IdBatch, Result};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+use tokio::time::sleep;
+use tracing::{info, warn};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DcStatus {
+    Healthy,
+    Degraded,
+    Failed,
+}
+
+#[derive(Debug)]
+pub struct DcHealthState {
+    pub dc_id: u8,
+    pub status: AtomicU8,
+    pub last_success: Arc<Mutex<Instant>>,
+    pub failure_count: AtomicU64,
+    pub consecutive_failures: AtomicU64,
+}
+
+impl DcHealthState {
+    pub fn new(dc_id: u8) -> Self {
+        Self {
+            dc_id,
+            status: AtomicU8::new(DcStatus::Healthy as u8),
+            last_success: Arc::new(Mutex::new(Instant::now())),
+            failure_count: AtomicU64::new(0),
+            consecutive_failures: AtomicU64::new(0),
+        }
+    }
+
+    pub fn get_status(&self) -> DcStatus {
+        match self.status.load(Ordering::Relaxed) {
+            0 => DcStatus::Healthy,
+            1 => DcStatus::Degraded,
+            _ => DcStatus::Failed,
+        }
+    }
+
+    pub fn set_status(&self, status: DcStatus) {
+        self.status.store(status as u8, Ordering::Relaxed);
+    }
+
+    pub fn record_success(&self) {
+        *self.last_success.lock() = Instant::now();
+        self.consecutive_failures.store(0, Ordering::Relaxed);
+        if self.get_status() != DcStatus::Healthy {
+            self.set_status(DcStatus::Healthy);
+            info!("DC {} recovered to healthy state", self.dc_id);
+        }
+    }
+
+    pub fn record_failure(&self) {
+        self.failure_count.fetch_add(1, Ordering::Relaxed);
+        let consecutive = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+
+        if consecutive >= 5 {
+            self.set_status(DcStatus::Failed);
+            warn!(
+                "DC {} marked as failed after {} consecutive failures",
+                self.dc_id, consecutive
+            );
+        } else if consecutive >= 3 {
+            self.set_status(DcStatus::Degraded);
+            warn!(
+                "DC {} marked as degraded after {} consecutive failures",
+                self.dc_id, consecutive
+            );
+        }
+    }
+
+    pub fn should_use_dc(&self) -> bool {
+        matches!(self.get_status(), DcStatus::Healthy | DcStatus::Degraded)
+    }
+}
+
+pub struct DcFailureDetector {
+    dc_states: DashMap<u8, Arc<DcHealthState>>,
+    failure_threshold: u64,
+    recovery_timeout: Duration,
+}
+
+impl DcFailureDetector {
+    pub fn new(failure_threshold: u64, recovery_timeout: Duration) -> Self {
+        Self {
+            dc_states: DashMap::new(),
+            failure_threshold,
+            recovery_timeout,
+        }
+    }
+
+    pub fn add_dc(&self, dc_id: u8) {
+        self.dc_states
+            .entry(dc_id)
+            .or_insert_with(|| Arc::new(DcHealthState::new(dc_id)));
+    }
+
+    pub fn get_dc_state(&self, dc_id: u8) -> Option<Arc<DcHealthState>> {
+        self.dc_states.get(&dc_id).map(|v| v.value().clone())
+    }
+
+    pub fn get_healthy_dcs(&self) -> Vec<u8> {
+        self.dc_states
+            .iter()
+            .filter(|entry| entry.value().should_use_dc())
+            .map(|entry| *entry.key())
+            .collect()
+    }
+
+    pub fn select_best_dc(&self, preferred_dc: u8) -> u8 {
+        let state = self.get_dc_state(preferred_dc);
+        if let Some(s) = state {
+            if s.should_use_dc() {
+                return preferred_dc;
+            }
+        }
+
+        let healthy_dcs = self.get_healthy_dcs();
+        if !healthy_dcs.is_empty() {
+            return healthy_dcs[0];
+        }
+
+        preferred_dc
+    }
+
+    pub async fn start_health_check(&self, check_interval: Duration) {
+        let detector = self.clone();
+        tokio::spawn(async move {
+            loop {
+                sleep(check_interval).await;
+                detector.check_recovery().await;
+            }
+        });
+    }
+
+    async fn check_recovery(&self) {
+        let now = Instant::now();
+        for entry in self.dc_states.iter() {
+            let state = entry.value();
+            if state.get_status() == DcStatus::Failed {
+                let last_success = *state.last_success.lock();
+                if now.duration_since(last_success) > self.recovery_timeout {
+                    info!("Attempting recovery for DC {}", state.dc_id);
+                    state.set_status(DcStatus::Degraded);
+                }
+            }
+        }
+    }
+}
+
+impl Clone for DcFailureDetector {
+    fn clone(&self) -> Self {
+        Self {
+            dc_states: self.dc_states.clone(),
+            failure_threshold: self.failure_threshold,
+            recovery_timeout: self.recovery_timeout,
+        }
+    }
+}
 
 pub struct Segment {
     pub start_id: AtomicU64,
@@ -74,6 +235,7 @@ pub struct DoubleBuffer {
     current: Arc<Mutex<Arc<AtomicSegment>>>,
     next: Arc<Mutex<Option<Arc<AtomicSegment>>>>,
     switch_threshold: f64,
+    #[allow(dead_code)]
     loader_tx: mpsc::Sender<()>,
 }
 
@@ -150,6 +312,9 @@ pub struct SegmentAlgorithm {
     buffers: DashMap<String, Arc<DoubleBuffer>>,
     metrics: Arc<AlgorithmMetricsInner>,
     segment_loader: Arc<dyn SegmentLoader + Send + Sync>,
+    dc_failure_detector: Arc<DcFailureDetector>,
+    local_dc_id: u8,
+    etcd_cluster_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
 }
 
 struct AlgorithmMetricsInner {
@@ -183,19 +348,52 @@ pub struct SegmentData {
     pub version: u8,
 }
 
+impl Default for SegmentAlgorithm {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
 impl SegmentAlgorithm {
-    pub fn new() -> Self {
+    pub fn new(local_dc_id: u8) -> Self {
+        let dc_failure_detector = Arc::new(DcFailureDetector::new(5, Duration::from_secs(300)));
+        dc_failure_detector.add_dc(local_dc_id);
+
         Self {
             config: SegmentAlgorithmConfig::default(),
             buffers: DashMap::new(),
             metrics: Arc::new(AlgorithmMetricsInner::default()),
             segment_loader: Arc::new(DefaultSegmentLoader),
+            dc_failure_detector,
+            local_dc_id,
+            etcd_cluster_health_monitor: None,
         }
     }
 
     pub fn with_loader(mut self, loader: Arc<dyn SegmentLoader + Send + Sync>) -> Self {
         self.segment_loader = loader;
         self
+    }
+
+    pub fn with_dc_failure_detector(mut self, detector: Arc<DcFailureDetector>) -> Self {
+        self.dc_failure_detector = detector;
+        self
+    }
+
+    pub fn with_etcd_cluster_health_monitor(
+        mut self,
+        monitor: Arc<EtcdClusterHealthMonitor>,
+    ) -> Self {
+        self.etcd_cluster_health_monitor = Some(monitor);
+        self
+    }
+
+    pub fn get_dc_failure_detector(&self) -> &Arc<DcFailureDetector> {
+        &self.dc_failure_detector
+    }
+
+    pub fn get_etcd_cluster_health_monitor(&self) -> Option<&Arc<EtcdClusterHealthMonitor>> {
+        self.etcd_cluster_health_monitor.as_ref()
     }
 
     fn get_or_create_buffer(&self, key: &str) -> Arc<DoubleBuffer> {
@@ -207,6 +405,19 @@ impl SegmentAlgorithm {
             })
             .value()
             .clone()
+    }
+
+    fn should_use_etcd(&self) -> bool {
+        if let Some(ref monitor) = self.etcd_cluster_health_monitor {
+            let status = monitor.get_status();
+            match status {
+                crate::coordinator::EtcdClusterStatus::Healthy => true,
+                crate::coordinator::EtcdClusterStatus::Degraded => true,
+                crate::coordinator::EtcdClusterStatus::Failed => false,
+            }
+        } else {
+            true
+        }
     }
 }
 
@@ -248,17 +459,49 @@ impl IdAlgorithm for SegmentAlgorithm {
 
     async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result<IdBatch> {
         let mut ids = Vec::with_capacity(size);
-        let mut last_error = None;
+        let key = format!("{}:{}", ctx.workspace_id, ctx.biz_tag);
+        let buffer = self.get_or_create_buffer(&key);
 
-        for _ in 0..size {
-            match self.generate(ctx).await {
-                Ok(id) => ids.push(id),
-                Err(e) => last_error = Some(e),
+        while ids.len() < size {
+            let current = buffer.get_current();
+            let remaining_needed = size - ids.len();
+
+            if let Some((start, end)) = current.try_consume(remaining_needed as u64) {
+                let count = (end - start) as usize;
+                ids.reserve(count);
+                ids.extend((start..end).map(|id| Id::from_u128(id.into())));
+                self.metrics
+                    .total_generated
+                    .fetch_add(count as u64, Ordering::Relaxed);
+                break;
+            }
+
+            if buffer.need_switch() {
+                let next = buffer.get_next();
+                if next.is_none() {
+                    self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
+                    let new_seg = self.segment_loader.load_segment(ctx, 0).await?;
+                    let atomic_seg = Arc::new(AtomicSegment::new(
+                        new_seg.start_id,
+                        new_seg.max_id,
+                        new_seg.step,
+                    ));
+                    buffer.set_next(atomic_seg);
+                }
+                buffer.swap();
+            } else {
+                break;
             }
         }
 
         if ids.is_empty() {
-            return Err(last_error.unwrap_or(CoreError::InternalError("Unknown error".to_string())));
+            let current = buffer.get_current();
+            let segment = current.inner.lock();
+            let max_id = segment.max_id.load(Ordering::Relaxed);
+            drop(segment);
+
+            self.metrics.total_failed.fetch_add(1, Ordering::Relaxed);
+            return Err(CoreError::SegmentExhausted { max_id });
         }
 
         Ok(IdBatch::new(
@@ -301,6 +544,11 @@ impl IdAlgorithm for SegmentAlgorithm {
 
     async fn initialize(&mut self, config: &Config) -> Result<()> {
         self.config = config.algorithm.segment.clone();
+
+        self.dc_failure_detector
+            .start_health_check(Duration::from_secs(60))
+            .await;
+
         Ok(())
     }
 
@@ -320,6 +568,84 @@ impl SegmentLoader for DefaultSegmentLoader {
             step: 1000,
             version: 0,
         })
+    }
+}
+
+pub struct DatabaseSegmentLoader {
+    repository: Arc<dyn SegmentRepository>,
+    dc_failure_detector: Arc<DcFailureDetector>,
+    local_dc_id: u8,
+    etcd_cluster_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
+}
+
+impl DatabaseSegmentLoader {
+    pub fn new(
+        repository: Arc<dyn SegmentRepository>,
+        dc_failure_detector: Arc<DcFailureDetector>,
+        local_dc_id: u8,
+    ) -> Self {
+        Self {
+            repository,
+            dc_failure_detector,
+            local_dc_id,
+            etcd_cluster_health_monitor: None,
+        }
+    }
+
+    pub fn with_etcd_cluster_health_monitor(
+        mut self,
+        monitor: Arc<EtcdClusterHealthMonitor>,
+    ) -> Self {
+        self.etcd_cluster_health_monitor = Some(monitor);
+        self
+    }
+}
+
+#[async_trait]
+impl SegmentLoader for DatabaseSegmentLoader {
+    async fn load_segment(&self, ctx: &GenerateContext, _worker_id: u8) -> Result<SegmentData> {
+        let dc_id = self.dc_failure_detector.select_best_dc(self.local_dc_id);
+        let dc_state = self.dc_failure_detector.get_dc_state(dc_id);
+        let dc_state_clone = dc_state.clone();
+
+        let segment = if dc_state.is_some() {
+            self.repository
+                .allocate_segment_with_dc(
+                    &ctx.workspace_id,
+                    &ctx.biz_tag,
+                    self.get_step() as i32,
+                    dc_id as i32,
+                )
+                .await
+                .map_err(|e| {
+                    if let Some(state) = dc_state_clone {
+                        state.record_failure();
+                    }
+                    CoreError::DatabaseError(e.to_string())
+                })?
+        } else {
+            self.repository
+                .allocate_segment(&ctx.workspace_id, &ctx.biz_tag, self.get_step() as i32)
+                .await
+                .map_err(|e| CoreError::DatabaseError(e.to_string()))?
+        };
+
+        if let Some(state) = dc_state {
+            state.record_success();
+        }
+
+        Ok(SegmentData {
+            start_id: segment.current_id as u64,
+            max_id: segment.max_id as u64,
+            step: segment.step as u64,
+            version: 0,
+        })
+    }
+}
+
+impl DatabaseSegmentLoader {
+    fn get_step(&self) -> u64 {
+        1000
     }
 }
 
@@ -353,7 +679,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_segment_algorithm_generate() {
-        let algo = SegmentAlgorithm::new();
+        let algo = SegmentAlgorithm::new(0);
         let ctx = GenerateContext {
             workspace_id: "test".to_string(),
             group_id: "test".to_string(),

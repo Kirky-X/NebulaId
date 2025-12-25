@@ -3,6 +3,9 @@ use crate::models::{BatchGenerateRequest, GenerateRequest, ParseRequest};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
 use tonic::{Code, Request, Response, Status};
 
 pub mod nebula_id {
@@ -12,9 +15,10 @@ pub mod nebula_id {
 use nebula_id::nebula_id_service_server::NebulaIdService;
 use nebula_id::{
     BatchGenerateRequest as GrpcBatchGenerateRequest,
-    BatchGenerateResponse as GrpcBatchGenerateResponse, GenerateRequest as GrpcGenerateRequest,
-    GenerateResponse as GrpcGenerateResponse, ParseRequest as GrpcParseRequest,
-    ParseResponse as GrpcParseResponse,
+    BatchGenerateResponse as GrpcBatchGenerateResponse, BatchGenerateStreamRequest,
+    BatchGenerateStreamResponse, GenerateRequest as GrpcGenerateRequest,
+    GenerateResponse as GrpcGenerateResponse, HealthCheckRequest, HealthCheckResponse,
+    ParseRequest as GrpcParseRequest, ParseResponse as GrpcParseResponse,
 };
 
 pub struct GrpcServer {
@@ -29,6 +33,8 @@ impl GrpcServer {
 
 #[async_trait]
 impl NebulaIdService for GrpcServer {
+    type BatchGenerateStreamStream = ReceiverStream<Result<BatchGenerateStreamResponse, Status>>;
+
     async fn generate(
         &self,
         request: Request<GrpcGenerateRequest>,
@@ -92,6 +98,82 @@ impl NebulaIdService for GrpcServer {
         }
     }
 
+    async fn batch_generate_stream(
+        &self,
+        request: Request<tonic::Streaming<BatchGenerateStreamRequest>>,
+    ) -> Result<Response<Self::BatchGenerateStreamStream>, Status> {
+        let mut stream = request.into_inner();
+        let (tx, rx) = mpsc::channel(128);
+
+        let handlers = self.handlers.clone();
+
+        tokio::spawn(async move {
+            while let Some(req) = stream.next().await {
+                match req {
+                    Ok(stream_req) => {
+                        let tag = stream_req.tag.clone();
+                        let batch_req = BatchGenerateRequest {
+                            workspace: stream_req.namespace,
+                            group: tag.clone(),
+                            biz_tag: tag,
+                            size: Some(stream_req.count as usize),
+                        };
+
+                        match handlers.batch_generate(batch_req).await {
+                            Ok(resp) => {
+                                let timestamp = resp.timestamp.parse().unwrap_or(0);
+                                for id in resp.ids {
+                                    let stream_resp = BatchGenerateStreamResponse {
+                                        id: Some(GrpcGenerateResponse {
+                                            id,
+                                            timestamp,
+                                            sequence: 0,
+                                            worker_id: 0,
+                                            algorithm: resp.algorithm.clone(),
+                                        }),
+                                    };
+
+                                    if tx.send(Ok(stream_resp)).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = tx
+                                    .send(Ok(BatchGenerateStreamResponse {
+                                        id: Some(GrpcGenerateResponse {
+                                            id: String::new(),
+                                            timestamp: 0,
+                                            sequence: 0,
+                                            worker_id: 0,
+                                            algorithm: format!("error: {}", e),
+                                        }),
+                                    }))
+                                    .await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(Ok(BatchGenerateStreamResponse {
+                                id: Some(GrpcGenerateResponse {
+                                    id: String::new(),
+                                    timestamp: 0,
+                                    sequence: 0,
+                                    worker_id: 0,
+                                    algorithm: format!("stream error: {}", e),
+                                }),
+                            }))
+                            .await;
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
     async fn parse(
         &self,
         request: Request<GrpcParseRequest>,
@@ -133,5 +215,21 @@ impl NebulaIdService for GrpcServer {
             }
             Err(e) => Err(Status::new(Code::InvalidArgument, e.to_string())),
         }
+    }
+
+    async fn health_check(
+        &self,
+        _request: Request<HealthCheckRequest>,
+    ) -> Result<Response<HealthCheckResponse>, Status> {
+        let health = self.handlers.health().await;
+        let status = if health.status == "healthy" {
+            nebula_id::health_check_response::ServingStatus::Serving
+        } else {
+            nebula_id::health_check_response::ServingStatus::NotServing
+        };
+
+        Ok(Response::new(HealthCheckResponse {
+            status: status as i32,
+        }))
     }
 }

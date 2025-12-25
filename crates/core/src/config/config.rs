@@ -293,6 +293,29 @@ impl Default for RateLimitConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TlsConfig {
+    pub enabled: bool,
+    pub cert_path: String,
+    pub key_path: String,
+    pub ca_path: Option<String>,
+    pub http_enabled: bool,
+    pub grpc_enabled: bool,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cert_path: "".to_string(),
+            key_path: "".to_string(),
+            ca_path: None,
+            http_enabled: false,
+            grpc_enabled: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     pub app: AppConfig,
     pub database: DatabaseConfig,
@@ -303,6 +326,7 @@ pub struct Config {
     pub monitoring: MonitoringConfig,
     pub logging: LoggingConfig,
     pub rate_limit: RateLimitConfig,
+    pub tls: TlsConfig,
 }
 
 impl Default for Config {
@@ -317,6 +341,7 @@ impl Default for Config {
             monitoring: MonitoringConfig::default(),
             logging: LoggingConfig::default(),
             rate_limit: RateLimitConfig::default(),
+            tls: TlsConfig::default(),
         }
     }
 }

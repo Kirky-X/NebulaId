@@ -1,19 +1,24 @@
 use nebula_core::algorithm::{AlgorithmRouter, IdGenerator};
 use nebula_core::config::Config;
+use nebula_core::coordinator::EtcdClusterHealthMonitor;
 use nebula_core::types::Result;
 use nebula_server::audit::AuditLogger;
+use nebula_server::config_hot_reload::HotReloadConfig;
+use nebula_server::config_management::ConfigManagementService;
 use nebula_server::grpc::nebula_id::nebula_id_service_server::NebulaIdServiceServer;
 use nebula_server::grpc::GrpcServer;
 use nebula_server::handlers::ApiHandlers;
 use nebula_server::middleware::ApiKeyAuth;
 use nebula_server::rate_limit::RateLimiter;
 use nebula_server::router::create_router;
+use nebula_server::tls_server::TlsManager;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tonic::transport::Server;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
+use tracing::warn;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -44,25 +49,39 @@ async fn load_api_keys(_auth: &Arc<ApiKeyAuth>) {
     info!("Loading API keys from configuration...");
 }
 
-async fn create_id_generator(config: &Config) -> Result<Arc<dyn IdGenerator>> {
+async fn create_id_generator(
+    config: &Config,
+    audit_logger: Arc<AuditLogger>,
+    etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
+) -> Result<Arc<dyn IdGenerator>> {
     info!("Initializing ID generators...");
 
-    let mut router = AlgorithmRouter::new(config.clone());
+    let audit_logger_for_core: nebula_core::algorithm::DynAuditLogger =
+        audit_logger as Arc<dyn nebula_core::algorithm::AuditLogger>;
+    let router = AlgorithmRouter::new(config.clone(), Some(audit_logger_for_core));
+
+    let router = if let Some(monitor) = etcd_health_monitor {
+        Arc::new(router.with_etcd_health_monitor(monitor))
+    } else {
+        Arc::new(router)
+    };
+
     router.initialize().await?;
 
-    let router = Arc::new(router);
     info!("ID generators initialized successfully");
     Ok(router)
 }
 
 async fn start_http_server(
-    config: ServerConfig,
+    _config: ServerConfig,
     handlers: Arc<ApiHandlers>,
     auth: Arc<ApiKeyAuth>,
     rate_limiter: Arc<RateLimiter>,
     audit_logger: Arc<AuditLogger>,
+    _config_service: Arc<ConfigManagementService>,
+    _tls_manager: Option<Arc<TlsManager>>,
 ) -> Result<()> {
-    let addr = SocketAddr::from(([0, 0, 0, 0], config.http_port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], DEFAULT_SERVER_PORT));
     info!("Starting HTTP server on {}", addr);
 
     let listener = TcpListener::bind(addr).await?;
@@ -82,7 +101,11 @@ async fn start_http_server(
     Ok(())
 }
 
-async fn start_grpc_server(_config: ServerConfig, handlers: Arc<ApiHandlers>) -> Result<()> {
+async fn start_grpc_server(
+    _config: ServerConfig,
+    handlers: Arc<ApiHandlers>,
+    tls_manager: Option<Arc<TlsManager>>,
+) -> Result<()> {
     let grpc_addr = SocketAddr::from(([0, 0, 0, 0], DEFAULT_GRPC_PORT));
     info!("Starting gRPC server on {}", grpc_addr);
 
@@ -93,7 +116,21 @@ async fn start_grpc_server(_config: ServerConfig, handlers: Arc<ApiHandlers>) ->
         info!("Shutting down gRPC server...");
     };
 
-    Server::builder()
+    let mut server_builder = Server::builder();
+
+    if let Some(ref tls) = tls_manager {
+        if tls.is_grpc_enabled() {
+            info!("gRPC TLS is enabled, using secure connection");
+            if let Some(grpc_tls_config) = tls.grpc_tls_config() {
+                let config = (*grpc_tls_config).clone();
+                server_builder = server_builder.tls_config(config).map_err(|e| {
+                    nebula_core::types::CoreError::InternalError(format!("TLS config error: {}", e))
+                })?;
+            }
+        }
+    }
+
+    server_builder
         .add_service(NebulaIdServiceServer::new(grpc_server))
         .serve_with_shutdown(grpc_addr, shutdown)
         .await
@@ -149,15 +186,59 @@ async fn main() -> Result<()> {
     let auth = Arc::new(ApiKeyAuth::new());
     load_api_keys(&auth).await;
 
-    let id_generator = create_id_generator(&config).await?;
-    let handlers = Arc::new(ApiHandlers::new(id_generator));
+    let hot_config = Arc::new(HotReloadConfig::new(
+        config.clone(),
+        "config.toml".to_string(),
+    ));
+    let config_service = Arc::new(ConfigManagementService::new(hot_config));
+
+    let audit_logger = Arc::new(AuditLogger::new(10000));
+
+    info!("Initializing etcd cluster health monitor...");
+    let etcd_cache_path = format!("./data/etcd_cache_{}.json", config.app.dc_id);
+    let etcd_health_monitor = Arc::new(EtcdClusterHealthMonitor::new(
+        config.etcd.clone(),
+        etcd_cache_path,
+    ));
+
+    if let Err(e) = etcd_health_monitor.load_local_cache().await {
+        warn!("Failed to load etcd local cache: {}", e);
+    }
+
+    etcd_health_monitor.start_health_check(std::time::Duration::from_secs(10));
+    etcd_health_monitor.start_cache_persistence(std::time::Duration::from_secs(60));
+    info!("Etcd cluster health monitor started");
+
+    let id_generator = create_id_generator(
+        &config,
+        audit_logger.clone(),
+        Some(etcd_health_monitor.clone()),
+    )
+    .await?;
+    let handlers = Arc::new(ApiHandlers::new(
+        id_generator.clone(),
+        config_service.clone(),
+    ));
 
     let rate_limiter = Arc::new(RateLimiter::new(
         config.rate_limit.default_rps,
         config.rate_limit.burst_size,
     ));
 
-    let audit_logger = Arc::new(AuditLogger::new(10000));
+    let mut tls_manager = TlsManager::new(config.tls.clone());
+    if let Err(e) = tls_manager.initialize().await {
+        error!("Failed to initialize TLS manager: {}", e);
+        info!("TLS will be disabled");
+    }
+    let tls_manager = if tls_manager.is_http_enabled() || tls_manager.is_grpc_enabled() {
+        Some(Arc::new(tls_manager))
+    } else {
+        None
+    };
+
+    info!("Starting degradation manager health check task...");
+    let degradation_manager = id_generator.get_degradation_manager();
+    degradation_manager.start_background_check();
 
     info!("Server initialized, starting HTTP and gRPC servers...");
 
@@ -167,8 +248,10 @@ async fn main() -> Result<()> {
         auth.clone(),
         rate_limiter.clone(),
         audit_logger.clone(),
+        config_service.clone(),
+        tls_manager.clone(),
     ));
-    let grpc_server = tokio::spawn(start_grpc_server(server_config, handlers));
+    let grpc_server = tokio::spawn(start_grpc_server(server_config, handlers, tls_manager));
 
     tokio::select! {
         http_result = http_server => {
@@ -210,6 +293,7 @@ mod tests {
     use super::*;
     use nebula_core::algorithm::AlgorithmRouter;
     use nebula_core::config::Config;
+    use nebula_server::config_hot_reload::HotReloadConfig;
     use std::sync::Arc;
 
     #[tokio::test]
@@ -223,8 +307,15 @@ mod tests {
     #[tokio::test]
     async fn test_create_router_with_handlers() {
         let config = Config::default();
-        let router = AlgorithmRouter::new(config);
-        let handlers = Arc::new(ApiHandlers::new(Arc::new(router)));
+        let audit_logger: Arc<dyn nebula_core::algorithm::AuditLogger> =
+            Arc::new(AuditLogger::new(10000));
+        let router = AlgorithmRouter::new(config.clone(), Some(audit_logger));
+        let hot_config = Arc::new(HotReloadConfig::new(
+            config.clone(),
+            "config.toml".to_string(),
+        ));
+        let config_service = Arc::new(ConfigManagementService::new(hot_config));
+        let handlers = Arc::new(ApiHandlers::new(Arc::new(router), config_service));
         let auth = Arc::new(ApiKeyAuth::new());
         let rate_limiter = Arc::new(RateLimiter::new(10000, 100));
         let audit_logger = Arc::new(AuditLogger::new(10000));
@@ -235,8 +326,15 @@ mod tests {
     #[tokio::test]
     async fn test_graceful_shutdown() {
         let config = Config::default();
-        let router = AlgorithmRouter::new(config);
-        let handlers = Arc::new(ApiHandlers::new(Arc::new(router)));
+        let audit_logger: Arc<dyn nebula_core::algorithm::AuditLogger> =
+            Arc::new(AuditLogger::new(10000));
+        let router = AlgorithmRouter::new(config.clone(), Some(audit_logger));
+        let hot_config = Arc::new(HotReloadConfig::new(
+            config.clone(),
+            "config.toml".to_string(),
+        ));
+        let config_service = Arc::new(ConfigManagementService::new(hot_config));
+        let handlers = Arc::new(ApiHandlers::new(Arc::new(router), config_service.clone()));
         let auth = Arc::new(ApiKeyAuth::new());
         let rate_limiter = Arc::new(RateLimiter::new(10000, 100));
         let audit_logger = Arc::new(AuditLogger::new(10000));
@@ -248,7 +346,16 @@ mod tests {
         };
 
         let server = tokio::spawn(async move {
-            start_http_server(server_config, handlers, auth, rate_limiter, audit_logger).await
+            start_http_server(
+                server_config,
+                handlers,
+                auth,
+                rate_limiter,
+                audit_logger,
+                config_service,
+                None,
+            )
+            .await
         });
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;

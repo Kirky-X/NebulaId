@@ -1,3 +1,4 @@
+use crate::config_management::ConfigManagementService;
 use crate::models::{
     BatchGenerateRequest, BatchGenerateResponse, GenerateRequest, GenerateResponse, HealthResponse,
     IdMetadataResponse, MetricsResponse, ParseRequest, ParseResponse,
@@ -10,6 +11,7 @@ pub struct ApiHandlers {
     id_generator: Arc<dyn nebula_core::algorithm::IdGenerator>,
     metrics: Arc<RwLock<ApiMetrics>>,
     start_time: std::time::Instant,
+    config_service: Arc<ConfigManagementService>,
 }
 
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -22,12 +24,20 @@ pub struct ApiMetrics {
 }
 
 impl ApiHandlers {
-    pub fn new(id_generator: Arc<dyn nebula_core::algorithm::IdGenerator>) -> Self {
+    pub fn new(
+        id_generator: Arc<dyn nebula_core::algorithm::IdGenerator>,
+        config_service: Arc<ConfigManagementService>,
+    ) -> Self {
         Self {
             id_generator,
             metrics: Arc::new(RwLock::new(ApiMetrics::default())),
             start_time: std::time::Instant::now(),
+            config_service,
         }
+    }
+
+    pub fn get_config_service(&self) -> Arc<ConfigManagementService> {
+        self.config_service.clone()
     }
 
     pub async fn generate(&self, req: GenerateRequest) -> Result<GenerateResponse> {
@@ -279,15 +289,21 @@ impl ApiHandlers {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config_hot_reload::HotReloadConfig;
     use nebula_core::algorithm::AlgorithmRouter;
     use nebula_core::config::Config;
 
     #[tokio::test]
     async fn test_generate_response() {
         let config = Config::default();
-        let mut router = AlgorithmRouter::new(config);
+        let router = AlgorithmRouter::new(config.clone(), None);
         router.initialize().await.unwrap();
-        let handlers = ApiHandlers::new(Arc::new(router));
+        let hot_config = Arc::new(HotReloadConfig::new(
+            config.clone(),
+            "config.toml".to_string(),
+        ));
+        let config_service = Arc::new(ConfigManagementService::new(hot_config));
+        let handlers = ApiHandlers::new(Arc::new(router), config_service);
 
         let req = GenerateRequest {
             workspace: "test-workspace".to_string(),

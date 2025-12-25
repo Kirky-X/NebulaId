@@ -11,6 +11,7 @@ pub struct Model {
     pub max_id: i64,
     pub step: i32,
     pub delta: i32,
+    pub dc_id: i32,
     pub created_at: DateTime,
     pub updated_at: DateTime,
 }
@@ -21,6 +22,7 @@ pub enum Relation {}
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Segment {
     pub id: i64,
     pub workspace_id: String,
@@ -29,6 +31,7 @@ pub struct Segment {
     pub max_id: i64,
     pub step: i32,
     pub delta: i32,
+    pub dc_id: i32,
     pub created_at: DateTime,
     pub updated_at: DateTime,
 }
@@ -49,6 +52,7 @@ impl From<Model> for Segment {
             max_id: model.max_id,
             step: model.step,
             delta: model.delta,
+            dc_id: model.dc_id,
             created_at: model.created_at,
             updated_at: model.updated_at,
         }

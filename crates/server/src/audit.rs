@@ -1,4 +1,9 @@
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use nebula_core::algorithm::{
+    AuditEvent as CoreAuditEvent, AuditEventType as CoreAuditEventType,
+    AuditLogger as CoreAuditLoggerTrait, AuditResult as CoreAuditResult,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,6 +17,7 @@ pub enum AuditEventType {
     BatchGeneration,
     Authentication,
     ConfigChange,
+    DegradationEvent,
     RateLimitExceeded,
     HealthCheck,
     MetricsAccess,
@@ -256,6 +262,36 @@ impl AuditLogger {
         self.log(event).await;
     }
 
+    pub async fn log_degradation_event(
+        &self,
+        workspace_id: Option<String>,
+        action: String,
+        algorithm_type: String,
+        previous_state: String,
+        current_state: String,
+        details: serde_json::Value,
+    ) {
+        let event = AuditEvent::new(
+            AuditEventType::DegradationEvent,
+            workspace_id,
+            action,
+            format!("algorithm:{}", algorithm_type),
+            if current_state == "Critical" {
+                AuditResult::Failure
+            } else {
+                AuditResult::Partial
+            },
+        )
+        .with_details(serde_json::json!({
+            "previous_state": previous_state,
+            "current_state": current_state,
+            "algorithm_type": algorithm_type,
+            "details": details
+        }));
+
+        self.log(event).await;
+    }
+
     pub async fn log_rate_limit_exceeded(
         &self,
         workspace_id: Option<String>,
@@ -463,5 +499,42 @@ mod tests {
             auth_events[1].error_message,
             Some("Invalid API key".to_string())
         );
+    }
+}
+
+#[async_trait]
+impl CoreAuditLoggerTrait for AuditLogger {
+    async fn log(&self, event: CoreAuditEvent) {
+        let server_event = AuditEvent {
+            id: 0,
+            timestamp: event.timestamp,
+            event_type: match event.event_type {
+                CoreAuditEventType::IdGeneration => AuditEventType::IdGeneration,
+                CoreAuditEventType::BatchGeneration => AuditEventType::BatchGeneration,
+                CoreAuditEventType::Authentication => AuditEventType::Authentication,
+                CoreAuditEventType::ConfigChange => AuditEventType::ConfigChange,
+                CoreAuditEventType::DegradationEvent => AuditEventType::DegradationEvent,
+                CoreAuditEventType::RateLimitExceeded => AuditEventType::RateLimitExceeded,
+                CoreAuditEventType::HealthCheck => AuditEventType::HealthCheck,
+                CoreAuditEventType::MetricsAccess => AuditEventType::MetricsAccess,
+            },
+            workspace_id: event.workspace_id,
+            user_id: None,
+            action: event.action,
+            resource: event.resource,
+            result: match event.result {
+                CoreAuditResult::Success => AuditResult::Success,
+                CoreAuditResult::Failure => AuditResult::Failure,
+                CoreAuditResult::Partial => AuditResult::Partial,
+                CoreAuditResult::Unknown => AuditResult::Failure,
+            },
+            details: event.details,
+            client_ip: None,
+            user_agent: None,
+            duration_ms: 0,
+            error_message: None,
+        };
+
+        AuditLogger::log(self, server_event).await;
     }
 }

@@ -10,7 +10,8 @@ use tracing::{error, info, warn};
 pub struct HotReloadConfig {
     config: Arc<RwLock<Config>>,
     config_path: String,
-    reload_callbacks: Arc<RwLock<Vec<Box<dyn Fn(Config) + Send + Sync>>>>,
+    reload_callbacks: Arc<RwLock<Vec<Arc<dyn Fn(Config) + Send + Sync>>>>,
+    audit_logger: Option<Arc<super::audit::AuditLogger>>,
 }
 
 impl HotReloadConfig {
@@ -19,7 +20,13 @@ impl HotReloadConfig {
             config: Arc::new(RwLock::new(config)),
             config_path,
             reload_callbacks: Arc::new(RwLock::new(Vec::new())),
+            audit_logger: None,
         }
+    }
+
+    pub fn with_audit_logger(mut self, audit_logger: Arc<super::audit::AuditLogger>) -> Self {
+        self.audit_logger = Some(audit_logger);
+        self
     }
 
     pub fn get_config(&self) -> Config {
@@ -33,35 +40,104 @@ impl HotReloadConfig {
         self.reload_callbacks
             .write()
             .unwrap()
-            .push(Box::new(callback));
+            .push(Arc::new(callback));
     }
 
     async fn reload_config(&self) -> Result<bool> {
-        match fs::read_to_string(&self.config_path).await {
-            Ok(content) => match toml::from_str::<Config>(&content) {
-                Ok(new_config) => {
-                    let mut config = self.config.write().unwrap();
-                    *config = new_config.clone();
-                    drop(config);
-
-                    let callbacks = self.reload_callbacks.read().unwrap();
-                    for callback in callbacks.iter() {
-                        callback(new_config.clone());
-                    }
-
-                    info!("Configuration hot-reloaded from {}", self.config_path);
-                    Ok(true)
-                }
-                Err(e) => {
-                    error!("Failed to parse config file: {}", e);
-                    Ok(false)
-                }
-            },
+        let config_path = self.config_path.clone();
+        let content = match fs::read_to_string(&config_path).await {
+            Ok(c) => c,
             Err(e) => {
                 warn!("Failed to read config file: {}", e);
-                Ok(false)
+                return Ok(false);
+            }
+        };
+
+        let new_config = match toml::from_str::<Config>(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                error!("Failed to parse config file: {}", e);
+                return Ok(false);
+            }
+        };
+
+        let old_config = {
+            let mut config = self.config.write().unwrap();
+            let old = config.clone();
+            *config = new_config.clone();
+            old
+        };
+
+        let callbacks: Vec<_> = {
+            let callbacks = self.reload_callbacks.read().unwrap();
+            callbacks.iter().cloned().collect()
+        };
+        for callback in callbacks {
+            callback(new_config.clone());
+        }
+
+        if let Some(ref logger) = self.audit_logger {
+            let changes = self.detect_config_changes(&old_config, &new_config);
+            let has_changes = changes
+                .as_array()
+                .map(|arr| !arr.is_empty())
+                .unwrap_or(false);
+            if has_changes {
+                let details = serde_json::json!({
+                    "source": "file_watch",
+                    "config_path": config_path,
+                    "changes": changes
+                });
+                let _ = logger
+                    .log_config_change(
+                        None,
+                        "hot_reload".to_string(),
+                        "system".to_string(),
+                        details,
+                    )
+                    .await;
             }
         }
+
+        info!("Configuration hot-reloaded from {}", config_path);
+        Ok(true)
+    }
+
+    fn detect_config_changes(&self, old_config: &Config, new_config: &Config) -> serde_json::Value {
+        let mut changes = Vec::new();
+
+        if old_config.app.name != new_config.app.name {
+            changes.push(format!(
+                "app.name: {} -> {}",
+                old_config.app.name, new_config.app.name
+            ));
+        }
+        if old_config.app.http_port != new_config.app.http_port {
+            changes.push(format!(
+                "app.http_port: {} -> {}",
+                old_config.app.http_port, new_config.app.http_port
+            ));
+        }
+        if old_config.rate_limit.default_rps != new_config.rate_limit.default_rps {
+            changes.push(format!(
+                "rate_limit.default_rps: {} -> {}",
+                old_config.rate_limit.default_rps, new_config.rate_limit.default_rps
+            ));
+        }
+        if old_config.rate_limit.burst_size != new_config.rate_limit.burst_size {
+            changes.push(format!(
+                "rate_limit.burst_size: {} -> {}",
+                old_config.rate_limit.burst_size, new_config.rate_limit.burst_size
+            ));
+        }
+        if old_config.logging.level != new_config.logging.level {
+            changes.push(format!(
+                "logging.level: {} -> {}",
+                old_config.logging.level, new_config.logging.level
+            ));
+        }
+
+        serde_json::json!(changes)
     }
 
     pub async fn watch(&self, interval_ms: u64) {
@@ -87,12 +163,33 @@ impl HotReloadConfig {
 
     pub fn update_config(&self, new_config: Config) {
         let mut config = self.config.write().unwrap();
+        let old_config = config.clone();
         *config = new_config.clone();
         drop(config);
 
         let callbacks = self.reload_callbacks.read().unwrap();
         for callback in callbacks.iter() {
             callback(new_config.clone());
+        }
+
+        if let Some(ref logger) = self.audit_logger {
+            let changes = self.detect_config_changes(&old_config, &new_config);
+            let has_changes = changes
+                .as_array()
+                .map(|arr| !arr.is_empty())
+                .unwrap_or(false);
+            if has_changes {
+                let details = serde_json::json!({
+                    "source": "api_update",
+                    "changes": changes
+                });
+                let _ = logger.log_config_change(
+                    None,
+                    "api_update".to_string(),
+                    "system".to_string(),
+                    details,
+                );
+            }
         }
 
         info!("Configuration updated programmatically");
@@ -198,6 +295,13 @@ include_location = true
 enabled = true
 default_rps = 10000
 burst_size = 100
+
+[tls]
+enabled = false
+cert_path = ""
+key_path = ""
+http_enabled = false
+grpc_enabled = false
 "#;
         std::fs::write(&config_path, initial_content).unwrap();
 
@@ -286,6 +390,13 @@ include_location = true
 enabled = true
 default_rps = 10000
 burst_size = 100
+
+[tls]
+enabled = false
+cert_path = ""
+key_path = ""
+http_enabled = false
+grpc_enabled = false
 "#;
         std::fs::write(&config_path, updated_content).unwrap();
 

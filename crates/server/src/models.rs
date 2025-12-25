@@ -133,3 +133,123 @@ pub struct IdMetadataResponse {
     pub algorithm: String,
     pub biz_tag: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigResponse {
+    pub app: AppConfigInfo,
+    pub database: DatabaseConfigInfo,
+    pub redis: RedisConfigInfo,
+    pub algorithm: AlgorithmConfigInfo,
+    pub monitoring: MonitoringConfigInfo,
+    pub logging: LoggingConfigInfo,
+    pub rate_limit: RateLimitConfigInfo,
+    pub tls: TlsConfigInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfigInfo {
+    pub name: String,
+    pub host: String,
+    pub http_port: u16,
+    pub grpc_port: u16,
+    pub dc_id: u8,
+    pub worker_id: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseConfigInfo {
+    pub engine: String,
+    pub host: String,
+    pub port: u16,
+    pub database: String,
+    pub max_connections: u32,
+    pub min_connections: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedisConfigInfo {
+    pub url: String,
+    pub pool_size: u32,
+    pub key_prefix: String,
+    pub ttl_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlgorithmConfigInfo {
+    pub default: String,
+    pub segment: SegmentConfigInfo,
+    pub snowflake: SnowflakeConfigInfo,
+    pub uuid_v7: UuidV7ConfigInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SegmentConfigInfo {
+    pub base_step: u64,
+    pub min_step: u64,
+    pub max_step: u64,
+    pub switch_threshold: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnowflakeConfigInfo {
+    pub datacenter_id_bits: u8,
+    pub worker_id_bits: u8,
+    pub sequence_bits: u8,
+    pub clock_drift_threshold_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UuidV7ConfigInfo {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitoringConfigInfo {
+    pub metrics_enabled: bool,
+    pub metrics_path: String,
+    pub tracing_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoggingConfigInfo {
+    pub level: String,
+    pub format: String,
+    pub include_location: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitConfigInfo {
+    pub enabled: bool,
+    pub default_rps: u32,
+    pub burst_size: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TlsConfigInfo {
+    pub enabled: bool,
+    pub http_enabled: bool,
+    pub grpc_enabled: bool,
+    pub has_cert: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct UpdateRateLimitRequest {
+    #[validate(range(min = 1, max = 1000000))]
+    pub default_rps: Option<u32>,
+
+    #[validate(range(min = 1, max = 1000))]
+    pub burst_size: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct UpdateLoggingRequest {
+    #[validate(length(min = 1, max = 20))]
+    pub level: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateConfigResponse {
+    pub success: bool,
+    pub message: String,
+    pub config: Option<ConfigResponse>,
+}

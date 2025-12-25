@@ -1,8 +1,9 @@
 use crate::algorithm::{
-    AlgorithmBuilder, AlgorithmMetricsSnapshot, GenerateContext, HealthStatus, IdAlgorithm,
-    IdGenerator,
+    AlgorithmBuilder, AlgorithmMetricsSnapshot, DegradationManager, DynAuditLogger,
+    GenerateContext, HealthStatus, IdAlgorithm, IdGenerator,
 };
 use crate::config::Config;
+use crate::coordinator::EtcdClusterHealthMonitor;
 use crate::types::{AlgorithmType, CoreError, Id, IdBatch, Result};
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -80,6 +81,10 @@ impl IdGenerator for AlgorithmRouter {
     async fn get_primary_algorithm(&self) -> String {
         format!("{:?}", self.config.algorithm.get_default_algorithm())
     }
+
+    fn get_degradation_manager(&self) -> &Arc<DegradationManager> {
+        &self.degradation_manager
+    }
 }
 
 pub struct AlgorithmRouter {
@@ -87,10 +92,12 @@ pub struct AlgorithmRouter {
     algorithms: DashMap<AlgorithmType, Arc<dyn IdAlgorithm>>,
     fallback_chain: Vec<AlgorithmType>,
     current_algorithm: DashMap<String, AlgorithmType>,
+    degradation_manager: Arc<DegradationManager>,
+    etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
 }
 
 impl AlgorithmRouter {
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config, audit_logger: Option<DynAuditLogger>) -> Self {
         let mut fallback_chain = Vec::new();
 
         match config.algorithm.get_default_algorithm() {
@@ -106,15 +113,28 @@ impl AlgorithmRouter {
             _ => {}
         }
 
+        let primary_algorithm = config.algorithm.get_default_algorithm();
+        let degradation_manager = Arc::new(DegradationManager::new(None, audit_logger));
+
+        degradation_manager.set_primary_algorithm(primary_algorithm);
+        degradation_manager.set_fallback_chain(fallback_chain.clone());
+
         Self {
             config,
             algorithms: DashMap::new(),
             fallback_chain,
             current_algorithm: DashMap::new(),
+            degradation_manager,
+            etcd_health_monitor: None,
         }
     }
 
-    pub async fn initialize(&mut self) -> Result<()> {
+    pub fn with_etcd_health_monitor(mut self, monitor: Arc<EtcdClusterHealthMonitor>) -> Self {
+        self.etcd_health_monitor = Some(monitor);
+        self
+    }
+
+    pub async fn initialize(&self) -> Result<()> {
         let mut errors = Vec::new();
 
         for alg_type in [
@@ -123,19 +143,27 @@ impl AlgorithmRouter {
             AlgorithmType::UuidV7,
             AlgorithmType::UuidV4,
         ] {
-            match AlgorithmBuilder::new(alg_type).build(&self.config).await {
+            let mut builder = AlgorithmBuilder::new(alg_type);
+            if let Some(ref monitor) = self.etcd_health_monitor {
+                builder = builder.with_etcd_health_monitor(monitor.clone());
+            }
+
+            match builder.build(&self.config).await {
                 Ok(mut algo) => {
                     if let Err(e) = algo.initialize(&self.config).await {
                         warn!("Failed to initialize algorithm {:?}: {}", alg_type, e);
                         errors.push((alg_type, e));
                         continue;
                     }
-                    self.algorithms.insert(alg_type, Arc::from(algo));
+                    let alg_arc: Arc<dyn IdAlgorithm> = Arc::from(algo);
+                    self.algorithms.insert(alg_type, alg_arc.clone());
+                    self.degradation_manager
+                        .register_algorithm(alg_type, alg_arc);
                     info!("Algorithm {:?} initialized successfully", alg_type);
                 }
-                Err(e) => {
-                    warn!("Failed to build algorithm {:?}: {}", alg_type, e);
-                    errors.push((alg_type, e));
+                Err(_e) => {
+                    warn!("Failed to build algorithm {:?}: {}", alg_type, _e);
+                    errors.push((alg_type, _e));
                 }
             }
         }
@@ -173,19 +201,39 @@ impl AlgorithmRouter {
 
     async fn generate_with_algorithm(
         &self,
-        algorithm: AlgorithmType,
+        _algorithm: AlgorithmType,
         ctx: &GenerateContext,
     ) -> Result<Id> {
-        if let Some(alg) = self.algorithms.get(&algorithm) {
+        let effective_algorithm = self.degradation_manager.get_effective_algorithm().await;
+
+        if let Some(alg) = self.algorithms.get(&effective_algorithm) {
             match alg.generate(ctx).await {
-                Ok(id) => return Ok(id),
+                Ok(id) => {
+                    self.degradation_manager
+                        .record_generation_result(effective_algorithm, true)
+                        .await;
+                    return Ok(id);
+                }
                 Err(e) => {
-                    debug!("Algorithm {} failed: {:?}", algorithm, e);
+                    debug!("Algorithm {} failed: {:?}", effective_algorithm, e);
+                    self.degradation_manager
+                        .record_generation_result(effective_algorithm, false)
+                        .await;
                     for fallback in &self.fallback_chain {
                         if let Some(fallback_alg) = self.algorithms.get(fallback) {
                             match fallback_alg.generate(ctx).await {
-                                Ok(id) => return Ok(id),
-                                Err(_) => continue,
+                                Ok(id) => {
+                                    self.degradation_manager
+                                        .record_generation_result(*fallback, true)
+                                        .await;
+                                    return Ok(id);
+                                }
+                                Err(_) => {
+                                    self.degradation_manager
+                                        .record_generation_result(*fallback, false)
+                                        .await;
+                                    continue;
+                                }
                             }
                         }
                     }
@@ -197,8 +245,18 @@ impl AlgorithmRouter {
         for fallback in &self.fallback_chain {
             if let Some(fallback_alg) = self.algorithms.get(fallback) {
                 match fallback_alg.generate(ctx).await {
-                    Ok(id) => return Ok(id),
-                    Err(_) => continue,
+                    Ok(id) => {
+                        self.degradation_manager
+                            .record_generation_result(*fallback, true)
+                            .await;
+                        return Ok(id);
+                    }
+                    Err(_) => {
+                        self.degradation_manager
+                            .record_generation_result(*fallback, false)
+                            .await;
+                        continue;
+                    }
                 }
             }
         }
@@ -210,20 +268,40 @@ impl AlgorithmRouter {
 
     async fn batch_generate_with_algorithm(
         &self,
-        algorithm: AlgorithmType,
+        _algorithm: AlgorithmType,
         ctx: &GenerateContext,
         size: usize,
     ) -> Result<IdBatch> {
-        if let Some(alg) = self.algorithms.get(&algorithm) {
+        let effective_algorithm = self.degradation_manager.get_effective_algorithm().await;
+
+        if let Some(alg) = self.algorithms.get(&effective_algorithm) {
             match alg.batch_generate(ctx, size).await {
-                Ok(batch) => return Ok(batch),
+                Ok(batch) => {
+                    self.degradation_manager
+                        .record_generation_result(effective_algorithm, true)
+                        .await;
+                    return Ok(batch);
+                }
                 Err(e) => {
-                    debug!("Algorithm {} batch failed: {:?}", algorithm, e);
+                    debug!("Algorithm {} batch failed: {:?}", effective_algorithm, e);
+                    self.degradation_manager
+                        .record_generation_result(effective_algorithm, false)
+                        .await;
                     for fallback in &self.fallback_chain {
                         if let Some(fallback_alg) = self.algorithms.get(fallback) {
                             match fallback_alg.batch_generate(ctx, size).await {
-                                Ok(batch) => return Ok(batch),
-                                Err(_) => continue,
+                                Ok(batch) => {
+                                    self.degradation_manager
+                                        .record_generation_result(*fallback, true)
+                                        .await;
+                                    return Ok(batch);
+                                }
+                                Err(_) => {
+                                    self.degradation_manager
+                                        .record_generation_result(*fallback, false)
+                                        .await;
+                                    continue;
+                                }
                             }
                         }
                     }
@@ -235,8 +313,18 @@ impl AlgorithmRouter {
         for fallback in &self.fallback_chain {
             if let Some(fallback_alg) = self.algorithms.get(fallback) {
                 match fallback_alg.batch_generate(ctx, size).await {
-                    Ok(batch) => return Ok(batch),
-                    Err(_) => continue,
+                    Ok(batch) => {
+                        self.degradation_manager
+                            .record_generation_result(*fallback, true)
+                            .await;
+                        return Ok(batch);
+                    }
+                    Err(_e) => {
+                        self.degradation_manager
+                            .record_generation_result(*fallback, false)
+                            .await;
+                        continue;
+                    }
                 }
             }
         }
@@ -260,6 +348,14 @@ impl AlgorithmRouter {
             .collect()
     }
 
+    pub fn get_degradation_manager(&self) -> &Arc<DegradationManager> {
+        &self.degradation_manager
+    }
+
+    pub async fn check_health_and_update_degradation(&self) {
+        self.degradation_manager.check_all_health().await;
+    }
+
     pub async fn shutdown(&self) {
         for entry in self.algorithms.iter() {
             if let Err(e) = entry.shutdown().await {
@@ -281,7 +377,7 @@ mod tests {
     #[tokio::test]
     async fn test_algorithm_router_initialize() {
         let config = Config::default();
-        let mut router = AlgorithmRouter::new(config);
+        let router = AlgorithmRouter::new(config, None);
 
         let result = router.initialize().await;
         assert!(result.is_ok());
@@ -290,7 +386,7 @@ mod tests {
     #[tokio::test]
     async fn test_algorithm_router_generate() {
         let config = Config::default();
-        let mut router = AlgorithmRouter::new(config);
+        let router = AlgorithmRouter::new(config, None);
         router.initialize().await.unwrap();
 
         let ctx = GenerateContext {
@@ -308,7 +404,7 @@ mod tests {
     #[tokio::test]
     async fn test_algorithm_router_batch_generate() {
         let config = Config::default();
-        let mut router = AlgorithmRouter::new(config);
+        let router = AlgorithmRouter::new(config, None);
         router.set_algorithm("test".to_string(), AlgorithmType::Snowflake);
         router.initialize().await.unwrap();
 
@@ -332,7 +428,7 @@ mod tests {
     #[test]
     fn test_set_algorithm() {
         let config = Config::default();
-        let router = AlgorithmRouter::new(config);
+        let router = AlgorithmRouter::new(config, None);
 
         router.set_algorithm("order".to_string(), AlgorithmType::Snowflake);
 

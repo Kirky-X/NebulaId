@@ -76,6 +76,11 @@ pub trait WorkspaceRepository: Send + Sync {
         limit: Option<u32>,
         offset: Option<u32>,
     ) -> Result<Vec<Workspace>>;
+    async fn get_workspace_with_groups(&self, id: Uuid) -> Result<Option<(Workspace, Vec<Group>)>>;
+    async fn get_workspace_with_groups_and_biz_tags(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<(Workspace, Vec<(Group, Vec<BizTag>)>)>>;
 }
 
 #[async_trait]
@@ -95,6 +100,8 @@ pub trait GroupRepository: Send + Sync {
         limit: Option<u32>,
         offset: Option<u32>,
     ) -> Result<Vec<Group>>;
+    async fn get_group_with_biz_tags(&self, id: Uuid) -> Result<Option<(Group, Vec<BizTag>)>>;
+    async fn delete_group_with_biz_tags(&self, id: Uuid) -> Result<()>;
 }
 
 #[async_trait]
@@ -116,6 +123,12 @@ pub trait BizTagRepository: Send + Sync {
         limit: Option<u32>,
         offset: Option<u32>,
     ) -> Result<Vec<BizTag>>;
+    async fn list_biz_tags_by_workspace_group(
+        &self,
+        workspace_id: Uuid,
+        group_id: Uuid,
+    ) -> Result<Vec<BizTag>>;
+    async fn count_biz_tags_by_group(&self, group_id: Uuid) -> Result<u64>;
 }
 
 use crate::database::biz_tag_entity::{BizTag, CreateBizTagRequest, UpdateBizTagRequest};
@@ -252,6 +265,66 @@ impl WorkspaceRepository for SeaOrmRepository {
 
         Ok(results.into_iter().map(|m| m.into()).collect())
     }
+
+    async fn get_workspace_with_groups(&self, id: Uuid) -> Result<Option<(Workspace, Vec<Group>)>> {
+        let workspace = WorkspaceEntity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        if workspace.is_none() {
+            return Ok(None);
+        }
+
+        let workspace: Workspace = workspace.unwrap().into();
+
+        let groups = GroupEntity::find()
+            .filter(GroupColumn::WorkspaceId.eq(id))
+            .all(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        let groups: Vec<Group> = groups.into_iter().map(|g| g.into()).collect();
+
+        Ok(Some((workspace, groups)))
+    }
+
+    async fn get_workspace_with_groups_and_biz_tags(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<(Workspace, Vec<(Group, Vec<BizTag>)>)>> {
+        let workspace = WorkspaceEntity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        if workspace.is_none() {
+            return Ok(None);
+        }
+
+        let workspace: Workspace = workspace.unwrap().into();
+
+        let groups = GroupEntity::find()
+            .filter(GroupColumn::WorkspaceId.eq(id))
+            .all(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        let mut result_groups: Vec<(Group, Vec<BizTag>)> = Vec::new();
+
+        for group in groups {
+            let biz_tags = BizTagEntity::find()
+                .filter(BizTagColumn::GroupId.eq(group.id))
+                .all(&self.db)
+                .await
+                .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+            let biz_tags: Vec<BizTag> = biz_tags.into_iter().map(|b| b.into()).collect();
+            result_groups.push((group.into(), biz_tags));
+        }
+
+        Ok(Some((workspace, result_groups)))
+    }
 }
 
 #[async_trait]
@@ -382,6 +455,61 @@ impl GroupRepository for SeaOrmRepository {
             .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
 
         Ok(results.into_iter().map(|m| m.into()).collect())
+    }
+
+    async fn get_group_with_biz_tags(&self, id: Uuid) -> Result<Option<(Group, Vec<BizTag>)>> {
+        let group = GroupEntity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        if group.is_none() {
+            return Ok(None);
+        }
+
+        let group: Group = group.unwrap().into();
+
+        let biz_tags = BizTagEntity::find()
+            .filter(BizTagColumn::GroupId.eq(id))
+            .all(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        let biz_tags: Vec<BizTag> = biz_tags.into_iter().map(|b| b.into()).collect();
+
+        Ok(Some((group, biz_tags)))
+    }
+
+    async fn delete_group_with_biz_tags(&self, id: Uuid) -> Result<()> {
+        let txn = self
+            .db
+            .begin()
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        let biz_tags = BizTagEntity::find()
+            .filter(BizTagColumn::GroupId.eq(id))
+            .all(&txn)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        for biz_tag in biz_tags {
+            BizTagEntity::delete_by_id(biz_tag.id)
+                .exec(&txn)
+                .await
+                .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+        }
+
+        GroupEntity::delete_by_id(id)
+            .exec(&txn)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        txn.commit()
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        Ok(())
     }
 }
 
@@ -571,6 +699,31 @@ impl BizTagRepository for SeaOrmRepository {
             .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
 
         Ok(results.into_iter().map(|m| m.into()).collect())
+    }
+
+    async fn list_biz_tags_by_workspace_group(
+        &self,
+        workspace_id: Uuid,
+        group_id: Uuid,
+    ) -> Result<Vec<BizTag>> {
+        let results = BizTagEntity::find()
+            .filter(BizTagColumn::WorkspaceId.eq(workspace_id))
+            .filter(BizTagColumn::GroupId.eq(group_id))
+            .all(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        Ok(results.into_iter().map(|m| m.into()).collect())
+    }
+
+    async fn count_biz_tags_by_group(&self, group_id: Uuid) -> Result<u64> {
+        let count = BizTagEntity::find()
+            .filter(BizTagColumn::GroupId.eq(group_id))
+            .count(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        Ok(count)
     }
 }
 
@@ -925,15 +1078,75 @@ mod tests {
     use super::*;
     use sea_orm::{ConnectOptions, ConnectionTrait, Database, Statement};
 
-    #[tokio::test]
-    async fn test_repository_operations() {
-        let opt = ConnectOptions::new("sqlite::memory:".to_string());
-        let db = Database::connect(opt).await.unwrap();
+    async fn setup_test_db(db: &sea_orm::DatabaseConnection) {
+        let backend = db.get_database_backend();
 
         db.execute(Statement::from_string(
-            db.get_database_backend(),
-            "CREATE TABLE IF NOT EXISTS nebula_segments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+            backend.clone(),
+            r#"
+            CREATE TABLE IF NOT EXISTS nebula_workspaces (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                status INTEGER NOT NULL DEFAULT 1,
+                max_groups INTEGER NOT NULL DEFAULT 10,
+                max_biz_tags INTEGER NOT NULL DEFAULT 100,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            "#,
+        ))
+        .await
+        .unwrap();
+
+        db.execute(Statement::from_string(
+            backend.clone(),
+            r#"
+            CREATE TABLE IF NOT EXISTS nebula_groups (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                max_biz_tags INTEGER NOT NULL DEFAULT 50,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (workspace_id) REFERENCES nebula_workspaces(id)
+            )
+            "#,
+        ))
+        .await
+        .unwrap();
+
+        db.execute(Statement::from_string(
+            backend.clone(),
+            r#"
+            CREATE TABLE IF NOT EXISTS nebula_biz_tags (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                group_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                algorithm INTEGER NOT NULL DEFAULT 0,
+                format INTEGER NOT NULL DEFAULT 0,
+                prefix TEXT,
+                base_step INTEGER NOT NULL DEFAULT 100,
+                max_step INTEGER NOT NULL DEFAULT 1000,
+                datacenter_ids TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (workspace_id) REFERENCES nebula_workspaces(id),
+                FOREIGN KEY (group_id) REFERENCES nebula_groups(id)
+            )
+            "#,
+        ))
+        .await
+        .unwrap();
+
+        db.execute(Statement::from_string(
+            backend.clone(),
+            r#"
+            CREATE TABLE IF NOT EXISTS nebula_segments (
+                id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
                 biz_tag TEXT NOT NULL,
                 current_id INTEGER NOT NULL DEFAULT 1,
@@ -943,10 +1156,18 @@ mod tests {
                 dc_id INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
-            )",
+            )
+            "#,
         ))
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_repository_operations() {
+        let opt = ConnectOptions::new("sqlite::memory:".to_string());
+        let db = Database::connect(opt).await.unwrap();
+        setup_test_db(&db).await;
 
         let repo = SeaOrmRepository::new(db);
 
@@ -980,5 +1201,170 @@ mod tests {
         let list = repo.list_segments("test_workspace").await.unwrap();
 
         assert_eq!(list.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_cascading_operations() {
+        let opt = ConnectOptions::new("sqlite::memory:".to_string());
+        let db = Database::connect(opt).await.unwrap();
+        setup_test_db(&db).await;
+
+        let repo = SeaOrmRepository::new(db);
+
+        let workspace = repo
+            .create_workspace(&CreateWorkspaceRequest {
+                name: "test_workspace".to_string(),
+                description: Some("Test workspace".to_string()),
+                max_groups: Some(5),
+                max_biz_tags: Some(50),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(workspace.name, "test_workspace");
+
+        let group1 = repo
+            .create_group(&CreateGroupRequest {
+                workspace_id: workspace.id,
+                name: "group1".to_string(),
+                description: Some("Test group 1".to_string()),
+                max_biz_tags: Some(20),
+            })
+            .await
+            .unwrap();
+
+        let group2 = repo
+            .create_group(&CreateGroupRequest {
+                workspace_id: workspace.id,
+                name: "group2".to_string(),
+                description: Some("Test group 2".to_string()),
+                max_biz_tags: Some(30),
+            })
+            .await
+            .unwrap();
+
+        let biz_tag1 = repo
+            .create_biz_tag(&CreateBizTagRequest {
+                workspace_id: workspace.id,
+                group_id: group1.id,
+                name: "biz_tag_1".to_string(),
+                description: Some("Test biz tag 1".to_string()),
+                algorithm: Some(crate::types::id::AlgorithmType::Segment),
+                format: Some(crate::types::id::IdFormat::Numeric),
+                prefix: None,
+                base_step: Some(100),
+                max_step: Some(1000),
+                datacenter_ids: None,
+            })
+            .await
+            .unwrap();
+
+        let biz_tag2 = repo
+            .create_biz_tag(&CreateBizTagRequest {
+                workspace_id: workspace.id,
+                group_id: group1.id,
+                name: "biz_tag_2".to_string(),
+                description: Some("Test biz tag 2".to_string()),
+                algorithm: Some(crate::types::id::AlgorithmType::Snowflake),
+                format: Some(crate::types::IdFormat::Numeric),
+                prefix: Some("prefix_".to_string()),
+                base_step: Some(200),
+                max_step: Some(2000),
+                datacenter_ids: Some(vec![0, 1]),
+            })
+            .await
+            .unwrap();
+
+        let biz_tag3 = repo
+            .create_biz_tag(&CreateBizTagRequest {
+                workspace_id: workspace.id,
+                group_id: group2.id,
+                name: "biz_tag_3".to_string(),
+                description: Some("Test biz tag 3".to_string()),
+                algorithm: None,
+                format: None,
+                prefix: None,
+                base_step: None,
+                max_step: None,
+                datacenter_ids: None,
+            })
+            .await
+            .unwrap();
+
+        let workspace_with_groups = repo
+            .get_workspace_with_groups(workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(workspace_with_groups.0.id, workspace.id);
+        assert_eq!(workspace_with_groups.1.len(), 2);
+
+        let workspace_with_all = repo
+            .get_workspace_with_groups_and_biz_tags(workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(workspace_with_all.0.id, workspace.id);
+        assert_eq!(workspace_with_all.1.len(), 2);
+
+        let total_biz_tags: usize = workspace_with_all
+            .1
+            .iter()
+            .map(|(_, tags)| tags.len())
+            .sum();
+        assert_eq!(total_biz_tags, 3);
+
+        let group_with_biz_tags = repo
+            .get_group_with_biz_tags(group1.id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(group_with_biz_tags.0.id, group1.id);
+        assert_eq!(group_with_biz_tags.1.len(), 2);
+
+        let biz_tags_in_group1 = repo
+            .list_biz_tags_by_workspace_group(workspace.id, group1.id)
+            .await
+            .unwrap();
+
+        assert_eq!(biz_tags_in_group1.len(), 2);
+
+        let count = repo.count_biz_tags_by_group(group1.id).await.unwrap();
+        assert_eq!(count, 2);
+
+        let count2 = repo.count_biz_tags_by_group(group2.id).await.unwrap();
+        assert_eq!(count2, 1);
+
+        repo.delete_group_with_biz_tags(group1.id).await.unwrap();
+
+        let remaining_biz_tags = repo
+            .list_biz_tags_by_workspace_group(workspace.id, group1.id)
+            .await
+            .unwrap();
+
+        assert_eq!(remaining_biz_tags.len(), 0);
+
+        let remaining_group = repo.get_group(group1.id).await.unwrap();
+        assert!(remaining_group.is_none());
+
+        let biz_tags_in_group2 = repo
+            .list_biz_tags_by_workspace_group(workspace.id, group2.id)
+            .await
+            .unwrap();
+
+        assert_eq!(biz_tags_in_group2.len(), 1);
+        assert_eq!(biz_tags_in_group2[0].id, biz_tag3.id);
+
+        repo.delete_biz_tag(biz_tag3.id).await.unwrap();
+
+        let biz_tags_in_group2_after_delete = repo
+            .list_biz_tags_by_workspace_group(workspace.id, group2.id)
+            .await
+            .unwrap();
+
+        assert_eq!(biz_tags_in_group2_after_delete.len(), 0);
     }
 }

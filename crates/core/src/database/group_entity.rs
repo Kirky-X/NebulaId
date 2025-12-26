@@ -23,6 +23,8 @@ pub enum Relation {
         to = "super::workspace_entity::Column::Id"
     )]
     Workspace,
+    #[sea_orm(has_many = "super::biz_tag_entity::Entity")]
+    BizTag,
 }
 
 impl ActiveModelBehavior for ActiveModel {}
@@ -30,6 +32,12 @@ impl ActiveModelBehavior for ActiveModel {}
 impl Related<super::workspace_entity::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Workspace.def()
+    }
+}
+
+impl Related<super::biz_tag_entity::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::BizTag.def()
     }
 }
 

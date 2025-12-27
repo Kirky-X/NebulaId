@@ -47,3 +47,8 @@ proptest = "1.4"
 quickcheck = "1"
 sea-orm = { version = "1.1", features = ["mock"] }
 tokio = { version = "1", features = ["test-util"] }
+criterion = "0.5"
+
+[[bench]]
+name = "benchmarks"
+harness = false

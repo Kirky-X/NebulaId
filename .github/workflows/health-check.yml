@@ -1,0 +1,62 @@
+name: Health Check
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Rust Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy, cargo-audit
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "nebula-ci-shared"
+          cache-targets: false
+
+      - name: Security Audit
+        run: cargo audit --deny warnings
+
+      - name: Format Check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy Lint
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build Project
+        run: cargo build --all-targets --all-features
+
+      - name: Run Tests
+        run: cargo test --all-targets --all-features
+
+      - name: Generate Code Coverage
+        if: github.event_name == 'pull_request'
+        run: |
+          cargo install grcov
+          grcov . --binary-path ./target/debug/ --source-dir . --output-type cobertura-xml --output-path cobertura.xml
+
+      - name: Upload Coverage Report
+        if: github.event_name == 'pull_request'
+        uses: codecov/codecov-action@v5
+        with:
+          files: cobertura.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+          verbose: true

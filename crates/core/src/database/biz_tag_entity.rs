@@ -44,6 +44,18 @@ pub enum Relation {
 
 impl ActiveModelBehavior for ActiveModel {}
 
+impl Related<super::workspace_entity::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Workspace.def()
+    }
+}
+
+impl Related<super::group_entity::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Group.def()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BizTag {
     pub id: Uuid,

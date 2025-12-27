@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS segments (
     worker_id INT NOT NULL DEFAULT 0,
     start_id BIGINT NOT NULL,
     max_id BIGINT NOT NULL,
-    current_id BIGINT NOT NULL DEFAULT start_id,
+    current_id BIGINT NOT NULL,
     step INT NOT NULL DEFAULT 1000,
     version INT NOT NULL DEFAULT 0,
     status VARCHAR(20) DEFAULT 'active',

@@ -101,11 +101,9 @@ pub struct UpdateBizTagRequest {
 
 impl From<Model> for BizTag {
     fn from(model: Model) -> Self {
-        // Parse the datacenter_ids from JSON string to Vec<i32>
         let datacenter_ids = if model.datacenter_ids.is_empty() {
             vec![]
         } else {
-            // Parse the JSON string to Vec<i32>
             serde_json::from_str(&model.datacenter_ids).unwrap_or_else(|_| vec![])
         };
 
@@ -123,26 +121,6 @@ impl From<Model> for BizTag {
             datacenter_ids,
             created_at: model.created_at,
             updated_at: model.updated_at,
-        }
-    }
-}
-
-impl From<BizTag> for BizTagResponse {
-    fn from(biz_tag: BizTag) -> Self {
-        BizTagResponse {
-            id: biz_tag.id,
-            workspace_id: biz_tag.workspace_id,
-            group_id: biz_tag.group_id,
-            name: biz_tag.name,
-            description: biz_tag.description,
-            algorithm: biz_tag.algorithm,
-            format: biz_tag.format,
-            prefix: biz_tag.prefix,
-            base_step: biz_tag.base_step,
-            max_step: biz_tag.max_step,
-            datacenter_ids: biz_tag.datacenter_ids,
-            created_at: biz_tag.created_at,
-            updated_at: biz_tag.updated_at,
         }
     }
 }

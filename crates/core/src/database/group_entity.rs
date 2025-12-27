@@ -67,17 +67,6 @@ pub struct UpdateGroupRequest {
     pub max_biz_tags: Option<i32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct GroupResponse {
-    pub id: Uuid,
-    pub workspace_id: Uuid,
-    pub name: String,
-    pub description: Option<String>,
-    pub max_biz_tags: i32,
-    pub created_at: DateTime,
-    pub updated_at: DateTime,
-}
-
 impl From<Model> for Group {
     fn from(model: Model) -> Self {
         Group {
@@ -88,20 +77,6 @@ impl From<Model> for Group {
             max_biz_tags: model.max_biz_tags,
             created_at: model.created_at,
             updated_at: model.updated_at,
-        }
-    }
-}
-
-impl From<Group> for GroupResponse {
-    fn from(group: Group) -> Self {
-        GroupResponse {
-            id: group.id,
-            workspace_id: group.workspace_id,
-            name: group.name,
-            description: group.description,
-            max_biz_tags: group.max_biz_tags,
-            created_at: group.created_at,
-            updated_at: group.updated_at,
         }
     }
 }

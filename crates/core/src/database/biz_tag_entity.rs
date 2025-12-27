@@ -99,23 +99,6 @@ pub struct UpdateBizTagRequest {
     pub datacenter_ids: Option<Vec<i32>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BizTagResponse {
-    pub id: Uuid,
-    pub workspace_id: Uuid,
-    pub group_id: Uuid,
-    pub name: String,
-    pub description: Option<String>,
-    pub algorithm: AlgorithmType,
-    pub format: IdFormat,
-    pub prefix: String,
-    pub base_step: i32,
-    pub max_step: i32,
-    pub datacenter_ids: Vec<i32>,
-    pub created_at: DateTime,
-    pub updated_at: DateTime,
-}
-
 impl From<Model> for BizTag {
     fn from(model: Model) -> Self {
         // Parse the datacenter_ids from JSON string to Vec<i32>

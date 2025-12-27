@@ -313,6 +313,7 @@ pub struct SegmentAlgorithm {
     metrics: Arc<AlgorithmMetricsInner>,
     segment_loader: Arc<dyn SegmentLoader + Send + Sync>,
     dc_failure_detector: Arc<DcFailureDetector>,
+    #[allow(dead_code)]
     local_dc_id: u8,
     etcd_cluster_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
 }
@@ -405,19 +406,6 @@ impl SegmentAlgorithm {
             })
             .value()
             .clone()
-    }
-
-    fn should_use_etcd(&self) -> bool {
-        if let Some(ref monitor) = self.etcd_cluster_health_monitor {
-            let status = monitor.get_status();
-            match status {
-                crate::coordinator::EtcdClusterStatus::Healthy => true,
-                crate::coordinator::EtcdClusterStatus::Degraded => true,
-                crate::coordinator::EtcdClusterStatus::Failed => false,
-            }
-        } else {
-            true
-        }
     }
 }
 

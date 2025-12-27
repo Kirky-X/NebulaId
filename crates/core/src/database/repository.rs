@@ -9,19 +9,17 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::database::biz_tag_entity::{
-    ActiveModel as BizTagActiveModel, AlgorithmTypeDb, Column as BizTagColumn,
-    Entity as BizTagEntity, IdFormatDb, Model as BizTagModel,
+    ActiveModel as BizTagActiveModel, Column as BizTagColumn, Entity as BizTagEntity,
 };
 use crate::database::group_entity::{
     ActiveModel as GroupActiveModel, Column as GroupColumn, Entity as GroupEntity,
-    Model as GroupModel,
 };
 use crate::database::segment_entity::{
     ActiveModel as SegmentActiveModel, Column as SegmentColumn, Entity as SegmentEntity,
 };
 use crate::database::workspace_entity::{
     ActiveModel as WorkspaceActiveModel, Column as WorkspaceColumn, Entity as WorkspaceEntity,
-    Model as WorkspaceModel, Workspace, WorkspaceStatusDb,
+    Workspace, WorkspaceStatusDb,
 };
 use crate::types::{Result, SegmentInfo};
 
@@ -1244,7 +1242,7 @@ mod tests {
             .await
             .unwrap();
 
-        let biz_tag1 = repo
+        let _biz_tag1 = repo
             .create_biz_tag(&CreateBizTagRequest {
                 workspace_id: workspace.id,
                 group_id: group1.id,

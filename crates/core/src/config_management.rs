@@ -1,5 +1,3 @@
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -396,6 +394,8 @@ mod tests {
             async fn update_group(&self, id: Uuid, group: &UpdateGroupRequest) -> Result<Group>;
             async fn delete_group(&self, id: Uuid) -> Result<()>;
             async fn list_groups(&self, workspace_id: Uuid, limit: Option<u32>, offset: Option<u32>) -> Result<Vec<Group>>;
+            async fn get_group_with_biz_tags(&self, id: Uuid) -> Result<Option<(Group, Vec<BizTag>)>>;
+            async fn delete_group_with_biz_tags(&self, id: Uuid) -> Result<()>;
         }
 
         #[async_trait]
@@ -406,6 +406,8 @@ mod tests {
             async fn update_biz_tag(&self, id: Uuid, biz_tag: &UpdateBizTagRequest) -> Result<BizTag>;
             async fn delete_biz_tag(&self, id: Uuid) -> Result<()>;
             async fn list_biz_tags(&self, workspace_id: Uuid, group_id: Option<Uuid>, limit: Option<u32>, offset: Option<u32>) -> Result<Vec<BizTag>>;
+            async fn list_biz_tags_by_workspace_group(&self, workspace_id: Uuid, group_id: Uuid) -> Result<Vec<BizTag>>;
+            async fn count_biz_tags_by_group(&self, group_id: Uuid) -> Result<u64>;
         }
     }
 
@@ -791,7 +793,7 @@ mod tests {
             datacenter_ids: Some(vec![0]),
         };
 
-        let expected_response = DynamicConfigResponse {
+        let _expected_response = DynamicConfigResponse {
             workspace_id,
             group_id,
             biz_tag_id: Uuid::new_v4(),

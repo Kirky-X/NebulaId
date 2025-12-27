@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -103,7 +102,7 @@ where
             ));
         };
 
-        let mut biz_tag = biz_tag_opt.ok_or_else(|| {
+        let biz_tag = biz_tag_opt.ok_or_else(|| {
             crate::CoreError::NotFound(format!(
                 "BizTag not found: workspace_id={}, group_id={:?}, name={}",
                 request.workspace_id, request.group_id, request.biz_tag
@@ -242,6 +241,7 @@ mod tests {
     use super::*;
     use crate::database::{BizTag, CreateBizTagRequest, UpdateBizTagRequest};
     use crate::types::id::{AlgorithmType, IdFormat};
+    use async_trait::async_trait;
     use mockall::{mock, predicate};
     use uuid::Uuid;
 
@@ -257,6 +257,8 @@ mod tests {
             async fn update_biz_tag(&self, id: Uuid, biz_tag: &UpdateBizTagRequest) -> Result<BizTag>;
             async fn delete_biz_tag(&self, id: Uuid) -> Result<()>;
             async fn list_biz_tags(&self, workspace_id: Uuid, group_id: Option<Uuid>, limit: Option<u32>, offset: Option<u32>) -> Result<Vec<BizTag>>;
+            async fn list_biz_tags_by_workspace_group(&self, workspace_id: Uuid, group_id: Uuid) -> Result<Vec<BizTag>>;
+            async fn count_biz_tags_by_group(&self, group_id: Uuid) -> Result<u64>;
         }
     }
 

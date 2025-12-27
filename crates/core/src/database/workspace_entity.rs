@@ -66,18 +66,6 @@ pub struct UpdateWorkspaceRequest {
     pub max_biz_tags: Option<i32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkspaceResponse {
-    pub id: Uuid,
-    pub name: String,
-    pub description: Option<String>,
-    pub status: WorkspaceStatus,
-    pub max_groups: i32,
-    pub max_biz_tags: i32,
-    pub created_at: DateTime,
-    pub updated_at: DateTime,
-}
-
 impl From<Model> for Workspace {
     fn from(model: Model) -> Self {
         Workspace {
@@ -89,21 +77,6 @@ impl From<Model> for Workspace {
             max_biz_tags: model.max_biz_tags,
             created_at: model.created_at,
             updated_at: model.updated_at,
-        }
-    }
-}
-
-impl From<Workspace> for WorkspaceResponse {
-    fn from(workspace: Workspace) -> Self {
-        WorkspaceResponse {
-            id: workspace.id,
-            name: workspace.name,
-            description: workspace.description,
-            status: workspace.status,
-            max_groups: workspace.max_groups,
-            max_biz_tags: workspace.max_biz_tags,
-            created_at: workspace.created_at,
-            updated_at: workspace.updated_at,
         }
     }
 }

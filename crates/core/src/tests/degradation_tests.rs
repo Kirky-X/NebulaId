@@ -248,7 +248,7 @@ async fn test_circuit_breaker_state_transitions() {
 
     manager.check_all_health().await;
 
-    let health_state = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
+    let _health_state = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
     assert_eq!(health_state.is_degraded, true);
 
     sleep(Duration::from_millis(1100)).await;

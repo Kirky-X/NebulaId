@@ -145,10 +145,7 @@ async fn handle_update_logging(
 }
 
 #[axum::debug_handler]
-async fn handle_reload_config(
-    State(state): State<AppState>,
-    Json(_req): Json<()>,
-) -> Json<UpdateConfigResponse> {
+async fn handle_reload_config(State(state): State<AppState>) -> Json<UpdateConfigResponse> {
     Json(state.config_service.reload_config().await)
 }
 

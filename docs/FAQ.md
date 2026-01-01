@@ -470,10 +470,10 @@ export NEBULA_AUTH_API_KEY="your-api-key-here"
 
 <br>
 
-**5-Minute Quick Start:**
+**5-Minute Quick Start：**
 
 ```rust
-use nebula_id::algorithm::SegmentAlgorithm;
+use nebula_core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -947,7 +947,7 @@ Nebula ID is designed for high concurrency:
 **Best Practices:**
 
 ```rust
-use nebula_id::algorithm::SnowflakeAlgorithm;
+use nebula_core::algorithm::SnowflakeAlgorithm;
 use std::sync::Arc;
 use tokio::task;
 

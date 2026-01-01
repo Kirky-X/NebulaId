@@ -118,6 +118,7 @@ async fn start_grpc_server(
 ) -> Result<()> {
     let grpc_addr = SocketAddr::from(([0, 0, 0, 0], config.grpc_port));
     info!("Starting gRPC server on {}", grpc_addr);
+    info!("Configured gRPC port: {}", config.grpc_port);
 
     let grpc_server = GrpcServer::new(handlers);
 
@@ -199,6 +200,9 @@ async fn main() -> Result<()> {
             .unwrap_or(1),
         shutdown_timeout_secs: 30,
     };
+
+    info!("Server configuration: HTTP port={}, gRPC port={}", 
+        server_config.http_port, server_config.grpc_port);
 
     let auth = Arc::new(ApiKeyAuth::new());
     load_api_keys(&auth).await;

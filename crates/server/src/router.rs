@@ -127,15 +127,28 @@ async fn handle_batch_generate(
     State(state): State<AppState>,
     Json(req): Json<BatchGenerateRequest>,
 ) -> Result<Json<BatchGenerateResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Validate the request using validator
+    use validator::Validate;
+    if let Err(errors) = req.validate() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(400, format!("Validation error: {}", errors))),
+        ));
+    }
+
     state
         .handlers
         .batch_generate(req)
         .await
         .map(Json)
         .map_err(|e| {
+            let status_code = match e {
+                nebula_core::types::CoreError::InvalidInput(_) => StatusCode::BAD_REQUEST,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(500, e.to_string())),
+                status_code,
+                Json(ErrorResponse::new(status_code.as_u16(), e.to_string())),
             )
         })
 }

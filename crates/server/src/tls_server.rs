@@ -1,15 +1,14 @@
+//! TLS 服务器模块
+//! 提供 HTTPS 和 gRPC TLS 支持
+
+use nebula_core::config::TlsConfig;
+use rustls::pki_types::PrivateKeyDer;
 use rustls::ServerConfig;
-use rustls_pemfile::{certs, pkcs8_private_keys};
 use std::fs::File;
 use std::io::BufReader;
-use std::net::SocketAddr;
 use std::path::Path;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 
@@ -29,18 +28,34 @@ pub type TlsResult<T> = std::result::Result<T, TlsError>;
 
 #[derive(Clone)]
 pub struct TlsManager {
-    config: nebula_core::config::TlsConfig,
+    config: TlsConfig,
     http_acceptor: Option<TlsAcceptor>,
     grpc_tls_config: Option<Arc<ServerTlsConfig>>,
 }
 
 impl TlsManager {
-    pub fn new(config: nebula_core::config::TlsConfig) -> Self {
+    pub fn new(config: TlsConfig) -> Self {
         Self {
             config,
             http_acceptor: None,
             grpc_tls_config: None,
         }
+    }
+
+    pub fn is_http_enabled(&self) -> bool {
+        self.config.http_enabled && self.http_acceptor.is_some()
+    }
+
+    pub fn is_grpc_enabled(&self) -> bool {
+        self.config.grpc_enabled && self.grpc_tls_config.is_some()
+    }
+
+    pub fn http_acceptor(&self) -> Option<&TlsAcceptor> {
+        self.http_acceptor.as_ref()
+    }
+
+    pub fn grpc_tls_config(&self) -> Option<&Arc<ServerTlsConfig>> {
+        self.grpc_tls_config.as_ref()
     }
 
     pub async fn initialize(&mut self) -> TlsResult<()> {
@@ -65,6 +80,7 @@ impl TlsManager {
             )));
         }
 
+        // 读取 PEM 文件
         let cert_file =
             File::open(cert_path).map_err(|e| TlsError::CertificateLoadError(e.to_string()))?;
         let key_file =
@@ -73,49 +89,106 @@ impl TlsManager {
         let mut cert_reader = BufReader::new(cert_file);
         let mut key_reader = BufReader::new(key_file);
 
-        let cert_chain_result = certs(&mut cert_reader);
-        let cert_chain: Vec<_> = cert_chain_result
-            .collect::<Result<_, _>>()
-            .map_err(|e| TlsError::CertificateLoadError(e.to_string()))?;
-        let cert_chain = cert_chain
+        // 读取证书 - rustls-pemfile 2.x API
+        let mut cert_chain = Vec::new();
+        loop {
+            match rustls_pemfile::read_one(&mut cert_reader) {
+                Ok(Some(rustls_pemfile::Item::X509Certificate(cert))) => {
+                    cert_chain.push(cert);
+                    break; // 只取第一个证书
+                }
+                Ok(Some(_)) => continue, // 跳过非证书项
+                Ok(None) => break,
+                Err(e) => return Err(TlsError::CertificateLoadError(e.to_string())),
+            }
+        }
+
+        let cert_der = cert_chain
             .into_iter()
             .next()
             .ok_or_else(|| TlsError::CertificateLoadError("Empty certificate chain".to_string()))?;
 
-        let pkcs8_key_result = pkcs8_private_keys(&mut key_reader);
-        let pkcs8_keys: Vec<_> = pkcs8_key_result
-            .collect::<Result<_, _>>()
-            .map_err(|e| TlsError::PrivateKeyLoadError(e.to_string()))?;
-        let pkcs8_key = pkcs8_keys
-            .into_iter()
-            .next()
+        // 读取密钥 - rustls-pemfile 2.x API
+        let mut private_key_der: Option<PrivateKeyDer<'static>> = None;
+        loop {
+            match rustls_pemfile::read_one(&mut key_reader) {
+                Ok(Some(rustls_pemfile::Item::Pkcs1Key(key))) => {
+                    private_key_der = Some(PrivateKeyDer::from(key));
+                    break;
+                }
+                Ok(Some(rustls_pemfile::Item::Pkcs8Key(key))) => {
+                    private_key_der = Some(PrivateKeyDer::from(key));
+                    break;
+                }
+                Ok(Some(rustls_pemfile::Item::Sec1Key(key))) => {
+                    private_key_der = Some(PrivateKeyDer::from(key));
+                    break;
+                }
+                Ok(Some(_)) => continue, // 跳过非密钥项
+                Ok(None) => break,
+                Err(e) => return Err(TlsError::PrivateKeyLoadError(e.to_string())),
+            }
+        }
+
+        let private_key_der = private_key_der
             .ok_or_else(|| TlsError::PrivateKeyLoadError("Empty private key".to_string()))?;
 
-        let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(pkcs8_key);
+        // 获取 PEM 字节用于 gRPC Identity
+        let cert_pem = cert_der.as_ref();
+        let key_pem: &[u8] = match &private_key_der {
+            PrivateKeyDer::Pkcs1(k) => k.secret_pkcs1_der(),
+            PrivateKeyDer::Pkcs8(k) => k.secret_pkcs8_der(),
+            PrivateKeyDer::Sec1(k) => k.secret_sec1_der(),
+            _ => unreachable!(),
+        };
 
-        let private_key_ref: &[u8] = private_key.secret_der();
-        let identity = Identity::from_pem(cert_chain.as_ref(), private_key_ref);
+        // 创建 Identity 用于 gRPC
+        let identity = Identity::from_pem(cert_pem, key_pem);
 
+        // 为 HTTP 配置 TLS
         if self.config.http_enabled {
             let rustls_config = ServerConfig::builder()
                 .with_no_client_auth()
-                .with_single_cert(vec![cert_chain], private_key)
+                .with_single_cert(vec![cert_der], private_key_der)
                 .map_err(|e| TlsError::InvalidConfig(e.to_string()))?;
 
-            self.http_acceptor = Some(TlsAcceptor::from(Arc::new(rustls_config)));
+            // 配置 ALPN 协议 (HTTP/2 支持)
+            let mut config_with_alpn = rustls_config;
+            if !self.config.alpn_protocols.is_empty() {
+                let alpn_protocols: Vec<Vec<u8>> = self
+                    .config
+                    .alpn_protocols
+                    .iter()
+                    .map(|s| s.as_bytes().to_vec())
+                    .collect();
+                config_with_alpn.alpn_protocols = alpn_protocols;
+            }
+            self.http_acceptor = Some(TlsAcceptor::from(Arc::new(config_with_alpn)));
         }
 
+        // 为 gRPC 配置 TLS
         if self.config.grpc_enabled {
-            let mut grpc_config = ServerTlsConfig::new().identity(identity.clone());
+            let mut grpc_config = ServerTlsConfig::new().identity(identity);
 
             if let Some(ref ca_path) = self.config.ca_path {
                 let ca_file = File::open(ca_path)
                     .map_err(|e| TlsError::CertificateLoadError(e.to_string()))?;
                 let mut ca_reader = BufReader::new(ca_file);
-                let ca_cert_result = certs(&mut ca_reader);
-                let ca_certs: Vec<_> = ca_cert_result
-                    .collect::<Result<_, _>>()
-                    .map_err(|e| TlsError::CertificateLoadError(e.to_string()))?;
+
+                // 读取 CA 证书
+                let mut ca_certs = Vec::new();
+                loop {
+                    match rustls_pemfile::read_one(&mut ca_reader) {
+                        Ok(Some(rustls_pemfile::Item::X509Certificate(cert))) => {
+                            ca_certs.push(cert);
+                            break;
+                        }
+                        Ok(Some(_)) => continue,
+                        Ok(None) => break,
+                        Err(e) => return Err(TlsError::CertificateLoadError(e.to_string())),
+                    }
+                }
+
                 let ca_cert = ca_certs.into_iter().next().ok_or_else(|| {
                     TlsError::CertificateLoadError("Empty CA certificate".to_string())
                 })?;
@@ -130,102 +203,6 @@ impl TlsManager {
 
         Ok(())
     }
-
-    pub fn is_http_enabled(&self) -> bool {
-        self.config.enabled && self.config.http_enabled && self.http_acceptor.is_some()
-    }
-
-    pub fn is_grpc_enabled(&self) -> bool {
-        self.config.enabled && self.config.grpc_enabled && self.grpc_tls_config.is_some()
-    }
-
-    pub fn http_acceptor(&self) -> Option<&TlsAcceptor> {
-        self.http_acceptor.as_ref()
-    }
-
-    pub fn grpc_tls_config(&self) -> Option<Arc<ServerTlsConfig>> {
-        self.grpc_tls_config.clone()
-    }
-
-    pub fn config(&self) -> &nebula_core::config::TlsConfig {
-        &self.config
-    }
-}
-
-pub struct TlsIncoming {
-    listener: TcpListener,
-    acceptor: TlsAcceptor,
-}
-
-impl TlsIncoming {
-    pub fn new(listener: TcpListener, acceptor: TlsAcceptor) -> Self {
-        Self { listener, acceptor }
-    }
-
-    pub async fn accept(
-        &mut self,
-    ) -> std::io::Result<(tokio_rustls::server::TlsStream<TcpStream>, SocketAddr)> {
-        let (stream, addr) = self.listener.accept().await?;
-        let tls_stream = self.acceptor.accept(stream).await.map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("TLS handshake failed: {}", e),
-            )
-        })?;
-        Ok((tls_stream, addr))
-    }
-
-    pub fn local_addr(&self) -> SocketAddr {
-        self.listener
-            .local_addr()
-            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)))
-    }
-
-    pub fn into_inner(self) -> (TcpListener, TlsAcceptor) {
-        (self.listener, self.acceptor)
-    }
-}
-
-pub struct TlsStream(pub tokio_rustls::server::TlsStream<TcpStream>);
-
-impl TlsStream {
-    pub fn inner_mut(&mut self) -> &mut tokio_rustls::server::TlsStream<TcpStream> {
-        &mut self.0
-    }
-}
-
-impl AsyncRead for TlsStream {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.0).poll_read(cx, buf)
-    }
-}
-
-impl AsyncWrite for TlsStream {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.0).poll_write(cx, buf)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.0).poll_flush(cx)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.0).poll_shutdown(cx)
-    }
-}
-
-impl std::fmt::Display for TlsIncoming {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TlsIncoming({})", self.local_addr())
-    }
 }
 
 #[cfg(test)]
@@ -234,12 +211,17 @@ mod tests {
 
     #[test]
     fn test_tls_config_default() {
-        let config = nebula_core::config::TlsConfig::default();
+        let config = TlsConfig::default();
         assert!(!config.enabled);
         assert!(config.cert_path.is_empty());
         assert!(config.key_path.is_empty());
         assert!(config.ca_path.is_none());
         assert!(!config.http_enabled);
         assert!(!config.grpc_enabled);
+        assert_eq!(
+            config.min_tls_version,
+            nebula_core::config::TlsVersion::Tls13
+        );
+        assert!(!config.alpn_protocols.is_empty());
     }
 }

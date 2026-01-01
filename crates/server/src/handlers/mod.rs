@@ -260,7 +260,7 @@ impl ApiHandlers {
             .get_timestamp()
             .map(|ts| {
                 let unix = ts.to_unix();
-                unix.0 as u64 * 1000 + (unix.1 / 1_000_000) as u64
+                unix.0 * 1000 + (unix.1 / 1_000_000) as u64
             })
             .unwrap_or(0);
 

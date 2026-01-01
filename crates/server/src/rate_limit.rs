@@ -61,7 +61,7 @@ impl RateLimiter {
         Self {
             buckets: Arc::new(Mutex::new(HashMap::new())),
             default_rate: default_rps,
-            default_burst: default_burst,
+            default_burst,
         }
     }
 

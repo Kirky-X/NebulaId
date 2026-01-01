@@ -104,13 +104,25 @@ impl ApiHandlers {
     pub async fn batch_generate(&self, req: BatchGenerateRequest) -> Result<BatchGenerateResponse> {
         let start = std::time::Instant::now();
 
+        // Validate batch size
+        let size = req.size.unwrap_or(10);
+        if size == 0 {
+            return Err(CoreError::InvalidInput("Batch size cannot be zero".to_string()));
+        }
+        if size > 100 {
+            return Err(CoreError::InvalidInput(format!(
+                "Batch size {} exceeds maximum allowed value of 100",
+                size
+            )));
+        }
+
         let result = self
             .id_generator
             .batch_generate(
                 &req.workspace,
                 &req.group,
                 &req.biz_tag,
-                req.size.unwrap_or(10),
+                size,
             )
             .await;
 

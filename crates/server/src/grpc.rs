@@ -70,6 +70,17 @@ impl NebulaIdService for GrpcServer {
         let req = request.into_inner();
         let tag = req.tag.clone();
 
+        // Validate batch size
+        if req.count == 0 {
+            return Err(Status::invalid_argument("Batch size cannot be zero"));
+        }
+        if req.count > 100 {
+            return Err(Status::invalid_argument(format!(
+                "Batch size {} exceeds maximum allowed value of 100",
+                req.count
+            )));
+        }
+
         let batch_req = BatchGenerateRequest {
             workspace: req.namespace,
             group: tag.clone(),

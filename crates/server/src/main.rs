@@ -28,6 +28,7 @@ const DEFAULT_GRPC_PORT: u16 = 50051;
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub http_port: u16,
+    pub grpc_port: u16,
     pub workers: usize,
     pub shutdown_timeout_secs: u64,
 }
@@ -39,6 +40,7 @@ impl Default for ServerConfig {
             .unwrap_or(1);
         Self {
             http_port: DEFAULT_SERVER_PORT,
+            grpc_port: DEFAULT_GRPC_PORT,
             workers,
             shutdown_timeout_secs: 30,
         }
@@ -110,11 +112,11 @@ async fn start_http_server(
 }
 
 async fn start_grpc_server(
-    _config: ServerConfig,
+    config: ServerConfig,
     handlers: Arc<ApiHandlers>,
     tls_manager: Option<Arc<TlsManager>>,
 ) -> Result<()> {
-    let grpc_addr = SocketAddr::from(([0, 0, 0, 0], DEFAULT_GRPC_PORT));
+    let grpc_addr = SocketAddr::from(([0, 0, 0, 0], config.grpc_port));
     info!("Starting gRPC server on {}", grpc_addr);
 
     let grpc_server = GrpcServer::new(handlers);
@@ -189,7 +191,14 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| Config::default());
     info!("Configuration loaded successfully");
 
-    let server_config = ServerConfig::default();
+    let server_config = ServerConfig {
+        http_port: config.app.http_port,
+        grpc_port: config.app.grpc_port,
+        workers: std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1),
+        shutdown_timeout_secs: 30,
+    };
 
     let auth = Arc::new(ApiKeyAuth::new());
     load_api_keys(&auth).await;

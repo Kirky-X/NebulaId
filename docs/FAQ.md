@@ -556,7 +556,7 @@ The Segment algorithm pre-allocates ID ranges from the database for efficient ba
 **Code Example:**
 
 ```rust
-use nebula_id::algorithm::SegmentAlgorithm;
+use nebula_core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -598,7 +598,7 @@ The Snowflake algorithm generates 64-bit IDs with configurable bit allocation:
 **Code Example:**
 
 ```rust
-use nebula_id::algorithm::SnowflakeAlgorithm;
+use nebula_core::algorithm::SnowflakeAlgorithm;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let snowflake = SnowflakeAlgorithm::new(1, 1); // datacenter, worker
@@ -728,7 +728,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 **Recommended Pattern:**
 
 ```rust
-use nebula_id::error::CoreError;
+use nebula_core::error::CoreError;
 
 #[tokio::main]
 async fn main() {
@@ -773,7 +773,7 @@ async fn main() {
 **Yes!** Nebula ID is designed for async/await from the ground up.
 
 ```rust
-use nebula_id::algorithm::SegmentAlgorithm;
+use nebula_core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

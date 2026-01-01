@@ -907,7 +907,7 @@ Nebula ID implements strict parameter validation to ensure system stability and 
 ### Basic Segment Algorithm
 
 ```rust
-use nebula_id::algorithm::SegmentAlgorithm;
+use nebula_core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tokio::sync::RwLock;
 
-pub mod utils;
+pub(crate) mod utils;
 
 #[derive(Clone)]
 pub struct ApiKeyAuth {

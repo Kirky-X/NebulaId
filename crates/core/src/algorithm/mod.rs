@@ -12,4 +12,4 @@ pub use router::AlgorithmRouter;
 
 pub use audit_trait::{AuditEvent, AuditEventType, AuditLogger, AuditResult, DynAuditLogger};
 
-pub use degradation_manager::DegradationManager;
+pub(crate) use degradation_manager::DegradationManager;

@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SegmentInfo {
+pub(crate) struct SegmentInfo {
     pub id: i64,
     pub workspace_id: String,
     pub biz_tag: String,

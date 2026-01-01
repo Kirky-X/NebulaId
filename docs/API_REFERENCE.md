@@ -926,7 +926,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Snowflake Algorithm
 
 ```rust
-use nebula_id::algorithm::SnowflakeAlgorithm;
+use nebula_core::algorithm::SnowflakeAlgorithm;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let snowflake = SnowflakeAlgorithm::new(1, 1);
@@ -963,9 +963,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Using IdAlgorithm Trait
 
 ```rust
-use nebula_id::algorithm::traits::IdAlgorithm;
-use nebula_id::algorithm::SnowflakeAlgorithm;
-use nebula_id::algorithm::GenerateContext;
+use nebula_core::algorithm::traits::IdAlgorithm;
+use nebula_core::algorithm::SnowflakeAlgorithm;
+use nebula_core::algorithm::GenerateContext;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1018,7 +1018,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Batch Generation
 
 ```rust
-use nebula_id::algorithm::SegmentAlgorithm;
+use nebula_core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

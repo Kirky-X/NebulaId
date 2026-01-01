@@ -277,7 +277,7 @@ nebula-id = { version = "0.1.0", features = ["monitoring", "audit", "grpc"] }
 **Verification:**
 
 ```rust
-use nebula_id::algorithm::SegmentAlgorithm;
+use nebula_core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -513,10 +513,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | General unique identifiers | UUID v4 | Simple, collision-resistant |
 | Mixed requirements | Multi-algorithm | Use different algorithms per use case |
 
-**Configuration Example:**
+**Configuration**Code Example:**
 
 ```rust
-use nebula_id::algorithm::{SegmentAlgorithm, SnowflakeAlgorithm, UuidV7Impl};
+use nebula_core::algorithm::{SegmentAlgorithm, SnowflakeAlgorithm, UuidV7Impl};
 
 // For database primary keys
 let segment = SegmentAlgorithm::new(1);
@@ -640,7 +640,7 @@ UUID v7 is a time-ordered UUID format defined by RFC 9562:
 **Code Example:**
 
 ```rust
-use nebula_id::algorithm::UuidV7Impl;
+use nebula_core::algorithm::UuidV7Impl;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let v7 = UuidV7Impl::new();
@@ -649,7 +649,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("UUID v7: {}", uuid);
     
     // Convert to Nebula ID
-    let nebula_id = nebula_id::types::Id::from_uuid_v7(uuid);
+    let nebula_id = nebula_core::types::Id::from_uuid_v7(uuid);
     
     Ok(())
 }
@@ -689,9 +689,9 @@ Nebula ID uses etcd for distributed coordination:
 **Code Example:**
 
 ```rust
-use nebula_id::algorithm::segment::{SegmentAlgorithm, DcFailureDetector};
-use nebula_id::coordinator::EtcdClusterHealthMonitor;
-use nebula_id::config::EtcdConfig;
+use nebula_core::algorithm::segment::{SegmentAlgorithm, DcFailureDetector};
+use nebula_core::coordinator::EtcdClusterHealthMonitor;
+use nebula_core::config::EtcdConfig;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1054,8 +1054,8 @@ max_batch_size = 100  # Maximum batch size to prevent DoS attacks
 **Usage:**
 
 ```rust
-use nebula_id::server::NebulaIdServer;
-use nebula_id::Config;
+use nebula_core::server::NebulaIdServer;
+use nebula_core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1245,7 +1245,7 @@ Generated IDs are not monotonically increasing.
 
 3. **Use UUID v7 for time-ordering:**
    ```rust
-   use nebula_id::algorithm::UuidV7Impl;
+   use nebula_core::algorithm::UuidV7Impl;
    use uuid::Uuid;
    
    let uuid = Uuid::now_v7();

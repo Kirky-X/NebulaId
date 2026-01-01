@@ -1,14 +1,13 @@
 use crate::algorithm::degradation_manager::{
-    CircuitBreakerState, DegradationConfig, DegradationManager, DegradationState,
+    DegradationConfig, DegradationManager, DegradationState,
 };
 use crate::algorithm::traits::{GenerateContext, HealthStatus, IdAlgorithm};
 use crate::coordinator::etcd_cluster_health::{EtcdClusterHealthMonitor, EtcdClusterStatus};
-use crate::coordinator::EtcdClusterHealthMonitor as EtcdMonitor;
 use crate::types::{AlgorithmType, Id, Result};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::time::sleep;
 
 struct MockIdAlgorithm {
@@ -36,6 +35,7 @@ impl MockIdAlgorithm {
         self.health_status.store(status, Ordering::Relaxed);
     }
 
+    #[allow(dead_code)]
     fn get_call_count(&self) -> u64 {
         self.call_count.load(Ordering::Relaxed)
     }
@@ -56,7 +56,7 @@ impl IdAlgorithm for MockIdAlgorithm {
     async fn batch_generate(
         &self,
         _ctx: &GenerateContext,
-        size: usize,
+        _size: usize,
     ) -> Result<crate::types::IdBatch> {
         self.call_count.fetch_add(1, Ordering::Relaxed);
         if self.should_fail.load(Ordering::Relaxed) == 1 {
@@ -248,15 +248,15 @@ async fn test_circuit_breaker_state_transitions() {
 
     manager.check_all_health().await;
 
-    let _health_state = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
-    assert_eq!(health_state.is_degraded, true);
+    let health_state = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
+    assert!(health_state.is_degraded);
 
     sleep(Duration::from_millis(1100)).await;
 
     manager.check_all_health().await;
 
     let health_state = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
-    assert_eq!(health_state.is_degraded, true);
+    assert!(health_state.is_degraded);
 
     alg.set_should_fail(false);
     alg.set_health_status(0);
@@ -270,7 +270,7 @@ async fn test_circuit_breaker_state_transitions() {
     manager.check_all_health().await;
 
     let health_state = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
-    assert_eq!(health_state.is_degraded, false);
+    assert!(!health_state.is_degraded);
 }
 
 #[tokio::test]
@@ -379,7 +379,7 @@ async fn test_algorithm_metrics_collection() {
             .await;
     }
 
-    let health_state = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
+    let _health_state = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
     let metrics = manager.get_all_states();
     let segment_metrics = metrics
         .iter()

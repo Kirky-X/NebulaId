@@ -70,16 +70,22 @@ impl NebulaIdService for GrpcServer {
         let req = request.into_inner();
         let tag = req.tag.clone();
 
+        tracing::info!("Received gRPC batch_generate request with count: {}", req.count);
+
         // Validate batch size
         if req.count == 0 {
+            tracing::warn!("Batch size validation failed: count is 0");
             return Err(Status::invalid_argument("Batch size cannot be zero"));
         }
         if req.count > 100 {
+            tracing::warn!("Batch size validation failed: count {} exceeds maximum 100", req.count);
             return Err(Status::invalid_argument(format!(
                 "Batch size {} exceeds maximum allowed value of 100",
                 req.count
             )));
         }
+
+        tracing::info!("Batch size validation passed: {}", req.count);
 
         let batch_req = BatchGenerateRequest {
             workspace: req.namespace,

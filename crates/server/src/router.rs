@@ -127,14 +127,19 @@ async fn handle_batch_generate(
     State(state): State<AppState>,
     Json(req): Json<BatchGenerateRequest>,
 ) -> Result<Json<BatchGenerateResponse>, (StatusCode, Json<ErrorResponse>)> {
+    tracing::info!("Received HTTP batch_generate request with size: {:?}", req.size);
+
     // Validate the request using validator
     use validator::Validate;
     if let Err(errors) = req.validate() {
+        tracing::warn!("HTTP batch size validation failed: {}", errors);
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(400, format!("Validation error: {}", errors))),
         ));
     }
+
+    tracing::info!("HTTP batch size validation passed: {:?}", req.size);
 
     state
         .handlers
@@ -143,8 +148,14 @@ async fn handle_batch_generate(
         .map(Json)
         .map_err(|e| {
             let status_code = match e {
-                nebula_core::types::CoreError::InvalidInput(_) => StatusCode::BAD_REQUEST,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
+                nebula_core::types::CoreError::InvalidInput(msg) => {
+                    tracing::warn!("HTTP batch generation failed: {}", msg);
+                    StatusCode::BAD_REQUEST
+                }
+                _ => {
+                    tracing::error!("HTTP batch generation error: {}", e);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
             };
             (
                 status_code,

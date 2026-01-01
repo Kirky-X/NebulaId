@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone)]
@@ -21,6 +22,12 @@ pub struct ApiKeyData {
 #[derive(Debug)]
 pub struct AuthManager {
     keys: Arc<RwLock<HashMap<String, ApiKeyData>>>,
+}
+
+impl Default for AuthManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AuthManager {
@@ -71,7 +78,12 @@ impl AuthManager {
             }
 
             let expected_hash = Self::hash_key(key_id, key_secret);
-            if expected_hash == key_data.key_hash {
+            // Use constant-time comparison to prevent timing attacks
+            if expected_hash
+                .as_bytes()
+                .ct_eq(key_data.key_hash.as_bytes())
+                .into()
+            {
                 return Some(key_data.workspace_id.clone());
             }
         }

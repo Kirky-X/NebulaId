@@ -12,12 +12,12 @@ use crate::rate_limit::RateLimiter;
 use crate::rate_limit_middleware::RateLimitMiddleware;
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{header, HeaderValue, Method, StatusCode},
     routing::{get, post},
     Json, Router,
 };
 use std::sync::Arc;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 
 use std::ops::Deref;
 
@@ -42,10 +42,21 @@ pub async fn create_router(
     rate_limiter: Arc<RateLimiter>,
     audit_logger: Arc<AuditLogger>,
 ) -> Router {
+    // Configure CORS with strict settings
+    // In production, specify your actual frontend origins
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin(
+            [
+                // Add your frontend domains here
+                // "https://your-frontend.com".parse::<HeaderValue>().unwrap(),
+                // "https://admin.your-domain.com".parse::<HeaderValue>().unwrap(),
+            ]
+            .into_iter()
+            .collect::<Vec<_>>(),
+        )
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT])
+        .allow_credentials(false); // Credentials should be handled via API keys
 
     let rate_limit_middleware = RateLimitMiddleware::new(rate_limiter.clone());
     let audit_middleware = AuditMiddleware::new(audit_logger.clone(), auth.clone(), rate_limiter);
@@ -58,7 +69,7 @@ pub async fn create_router(
         config_service: config_service.clone(),
     };
 
-    let router = Router::new()
+    Router::new()
         .route("/api/v1/generate", post(handle_generate))
         .route("/api/v1/generate/batch", post(handle_batch_generate))
         .route("/api/v1/parse", post(handle_parse))
@@ -69,12 +80,35 @@ pub async fn create_router(
         .route("/api/v1/config/logging", post(handle_update_logging))
         .route("/api/v1/config/reload", post(handle_reload_config))
         .with_state(app_state)
+        // Security headers
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'self'"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_XSS_PROTECTION,
+            HeaderValue::from_static("1; mode=block"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("strict-origin-when-cross-origin"),
+        ))
         .layer(cors)
         .layer(axum::Extension(rate_limit_middleware))
         .layer(axum::Extension(audit_middleware))
-        .layer(axum::Extension(audit_logger));
-
-    router
+        .layer(axum::Extension(audit_logger))
 }
 
 async fn handle_generate(

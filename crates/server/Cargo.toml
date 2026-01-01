@@ -19,7 +19,7 @@ nebula-core = { path = "../core" }
 axum = { version = "0.8", features = ["json", "macros"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = { version = "0.4", features = ["full"] }
-tower-http = { version = "0.5", features = ["cors", "compression-gzip", "timeout", "limit", "trace"] }
+tower-http = { version = "0.5", features = ["cors", "compression-gzip", "timeout", "limit", "trace", "set-header"] }
 hyper = { version = "1", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
@@ -33,6 +33,7 @@ futures-util = "0.3"
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-native-tls", "postgres", "uuid", "chrono"] }
 redis = { version = "0.25", features = ["aio", "tokio-comp"] }
 etcd-client = "0.17"
+uuid = { version = "1", features = ["v4", "v7", "v8"] }
 
 reqwest = { version = "0.11", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
@@ -46,6 +47,7 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 tracing-appender = "0.2"
+subtle = "2"
 
 prometheus = "0.14"
 

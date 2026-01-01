@@ -10,6 +10,7 @@ use base64::Engine;
 use sha2::Digest;
 use std::collections::HashMap;
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 use tokio::sync::RwLock;
 
 pub mod utils;
@@ -27,6 +28,12 @@ pub struct ApiKeyData {
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
     pub enabled: bool,
+}
+
+impl Default for ApiKeyAuth {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ApiKeyAuth {
@@ -64,7 +71,12 @@ impl ApiKeyAuth {
                 }
             }
             let expected_hash = Self::hash_key(key_id, key_secret);
-            if expected_hash == key_data.key_hash {
+            // Use constant-time comparison to prevent timing attacks
+            if expected_hash
+                .as_bytes()
+                .ct_eq(key_data.key_hash.as_bytes())
+                .into()
+            {
                 return Some(key_data.workspace_id.clone());
             }
         }
@@ -86,8 +98,7 @@ impl ApiKeyAuth {
 
         if let Some(header) = auth_header {
             if let Ok(value) = header.to_str() {
-                if value.starts_with("Basic ") {
-                    let credentials = &value[6..];
+                if let Some(credentials) = value.strip_prefix("Basic ") {
                     if let Ok(decoded) =
                         base64::engine::general_purpose::STANDARD.decode(credentials)
                     {
@@ -104,8 +115,7 @@ impl ApiKeyAuth {
                             }
                         }
                     }
-                } else if value.starts_with("ApiKey ") {
-                    let api_key = &value[7..];
+                } else if let Some(api_key) = value.strip_prefix("ApiKey ") {
                     let parts: Vec<&str> = api_key.splitn(2, '_').collect();
                     if parts.len() == 2 {
                         if let Some(workspace_id) = self.validate_key(parts[0], parts[1]).await {

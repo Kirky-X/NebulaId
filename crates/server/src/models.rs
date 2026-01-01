@@ -31,7 +31,7 @@ pub struct BatchGenerateRequest {
     #[validate(length(min = 1, max = 64))]
     pub biz_tag: String,
 
-    #[validate(range(min = 1, max = 1000))]
+    #[validate(range(min = 1, max = 100))]
     pub size: Option<usize>,
 }
 

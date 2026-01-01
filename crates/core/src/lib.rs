@@ -1,17 +1,21 @@
+// Public API modules
 pub mod algorithm;
 pub mod auth;
 pub mod cache;
 pub mod config;
-pub mod config_management;
-pub mod coordinator;
-pub mod database;
-pub mod dynamic_config;
-pub mod monitoring;
 pub mod types;
 
-#[cfg(test)]
-pub mod tests;
+// Internal implementation modules
+pub(crate) mod config_management;
+pub(crate) mod coordinator;
+pub(crate) mod database;
+pub(crate) mod dynamic_config;
+pub(crate) mod monitoring;
 
+#[cfg(test)]
+mod tests;
+
+// Public API re-exports
 pub use types::*;
 
 pub use algorithm::{
@@ -26,15 +30,3 @@ pub use auth::{AuthManager, Authenticator};
 pub use cache::MultiLevelCache;
 
 pub use config::{Config, TlsConfig};
-
-pub use config_management::ConfigManagementService;
-
-pub use coordinator::{EtcdClusterHealthMonitor, EtcdClusterStatus, LocalCacheEntry};
-
-pub use database::{
-    AlgorithmType, BizTag, BizTagRepository, CreateBizTagRequest, CreateGroupRequest,
-    CreateWorkspaceRequest, Group, GroupRepository, IdFormat, UpdateBizTagRequest,
-    UpdateGroupRequest, UpdateWorkspaceRequest, Workspace, WorkspaceRepository, WorkspaceStatus,
-};
-
-pub use dynamic_config::DynamicConfigService;

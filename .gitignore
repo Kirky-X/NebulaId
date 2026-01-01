@@ -60,3 +60,11 @@ temp/
 # docs/task.md
 # docs/errata.md
 IFLOW.md
+# Backup files
+*.bak
+# Reports
+*_REPORT.md
+IMPROVEMENTS_SUMMARY.md
+# Temporary documentation
+docs/IMPLEMENTATION_PLAN.md
+docs/task.md

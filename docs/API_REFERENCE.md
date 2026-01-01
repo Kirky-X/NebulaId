@@ -65,6 +65,165 @@ Enterprise-grade scalability
 
 ## Core API
 
+### TLS Configuration
+
+Nebula ID supports TLS 1.2/1.3 encryption for both HTTP and gRPC servers.
+
+#### `TlsConfig`
+
+TLS configuration structure.
+
+```rust
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TlsConfig {
+    pub enabled: bool,
+    pub cert_path: String,
+    pub key_path: String,
+    pub ca_path: Option<String>,
+    pub http_enabled: bool,
+    pub grpc_enabled: bool,
+    pub min_tls_version: TlsVersion,
+    pub alpn_protocols: Vec<String>,
+}
+```
+
+**Fields:**
+- `enabled`: Enable TLS globally
+- `cert_path`: Path to TLS certificate file
+- `key_path`: Path to TLS private key file
+- `ca_path`: Optional CA certificate path for client authentication
+- `http_enabled`: Enable HTTPS for HTTP server
+- `grpc_enabled`: Enable TLS for gRPC server
+- `min_tls_version`: Minimum TLS version (TLSv12 or TLSv13)
+- `alpn_protocols`: ALPN protocol list (e.g., ["h2", "http/1.1"])
+
+#### `TlsVersion`
+
+Supported TLS versions.
+
+```rust
+pub enum TlsVersion {
+    Tls12,
+    Tls13,
+}
+```
+
+#### `TlsManager`
+
+TLS certificate and configuration manager.
+
+```rust
+pub struct TlsManager {
+    config: TlsConfig,
+    tls_config: Arc<ServerTlsConfig>,
+}
+```
+
+**Methods:**
+
+```rust
+pub fn initialize(config: TlsConfig) -> Result<Self>
+pub fn is_http_enabled(&self) -> bool
+pub fn is_grpc_enabled(&self) -> bool
+pub fn http_acceptor(&self) -> Result<TlsAcceptor>
+pub fn grpc_tls_config(&self) -> Arc<ServerTlsConfig>
+pub async fn serve_https(incoming: TlsIncoming, router: axum::Router) -> std::io::Result<()>
+```
+
+---
+
+### Smart Segment (Dynamic Step)
+
+Nebula ID implements dynamic step adjustment based on QPS and system load.
+
+#### `StepCalculator`
+
+Dynamic step calculation based on the formula:
+
+```
+next_step = base_step × (1 + α × velocity) × (1 + β × pressure)
+
+Where:
+- velocity = current_qps / step
+- pressure = cpu_usage (0-1)
+- α = 0.5 (velocity factor)
+- β = 0.3 (pressure factor)
+```
+
+```rust
+#[derive(Debug, Clone)]
+pub struct StepCalculator {
+    velocity_factor: f64,  // α = 0.5
+    pressure_factor: f64,  // β = 0.3
+}
+```
+
+**Methods:**
+
+```rust
+pub fn new(velocity_factor: f64, pressure_factor: f64) -> Self
+pub fn calculate(&self, qps: u64, current_step: u64, config: &SegmentAlgorithmConfig) -> u64
+pub fn get_adjustment_direction(&self, qps: u64, current_step: u64, config: &SegmentAlgorithmConfig) -> &'static str
+```
+
+**Adjustment Direction:**
+- `"up"`: High QPS detected, increase step
+- `"down"`: Low QPS detected, decrease step
+- `"stable"`: QPS is stable, keep current step
+
+#### `QpsWindow`
+
+Sliding window QPS calculator.
+
+```rust
+#[derive(Debug, Clone)]
+pub struct QpsWindow {
+    window_secs: u64,
+    timestamps: Arc<parking_lot::Mutex<Vec<std::time::Instant>>>,
+}
+```
+
+**Methods:**
+
+```rust
+pub fn new(window_secs: u64) -> Self
+pub fn record(&self)
+pub fn record_batch(&self, count: usize)
+pub fn get_qps(&self) -> u64
+pub fn cleanup(&self)
+pub fn window_size(&self) -> u64
+```
+
+#### `DatabaseSegmentLoader`
+
+Segment loader with dynamic step calculation.
+
+```rust
+pub struct DatabaseSegmentLoader {
+    repository: Arc<dyn SegmentRepository>,
+    dc_failure_detector: Arc<DcFailureDetector>,
+    local_dc_id: u8,
+    etcd_cluster_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
+    step_calculator: StepCalculator,
+    segment_config: SegmentAlgorithmConfig,
+}
+```
+
+**Methods:**
+
+```rust
+pub fn new(
+    repository: Arc<dyn SegmentRepository>,
+    dc_failure_detector: Arc<DcFailureDetector>,
+    local_dc_id: u8,
+    config: SegmentAlgorithmConfig,
+) -> Self
+pub fn with_etcd_cluster_health_monitor(mut self, monitor: Arc<EtcdClusterHealthMonitor>) -> Self
+pub fn get_current_step(&self) -> u64
+```
+
+---
+
 ### SegmentAlgorithm
 
 `SegmentAlgorithm` is a high-performance distributed ID generator based on the segment algorithm. It pre-allocates ID ranges from the database for efficient batch generation.

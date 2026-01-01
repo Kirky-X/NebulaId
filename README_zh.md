@@ -109,7 +109,7 @@ graph LR
 <br>
 
 ```rust
-use nebula_id::algorithm::{SegmentAlgorithm, SnowflakeAlgorithm};
+use nebula_core::algorithm::{SegmentAlgorithm, SnowflakeAlgorithm};
 
 // Segment算法用于有序、高吞吐量的ID生成
 let segment = SegmentAlgorithm::new(1);
@@ -130,14 +130,17 @@ let id = snowflake.generate_id()?;
 <br>
 
 ```rust
-use nebula_id::types::NebulaId;
+use nebula_core::types::Id;
+use uuid::Uuid;
 
 // 生成UUID v7用于时间排序的标识符
-let uuid = NebulaId::from_uuid_v7(uuid::Uuid::now_v7());
-let id_string = uuid.to_string();
+let uuid_v7 = Uuid::now_v7();
+let id = Id::from_uuid_v7(uuid_v7);
+let id_string = id.to_string();
 
 // 生成UUID v4用于随机标识符
-let uuid_v4 = NebulaId::from_uuid_v4(uuid::Uuid::new_v4());
+let uuid_v4 = Uuid::new_v4();
+let id_v4 = Id::from_uuid_v4(uuid_v4);
 ```
 
 适用于需要不同排序保证的唯一标识符的微服务。
@@ -150,7 +153,7 @@ let uuid_v4 = NebulaId::from_uuid_v4(uuid::Uuid::new_v4());
 <br>
 
 ```rust
-use nebula_id::algorithm::SegmentAlgorithm;
+use nebula_core::algorithm::SegmentAlgorithm;
 
 // 双缓冲机制实现最大吞吐量
 let segment = SegmentAlgorithm::new(1);
@@ -175,9 +178,9 @@ let id = segment.generate_id()?;
 
 ```toml
 [dependencies]
-nebula-id = "0.1.0"
-tokio = { version = "1.0", features = ["full"] }
-uuid = { version = "1.0", features = ["v7"] }
+nebula-id = { path = "./crates/core" }
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v7"] }
 ```
 
 </td>
@@ -189,7 +192,22 @@ uuid = { version = "1.0", features = ["v7"] }
 [dependencies.nebula-id]
 version = "0.1.0"
 features = ["monitoring", "audit", "grpc"]
+default-features = false
 ```
+
+**核心功能:**
+- `algorithm` - ID生成算法 (Segment, Snowflake, UUID)
+- `database` - 数据库集成 (SeaORM)
+- `cache` - 多级缓存 (Redis, Memory)
+- `coordinator` - 分布式协调 (Etcd)
+
+**服务端功能:**
+- `server` - HTTP/gRPC服务端
+- `monitoring` - 指标和健康检查
+- `auth` - 认证和授权
+
+**客户端功能:**
+- `client` - 客户端库用于服务交互
 
 </td>
 </tr>
@@ -227,13 +245,13 @@ url = "redis://localhost"
 **步骤2：初始化服务**
 
 ```rust
-use nebula_id::Config;
+use nebula_core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load_from_file("config.toml")?;
     
-    let service = NebulaIdService::new(config).await?;
+    let service = nebula_server::NebulaIdService::new(config).await?;
     service.start().await?;
     
     Ok(())
@@ -250,12 +268,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 <br>
 
 ```rust
-use nebula_id::algorithm::SegmentAlgorithm;
+use nebula_core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let segment = SegmentAlgorithm::new(1);
-    let id = segment.generate_id().await?;
+    let id = segment.generate_id()?;
     
     println!("生成的ID: {}", id);
     Ok(())
@@ -328,7 +346,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #### 📝 示例1：Segment算法
 
 ```rust
-use nebula_id::algorithm::SegmentAlgorithm;
+use nebula_core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -336,7 +354,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let segment = SegmentAlgorithm::new(1);
     
     // 生成ID
-    let id = segment.generate_id().await?;
+    let id = segment.generate_id()?;
     
     println!("生成的ID: {}", id);
     Ok(())
@@ -358,7 +376,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #### 🔥 示例2：Snowflake算法
 
 ```rust
-use nebula_id::algorithm::SnowflakeAlgorithm;
+use nebula_core::algorithm::SnowflakeAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

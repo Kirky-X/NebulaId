@@ -108,7 +108,7 @@ graph LR
 <br>
 
 ```rust
-use nebula_id::algorithm::{SegmentAlgorithm, SnowflakeAlgorithm};
+use nebula_core::algorithm::{SegmentAlgorithm, SnowflakeAlgorithm};
 
 // Segment algorithm for ordered, high-throughput ID generation
 let segment = SegmentAlgorithm::new(1);
@@ -129,14 +129,17 @@ Perfect for large-scale distributed systems requiring unique, ordered identifier
 <br>
 
 ```rust
-use nebula_id::types::NebulaId;
+use nebula_core::types::Id;
+use uuid::Uuid;
 
 // Generate UUID v7 for time-ordered identifiers
-let uuid = NebulaId::from_uuid_v7(uuid::Uuid::now_v7());
-let id_string = uuid.to_string();
+let uuid_v7 = Uuid::now_v7();
+let id = Id::from_uuid_v7(uuid_v7);
+let id_string = id.to_string();
 
 // Generate UUID v4 for random identifiers
-let uuid_v4 = NebulaId::from_uuid_v4(uuid::Uuid::new_v4());
+let uuid_v4 = Uuid::new_v4();
+let id_v4 = Id::from_uuid_v4(uuid_v4);
 ```
 
 Ideal for microservices requiring unique identifiers with different ordering guarantees.
@@ -149,7 +152,7 @@ Ideal for microservices requiring unique identifiers with different ordering gua
 <br>
 
 ```rust
-use nebula_id::algorithm::SegmentAlgorithm;
+use nebula_core::algorithm::SegmentAlgorithm;
 
 // Double buffering for maximum throughput
 let segment = SegmentAlgorithm::new(1);
@@ -174,9 +177,9 @@ Great for high-performance applications requiring millions of IDs per second wit
 
 ```toml
 [dependencies]
-nebula-id = "0.1.0"
-tokio = { version = "1.0", features = ["full"] }
-uuid = { version = "1.0", features = ["v7"] }
+nebula-id = { path = "./crates/core" }
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v7"] }
 ```
 
 </td>
@@ -188,7 +191,22 @@ uuid = { version = "1.0", features = ["v7"] }
 [dependencies.nebula-id]
 version = "0.1.0"
 features = ["monitoring", "audit", "grpc"]
+default-features = false
 ```
+
+**Core Features:**
+- `algorithm` - ID generation algorithms (Segment, Snowflake, UUID)
+- `database` - Database integration (SeaORM)
+- `cache` - Multi-level caching (Redis, Memory)
+- `coordinator` - Distributed coordination (Etcd)
+
+**Server Features:**
+- `server` - HTTP/gRPC server
+- `monitoring` - Metrics and health checks
+- `auth` - Authentication and authorization
+
+**Client Features:**
+- `client` - Client library for service interaction
 
 </td>
 </tr>
@@ -226,13 +244,13 @@ url = "redis://localhost"
 **Step 2: Initialize Service**
 
 ```rust
-use nebula_id::Config;
+use nebula_core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load_from_file("config.toml")?;
     
-    let service = NebulaIdService::new(config).await?;
+    let service = nebula_server::NebulaIdService::new(config).await?;
     service.start().await?;
     
     Ok(())
@@ -249,12 +267,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 <br>
 
 ```rust
-use nebula_id::algorithm::SegmentAlgorithm;
+use nebula_core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let segment = SegmentAlgorithm::new(1);
-    let id = segment.generate_id().await?;
+    let id = segment.generate_id()?;
     
     println!("Generated ID: {}", id);
     Ok(())
@@ -327,7 +345,7 @@ Package registry
 #### 📝 Example 1: Segment Algorithm
 
 ```rust
-use nebula_id::algorithm::SegmentAlgorithm;
+use nebula_core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -335,7 +353,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let segment = SegmentAlgorithm::new(1);
     
     // Generate IDs
-    let id = segment.generate_id().await?;
+    let id = segment.generate_id()?;
     
     println!("Generated ID: {}", id);
     Ok(())
@@ -357,7 +375,7 @@ Segment ID generated: 1000001
 #### 🔥 Example 2: Snowflake Algorithm
 
 ```rust
-use nebula_id::algorithm::SnowflakeAlgorithm;
+use nebula_core::algorithm::SnowflakeAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

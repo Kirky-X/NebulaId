@@ -524,7 +524,7 @@ export NEBULA_AUTH_API_KEY="your-api-key-here"
 | `app.port` | u16 | 8080 | 服务器端口 |
 | `algorithm.type` | String | "segment" | ID生成算法 |
 | `database.url` | String | - | 数据库连接URL |
-| `database.max_connections` | u32 | 10 | 连接池大小 |
+| `database.max_connections` | u32 | 1200 | 连接池大小 |
 | `redis.url` | String | - | Redis连接URL |
 | `etcd.endpoints` | Vec&lt;String&gt; | [] | Etcd服务器端点 |
 | `auth.api_key` | String | - | 用于认证的API密钥 |
@@ -591,6 +591,9 @@ cargo test test_name
 
 # 运行集成测试
 cargo test --test integration
+
+# 运行预提交检查（格式化、静态分析、构建、测试、安全、文档、覆盖率）
+./scripts/pre-commit-check.sh
 ```
 
 <details>
@@ -600,9 +603,9 @@ cargo test --test integration
 
 | 类别 | 测试数量 | 覆盖率 |
 |----------|-------|----------|
-| 单元测试 | 100+ | 85% |
-| 集成测试 | 30+ | 80% |
-| **总计** | **130+** | **85%** |
+| 单元测试 | 102 | 85% |
+| 集成测试 | 30 | 80% |
+| **总计** | **132** | **33.97%** |
 
 </details>
 
@@ -678,17 +681,17 @@ test uuid_v4_next_id    ... bench: 50 ns/iter (+/- 5)
 <td align="center" width="33%">
 <img src="https://img.icons8.com/fluency/96/000000/lock.png" width="64" height="64"><br>
 <b>API认证</b><br>
-基于API密钥的ID生成请求认证
+基于API密钥的认证，具有时序攻击防护
 </td>
 <td align="center" width="33%">
 <img src="https://img.icons8.com/fluency/96/000000/security-checked.png" width="64" height="64"><br>
 <b>限流</b><br>
-可配置限流防止滥用
+可配置限流防止滥用（最大批量大小：100）
 </td>
 <td align="center" width="33%">
 <img src="https://img.icons8.com/fluency/96/000000/privacy.png" width="64" height="64"><br>
 <b>审计日志</b><br>
-跟踪所有ID生成操作
+跟踪所有ID生成操作，具有IP欺骗防护
 </td>
 </tr>
 </table>
@@ -700,10 +703,13 @@ test uuid_v4_next_id    ... bench: 50 ns/iter (+/- 5)
 
 ### 安全措施
 
-- ✅ **API密钥认证** - 使用API密钥认证保护API访问
-- ✅ **限流** - 可配置限流防止滥用和DoS攻击
-- ✅ **审计日志** - 完整的操作跟踪，满足合规和监控需求
-- ✅ **TLS支持** - HTTPS和gRPCS实现加密通信
+- ✅ **API密钥认证** - 使用API密钥认证保护API访问，采用常量时间比较防止时序攻击
+- ✅ **限流** - 可配置限流防止滥用和DoS攻击（最大批量大小：100）
+- ✅ **审计日志** - 完整的操作跟踪，满足合规和监控需求，具有IP欺骗防护
+- ✅ **TLS支持** - HTTPS和gRPCS实现加密通信（TLS 1.2/1.3）
+- ✅ **CORS限制** - 严格的跨域资源共享策略
+- ✅ **安全响应头** - X-Content-Type-Options、X-Frame-Options、CSP、HSTS、X-XSS-Protection、Referrer-Policy
+- ✅ **IP欺骗防护** - 对X-Forwarded-For头进行可信代理验证
 
 ### 功能标志
 

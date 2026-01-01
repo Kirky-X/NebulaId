@@ -998,6 +998,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 **Authentication**
 - ✅ API Key authentication
+- ✅ Constant-time comparison (timing attack prevention)
 - ✅ Token-based access
 - ✅ Configurable key rotation
 
@@ -1005,18 +1006,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 <td width="50%">
 
 **Protection**
-- ✅ Rate limiting
+- ✅ Rate limiting (max batch size: 100)
 - ✅ Request validation
-- ✅ Audit logging
+- ✅ Audit logging with IP spoofing protection
+- ✅ CORS restrictions
+- ✅ Security headers
 
 </td>
 </tr>
 </table>
 
 **Encryption:**
-- ✅ TLS/HTTPS support
+- ✅ TLS/HTTPS support (TLS 1.2/1.3)
 - ✅ gRPCS support
 - ✅ Secure communication
+
+**Security Headers:**
+- X-Content-Type-Options: nosniff
+- X-Frame-Options: DENY
+- Content-Security-Policy: default-src 'self'
+- Strict-Transport-Security: max-age=31536000; includeSubDomains
+- X-XSS-Protection: 1; mode=block
+- Referrer-Policy: strict-origin-when-cross-origin
 
 **More details:** [Security Guide](USER_GUIDE.md#security)
 
@@ -1037,6 +1048,7 @@ token_expiry_hours = 24
 [rate_limit]
 requests_per_second = 1000
 burst_size = 100
+max_batch_size = 100  # Maximum batch size to prevent DoS attacks
 ```
 
 **Usage:**

@@ -522,7 +522,7 @@ export NEBULA_AUTH_API_KEY="your-api-key-here"
 | `app.port` | u16 | 8080 | Server port |
 | `algorithm.type` | String | "segment" | ID generation algorithm |
 | `database.url` | String | - | Database connection URL |
-| `database.max_connections` | u32 | 10 | Connection pool size |
+| `database.max_connections` | u32 | 1200 | Connection pool size |
 | `redis.url` | String | - | Redis connection URL |
 | `etcd.endpoints` | Vec&lt;String&gt; | [] | Etcd server endpoints |
 | `auth.api_key` | String | - | API key for authentication |
@@ -589,6 +589,9 @@ cargo test test_name
 
 # Run integration tests
 cargo test --test integration
+
+# Run pre-commit checks (format, lint, build, test, security, docs, coverage)
+./scripts/pre-commit-check.sh
 ```
 
 <details>
@@ -598,9 +601,9 @@ cargo test --test integration
 
 | Category | Tests | Coverage |
 |----------|-------|----------|
-| Unit Tests | 100+ | 85% |
-| Integration Tests | 30+ | 80% |
-| **Total** | **130+** | **85%** |
+| Unit Tests | 102 | 85% |
+| Integration Tests | 30 | 80% |
+| **Total** | **132** | **33.97%** |
 
 </details>
 
@@ -676,7 +679,7 @@ test uuid_v4_next_id    ... bench: 50 ns/iter (+/- 5)
 <td align="center" width="33%">
 <img src="https://img.icons8.com/fluency/96/000000/lock.png" width="64" height="64"><br>
 <b>API Authentication</b><br>
-API key-based authentication for all ID generation requests
+API key-based authentication with timing attack protection
 </td>
 <td align="center" width="33%">
 <img src="https://img.icons8.com/fluency/96/000000/security-checked.png" width="64" height="64"><br>
@@ -698,10 +701,13 @@ Track all ID generation operations
 
 ### Security Measures
 
-- ✅ **API Key Authentication** - Secure API access with API key authentication
-- ✅ **Rate Limiting** - Configurable rate limits to prevent abuse and DoS attacks
-- ✅ **Audit Logging** - Full operation tracking for compliance and monitoring
-- ✅ **TLS Support** - HTTPS and gRPCS for encrypted communication
+- ✅ **API Key Authentication** - Secure API access with API key authentication using constant-time comparison to prevent timing attacks
+- ✅ **Rate Limiting** - Configurable rate limits to prevent abuse and DoS attacks (max batch size: 100)
+- ✅ **Audit Logging** - Full operation tracking for compliance and monitoring with IP spoofing protection
+- ✅ **TLS Support** - HTTPS and gRPCS for encrypted communication (TLS 1.2/1.3)
+- ✅ **CORS Restrictions** - Strict cross-origin resource sharing policies
+- ✅ **Security Headers** - X-Content-Type-Options, X-Frame-Options, CSP, HSTS, X-XSS-Protection, Referrer-Policy
+- ✅ **IP Spoofing Protection** - Trusted proxy validation for X-Forwarded-For headers
 
 ### Feature Flags
 

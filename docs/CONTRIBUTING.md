@@ -272,6 +272,11 @@ git checkout -b docs/update-readme
 在提交前，请确保代码通过所有本地检查。
 
 ```bash
+# 运行预提交检查脚本（推荐）
+./scripts/pre-commit-check.sh
+
+# 或手动执行以下步骤：
+
 # 格式化代码
 cargo fmt
 
@@ -285,6 +290,15 @@ cargo test --all-features
 cargo test -p nebula-id-core
 cargo test -p nebula-id-server
 ```
+
+**预提交检查脚本**会自动执行以下检查：
+1. 代码格式化
+2. Clippy 静态分析
+3. 构建验证
+4. 测试执行
+5. 安全审计（如果配置了 deny.toml）
+6. 文档生成
+7. 代码覆盖率
 
 #### 4️⃣ 提交代码
 
@@ -444,6 +458,7 @@ cargo tarpaulin --package nebula-id-core --out Html
 - [ ] 未引入新的警告 (Zero Warning)
 - [ ] 变更已通过 cargo clippy
 - [ ] 变更已通过 cargo fmt
+- [ ] 变更已通过 ./scripts/pre-commit-check.sh (包括格式化、静态分析、构建、测试、安全审计、文档、覆盖率)
 
 ## 相关 Issue
 Closes #123

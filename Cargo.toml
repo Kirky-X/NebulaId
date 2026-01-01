@@ -9,7 +9,6 @@ authors = ["Tech Team"]
 members = [
     "crates/core",
     "crates/server",
-    "crates/client",
 ]
 
 [profile.release]

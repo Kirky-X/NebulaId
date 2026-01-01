@@ -288,9 +288,11 @@ pub async fn generate_batch(&self, size: usize) -> Result<IdBatch>
 ```
 
 **Parameters:**
-- `size`: Number of IDs to generate (recommended: 100-1000)
+- `size`: Number of IDs to generate (recommended: 10-100, maximum: 100)
 
 **Returns:** `Result<IdBatch>` - Batch of generated IDs.
+
+**Note:** Batch size is limited to 100 to prevent DoS attacks and ensure optimal performance.
 
 #### `get_dc_failure_detector()`
 
@@ -826,6 +828,33 @@ pub struct SegmentInfo {
 
 ## Error Handling
 
+### HTTP API Error Response Format
+
+All HTTP API endpoints return errors in a consistent format:
+
+```json
+{
+  "code": 400,
+  "message": "Invalid request parameter",
+  "details": "Batch size must be between 1 and 100"
+}
+```
+
+**Fields:**
+- `code`: HTTP status code (e.g., 400, 401, 404, 500)
+- `message`: Human-readable error message
+- `details`: Optional detailed error information
+
+**Common HTTP Status Codes:**
+
+| Code | Description | Example |
+|------|-------------|---------|
+| 400 | Bad Request | Invalid parameters, validation errors |
+| 401 | Unauthorized | Missing or invalid API key |
+| 404 | Not Found | Resource not found |
+| 429 | Too Many Requests | Rate limit exceeded |
+| 500 | Internal Server Error | Server-side error |
+
 ### `CoreError`
 
 Common error variants encountered during ID generation.
@@ -840,6 +869,36 @@ Common error variants encountered during ID generation.
 | `CacheUnavailable` | Local cache is unavailable |
 | `InternalError` | Internal error with description |
 | `ConfigError` | Configuration error |
+
+---
+
+## Parameter Validation
+
+### Validation Strategy
+
+Nebula ID implements strict parameter validation to ensure system stability and security:
+
+**Validation Principles:**
+1. **Fail Fast**: Reject invalid requests immediately with clear error messages
+2. **Security First**: Prevent DoS attacks through size and rate limiting
+3. **User Friendly**: Provide descriptive error messages for debugging
+
+### Request Parameter Validation
+
+| Parameter | Type | Validation | Error Response |
+|-----------|------|------------|----------------|
+| `workspace` | String | 1-64 characters | `400: "workspace length must be between 1 and 64"` |
+| `group` | String | 1-64 characters | `400: "group length must be between 1 and 64"` |
+| `biz_tag` | String | 1-64 characters | `400: "biz_tag length must be between 1 and 64"` |
+| `size` | Integer | 1-100 | `400: "size must be between 1 and 100"` |
+| `id` | String | Valid ID format | `400: "Invalid ID format"` |
+
+### Security Validations
+
+- **Batch Size Limit**: Maximum 100 IDs per batch to prevent DoS attacks
+- **Rate Limiting**: Configurable rate limits per API key
+- **Input Sanitization**: All string inputs are validated for length and format
+- **Type Safety**: Strong type checking at compile time
 
 ---
 
@@ -964,15 +1023,15 @@ use nebula_id::algorithm::SegmentAlgorithm;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let segment = SegmentAlgorithm::new(1);
-    
-    let batch = segment.generate_batch(1000).await?;
-    
+
+    let batch = segment.generate_batch(100).await?;
+
     for (i, id) in batch.into_vec().into_iter().enumerate().take(5) {
         println!("ID {}: {}", i + 1, id.to_u128());
     }
-    
-    println!("... and {} more IDs", 995);
-    
+
+    println!("... and {} more IDs", 95);
+
     Ok(())
 }
 ```

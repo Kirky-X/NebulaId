@@ -4,17 +4,12 @@ use std::fmt;
 use std::str::FromStr;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum IdFormat {
+    #[default]
     Numeric,
     Prefixed,
     Uuid,
-}
-
-impl Default for IdFormat {
-    fn default() -> Self {
-        IdFormat::Numeric
-    }
 }
 
 impl fmt::Display for IdFormat {
@@ -153,18 +148,13 @@ impl IdBatch {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum AlgorithmType {
+    #[default]
     Segment,
     Snowflake,
     UuidV7,
     UuidV4,
-}
-
-impl Default for AlgorithmType {
-    fn default() -> Self {
-        AlgorithmType::Segment
-    }
 }
 
 impl fmt::Display for AlgorithmType {

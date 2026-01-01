@@ -138,6 +138,7 @@ impl AuditLogger {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn log_id_generation(
         &self,
         workspace_id: String,
@@ -176,6 +177,7 @@ impl AuditLogger {
         self.log(event).await;
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn log_batch_generation(
         &self,
         workspace_id: String,
@@ -352,6 +354,43 @@ impl AuditLogger {
     }
 }
 
+#[async_trait]
+impl CoreAuditLoggerTrait for AuditLogger {
+    async fn log(&self, event: CoreAuditEvent) {
+        let server_event = AuditEvent {
+            id: 0,
+            timestamp: event.timestamp,
+            event_type: match event.event_type {
+                CoreAuditEventType::IdGeneration => AuditEventType::IdGeneration,
+                CoreAuditEventType::BatchGeneration => AuditEventType::BatchGeneration,
+                CoreAuditEventType::Authentication => AuditEventType::Authentication,
+                CoreAuditEventType::ConfigChange => AuditEventType::ConfigChange,
+                CoreAuditEventType::DegradationEvent => AuditEventType::DegradationEvent,
+                CoreAuditEventType::RateLimitExceeded => AuditEventType::RateLimitExceeded,
+                CoreAuditEventType::HealthCheck => AuditEventType::HealthCheck,
+                CoreAuditEventType::MetricsAccess => AuditEventType::MetricsAccess,
+            },
+            workspace_id: event.workspace_id,
+            user_id: None,
+            action: event.action,
+            resource: event.resource,
+            result: match event.result {
+                CoreAuditResult::Success => AuditResult::Success,
+                CoreAuditResult::Failure => AuditResult::Failure,
+                CoreAuditResult::Partial => AuditResult::Partial,
+                CoreAuditResult::Unknown => AuditResult::Failure,
+            },
+            details: event.details,
+            client_ip: None,
+            user_agent: None,
+            duration_ms: 0,
+            error_message: None,
+        };
+
+        AuditLogger::log(self, server_event).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,42 +538,5 @@ mod tests {
             auth_events[1].error_message,
             Some("Invalid API key".to_string())
         );
-    }
-}
-
-#[async_trait]
-impl CoreAuditLoggerTrait for AuditLogger {
-    async fn log(&self, event: CoreAuditEvent) {
-        let server_event = AuditEvent {
-            id: 0,
-            timestamp: event.timestamp,
-            event_type: match event.event_type {
-                CoreAuditEventType::IdGeneration => AuditEventType::IdGeneration,
-                CoreAuditEventType::BatchGeneration => AuditEventType::BatchGeneration,
-                CoreAuditEventType::Authentication => AuditEventType::Authentication,
-                CoreAuditEventType::ConfigChange => AuditEventType::ConfigChange,
-                CoreAuditEventType::DegradationEvent => AuditEventType::DegradationEvent,
-                CoreAuditEventType::RateLimitExceeded => AuditEventType::RateLimitExceeded,
-                CoreAuditEventType::HealthCheck => AuditEventType::HealthCheck,
-                CoreAuditEventType::MetricsAccess => AuditEventType::MetricsAccess,
-            },
-            workspace_id: event.workspace_id,
-            user_id: None,
-            action: event.action,
-            resource: event.resource,
-            result: match event.result {
-                CoreAuditResult::Success => AuditResult::Success,
-                CoreAuditResult::Failure => AuditResult::Failure,
-                CoreAuditResult::Partial => AuditResult::Partial,
-                CoreAuditResult::Unknown => AuditResult::Failure,
-            },
-            details: event.details,
-            client_ip: None,
-            user_agent: None,
-            duration_ms: 0,
-            error_message: None,
-        };
-
-        AuditLogger::log(self, server_event).await;
     }
 }

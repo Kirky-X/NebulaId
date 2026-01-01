@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -106,7 +108,7 @@ impl MultiLevelCache {
             match backend.get(key).await {
                 Ok(Some(ids)) => {
                     self.metrics.l3_hits.fetch_add(1, Ordering::Relaxed);
-                    let u64_ids: Vec<u64> = ids.into_iter().map(|id| id as u64).collect();
+                    let u64_ids: Vec<u64> = ids.into_iter().collect();
                     self.refill_l1(key, &u64_ids).await;
                     self.l2_buffer.produce(key, &u64_ids).await;
 
@@ -247,13 +249,8 @@ impl DoubleBuffer {
 
     async fn produce(&self, ids: &[u64]) {
         let mut next = self.next.write().await;
-        let pos = self.write_pos.fetch_add(ids.len(), Ordering::Relaxed);
-
-        if pos == 0 && next.is_empty() {
-            next.extend_from_slice(ids);
-        } else {
-            next.extend_from_slice(ids);
-        }
+        let _pos = self.write_pos.fetch_add(ids.len(), Ordering::Relaxed);
+        next.extend_from_slice(ids);
     }
 
     async fn consume(&self, count: usize) -> Vec<u64> {
@@ -292,7 +289,7 @@ impl DoubleBuffer {
             let start = pos;
             let end = pos + to_fetch;
             self.read_pos.store(end, Ordering::Relaxed);
-            return active[start..end].to_vec();
+            active[start..end].to_vec()
         }
     }
 

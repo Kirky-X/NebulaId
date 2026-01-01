@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::algorithm::{AlgorithmMetricsSnapshot, GenerateContext, HealthStatus, IdAlgorithm};
 use crate::config::{Config, SnowflakeAlgorithmConfig};
 use crate::types::{AlgorithmType, CoreError, Id, IdBatch, Result};

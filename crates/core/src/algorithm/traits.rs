@@ -72,17 +72,12 @@ impl Default for GenerateContext {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum HealthStatus {
+    #[default]
     Healthy,
     Degraded(String),
     Unhealthy(String),
-}
-
-impl Default for HealthStatus {
-    fn default() -> Self {
-        HealthStatus::Healthy
-    }
 }
 
 impl HealthStatus {

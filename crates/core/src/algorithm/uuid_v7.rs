@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::algorithm::traits::{
     AlgorithmMetricsSnapshot, GenerateContext, HealthStatus, IdAlgorithm,
 };

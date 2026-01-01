@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -368,6 +370,7 @@ mod tests {
         Group, IdFormat, UpdateBizTagRequest, UpdateGroupRequest, UpdateWorkspaceRequest,
         Workspace, WorkspaceStatus,
     };
+    use async_trait::async_trait;
     use mockall::{mock, predicate};
     use std::sync::Arc;
     use uuid::Uuid;
@@ -384,6 +387,8 @@ mod tests {
             async fn update_workspace(&self, id: Uuid, workspace: &UpdateWorkspaceRequest) -> Result<Workspace>;
             async fn delete_workspace(&self, id: Uuid) -> Result<()>;
             async fn list_workspaces(&self, limit: Option<u32>, offset: Option<u32>) -> Result<Vec<Workspace>>;
+            async fn get_workspace_with_groups(&self, id: Uuid) -> Result<Option<(Workspace, Vec<Group>)>>;
+            async fn get_workspace_with_groups_and_biz_tags(&self, id: Uuid) -> Result<Option<(Workspace, Vec<(Group, Vec<BizTag>)>)>>;
         }
 
         #[async_trait]

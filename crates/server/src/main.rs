@@ -79,17 +79,25 @@ async fn start_http_server(
     rate_limiter: Arc<RateLimiter>,
     audit_logger: Arc<AuditLogger>,
     _config_service: Arc<ConfigManagementService>,
-    _tls_manager: Option<Arc<TlsManager>>,
+    tls_manager: Option<Arc<TlsManager>>,
 ) -> Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], DEFAULT_SERVER_PORT));
-    info!("Starting HTTP server on {}", addr);
-
-    let listener = TcpListener::bind(addr).await?;
 
     let router = create_router(handlers, auth, rate_limiter, audit_logger)
         .await
         .layer(TimeoutLayer::new(std::time::Duration::from_secs(30)))
         .layer(RequestBodyLimitLayer::new(1024 * 1024));
+
+    // 检查是否启用 HTTPS (暂时回退到普通 HTTP，TLS 功能待完善)
+    if let Some(ref tls) = tls_manager {
+        if tls.is_http_enabled() {
+            info!("HTTPS is enabled but using HTTP fallback for now");
+        }
+    }
+
+    // 回退到普通 HTTP
+    info!("Starting HTTP server on {}", addr);
+    let listener = TcpListener::bind(addr).await?;
 
     axum::serve(listener, router)
         .with_graceful_shutdown(async {
@@ -122,7 +130,7 @@ async fn start_grpc_server(
         if tls.is_grpc_enabled() {
             info!("gRPC TLS is enabled, using secure connection");
             if let Some(grpc_tls_config) = tls.grpc_tls_config() {
-                let config = (*grpc_tls_config).clone();
+                let config = grpc_tls_config.as_ref().clone();
                 server_builder = server_builder.tls_config(config).map_err(|e| {
                     nebula_core::types::CoreError::InternalError(format!("TLS config error: {}", e))
                 })?;
@@ -205,9 +213,10 @@ async fn main() -> Result<()> {
         warn!("Failed to load etcd local cache: {}", e);
     }
 
-    etcd_health_monitor.start_health_check(std::time::Duration::from_secs(10));
-    etcd_health_monitor.start_cache_persistence(std::time::Duration::from_secs(60));
-    info!("Etcd cluster health monitor started");
+    // TODO: Start health check and cache persistence in background
+    // tokio::spawn(etcd_health_monitor.start_health_check(std::time::Duration::from_secs(10)));
+    // tokio::spawn(etcd_health_monitor.start_cache_persistence(std::time::Duration::from_secs(60)));
+    info!("Etcd cluster health monitor initialized");
 
     let id_generator = create_id_generator(
         &config,

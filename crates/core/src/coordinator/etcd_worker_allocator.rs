@@ -221,11 +221,7 @@ impl EtcdWorkerAllocator {
 
     pub async fn health_check(&self) -> bool {
         let mut client = self.client.lock().await;
-        if let Ok(_response) = client.status().await {
-            true
-        } else {
-            false
-        }
+        (client.status().await).is_ok()
     }
 }
 
@@ -285,7 +281,6 @@ mod tests {
             }
             Err(WorkerAllocatorError::ConnectionFailed(msg)) => {
                 println!("Connection failed as expected: {}", msg);
-                assert!(true);
             }
             Err(WorkerAllocatorError::EtcdError(msg)) => {
                 println!("Etcd error as expected: {}", msg);

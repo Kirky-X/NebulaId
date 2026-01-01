@@ -1,13 +1,13 @@
-mod algorithm;
-mod auth;
-mod cache;
-mod config;
-mod config_management;
-mod coordinator;
-mod database;
-mod dynamic_config;
-mod monitoring;
-mod types;
+pub mod algorithm;
+pub mod auth;
+pub mod cache;
+pub mod config;
+pub mod config_management;
+pub mod coordinator;
+pub mod database;
+pub mod dynamic_config;
+pub mod monitoring;
+pub mod types;
 
 #[cfg(test)]
 pub mod tests;

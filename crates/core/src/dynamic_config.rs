@@ -113,7 +113,7 @@ where
         let update_request = UpdateBizTagRequest {
             name: None,        // 不更新名称
             description: None, // 不更新描述
-            algorithm: request.algorithm.clone(),
+            algorithm: request.algorithm,
             format: request.format.clone(),
             prefix: request.prefix.clone(),
             base_step: request.base_step,

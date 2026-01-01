@@ -2,6 +2,7 @@ use crate::types::AlgorithmType;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, Serialize)]
 pub struct AlgorithmMetrics {
@@ -115,6 +116,73 @@ impl AlgorithmMetrics {
 
     pub fn get_cache_hit_rate(&self) -> f64 {
         self.cache_hit_rate.load(Ordering::Relaxed) as f64 / 100.0
+    }
+}
+
+/// QPS 滑动窗口计算器
+#[derive(Debug, Clone)]
+pub struct QpsWindow {
+    /// 滑动窗口大小（秒）
+    window_secs: u64,
+    /// 请求时间戳队列
+    timestamps: Arc<parking_lot::Mutex<Vec<std::time::Instant>>>,
+}
+
+impl QpsWindow {
+    pub fn new(window_secs: u64) -> Self {
+        Self {
+            window_secs,
+            timestamps: Arc::new(parking_lot::Mutex::new(Vec::new())),
+        }
+    }
+
+    /// 记录一次请求
+    pub fn record(&self) {
+        let mut timestamps = self.timestamps.lock();
+        timestamps.push(std::time::Instant::now());
+    }
+
+    /// 批量记录请求
+    pub fn record_batch(&self, count: usize) {
+        let mut timestamps = self.timestamps.lock();
+        let now = std::time::Instant::now();
+        for _ in 0..count {
+            timestamps.push(now);
+        }
+    }
+
+    /// 获取当前窗口内的 QPS
+    pub fn get_qps(&self) -> u64 {
+        let mut timestamps = self.timestamps.lock();
+        let now = std::time::Instant::now();
+        let window_start = now - std::time::Duration::from_secs(self.window_secs);
+
+        // 移除过期的时间戳
+        timestamps.retain(|&ts| ts > window_start);
+
+        // 计算窗口内的请求数
+        let count = timestamps.len();
+
+        // 估算当前 QPS（基于窗口大小）
+        if count > 0 {
+            // 返回窗口内的请求数作为 QPS 估计
+            count as u64
+        } else {
+            0
+        }
+    }
+
+    /// 清理过期数据
+    pub fn cleanup(&self) {
+        let mut timestamps = self.timestamps.lock();
+        let window_start =
+            std::time::Instant::now() - std::time::Duration::from_secs(self.window_secs);
+        timestamps.retain(|&ts| ts > window_start);
+    }
+
+    /// 获取窗口大小
+    pub fn window_size(&self) -> u64 {
+        self.window_secs
     }
 }
 

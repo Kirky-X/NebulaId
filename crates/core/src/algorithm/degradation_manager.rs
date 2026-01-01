@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::algorithm::{audit_trait::DynAuditLogger, HealthStatus, IdAlgorithm};
 use crate::AlgorithmType;
 use dashmap::DashMap;
@@ -656,7 +658,6 @@ pub fn default_degradation_config() -> DegradationConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::algorithm::HealthStatus;
 
     #[test]
     fn test_health_state_record_failure() {

@@ -1,13 +1,15 @@
-mod audit_trait;
-mod degradation_manager;
-mod router;
-mod segment;
-mod snowflake;
-mod traits;
-mod uuid_v7;
+pub(crate) mod audit_trait;
+pub(crate) mod degradation_manager;
+pub mod router;
+pub(crate) mod segment;
+pub(crate) mod snowflake;
+pub(crate) mod traits;
+pub(crate) mod uuid_v7;
 
 pub use traits::*;
 
-pub use audit_trait::DynAuditLogger;
+pub use router::AlgorithmRouter;
+
+pub use audit_trait::{AuditEvent, AuditEventType, AuditLogger, AuditResult, DynAuditLogger};
 
 pub use degradation_manager::DegradationManager;

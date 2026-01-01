@@ -1,16 +1,18 @@
-mod audit;
-mod audit_middleware;
-mod config_hot_reload;
-mod config_management;
-mod grpc;
-mod handlers;
-mod middleware;
-mod models;
-mod rate_limit;
-mod rate_limit_middleware;
-mod router;
-mod server_config;
-mod tls_server;
+//! Nebula ID Server
+
+pub mod audit;
+pub mod audit_middleware;
+pub mod config_hot_reload;
+pub mod config_management;
+pub mod grpc;
+pub mod handlers;
+pub mod middleware;
+pub mod models;
+pub mod rate_limit;
+pub mod rate_limit_middleware;
+pub mod router;
+pub mod server_config;
+pub mod tls_server;
 
 pub use audit::{AuditEvent, AuditEventType, AuditLogger};
 pub use config_management::ConfigManagementService;

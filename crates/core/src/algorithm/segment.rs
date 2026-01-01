@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::algorithm::{AlgorithmMetricsSnapshot, GenerateContext, HealthStatus, IdAlgorithm};
 use crate::config::{Config, SegmentAlgorithmConfig};
 use crate::coordinator::EtcdClusterHealthMonitor;
@@ -12,6 +14,12 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tracing::{info, warn};
+
+// Constants for algorithm configuration
+const DEFAULT_CPU_USAGE: f64 = 0.1;
+const FAILURE_THRESHOLD_DEGRADED: u64 = 3;
+const FAILURE_THRESHOLD_FAILED: u64 = 5;
+const DEFAULT_QPS_BASELINE: u64 = 1000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DcStatus {
@@ -82,6 +90,119 @@ impl DcHealthState {
 
     pub fn should_use_dc(&self) -> bool {
         matches!(self.get_status(), DcStatus::Healthy | DcStatus::Degraded)
+    }
+}
+
+/// 动态步长计算器
+/// 基于 QPS 和系统负载自动调整号段步长
+///
+/// 动态步长计算公式:
+/// ```text
+/// next_step = base_step * (1 + alpha * velocity) * (1 + beta * pressure)
+///
+/// 其中:
+/// - velocity = current_qps / step
+/// - pressure = cpu_usage (0-1)
+/// - alpha = 0.5 (速率因子)
+/// - beta = 0.3 (压力因子)
+///
+/// 边界控制:
+/// - min_step = base_step * 0.5
+/// - max_step = base_step * 100
+/// ```
+#[derive(Debug, Clone)]
+pub struct StepCalculator {
+    /// 速率因子 (α)
+    velocity_factor: f64,
+    /// 压力因子 (β)
+    pressure_factor: f64,
+}
+
+impl Default for StepCalculator {
+    fn default() -> Self {
+        Self {
+            velocity_factor: 0.5,
+            pressure_factor: 0.3,
+        }
+    }
+}
+
+impl StepCalculator {
+    /// 创建步长计算器
+    pub fn new(velocity_factor: f64, pressure_factor: f64) -> Self {
+        Self {
+            velocity_factor,
+            pressure_factor,
+        }
+    }
+
+    /// 获取 CPU 使用率 (模拟值，实际应从系统监控获取)
+    fn get_cpu_usage(&self) -> f64 {
+        // TODO: 集成系统监控获取实际 CPU 使用率
+        // 当前返回默认低负载值
+        DEFAULT_CPU_USAGE
+    }
+
+    /// 计算动态步长
+    ///
+    /// # Arguments
+    /// * `qps` - 当前 QPS
+    /// * `current_step` - 当前步长
+    /// * `config` - Segment 算法配置
+    ///
+    /// # Returns
+    /// 计算后的步长值
+    pub fn calculate(&self, qps: u64, current_step: u64, config: &SegmentAlgorithmConfig) -> u64 {
+        // 避免除零
+        let step = if current_step == 0 {
+            config.base_step
+        } else {
+            current_step
+        };
+
+        // 计算速率 (velocity = qps / step)
+        let velocity = qps as f64 / step as f64;
+
+        // 获取系统压力 (CPU 使用率)
+        let pressure = self.get_cpu_usage();
+
+        // 计算步长
+        let next_step = config.base_step as f64
+            * (1.0 + self.velocity_factor * velocity)
+            * (1.0 + self.pressure_factor * pressure);
+
+        // 应用边界控制
+        let min_step = (config.base_step as f64 * 0.5).max(config.min_step as f64);
+        let max_step = (config.base_step as f64 * 100.0).min(config.max_step as f64);
+
+        next_step.clamp(min_step, max_step).round() as u64
+    }
+
+    /// 获取建议的步长调整方向
+    ///
+    /// # Arguments
+    /// * `qps` - 当前 QPS
+    /// * `current_step` - 当前步长
+    /// * `config` - Segment 算法配置
+    ///
+    /// # Returns
+    /// "up" 表示建议增大步长, "down" 表示建议减小步长, "stable" 表示保持稳定
+    pub fn get_adjustment_direction(
+        &self,
+        qps: u64,
+        current_step: u64,
+        config: &SegmentAlgorithmConfig,
+    ) -> &'static str {
+        let target_step = self.calculate(qps, current_step, config);
+
+        let ratio = target_step as f64 / current_step as f64;
+        if ratio > 1.2 {
+            "up"
+        } else if ratio < 0.8 {
+            "down"
+        } else {
+            "stable"
+        }
     }
 }
 
@@ -564,6 +685,10 @@ pub struct DatabaseSegmentLoader {
     dc_failure_detector: Arc<DcFailureDetector>,
     local_dc_id: u8,
     etcd_cluster_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
+    /// 动态步长计算器
+    step_calculator: StepCalculator,
+    /// Segment 算法配置
+    segment_config: SegmentAlgorithmConfig,
 }
 
 impl DatabaseSegmentLoader {
@@ -571,12 +696,15 @@ impl DatabaseSegmentLoader {
         repository: Arc<dyn SegmentRepository>,
         dc_failure_detector: Arc<DcFailureDetector>,
         local_dc_id: u8,
+        config: SegmentAlgorithmConfig,
     ) -> Self {
         Self {
             repository,
             dc_failure_detector,
             local_dc_id,
             etcd_cluster_health_monitor: None,
+            step_calculator: StepCalculator::default(),
+            segment_config: config,
         }
     }
 
@@ -587,11 +715,48 @@ impl DatabaseSegmentLoader {
         self.etcd_cluster_health_monitor = Some(monitor);
         self
     }
+
+    /// 动态计算步长
+    ///
+    /// 根据当前 QPS 计算合适的步长
+    ///
+    /// # Arguments
+    /// * `qps` - 当前 QPS
+    ///
+    /// # Returns
+    /// 计算后的步长值
+    fn calculate_step(&self, qps: u64) -> u64 {
+        self.step_calculator
+            .calculate(qps, self.segment_config.base_step, &self.segment_config)
+    }
+
+    /// 获取当前步长（用于测试）
+    pub fn get_current_step(&self) -> u64 {
+        self.segment_config.base_step
+    }
+
+    /// 获取当前 QPS
+    /// TODO: 集成实际监控系统获取真实 QPS 值
+    fn get_current_qps(&self) -> u64 {
+        // 当前返回基准 QPS，后续应从监控系统获取实际值
+        // 默认假设基准 QPS，作为动态调整的基准
+        DEFAULT_QPS_BASELINE
+    }
 }
 
 #[async_trait]
 impl SegmentLoader for DatabaseSegmentLoader {
     async fn load_segment(&self, ctx: &GenerateContext, _worker_id: u8) -> Result<SegmentData> {
+        // 获取当前 QPS (简化处理，实际应从监控获取)
+        let current_qps = self.get_current_qps();
+        let step = self.calculate_step(current_qps);
+
+        tracing::debug!(
+            "Loading segment for {} with dynamic step: {} (QPS: {})",
+            ctx.biz_tag,
+            step,
+            current_qps
+        );
         let dc_id = self.dc_failure_detector.select_best_dc(self.local_dc_id);
         let dc_state = self.dc_failure_detector.get_dc_state(dc_id);
         let dc_state_clone = dc_state.clone();
@@ -601,7 +766,7 @@ impl SegmentLoader for DatabaseSegmentLoader {
                 .allocate_segment_with_dc(
                     &ctx.workspace_id,
                     &ctx.biz_tag,
-                    self.get_step() as i32,
+                    step as i32,
                     dc_id as i32,
                 )
                 .await
@@ -613,7 +778,7 @@ impl SegmentLoader for DatabaseSegmentLoader {
                 })?
         } else {
             self.repository
-                .allocate_segment(&ctx.workspace_id, &ctx.biz_tag, self.get_step() as i32)
+                .allocate_segment(&ctx.workspace_id, &ctx.biz_tag, step as i32)
                 .await
                 .map_err(|e| CoreError::DatabaseError(e.to_string()))?
         };
@@ -628,12 +793,6 @@ impl SegmentLoader for DatabaseSegmentLoader {
             step: segment.step as u64,
             version: 0,
         })
-    }
-}
-
-impl DatabaseSegmentLoader {
-    fn get_step(&self) -> u64 {
-        1000
     }
 }
 

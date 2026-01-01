@@ -10,6 +10,7 @@ use tracing::{error, info, warn};
 pub struct HotReloadConfig {
     config: Arc<RwLock<Config>>,
     config_path: String,
+    #[allow(clippy::type_complexity)]
     reload_callbacks: Arc<RwLock<Vec<Arc<dyn Fn(Config) + Send + Sync>>>>,
     audit_logger: Option<Arc<super::audit::AuditLogger>>,
 }
@@ -183,6 +184,7 @@ impl HotReloadConfig {
                     "source": "api_update",
                     "changes": changes
                 });
+                #[allow(clippy::let_underscore_future)]
                 let _ = logger.log_config_change(
                     None,
                     "api_update".to_string(),
@@ -217,7 +219,7 @@ pub async fn watch_config_file<P: AsRef<Path>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -302,6 +304,8 @@ cert_path = ""
 key_path = ""
 http_enabled = false
 grpc_enabled = false
+min_tls_version = "tls13"
+alpn_protocols = ["h2", "http/1.1"]
 "#;
         std::fs::write(&config_path, initial_content).unwrap();
 
@@ -397,6 +401,8 @@ cert_path = ""
 key_path = ""
 http_enabled = false
 grpc_enabled = false
+min_tls_version = "tls13"
+alpn_protocols = ["h2", "http/1.1"]
 "#;
         std::fs::write(&config_path, updated_content).unwrap();
 

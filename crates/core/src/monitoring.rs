@@ -52,17 +52,12 @@ impl std::fmt::Display for AlertSeverity {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum AlertStatus {
     Firing,
     Resolved,
+    #[default]
     Pending,
-}
-
-impl Default for AlertStatus {
-    fn default() -> Self {
-        AlertStatus::Pending
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -340,7 +335,7 @@ impl AlertEvaluator for DefaultEvaluator {
                     let max_latency = snapshots
                         .iter()
                         .map(|s| s.p99_latency_ms)
-                        .max_by(|a, b| a.partial_cmp(&b).unwrap())
+                        .max_by(|a, b| a.partial_cmp(b).unwrap())
                         .unwrap_or(0.0);
                     let firing = max_latency > threshold;
                     (firing, Some(format!("p99_latency_ms: {:.2}", max_latency)))
@@ -355,7 +350,7 @@ impl AlertEvaluator for DefaultEvaluator {
                     let min_hit_rate = snapshots
                         .iter()
                         .map(|s| s.cache_hit_rate)
-                        .min_by(|a, b| a.partial_cmp(&b).unwrap())
+                        .min_by(|a, b| a.partial_cmp(b).unwrap())
                         .unwrap_or(100.0);
                     let firing = min_hit_rate < threshold;
                     (firing, Some(format!("hit_rate: {:.2}%", min_hit_rate)))
@@ -630,10 +625,7 @@ impl AlertManager {
         let config_guard = self.config.load();
         let (should_fire, current_value) = self.evaluator.evaluate(rule, &self.metrics);
 
-        let mut state = self
-            .states
-            .entry(rule.name.clone())
-            .or_insert_with(AlertState::new);
+        let mut state = self.states.entry(rule.name.clone()).or_default();
 
         if should_fire {
             state.promote(current_value.clone());
@@ -780,14 +772,12 @@ impl AlertManager {
         }
 
         info!("AlertManager shutting down...");
-        let _ = self.shutdown_rx.close();
+        self.shutdown_rx.close();
         info!("AlertManager shutdown complete");
     }
 
     pub fn add_rule(&self, rule: AlertRule) {
-        self.states
-            .entry(rule.name.clone())
-            .or_insert_with(AlertState::new);
+        self.states.entry(rule.name.clone()).or_default();
         let config = self.config.load().as_ref().clone();
         let mut new_config = config;
         new_config.rules.push(rule);

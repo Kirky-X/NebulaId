@@ -59,7 +59,7 @@ impl IdGenerator for AlgorithmRouter {
     }
 
     async fn health_check(&self) -> HealthStatus {
-        let statuses = self.health_check();
+        let statuses = AlgorithmRouter::health_check(self);
         if statuses.is_empty() {
             return HealthStatus::Unhealthy("No algorithms available".to_string());
         }

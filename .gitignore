@@ -53,12 +53,12 @@ temp/
 # =============================================================================
 # Specific Documentation Files
 # =============================================================================
-# docs/prd.md
-# docs/tdd.md
-# docs/test.md
-# docs/uat.md
-# docs/task.md
-# docs/errata.md
+docs/prd.md
+docs/task.md
+docs/tdd.md
+docs/test.md
+docs/uat.md
+docs/errata.md
 IFLOW.md
 # Backup files
 *.bak

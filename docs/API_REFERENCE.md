@@ -944,7 +944,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### UUID Generation
 
 ```rust
-use nebula_id::algorithm::uuid_v7::{UuidV7Impl, UuidV4Impl};
+use nebula_core::algorithm::uuid_v7::{UuidV7Impl, UuidV4Impl};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let v7 = UuidV7Impl::new();
@@ -988,9 +988,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### With Health Monitoring
 
 ```rust
-use nebula_id::algorithm::segment::{SegmentAlgorithm, DcFailureDetector};
-use nebula_id::coordinator::EtcdClusterHealthMonitor;
-use nebula_id::config::EtcdConfig;
+use nebula_core::algorithm::segment::{SegmentAlgorithm, DcFailureDetector};
+use nebula_core::coordinator::EtcdClusterHealthMonitor;
+use nebula_core::config::EtcdConfig;
 use std::sync::Arc;
 use std::time::Duration;
 

@@ -2,6 +2,7 @@ use axum::body::Body;
 use axum::http::Request;
 use std::net::SocketAddr;
 
+#[allow(dead_code)]
 pub fn get_client_ip(req: &Request<Body>) -> Option<String> {
     req.headers()
         .get("x-forwarded-for")

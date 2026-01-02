@@ -107,7 +107,9 @@ impl ApiHandlers {
         // Validate batch size
         let size = req.size.unwrap_or(10);
         if size == 0 {
-            return Err(CoreError::InvalidInput("Batch size cannot be zero".to_string()));
+            return Err(CoreError::InvalidInput(
+                "Batch size cannot be zero".to_string(),
+            ));
         }
         if size > 100 {
             return Err(CoreError::InvalidInput(format!(
@@ -118,12 +120,7 @@ impl ApiHandlers {
 
         let result = self
             .id_generator
-            .batch_generate(
-                &req.workspace,
-                &req.group,
-                &req.biz_tag,
-                size,
-            )
+            .batch_generate(&req.workspace, &req.group, &req.biz_tag, size)
             .await;
 
         if let Err(ref e) = result {

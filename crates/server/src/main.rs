@@ -201,8 +201,10 @@ async fn main() -> Result<()> {
         shutdown_timeout_secs: 30,
     };
 
-    info!("Server configuration: HTTP port={}, gRPC port={}", 
-        server_config.http_port, server_config.grpc_port);
+    info!(
+        "Server configuration: HTTP port={}, gRPC port={}",
+        server_config.http_port, server_config.grpc_port
+    );
 
     let auth = Arc::new(ApiKeyAuth::new());
     load_api_keys(&auth).await;
@@ -363,6 +365,7 @@ mod tests {
 
         let server_config = ServerConfig {
             http_port: 0,
+            grpc_port: 0,
             workers: 1,
             shutdown_timeout_secs: 1,
         };

@@ -1,4 +1,5 @@
 #![allow(clippy::type_complexity)]
+#![allow(dead_code)]
 
 use std::sync::Arc;
 use uuid::Uuid;

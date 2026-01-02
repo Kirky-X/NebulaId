@@ -1,7 +1,7 @@
 use crate::types::id::{AlgorithmType, IdFormat};
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
-use serde_json;
+use serde_json::from_str;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize)]
 #[sea_orm(table_name = "biz_tags")]
@@ -104,7 +104,7 @@ impl From<Model> for BizTag {
         let datacenter_ids = if model.datacenter_ids.is_empty() {
             vec![]
         } else {
-            serde_json::from_str(&model.datacenter_ids).unwrap_or_else(|_| vec![])
+            from_str(&model.datacenter_ids).unwrap_or_else(|_| vec![])
         };
 
         BizTag {

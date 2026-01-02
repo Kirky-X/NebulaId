@@ -23,6 +23,7 @@ pub(crate) struct SegmentInfo {
 }
 
 impl SegmentInfo {
+    #[allow(dead_code)]
     pub fn new(
         workspace_id: String,
         biz_tag: String,

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::types::GlobalMetrics;
 use arc_swap::ArcSwap;
 use dashmap::DashMap;

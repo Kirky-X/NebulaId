@@ -6,7 +6,7 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QuerySelect, Set,
     TransactionTrait,
 };
-use serde_json;
+use serde_json::to_string;
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -566,7 +566,7 @@ impl BizTagRepository for SeaOrmRepository {
 
         let datacenter_ids_json = biz_tag.datacenter_ids.clone().unwrap_or(vec![0]);
         let datacenter_ids_str =
-            serde_json::to_string(&datacenter_ids_json).unwrap_or_else(|_| "[]".to_string());
+            to_string(&datacenter_ids_json).unwrap_or_else(|_| "[]".to_string());
 
         let new_biz_tag = BizTagActiveModel {
             id: Set(uuid::Uuid::new_v4()),
@@ -641,7 +641,7 @@ impl BizTagRepository for SeaOrmRepository {
         let existing = existing.unwrap();
 
         let datacenter_ids = if let Some(ids) = &biz_tag.datacenter_ids {
-            serde_json::to_string(ids).unwrap_or_else(|_| existing.datacenter_ids.clone())
+            to_string(ids).unwrap_or_else(|_| existing.datacenter_ids.clone())
         } else {
             existing.datacenter_ids.clone()
         };

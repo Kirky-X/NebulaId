@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::config::EtcdConfig;
 use async_trait::async_trait;
 use etcd_client::{Client, ConnectOptions};

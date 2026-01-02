@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 mod biz_tag_entity;
 mod group_entity;
 mod repository;

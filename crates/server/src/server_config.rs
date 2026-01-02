@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::config_hot_reload::HotReloadConfig;
 use crate::models::{
     AlgorithmConfigInfo, AppConfigInfo, ConfigResponse, DatabaseConfigInfo, LoggingConfigInfo,
@@ -6,7 +8,6 @@ use crate::models::{
     UpdateRateLimitRequest, UuidV7ConfigInfo,
 };
 use nebula_core::config::Config;
-use nebula_core::database::{AlgorithmType, BizTag, Group, IdFormat, Workspace, WorkspaceStatus};
 use nebula_core::types::Result;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -40,64 +41,27 @@ impl ConfigManagementService {
         self.admin_service.reload_config().await
     }
 
-    pub async fn get_workspace(&self, _id: Uuid) -> Result<Option<Workspace>> {
+    pub async fn get_workspace(&self, _id: Uuid) -> Result<Option<()>> {
         Ok(None)
     }
 
-    pub async fn get_workspace_by_name(&self, name: &str) -> Result<Option<Workspace>> {
-        if name == "test-workspace" {
-            return Ok(Some(Workspace {
-                id: Uuid::nil(),
-                name: name.to_string(),
-                description: None,
-                status: WorkspaceStatus::Active,
-                max_groups: 10,
-                max_biz_tags: 100,
-                created_at: chrono::Utc::now().naive_utc(),
-                updated_at: chrono::Utc::now().naive_utc(),
-            }));
-        }
+    #[allow(dead_code)]
+    pub async fn get_workspace_by_name(&self, _name: &str) -> Result<Option<()>> {
         Ok(None)
     }
 
-    pub async fn get_group_by_name(&self, workspace_id: Uuid, name: &str) -> Result<Option<Group>> {
-        if name == "test-group" {
-            return Ok(Some(Group {
-                id: Uuid::nil(),
-                workspace_id,
-                name: name.to_string(),
-                description: None,
-                max_biz_tags: 50,
-                created_at: chrono::Utc::now().naive_utc(),
-                updated_at: chrono::Utc::now().naive_utc(),
-            }));
-        }
+    #[allow(dead_code)]
+    pub async fn get_group_by_name(&self, _workspace_id: Uuid, _name: &str) -> Result<Option<()>> {
         Ok(None)
     }
 
+    #[allow(dead_code)]
     pub async fn get_biz_tag(
         &self,
-        workspace_id: Uuid,
-        group_id: Uuid,
-        name: &str,
-    ) -> Result<Option<BizTag>> {
-        if name == "test-tag" {
-            return Ok(Some(BizTag {
-                id: Uuid::nil(),
-                workspace_id,
-                group_id,
-                name: name.to_string(),
-                description: None,
-                algorithm: AlgorithmType::Segment,
-                format: IdFormat::Numeric,
-                prefix: "".to_string(),
-                base_step: 1000,
-                max_step: 10000,
-                datacenter_ids: vec![1],
-                created_at: chrono::Utc::now().naive_utc(),
-                updated_at: chrono::Utc::now().naive_utc(),
-            }));
-        }
+        _workspace_id: Uuid,
+        _group_id: Uuid,
+        _name: &str,
+    ) -> Result<Option<()>> {
         Ok(None)
     }
 }

@@ -1,0 +1,77 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+*.md
+docs/
+README*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+target/
+**/target/
+Cargo.lock
+
+# Dependencies
+.cargo/
+
+# Test files
+tests/
+**/tests/
+*.test.sh
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Development tools
+Makefile
+scripts/pre-commit-check.sh
+scripts/init.sql
+
+# Coverage
+tarpaulin-report.html
+*.profraw
+*.profdata
+
+# Database backups
+*.sql
+*.dump
+
+# Grafana dashboards
+grafana/
+
+# Protobuf (already compiled)
+protos/*.rs

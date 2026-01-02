@@ -1,6 +1,13 @@
 version: '3.8'
 
+# 环境变量文件（指向项目根目录）
+env_file:
+  - ../.env
+
 services:
+  # ============================================
+  # PostgreSQL Database
+  # ============================================
   postgres:
     image: postgres:16-alpine
     container_name: nebula-postgres
@@ -9,10 +16,12 @@ services:
       POSTGRES_USER: idgen
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-idgen123}
       PGDATA: /var/lib/postgresql/data/pgdata
+      TZ: Asia/Shanghai
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     deploy:
       resources:
         limits:
@@ -30,6 +39,9 @@ services:
       -c checkpoint_completion_target=0.9
       -c wal_buffers=64MB
       -c default_statistics_target=100
+      -c log_statement=all
+      -c log_duration=on
+      -c log_min_duration_statement=1000
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U idgen -d idgen"]
       interval: 10s
@@ -37,9 +49,17 @@ services:
       retries: 5
       start_period: 10s
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - nebula-network
 
+  # ============================================
+  # Redis Cache
+  # ============================================
   redis:
     image: redis:7.2-alpine
     container_name: nebula-redis
@@ -52,6 +72,7 @@ services:
       --maxmemory-policy allkeys-lru
       --timeout 300
       --tcp-backlog 511
+      --loglevel notice
     volumes:
       - redis_data:/data
     deploy:
@@ -69,15 +90,24 @@ services:
       retries: 5
       start_period: 5s
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - nebula-network
 
+  # ============================================
+  # etcd Configuration Store
+  # ============================================
   etcd:
     image: quay.io/coreos/etcd:v3.5.11
     container_name: nebula-etcd
     environment:
       ETCD_NAME: etcd0
       ETCD_SNAPSHOT_COUNT: 10000
+      ETCD_LOGGER: zap
     ports:
       - "${ETCD_CLIENT_PORT:-2379}:2379"
       - "${ETCD_PEER_PORT:-2380}:2380"
@@ -92,6 +122,7 @@ services:
       --initial-advertise-peer-urls=http://etcd:2380
       --initial-cluster=etcd0=http://etcd:2380
       --max-request-bytes=1048576
+      --log-level=info
     deploy:
       resources:
         limits:
@@ -107,13 +138,23 @@ services:
       retries: 5
       start_period: 10s
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - nebula-network
 
+  # ============================================
+  # Nebula ID Application
+  # ============================================
   app:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        BUILD_PROFILE: release
     image: nebula-id:latest
     container_name: nebula-app
     ports:
@@ -125,12 +166,13 @@ services:
       - ETCD_ENDPOINTS=etcd:2379
       - DC_ID=${DC_ID:-0}
       - RUST_LOG=${RUST_LOG:-info}
-      - RUST_BACKTRACE=0
+      - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
       - SERVER_HTTP_HOST=0.0.0.0
       - SERVER_HTTP_PORT=8080
       - METRICS_ENABLED=true
       - METRICS_HOST=0.0.0.0
       - METRICS_PORT=9091
+      - TZ=Asia/Shanghai
     deploy:
       resources:
         limits:
@@ -139,6 +181,11 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
     depends_on:
       postgres:
         condition: service_healthy
@@ -147,30 +194,40 @@ services:
       etcd:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 5s
+      start_period: 10s
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
     networks:
       - nebula-network
-    volumes:
-      - cargo_cache:/root/.cargo
+    # 移除 cargo_cache 卷以避免权限问题
+    # 如需缓存，在构建时使用 --build-arg
 
 volumes:
   postgres_data:
     driver: local
+    name: nebulaid_postgres_data
   redis_data:
     driver: local
+    name: nebulaid_redis_data
   etcd_data:
     driver: local
-  cargo_cache:
-    driver: local
+    name: nebulaid_etcd_data
 
 networks:
   nebula-network:
     driver: bridge
+    name: nebulaid_network
     ipam:
+      driver: default
       config:
         - subnet: 172.28.0.0/16
+          ip_range: 172.28.0.0/24
+          gateway: 172.28.0.1

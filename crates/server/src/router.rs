@@ -33,6 +33,7 @@ use axum::{
 };
 use std::sync::Arc;
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
+use validator::Validate;
 
 use std::ops::Deref;
 
@@ -132,6 +133,17 @@ async fn handle_generate(
     State(state): State<AppState>,
     Json(req): Json<GenerateRequest>,
 ) -> Result<Json<GenerateResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Validate request parameters
+    if let Err(validation_errors) = req.validate() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                400,
+                format!("Validation error: {}", validation_errors),
+            )),
+        ));
+    }
+
     state.handlers.generate(req).await.map(Json).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -202,6 +214,17 @@ async fn handle_parse(
     State(state): State<AppState>,
     Json(req): Json<ParseRequest>,
 ) -> Result<Json<ParseResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Validate request parameters
+    if let Err(validation_errors) = req.validate() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                400,
+                format!("Validation error: {}", validation_errors),
+            )),
+        ));
+    }
+
     state.handlers.parse(req).await.map(Json).map_err(|e| {
         (
             StatusCode::BAD_REQUEST,

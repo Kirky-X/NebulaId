@@ -61,7 +61,7 @@ otlp_endpoint = ""
 [rate_limit]
 enabled = true
 default_rps = 10000
-burst_size = 100
+burst_size = 5000
 
 [tls]
 enabled = false

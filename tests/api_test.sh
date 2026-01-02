@@ -487,21 +487,43 @@ fi
 
 echo "Test 7.2: Concurrent generation (50 requests x 50)"
 START_TIME=$(date +%s%N)
+
+# 工业级并发方案：批量聚合 + 独立文件计数
+# 使用brace expansion避免C-style循环的子shell兼容问题
 SUCCESS_COUNT=0
-for j in {1..50}; do
-    (for i in {1..50}; do
-        RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/api/v1/generate" \
-            -H "Content-Type: application/json" \
-            -d '{"workspace":"test","group":"concurrent","biz_tag":"concurrent_test","algorithm":"snowflake"}')
-        if [ "$RESPONSE" = "200" ]; then
-            SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-        fi
-    done) &
+BATCH_SIZE=50
+BATCHES=50
+TMPDIR="${TMPDIR:-/tmp}"
+
+for batch in $(seq 1 $BATCHES); do
+    (
+        local_success=0
+        for i in $(seq 1 $BATCH_SIZE); do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/api/v1/generate" \
+                -H "Content-Type: application/json" \
+                -H "X-Request-ID: batch${batch}-req${i}" \
+                -d '{"workspace":"test","group":"concurrent","biz_tag":"concurrent_test","algorithm":"snowflake"}')
+            if [ "$HTTP_CODE" = "200" ]; then
+                local_success=$((local_success + 1))
+            fi
+        done
+        echo "$local_success" > "$TMPDIR/nebula_batch_${batch}_$$.tmp"
+    ) &
 done
+
 wait
+
+for batch in $(seq 1 $BATCHES); do
+    if [ -f "$TMPDIR/nebula_batch_${batch}_$$.tmp" ]; then
+        batch_count=$(cat "$TMPDIR/nebula_batch_${batch}_$$.tmp")
+        SUCCESS_COUNT=$((SUCCESS_COUNT + batch_count))
+        rm -f "$TMPDIR/nebula_batch_${batch}_$$.tmp"
+    fi
+done
+
 END_TIME=$(date +%s%N)
 DURATION=$((($END_TIME - $START_TIME) / 1000000))
-TOTAL_REQUESTS=2500
+TOTAL_REQUESTS=$((BATCH_SIZE * BATCHES))
 echo "  [INFO] $SUCCESS_COUNT/$TOTAL_REQUESTS successful, duration: ${DURATION}ms"
 if [ $SUCCESS_COUNT -gt 0 ]; then
     log_result "Concurrent Performance" "PASS" "$SUCCESS_COUNT/$TOTAL_REQUESTS, ${DURATION}ms"

@@ -3,6 +3,7 @@ use crate::algorithm::{
     GenerateContext, HealthStatus, IdAlgorithm, IdGenerator,
 };
 use crate::config::Config;
+#[cfg(feature = "etcd")]
 use crate::coordinator::EtcdClusterHealthMonitor;
 use crate::types::{AlgorithmType, CoreError, Id, IdBatch, Result};
 use async_trait::async_trait;
@@ -21,7 +22,7 @@ impl IdGenerator for AlgorithmRouter {
             format: crate::types::IdFormat::Numeric,
             prefix: None,
         };
-        self.generate(&ctx).await
+        AlgorithmRouter::generate(self, &ctx).await
     }
 
     async fn batch_generate(
@@ -38,7 +39,7 @@ impl IdGenerator for AlgorithmRouter {
             format: crate::types::IdFormat::Numeric,
             prefix: None,
         };
-        let batch = self.batch_generate(&ctx, size).await?;
+        let batch = AlgorithmRouter::batch_generate(self, &ctx, size).await?;
         Ok(batch.ids)
     }
 
@@ -49,12 +50,9 @@ impl IdGenerator for AlgorithmRouter {
         biz_tag: &str,
     ) -> Result<String> {
         if let Some(alg) = self.current_algorithm.get(biz_tag) {
-            Ok(format!("{:?}", alg))
+            Ok(format!("{}", *alg))
         } else {
-            Ok(format!(
-                "{:?}",
-                self.config.algorithm.get_default_algorithm()
-            ))
+            Ok(format!("{}", self.config.algorithm.get_default_algorithm()))
         }
     }
 
@@ -85,6 +83,31 @@ impl IdGenerator for AlgorithmRouter {
     fn get_degradation_manager(&self) -> &Arc<DegradationManager> {
         &self.degradation_manager
     }
+
+    async fn generate_with_algorithm(
+        &self,
+        algorithm: AlgorithmType,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+    ) -> Result<Id> {
+        AlgorithmRouter::generate_with_algorithm(self, algorithm, workspace, group, biz_tag).await
+    }
+
+    async fn batch_generate_with_algorithm(
+        &self,
+        algorithm: AlgorithmType,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+        size: usize,
+    ) -> Result<Vec<Id>> {
+        let batch = AlgorithmRouter::batch_generate_with_algorithm(
+            self, algorithm, workspace, group, biz_tag, size,
+        )
+        .await?;
+        Ok(batch.ids)
+    }
 }
 
 pub struct AlgorithmRouter {
@@ -93,7 +116,10 @@ pub struct AlgorithmRouter {
     fallback_chain: Vec<AlgorithmType>,
     current_algorithm: DashMap<String, AlgorithmType>,
     degradation_manager: Arc<DegradationManager>,
+    #[cfg(feature = "etcd")]
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
+    #[cfg(not(feature = "etcd"))]
+    etcd_health_monitor: Option<()>,
 }
 
 impl AlgorithmRouter {
@@ -129,8 +155,15 @@ impl AlgorithmRouter {
         }
     }
 
+    #[cfg(feature = "etcd")]
     pub fn with_etcd_health_monitor(mut self, monitor: Arc<EtcdClusterHealthMonitor>) -> Self {
         self.etcd_health_monitor = Some(monitor);
+        self
+    }
+
+    #[cfg(not(feature = "etcd"))]
+    pub fn with_etcd_health_monitor(mut self, _monitor: Arc<()>) -> Self {
+        self.etcd_health_monitor = Some(());
         self
     }
 
@@ -144,6 +177,7 @@ impl AlgorithmRouter {
             AlgorithmType::UuidV4,
         ] {
             let mut builder = AlgorithmBuilder::new(alg_type);
+            #[cfg(feature = "etcd")]
             if let Some(ref monitor) = self.etcd_health_monitor {
                 builder = builder.with_etcd_health_monitor(monitor.clone());
             }
@@ -179,12 +213,12 @@ impl AlgorithmRouter {
 
     pub async fn generate(&self, ctx: &GenerateContext) -> Result<Id> {
         let algorithm = self.get_algorithm(ctx);
-        self.generate_with_algorithm(algorithm, ctx).await
+        self.generate_with_algorithm_internal(algorithm, ctx).await
     }
 
     pub async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result<IdBatch> {
         let algorithm = self.get_algorithm(ctx);
-        self.batch_generate_with_algorithm(algorithm, ctx, size)
+        self.batch_generate_with_algorithm_internal(algorithm, ctx, size)
             .await
     }
 
@@ -199,19 +233,72 @@ impl AlgorithmRouter {
         self.current_algorithm.insert(biz_tag, algorithm);
     }
 
-    async fn generate_with_algorithm(
+    pub async fn generate_with_algorithm(
         &self,
-        _algorithm: AlgorithmType,
+        algorithm: AlgorithmType,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+    ) -> Result<Id> {
+        info!(
+            "AlgorithmRouter::generate_with_algorithm called: algorithm={:?}, workspace={}, group={}, biz_tag={}",
+            algorithm, workspace, group, biz_tag
+        );
+        let ctx = GenerateContext {
+            workspace_id: workspace.to_string(),
+            group_id: group.to_string(),
+            biz_tag: biz_tag.to_string(),
+            format: crate::types::IdFormat::Numeric,
+            prefix: None,
+        };
+        self.generate_with_algorithm_internal(algorithm, &ctx).await
+    }
+
+    pub async fn batch_generate_with_algorithm(
+        &self,
+        algorithm: AlgorithmType,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+        size: usize,
+    ) -> Result<IdBatch> {
+        let ctx = GenerateContext {
+            workspace_id: workspace.to_string(),
+            group_id: group.to_string(),
+            biz_tag: biz_tag.to_string(),
+            format: crate::types::IdFormat::Numeric,
+            prefix: None,
+        };
+        self.batch_generate_with_algorithm_internal(algorithm, &ctx, size)
+            .await
+    }
+
+    async fn generate_with_algorithm_internal(
+        &self,
+        algorithm: AlgorithmType,
         ctx: &GenerateContext,
     ) -> Result<Id> {
-        let effective_algorithm = self.degradation_manager.get_effective_algorithm().await;
+        let effective_algorithm = algorithm;
+
+        info!(
+            "generate_with_algorithm_internal: requested algorithm={:?}, biz_tag={}",
+            effective_algorithm, ctx.biz_tag
+        );
 
         if let Some(alg) = self.algorithms.get(&effective_algorithm) {
+            info!(
+                "Found algorithm {:?}, attempting to generate",
+                effective_algorithm
+            );
             match alg.generate(ctx).await {
                 Ok(id) => {
                     self.degradation_manager
                         .record_generation_result(effective_algorithm, true)
                         .await;
+                    info!(
+                        "Successfully generated ID with algorithm {:?}",
+                        effective_algorithm
+                    );
                     return Ok(id);
                 }
                 Err(e) => {
@@ -219,6 +306,10 @@ impl AlgorithmRouter {
                     self.degradation_manager
                         .record_generation_result(effective_algorithm, false)
                         .await;
+                    warn!(
+                        "Algorithm {:?} failed, falling back to fallback chain: {:?}",
+                        effective_algorithm, self.fallback_chain
+                    );
                     for fallback in &self.fallback_chain {
                         if let Some(fallback_alg) = self.algorithms.get(fallback) {
                             match fallback_alg.generate(ctx).await {
@@ -226,6 +317,10 @@ impl AlgorithmRouter {
                                     self.degradation_manager
                                         .record_generation_result(*fallback, true)
                                         .await;
+                                    info!(
+                                        "Fell back to algorithm {:?} and successfully generated ID",
+                                        fallback
+                                    );
                                     return Ok(id);
                                 }
                                 Err(_) => {
@@ -241,6 +336,11 @@ impl AlgorithmRouter {
                 }
             }
         }
+
+        warn!(
+            "Algorithm {:?} not found in algorithms map, falling back to fallback chain: {:?}",
+            effective_algorithm, self.fallback_chain
+        );
 
         for fallback in &self.fallback_chain {
             if let Some(fallback_alg) = self.algorithms.get(fallback) {
@@ -266,13 +366,13 @@ impl AlgorithmRouter {
         ))
     }
 
-    async fn batch_generate_with_algorithm(
+    async fn batch_generate_with_algorithm_internal(
         &self,
-        _algorithm: AlgorithmType,
+        algorithm: AlgorithmType,
         ctx: &GenerateContext,
         size: usize,
     ) -> Result<IdBatch> {
-        let effective_algorithm = self.degradation_manager.get_effective_algorithm().await;
+        let effective_algorithm = algorithm;
 
         if let Some(alg) = self.algorithms.get(&effective_algorithm) {
             match alg.batch_generate(ctx, size).await {

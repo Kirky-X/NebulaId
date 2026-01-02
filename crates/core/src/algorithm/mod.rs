@@ -1,4 +1,5 @@
 pub(crate) mod audit_trait;
+pub(crate) mod circuit_breaker;
 pub(crate) mod degradation_manager;
 pub mod router;
 pub(crate) mod segment;
@@ -12,4 +13,6 @@ pub use router::AlgorithmRouter;
 
 pub use audit_trait::{AuditEvent, AuditEventType, AuditLogger, AuditResult, DynAuditLogger};
 
-pub(crate) use degradation_manager::DegradationManager;
+pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitBreakerState};
+
+pub use degradation_manager::DegradationManager;

@@ -1,11 +1,10 @@
-use std::collections::HashMap;
+use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct RateLimiter {
-    buckets: Arc<Mutex<HashMap<String, TokenBucket>>>,
+    buckets: Arc<DashMap<String, TokenBucket>>,
     default_rate: u32,
     default_burst: u32,
 }
@@ -54,12 +53,16 @@ impl TokenBucket {
     fn limit(&self) -> u32 {
         self.burst
     }
+
+    fn rate(&self) -> u32 {
+        self.rate
+    }
 }
 
 impl RateLimiter {
     pub fn new(default_rps: u32, default_burst: u32) -> Self {
         Self {
-            buckets: Arc::new(Mutex::new(HashMap::new())),
+            buckets: Arc::new(DashMap::new()),
             default_rate: default_rps,
             default_burst,
         }
@@ -71,9 +74,7 @@ impl RateLimiter {
         custom_rate: Option<u32>,
         custom_burst: Option<u32>,
     ) -> RateLimitResult {
-        let mut buckets = self.buckets.lock().await;
-
-        let bucket = buckets.entry(key.to_string()).or_insert_with(|| {
+        let mut bucket = self.buckets.entry(key.to_string()).or_insert_with(|| {
             TokenBucket::new(
                 custom_rate.unwrap_or(self.default_rate),
                 custom_burst.unwrap_or(self.default_burst),
@@ -92,16 +93,36 @@ impl RateLimiter {
         }
     }
 
-    pub async fn get_usage(&self, key: &str) -> Option<RateLimitStatus> {
-        let mut buckets = self.buckets.lock().await;
-        buckets.get_mut(key).map(|bucket| {
+    pub fn get_usage(&self, key: &str) -> Option<RateLimitStatus> {
+        self.buckets.get_mut(key).map(|mut bucket| {
             let remaining = bucket.remaining();
             RateLimitStatus {
                 remaining,
                 limit: bucket.limit(),
-                rate: bucket.rate,
+                rate: bucket.rate(),
             }
         })
+    }
+
+    /// 获取当前桶数量
+    pub fn bucket_count(&self) -> usize {
+        self.buckets.len()
+    }
+
+    /// 清理过期的桶（超过指定时间未访问）
+    pub fn cleanup(&self, max_idle: std::time::Duration) -> usize {
+        let now = Instant::now();
+        let mut removed = 0;
+
+        self.buckets.retain(|_, bucket| {
+            let is_expired = now.duration_since(bucket.last_update) > max_idle;
+            if is_expired {
+                removed += 1;
+            }
+            !is_expired
+        });
+
+        removed
     }
 }
 
@@ -190,5 +211,66 @@ mod tests {
 
         let result = limiter.check_rate_limit("key1", Some(20), Some(10)).await;
         assert!(!result.allowed);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_concurrent() {
+        use futures_util::future::join_all;
+        use std::sync::Arc;
+        use tokio::task;
+
+        let limiter = Arc::new(RateLimiter::new(100, 100));
+        let num_tasks = 10;
+        let requests_per_task = 10;
+
+        let handles: Vec<_> = (0..num_tasks)
+            .map(|i| {
+                let limiter = limiter.clone();
+                task::spawn(async move {
+                    let mut results = Vec::new();
+                    for _j in 0..requests_per_task {
+                        let key = format!("key-{}", i);
+                        let result = limiter.check_rate_limit(&key, None, None).await;
+                        results.push(result);
+                    }
+                    results
+                })
+            })
+            .collect();
+
+        let results: Vec<Vec<RateLimitResult>> = join_all(handles)
+            .await
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect();
+
+        // 所有请求都应该被允许
+        for task_results in results {
+            for result in task_results {
+                assert!(result.allowed, "Concurrent request should be allowed");
+            }
+        }
+
+        // 验证 bucket 数量
+        assert_eq!(limiter.bucket_count(), num_tasks);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_cleanup() {
+        let limiter = RateLimiter::new(10, 5);
+
+        // 添加一些桶
+        limiter.check_rate_limit("key1", None, None).await;
+        limiter.check_rate_limit("key2", None, None).await;
+
+        assert_eq!(limiter.bucket_count(), 2);
+
+        // 等待过期
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // 清理过期的桶
+        let removed = limiter.cleanup(std::time::Duration::from_millis(100));
+        assert_eq!(removed, 2);
+        assert_eq!(limiter.bucket_count(), 0);
     }
 }

@@ -5,21 +5,27 @@ edition = "2021"
 description = "Core ID generation algorithms and types"
 authors = ["Tech Team"]
 
+[features]
+default = ["etcd"]
+etcd = ["dep:etcd-client"]
+
 [dependencies]
 arc-swap = "1.6"
 async-trait = "0.1"
 base64 = "0.21"
 bytes = "1"
 chrono = { version = "0.4", features = ["std"] }
+crc32fast = "1"
 crossbeam = "0.8"
 dashmap = "6"
 derive_more = { version = "1", features = ["display", "error", "from"] }
 either = "1"
-etcd-client = "0.17"
+etcd-client = { version = "0.17", optional = true }
 futures = "0.3"
 hex = "0.4"
 hmac = "0.12"
 parking_lot = "0.12"
+pin-project = "1.1"
 prost = "0.14"
 prost-types = "0.14"
 prometheus-client = "0.22"

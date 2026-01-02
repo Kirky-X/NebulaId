@@ -3,6 +3,7 @@ use crate::algorithm::{
     GenerateContext, HealthStatus, IdAlgorithm, IdGenerator,
 };
 use crate::config::Config;
+#[cfg(feature = "etcd")]
 use crate::coordinator::EtcdClusterHealthMonitor;
 use crate::database::SegmentRepository;
 use crate::types::{AlgorithmType, CoreError, Id, IdBatch, Result};
@@ -107,7 +108,10 @@ pub struct AlgorithmRouter {
     fallback_chain: Vec<AlgorithmType>,
     current_algorithm: DashMap<String, AlgorithmType>,
     degradation_manager: Arc<DegradationManager>,
+    #[cfg(feature = "etcd")]
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
+    #[cfg(not(feature = "etcd"))]
+    etcd_health_monitor: Option<()>,
     segment_repository: Option<Arc<dyn SegmentRepository>>,
 }
 
@@ -149,8 +153,15 @@ impl AlgorithmRouter {
         }
     }
 
+    #[cfg(feature = "etcd")]
     pub fn with_etcd_health_monitor(mut self, monitor: Arc<EtcdClusterHealthMonitor>) -> Self {
         self.etcd_health_monitor = Some(monitor);
+        self
+    }
+
+    #[cfg(not(feature = "etcd"))]
+    pub fn with_etcd_health_monitor(mut self, _monitor: Arc<()>) -> Self {
+        self.etcd_health_monitor = Some(());
         self
     }
 
@@ -164,6 +175,7 @@ impl AlgorithmRouter {
             AlgorithmType::UuidV4,
         ] {
             let mut builder = AlgorithmBuilder::new(alg_type);
+            #[cfg(feature = "etcd")]
             if let Some(ref monitor) = self.etcd_health_monitor {
                 builder = builder.with_etcd_health_monitor(monitor.clone());
             }

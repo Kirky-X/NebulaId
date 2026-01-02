@@ -1,9 +1,5 @@
 version: '3.8'
 
-# 环境变量文件（指向项目根目录）
-env_file:
-  - ../.env
-
 services:
   # ============================================
   # PostgreSQL Database

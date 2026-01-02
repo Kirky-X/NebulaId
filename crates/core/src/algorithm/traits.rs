@@ -3,6 +3,7 @@ use crate::algorithm::segment::SegmentAlgorithm;
 use crate::algorithm::snowflake::SnowflakeAlgorithm;
 use crate::algorithm::uuid_v7::{UuidV4Impl, UuidV7Impl};
 use crate::config::Config;
+#[cfg(feature = "etcd")]
 use crate::coordinator::EtcdClusterHealthMonitor;
 use crate::types::{AlgorithmType, Id, IdBatch, Result};
 use async_trait::async_trait;
@@ -31,6 +32,23 @@ pub trait IdGenerator: Send + Sync {
 
     async fn batch_generate(
         &self,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+        size: usize,
+    ) -> Result<Vec<Id>>;
+
+    async fn generate_with_algorithm(
+        &self,
+        algorithm: AlgorithmType,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+    ) -> Result<Id>;
+
+    async fn batch_generate_with_algorithm(
+        &self,
+        algorithm: AlgorithmType,
         workspace: &str,
         group: &str,
         biz_tag: &str,
@@ -104,7 +122,10 @@ impl AlgorithmMetricsSnapshot {
 
 pub struct AlgorithmBuilder {
     algorithm_type: AlgorithmType,
+    #[cfg(feature = "etcd")]
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
+    #[cfg(not(feature = "etcd"))]
+    etcd_health_monitor: Option<()>,
 }
 
 impl AlgorithmBuilder {
@@ -115,8 +136,15 @@ impl AlgorithmBuilder {
         }
     }
 
+    #[cfg(feature = "etcd")]
     pub fn with_etcd_health_monitor(mut self, monitor: Arc<EtcdClusterHealthMonitor>) -> Self {
         self.etcd_health_monitor = Some(monitor);
+        self
+    }
+
+    #[cfg(not(feature = "etcd"))]
+    pub fn with_etcd_health_monitor(mut self, _monitor: Arc<()>) -> Self {
+        self.etcd_health_monitor = Some(());
         self
     }
 
@@ -131,6 +159,7 @@ impl AlgorithmBuilder {
             AlgorithmType::UuidV4 => Ok(Box::new(UuidV4Impl::new())),
             AlgorithmType::Segment => {
                 let mut algo = SegmentAlgorithm::new(config.app.dc_id);
+                #[cfg(feature = "etcd")]
                 if let Some(ref monitor) = self.etcd_health_monitor {
                     algo = algo.with_etcd_cluster_health_monitor(monitor.clone());
                 }

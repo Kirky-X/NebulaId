@@ -2,8 +2,11 @@ use crate::algorithm::degradation_manager::{
     DegradationConfig, DegradationManager, DegradationState,
 };
 use crate::algorithm::traits::{GenerateContext, HealthStatus, IdAlgorithm};
-use crate::coordinator::etcd_cluster_health::{EtcdClusterHealthMonitor, EtcdClusterStatus};
 use crate::types::{AlgorithmType, Id, Result};
+
+#[cfg(feature = "etcd")]
+use crate::coordinator::{EtcdClusterHealthMonitor, EtcdClusterStatus};
+
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -507,6 +510,7 @@ async fn test_multiple_algorithm_degradation() {
     assert!(matches!(state, DegradationState::Normal));
 }
 
+#[cfg(feature = "etcd")]
 #[tokio::test]
 async fn test_etcd_cache_persistence_across_instances() {
     let config = crate::config::EtcdConfig::default();

@@ -2,10 +2,11 @@ use crate::config_hot_reload::HotReloadConfig;
 use crate::models::{
     AlgorithmConfigInfo, AppConfigInfo, ConfigResponse, DatabaseConfigInfo, LoggingConfigInfo,
     MonitoringConfigInfo, RateLimitConfigInfo, RedisConfigInfo, SegmentConfigInfo,
-    SnowflakeConfigInfo, TlsConfigInfo, UpdateConfigResponse, UpdateLoggingRequest,
-    UpdateRateLimitRequest, UuidV7ConfigInfo,
+    SetAlgorithmRequest, SetAlgorithmResponse, SnowflakeConfigInfo, TlsConfigInfo,
+    UpdateConfigResponse, UpdateLoggingRequest, UpdateRateLimitRequest, UuidV7ConfigInfo,
 };
 use nebula_core::config::Config;
+use nebula_core::types::id::AlgorithmType;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use validator::Validate;
@@ -13,13 +14,18 @@ use validator::Validate;
 pub struct ConfigManagementService {
     hot_config: Arc<HotReloadConfig>,
     rate_limiter: Arc<RwLock<Option<(u32, u32)>>>,
+    algorithm_router: Arc<nebula_core::algorithm::AlgorithmRouter>,
 }
 
 impl ConfigManagementService {
-    pub fn new(hot_config: Arc<HotReloadConfig>) -> Self {
+    pub fn new(
+        hot_config: Arc<HotReloadConfig>,
+        algorithm_router: Arc<nebula_core::algorithm::AlgorithmRouter>,
+    ) -> Self {
         Self {
             hot_config,
             rate_limiter: Arc::new(RwLock::new(None)),
+            algorithm_router,
         }
     }
 
@@ -182,12 +188,65 @@ impl ConfigManagementService {
         let guard = self.rate_limiter.read().await;
         *guard
     }
+
+    pub async fn set_algorithm(&self, req: SetAlgorithmRequest) -> SetAlgorithmResponse {
+        if let Err(e) = req.validate() {
+            return SetAlgorithmResponse {
+                success: false,
+                biz_tag: req.biz_tag.clone(),
+                algorithm: req.algorithm.clone(),
+                message: format!("Validation error: {}", e),
+            };
+        }
+
+        let algorithm_type = match req.algorithm.to_lowercase().as_str() {
+            "segment" => AlgorithmType::Segment,
+            "snowflake" => AlgorithmType::Snowflake,
+            "uuid_v7" => AlgorithmType::UuidV7,
+            _ => {
+                return SetAlgorithmResponse {
+                    success: false,
+                    biz_tag: req.biz_tag.clone(),
+                    algorithm: req.algorithm.clone(),
+                    message: format!(
+                        "Invalid algorithm '{}'. Valid options: segment, snowflake, uuid_v7",
+                        req.algorithm
+                    ),
+                };
+            }
+        };
+
+        let biz_tag = req.biz_tag.clone();
+        let algorithm = req.algorithm.clone();
+        self.algorithm_router
+            .set_algorithm(biz_tag.clone(), algorithm_type);
+
+        let message = format!(
+            "Algorithm for biz_tag '{}' set to '{}' successfully",
+            biz_tag, algorithm
+        );
+
+        SetAlgorithmResponse {
+            success: true,
+            biz_tag,
+            algorithm,
+            message,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use nebula_core::config::Config;
+
+    fn create_test_algorithm_router() -> Arc<nebula_core::algorithm::AlgorithmRouter> {
+        let config = Config::default();
+        Arc::new(nebula_core::algorithm::AlgorithmRouter::new(
+            config.clone(),
+            None,
+        ))
+    }
 
     #[tokio::test]
     async fn test_config_to_response() {
@@ -202,6 +261,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_rate_limit_request_validation() {
+        let hot_config = Arc::new(HotReloadConfig::new(
+            Config::default(),
+            "config.toml".to_string(),
+        ));
+        let algorithm_router = create_test_algorithm_router();
+        let _service = ConfigManagementService::new(hot_config, algorithm_router);
+
         let valid_req = UpdateRateLimitRequest {
             default_rps: Some(5000),
             burst_size: Some(50),
@@ -217,6 +283,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_logging_request_validation() {
+        let hot_config = Arc::new(HotReloadConfig::new(
+            Config::default(),
+            "config.toml".to_string(),
+        ));
+        let algorithm_router = create_test_algorithm_router();
+        let _service = ConfigManagementService::new(hot_config, algorithm_router);
+
         let valid_req = UpdateLoggingRequest {
             level: Some("debug".to_string()),
         };
@@ -229,5 +302,44 @@ mod tests {
             level: Some("invalid_level_that_is_too_long".to_string()),
         };
         assert!(invalid_req.validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_set_algorithm() {
+        let hot_config = Arc::new(HotReloadConfig::new(
+            Config::default(),
+            "config.toml".to_string(),
+        ));
+        let algorithm_router = create_test_algorithm_router();
+        let service = ConfigManagementService::new(hot_config, algorithm_router.clone());
+
+        let req = SetAlgorithmRequest {
+            biz_tag: "test-biz".to_string(),
+            algorithm: "snowflake".to_string(),
+        };
+
+        let response = service.set_algorithm(req).await;
+        assert!(response.success);
+        assert_eq!(response.biz_tag, "test-biz");
+        assert_eq!(response.algorithm, "snowflake");
+    }
+
+    #[tokio::test]
+    async fn test_set_algorithm_invalid() {
+        let hot_config = Arc::new(HotReloadConfig::new(
+            Config::default(),
+            "config.toml".to_string(),
+        ));
+        let algorithm_router = create_test_algorithm_router();
+        let service = ConfigManagementService::new(hot_config, algorithm_router);
+
+        let req = SetAlgorithmRequest {
+            biz_tag: "test-biz".to_string(),
+            algorithm: "invalid_algorithm".to_string(),
+        };
+
+        let response = service.set_algorithm(req).await;
+        assert!(!response.success);
+        assert!(response.message.contains("Invalid algorithm"));
     }
 }

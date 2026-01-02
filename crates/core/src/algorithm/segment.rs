@@ -2,6 +2,7 @@
 
 use crate::algorithm::{AlgorithmMetricsSnapshot, GenerateContext, HealthStatus, IdAlgorithm};
 use crate::config::{Config, SegmentAlgorithmConfig};
+#[cfg(feature = "etcd")]
 use crate::coordinator::EtcdClusterHealthMonitor;
 use crate::database::SegmentRepository;
 use crate::types::{AlgorithmType, CoreError, Id, IdBatch, Result};
@@ -436,7 +437,10 @@ pub struct SegmentAlgorithm {
     dc_failure_detector: Arc<DcFailureDetector>,
     #[allow(dead_code)]
     local_dc_id: u8,
+    #[cfg(feature = "etcd")]
     etcd_cluster_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
+    #[cfg(not(feature = "etcd"))]
+    etcd_cluster_health_monitor: Option<()>,
 }
 
 struct AlgorithmMetricsInner {
@@ -502,6 +506,7 @@ impl SegmentAlgorithm {
         self
     }
 
+    #[cfg(feature = "etcd")]
     pub fn with_etcd_cluster_health_monitor(
         mut self,
         monitor: Arc<EtcdClusterHealthMonitor>,
@@ -510,12 +515,24 @@ impl SegmentAlgorithm {
         self
     }
 
-    pub fn get_dc_failure_detector(&self) -> &Arc<DcFailureDetector> {
-        &self.dc_failure_detector
+    #[cfg(not(feature = "etcd"))]
+    pub fn with_etcd_cluster_health_monitor(mut self, _monitor: Arc<()>) -> Self {
+        self.etcd_cluster_health_monitor = Some(());
+        self
     }
 
+    #[cfg(feature = "etcd")]
     pub fn get_etcd_cluster_health_monitor(&self) -> Option<&Arc<EtcdClusterHealthMonitor>> {
         self.etcd_cluster_health_monitor.as_ref()
+    }
+
+    #[cfg(not(feature = "etcd"))]
+    pub fn get_etcd_cluster_health_monitor(&self) -> Option<&Arc<()>> {
+        self.etcd_cluster_health_monitor.as_ref()
+    }
+
+    pub fn get_dc_failure_detector(&self) -> &Arc<DcFailureDetector> {
+        &self.dc_failure_detector
     }
 
     fn get_or_create_buffer(&self, key: &str) -> Arc<DoubleBuffer> {
@@ -684,7 +701,10 @@ pub struct DatabaseSegmentLoader {
     repository: Arc<dyn SegmentRepository>,
     dc_failure_detector: Arc<DcFailureDetector>,
     local_dc_id: u8,
+    #[cfg(feature = "etcd")]
     etcd_cluster_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
+    #[cfg(not(feature = "etcd"))]
+    etcd_cluster_health_monitor: Option<()>,
     /// 动态步长计算器
     step_calculator: StepCalculator,
     /// Segment 算法配置
@@ -708,11 +728,18 @@ impl DatabaseSegmentLoader {
         }
     }
 
+    #[cfg(feature = "etcd")]
     pub fn with_etcd_cluster_health_monitor(
         mut self,
         monitor: Arc<EtcdClusterHealthMonitor>,
     ) -> Self {
         self.etcd_cluster_health_monitor = Some(monitor);
+        self
+    }
+
+    #[cfg(not(feature = "etcd"))]
+    pub fn with_etcd_cluster_health_monitor(mut self, _monitor: Arc<()>) -> Self {
+        self.etcd_cluster_health_monitor = Some(());
         self
     }
 

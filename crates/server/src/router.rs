@@ -4,9 +4,10 @@ use crate::config_management::ConfigManagementService;
 use crate::handlers::ApiHandlers;
 use crate::middleware::ApiKeyAuth;
 use crate::models::{
-    BatchGenerateRequest, BatchGenerateResponse, ConfigResponse, ErrorResponse, GenerateRequest,
-    GenerateResponse, HealthResponse, MetricsResponse, ParseRequest, ParseResponse,
-    UpdateConfigResponse, UpdateLoggingRequest, UpdateRateLimitRequest,
+    ApiInfoResponse, BatchGenerateRequest, BatchGenerateResponse, ConfigResponse, ErrorResponse,
+    GenerateRequest, GenerateResponse, HealthResponse, MetricsResponse, ParseRequest,
+    ParseResponse, SetAlgorithmRequest, SetAlgorithmResponse, UpdateConfigResponse,
+    UpdateLoggingRequest, UpdateRateLimitRequest,
 };
 use crate::rate_limit::RateLimiter;
 use crate::rate_limit_middleware::RateLimitMiddleware;
@@ -70,6 +71,7 @@ pub async fn create_router(
     };
 
     Router::new()
+        .route("/api/v1", get(handle_api_info))
         .route("/api/v1/generate", post(handle_generate))
         .route("/api/v1/generate/batch", post(handle_batch_generate))
         .route("/api/v1/parse", post(handle_parse))
@@ -79,6 +81,7 @@ pub async fn create_router(
         .route("/api/v1/config/rate-limit", post(handle_update_rate_limit))
         .route("/api/v1/config/logging", post(handle_update_logging))
         .route("/api/v1/config/reload", post(handle_reload_config))
+        .route("/api/v1/config/algorithm", post(handle_set_algorithm))
         .with_state(app_state)
         // Security headers
         .layer(SetResponseHeaderLayer::overriding(
@@ -216,6 +219,34 @@ async fn handle_reload_config(State(state): State<AppState>) -> Json<UpdateConfi
     Json(state.config_service.reload_config().await)
 }
 
+async fn handle_set_algorithm(
+    State(state): State<AppState>,
+    Json(req): Json<SetAlgorithmRequest>,
+) -> Json<SetAlgorithmResponse> {
+    Json(state.config_service.set_algorithm(req).await)
+}
+
+async fn handle_api_info() -> Json<ApiInfoResponse> {
+    Json(ApiInfoResponse {
+        name: "Nebula ID Service".to_string(),
+        version: "1.0.0".to_string(),
+        description: "Distributed ID Generation Service".to_string(),
+        endpoints: vec![
+            "GET /health - Health check".to_string(),
+            "GET /metrics - Prometheus metrics".to_string(),
+            "GET /api/v1 - API information".to_string(),
+            "POST /api/v1/generate - Generate ID".to_string(),
+            "POST /api/v1/generate/batch - Batch generate IDs".to_string(),
+            "POST /api/v1/parse - Parse ID".to_string(),
+            "GET /api/v1/config - Get configuration".to_string(),
+            "POST /api/v1/config/rate-limit - Update rate limit".to_string(),
+            "POST /api/v1/config/logging - Update logging".to_string(),
+            "POST /api/v1/config/reload - Reload configuration".to_string(),
+            "POST /api/v1/config/algorithm - Set algorithm".to_string(),
+        ],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,8 +261,11 @@ mod tests {
             config.clone(),
             "config.toml".to_string(),
         ));
-        let algorithm_router = Arc::new(AlgorithmRouter::new(config, None));
-        let config_service = Arc::new(ConfigManagementService::new(hot_config));
+        let algorithm_router = Arc::new(AlgorithmRouter::new(config.clone(), None));
+        let config_service = Arc::new(ConfigManagementService::new(
+            hot_config,
+            algorithm_router.clone(),
+        ));
         let handlers = ApiHandlers::new(algorithm_router, config_service);
         Arc::new(handlers)
     }

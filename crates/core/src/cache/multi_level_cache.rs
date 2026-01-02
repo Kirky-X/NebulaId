@@ -1,32 +1,31 @@
 #![allow(clippy::type_complexity)]
 
-use std::future::Future;
-use std::pin::Pin;
+use async_trait::async_trait;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::cache::RingBuffer;
 use crate::types::{CoreError, IdBatch, Result};
 
+#[async_trait]
 pub trait CacheBackend: Send + Sync {
-    fn get(&self, key: &str) -> Pin<Box<dyn Future<Output = Result<Option<Vec<u64>>>> + Send>>;
-    fn set(
-        &self,
-        key: &str,
-        values: &[u64],
-        ttl_seconds: u64,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>;
-    fn delete(&self, key: &str) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>;
-    fn exists(&self, key: &str) -> Pin<Box<dyn Future<Output = Result<bool>> + Send>>;
+    async fn get(&self, key: &str) -> Result<Option<Vec<u64>>>;
+    async fn set(&self, key: &str, values: &[u64], ttl_seconds: u64) -> Result<()>;
+    async fn delete(&self, key: &str) -> Result<()>;
+    async fn exists(&self, key: &str) -> Result<bool>;
 }
 
 pub struct MultiLevelCache {
     l1_cache: Arc<DashMap<String, Arc<RingBuffer<u64>>>>,
+    l1_access_order: Arc<RwLock<HashMap<String, Instant>>>, // LRU 访问追踪
+    l1_max_keys: usize,                                     // L1 最大 key 数量限制
     l2_buffer: DoubleBufferCache,
     l3_backend: Option<Arc<dyn CacheBackend>>,
     l1_capacity: usize,
@@ -44,8 +43,38 @@ impl MultiLevelCache {
         l2_buffer_count: usize,
         l3_backend: Option<Arc<dyn CacheBackend>>,
     ) -> Self {
+        Self::with_l1_max_keys(
+            l1_capacity,
+            l1_watermark_high,
+            l1_watermark_low,
+            l2_capacity,
+            l2_buffer_count,
+            l3_backend,
+            1000, // 默认最大 1000 个 key
+        )
+    }
+
+    /// 创建带 L1 key 数量限制的 MultiLevelCache
+    ///
+    /// # Arguments
+    /// * `l1_max_keys` - L1 缓存最大 key 数量，0 表示无限制
+    pub fn with_l1_max_keys(
+        l1_capacity: usize,
+        l1_watermark_high: f64,
+        l1_watermark_low: f64,
+        l2_capacity: usize,
+        l2_buffer_count: usize,
+        l3_backend: Option<Arc<dyn CacheBackend>>,
+        l1_max_keys: usize,
+    ) -> Self {
         Self {
             l1_cache: Arc::new(DashMap::new()),
+            l1_access_order: Arc::new(RwLock::new(HashMap::new())),
+            l1_max_keys: if l1_max_keys > 0 {
+                l1_max_keys
+            } else {
+                usize::MAX
+            },
             l2_buffer: DoubleBufferCache::new(l2_capacity, l2_buffer_count),
             l3_backend,
             l1_capacity,
@@ -135,6 +164,9 @@ impl MultiLevelCache {
     }
 
     async fn refill_l1(&self, key: &str, ids: &[u64]) {
+        // LRU 淘汰：检查是否需要驱逐旧条目
+        self.evict_l1_if_needed().await;
+
         let buffer = self.l1_cache.entry(key.to_string()).or_insert_with(|| {
             Arc::new(RingBuffer::new(
                 self.l1_capacity,
@@ -149,7 +181,80 @@ impl MultiLevelCache {
             .l1_items_refilled
             .fetch_add(pushed, Ordering::Relaxed);
 
+        // 更新访问时间
+        let mut access_order = self.l1_access_order.write().await;
+        access_order.insert(key.to_string(), Instant::now());
+
         debug!("Refilled L1 cache for key: {} with {} items", key, pushed);
+    }
+
+    /// L1 缓存淘汰检查
+    async fn evict_l1_if_needed(&self) {
+        if self.l1_max_keys == usize::MAX {
+            return; // 无限制
+        }
+
+        let current_size = self.l1_cache.len();
+        if current_size < self.l1_max_keys {
+            return; // 未达到限制
+        }
+
+        // 需要淘汰 10% 的条目
+        let evict_count = (self.l1_max_keys / 10).max(1);
+        let mut access_order = self.l1_access_order.write().await;
+
+        // 找出最久未访问的条目
+        let mut candidates: Vec<_> = access_order.iter().collect();
+        candidates.sort_by(|a, b| a.1.cmp(b.1));
+
+        let to_evict: Vec<String> = candidates
+            .into_iter()
+            .take(evict_count)
+            .map(|(k, _)| k.clone())
+            .collect();
+
+        for key in &to_evict {
+            self.l1_cache.remove(key);
+            access_order.remove(key);
+            self.metrics.l1_evictions.fetch_add(1, Ordering::Relaxed);
+            debug!("Evicted L1 cache key: {} (LRU)", key);
+        }
+
+        if !to_evict.is_empty() {
+            info!(
+                "Evicted {} old entries from L1 cache (max_keys={})",
+                to_evict.len(),
+                self.l1_max_keys
+            );
+        }
+    }
+
+    /// 手动触发 L1 缓存清理
+    pub async fn evict_l1_expired(&self, max_age: Duration) -> usize {
+        let cutoff = Instant::now() - max_age;
+        let mut access_order = self.l1_access_order.write().await;
+        let mut evicted = 0;
+
+        let to_evict: Vec<String> = access_order
+            .iter()
+            .filter(|(_key, time): &(&String, &Instant)| **time < cutoff)
+            .map(|(k, _)| k.clone())
+            .collect();
+
+        for key in &to_evict {
+            self.l1_cache.remove(key);
+            access_order.remove(key);
+            evicted += 1;
+        }
+
+        if evicted > 0 {
+            info!(
+                "Evicted {} expired entries from L1 cache (age > {:?})",
+                evicted, max_age
+            );
+        }
+
+        evicted
     }
 
     pub async fn put_ids(&self, key: &str, ids: &[u64]) -> Result<()> {
@@ -169,6 +274,10 @@ impl MultiLevelCache {
         self.l1_cache.remove(key);
         self.l2_buffer.invalidate(key).await;
 
+        // 清理 access_order
+        let mut access_order = self.l1_access_order.write().await;
+        access_order.remove(key);
+
         if let Some(ref backend) = self.l3_backend {
             backend.delete(key).await?;
         }
@@ -182,6 +291,10 @@ impl MultiLevelCache {
         for entry in self.l1_cache.iter() {
             entry.value().clear();
         }
+
+        // 清理 access_order
+        let mut access_order = self.l1_access_order.write().await;
+        access_order.clear();
 
         self.l2_buffer.clear().await;
 
@@ -197,6 +310,7 @@ impl MultiLevelCache {
             total_requests: self.metrics.total_requests.load(Ordering::Relaxed),
             l1_hits: self.metrics.l1_hits.load(Ordering::Relaxed),
             l1_misses: self.metrics.l1_misses.load(Ordering::Relaxed),
+            l1_evictions: self.metrics.l1_evictions.load(Ordering::Relaxed),
             l2_hits: self.metrics.l2_hits.load(Ordering::Relaxed),
             l2_misses: self.metrics.l2_misses.load(Ordering::Relaxed),
             l3_requests: self.metrics.l3_requests.load(Ordering::Relaxed),
@@ -208,6 +322,7 @@ impl MultiLevelCache {
             l2_refills: self.metrics.l2_refills.load(Ordering::Relaxed),
             l1_items_fetched: self.metrics.l1_items_fetched.load(Ordering::Relaxed),
             l1_items_refilled: self.metrics.l1_items_refilled.load(Ordering::Relaxed),
+            l1_key_count: self.l1_cache.len(),
         }
     }
 }
@@ -396,6 +511,7 @@ pub struct CacheMetrics {
     total_requests: AtomicUsize,
     l1_hits: AtomicUsize,
     l1_misses: AtomicUsize,
+    l1_evictions: AtomicUsize,
     l2_hits: AtomicUsize,
     l2_misses: AtomicUsize,
     l3_requests: AtomicUsize,
@@ -420,6 +536,7 @@ pub struct CacheMetricsSnapshot {
     pub total_requests: usize,
     pub l1_hits: usize,
     pub l1_misses: usize,
+    pub l1_evictions: usize,
     pub l2_hits: usize,
     pub l2_misses: usize,
     pub l3_requests: usize,
@@ -431,6 +548,7 @@ pub struct CacheMetricsSnapshot {
     pub l2_refills: usize,
     pub l1_items_fetched: usize,
     pub l1_items_refilled: usize,
+    pub l1_key_count: usize,
 }
 
 impl CacheMetricsSnapshot {

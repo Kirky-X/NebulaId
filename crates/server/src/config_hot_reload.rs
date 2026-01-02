@@ -1,4 +1,5 @@
 use nebula_core::config::Config;
+use nebula_core::types::id::AlgorithmType;
 use nebula_core::types::Result;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
@@ -13,6 +14,7 @@ pub struct HotReloadConfig {
     #[allow(clippy::type_complexity)]
     reload_callbacks: Arc<RwLock<Vec<Arc<dyn Fn(Config) + Send + Sync>>>>,
     audit_logger: Option<Arc<super::audit::AuditLogger>>,
+    biz_algorithm_map: Arc<RwLock<std::collections::HashMap<String, AlgorithmType>>>,
 }
 
 impl HotReloadConfig {
@@ -22,6 +24,7 @@ impl HotReloadConfig {
             config_path,
             reload_callbacks: Arc::new(RwLock::new(Vec::new())),
             audit_logger: None,
+            biz_algorithm_map: Arc::new(RwLock::new(std::collections::HashMap::new())),
         }
     }
 
@@ -199,6 +202,17 @@ impl HotReloadConfig {
 
     pub async fn reload_from_file(&self) -> Result<bool> {
         self.reload_config().await
+    }
+
+    pub fn set_algorithm(&self, biz_tag: &str, algorithm: AlgorithmType) {
+        let mut map = self.biz_algorithm_map.write().unwrap();
+        map.insert(biz_tag.to_string(), algorithm);
+        info!("Set algorithm for biz_tag '{}' to {:?}", biz_tag, algorithm);
+    }
+
+    pub fn get_algorithm(&self, biz_tag: &str) -> Option<AlgorithmType> {
+        let map = self.biz_algorithm_map.read().unwrap();
+        map.get(biz_tag).cloned()
     }
 }
 

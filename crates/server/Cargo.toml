@@ -9,12 +9,16 @@ authors = ["Tech Team"]
 name = "nebula-id"
 path = "src/main.rs"
 
+[features]
+default = ["etcd"]
+etcd = ["dep:etcd-client", "nebula-core/etcd"]
+
 [build-dependencies]
 tonic-prost-build = "0.14"
 
 [dependencies]
 tonic-prost = "0.14"
-nebula-core = { path = "../core" }
+nebula-core = { path = "../core", default-features = false }
 
 axum = { version = "0.8", features = ["json", "macros"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
@@ -29,10 +33,11 @@ rustls = "0.22"
 tokio-rustls = "0.25"
 rustls-pemfile = "2"
 futures-util = "0.3"
+dashmap = "6"
 
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-native-tls", "postgres", "uuid", "chrono"] }
 redis = { version = "0.25", features = ["aio", "tokio-comp"] }
-etcd-client = "0.17"
+etcd-client = { version = "0.17", optional = true }
 uuid = { version = "1", features = ["v4", "v7", "v8"] }
 
 reqwest = { version = "0.11", features = ["json"] }

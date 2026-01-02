@@ -46,6 +46,7 @@ impl NebulaIdService for GrpcServer {
             workspace: req.namespace,
             group: tag.clone(),
             biz_tag: tag,
+            algorithm: None,
         };
 
         match self.handlers.generate(generate_req).await {
@@ -98,6 +99,7 @@ impl NebulaIdService for GrpcServer {
             group: tag.clone(),
             biz_tag: tag,
             size: Some(req.count as usize),
+            algorithm: None,
         };
 
         match self.handlers.batch_generate(batch_req).await {
@@ -140,6 +142,7 @@ impl NebulaIdService for GrpcServer {
                             group: tag.clone(),
                             biz_tag: tag,
                             size: Some(stream_req.count as usize),
+                            algorithm: None,
                         };
 
                         match handlers.batch_generate(batch_req).await {
@@ -208,6 +211,7 @@ impl NebulaIdService for GrpcServer {
             workspace: String::new(),
             group: String::new(),
             biz_tag: String::new(),
+            algorithm: String::new(),
         };
 
         match self.handlers.parse(parse_req).await {

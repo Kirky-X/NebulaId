@@ -11,6 +11,9 @@ pub struct GenerateRequest {
 
     #[validate(length(min = 1, max = 64))]
     pub biz_tag: String,
+
+    #[validate(length(min = 1, max = 20))]
+    pub algorithm: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +36,9 @@ pub struct BatchGenerateRequest {
 
     #[validate(range(min = 1, max = 100))]
     pub size: Option<usize>,
+
+    #[validate(length(min = 1, max = 20))]
+    pub algorithm: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,6 +119,10 @@ pub struct ParseRequest {
 
     #[validate(length(min = 1, max = 64))]
     pub biz_tag: String,
+
+    #[validate(length(min = 1, max = 32))]
+    #[serde(default)]
+    pub algorithm: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,9 +257,34 @@ pub struct UpdateLoggingRequest {
     pub level: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct SetAlgorithmRequest {
+    #[validate(length(min = 1, max = 64))]
+    pub biz_tag: String,
+
+    #[validate(length(min = 1, max = 20))]
+    pub algorithm: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetAlgorithmResponse {
+    pub success: bool,
+    pub biz_tag: String,
+    pub algorithm: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateConfigResponse {
     pub success: bool,
     pub message: String,
     pub config: Option<ConfigResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiInfoResponse {
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub endpoints: Vec<String>,
 }

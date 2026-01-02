@@ -40,7 +40,18 @@ pub struct Id(u128);
 
 impl fmt::Display for Id {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        // 检测是否是 UUID 格式（版本在高位 12-15 位）
+        // UUID v7: 版本位 (12-15) 值为 7
+        // UUID v4: 版本位 (12-15) 值为 4
+        let version_bits = (self.0 >> 76) & 0xF; // 76 = 64 + 12
+        if version_bits == 7 || version_bits == 4 {
+            // 是 UUID 格式，输出标准字符串格式
+            let uuid = Uuid::from_u128(self.0);
+            write!(f, "{}", uuid.to_string())
+        } else {
+            // 数值格式（Segment、Snowflake）
+            write!(f, "{}", self.0)
+        }
     }
 }
 

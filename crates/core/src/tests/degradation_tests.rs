@@ -121,6 +121,7 @@ impl IdAlgorithm for MockIdAlgorithm {
 }
 
 #[tokio::test]
+#[cfg(feature = "etcd")]
 async fn test_etcd_cluster_status_transitions() {
     let config = crate::config::EtcdConfig::default();
     let cache_path = "/tmp/test_etcd_status_transitions.json".to_string();
@@ -147,6 +148,7 @@ async fn test_etcd_cluster_status_transitions() {
 }
 
 #[tokio::test]
+#[cfg(feature = "etcd")]
 async fn test_etcd_cluster_failure_recovery() {
     let config = crate::config::EtcdConfig::default();
     let cache_path = "/tmp/test_etcd_recovery.json".to_string();
@@ -164,6 +166,7 @@ async fn test_etcd_cluster_failure_recovery() {
 }
 
 #[tokio::test]
+#[cfg(feature = "etcd")]
 async fn test_etcd_cluster_cache_fallback() {
     let config = crate::config::EtcdConfig::default();
     let cache_path = "/tmp/test_etcd_cache_fallback.json".to_string();

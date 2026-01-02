@@ -61,7 +61,7 @@ impl fmt::Display for Id {
         if version_bits == 7 || version_bits == 4 {
             // 是 UUID 格式，输出标准字符串格式
             let uuid = Uuid::from_u128(self.0);
-            write!(f, "{}", uuid.to_string())
+            write!(f, "{}", uuid)
         } else {
             // 数值格式（Segment、Snowflake）
             write!(f, "{}", self.0)

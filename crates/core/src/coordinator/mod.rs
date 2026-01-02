@@ -11,13 +11,13 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
 use crate::config::EtcdConfig;
 use crate::types::Result;
+use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU16, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::fs;
@@ -38,6 +38,90 @@ pub struct LocalCacheEntry {
     pub version: i64,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// Worker ID 分配器 trait
+#[async_trait]
+pub trait WorkerIdAllocator: Send + Sync {
+    async fn allocate(&self) -> std::result::Result<u16, WorkerAllocatorError>;
+    async fn release(&self, worker_id: u16) -> std::result::Result<(), WorkerAllocatorError>;
+    fn get_allocated_id(&self) -> Option<u16>;
+    fn is_healthy(&self) -> bool;
+}
+
+/// Worker ID 分配器错误
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum WorkerAllocatorError {
+    #[error("Failed to connect to etcd: {0}")]
+    ConnectionFailed(String),
+
+    #[error("No available worker ID")]
+    NoAvailableId,
+
+    #[error("Lease renewal failed: {0}")]
+    LeaseRenewalFailed(String),
+
+    #[error("Worker ID allocation cancelled")]
+    Cancelled,
+
+    #[error("etcd error: {0}")]
+    EtcdError(String),
+
+    #[error("Local allocator not configured")]
+    NotConfigured,
+}
+
+/// 本地 Worker ID 分配器（无 etcd 时使用）
+#[cfg(not(feature = "etcd"))]
+#[derive(Clone)]
+pub struct LocalWorkerAllocator {
+    worker_id: Arc<AtomicU16>,
+    datacenter_id: u8,
+}
+
+#[cfg(not(feature = "etcd"))]
+impl LocalWorkerAllocator {
+    pub fn new(datacenter_id: u8, default_worker_id: u16) -> Self {
+        info!(
+            "LocalWorkerAllocator initialized for DC {} with worker_id {}",
+            datacenter_id, default_worker_id
+        );
+        Self {
+            worker_id: Arc::new(AtomicU16::new(default_worker_id)),
+            datacenter_id,
+        }
+    }
+}
+
+#[cfg(not(feature = "etcd"))]
+#[async_trait]
+impl WorkerIdAllocator for LocalWorkerAllocator {
+    async fn allocate(&self) -> std::result::Result<u16, WorkerAllocatorError> {
+        let id = self.worker_id.load(Ordering::SeqCst);
+        info!(
+            "Allocated local worker_id: {} for DC {}",
+            id, self.datacenter_id
+        );
+        Ok(id)
+    }
+
+    async fn release(&self, worker_id: u16) -> std::result::Result<(), WorkerAllocatorError> {
+        info!("Released local worker_id: {}", worker_id);
+        Ok(())
+    }
+
+    fn get_allocated_id(&self) -> Option<u16> {
+        let id = self.worker_id.load(Ordering::SeqCst);
+        if id == 0 {
+            None
+        } else {
+            Some(id)
+        }
+    }
+
+    fn is_healthy(&self) -> bool {
+        true
+    }
 }
 
 /// Placeholder type when etcd feature is disabled
@@ -98,6 +182,7 @@ pub struct EtcdClusterHealthMonitor {
     is_using_cache: AtomicBool,
 }
 
+#[cfg(feature = "etcd")]
 impl EtcdClusterHealthMonitor {
     pub fn new(config: EtcdConfig, cache_file_path: String) -> Self {
         Self {
@@ -212,10 +297,12 @@ impl EtcdClusterHealthMonitor {
         Ok(())
     }
 
+    #[cfg(feature = "etcd")]
     pub fn get_from_cache(&self, key: &str) -> Option<LocalCacheEntry> {
         self.local_cache.get(key).map(|v| v.value().clone())
     }
 
+    #[cfg(feature = "etcd")]
     pub fn put_to_cache(&self, key: String, value: String, version: i64) {
         let now = chrono::Utc::now().timestamp();
         let entry = LocalCacheEntry {
@@ -228,6 +315,7 @@ impl EtcdClusterHealthMonitor {
         self.local_cache.insert(key, entry);
     }
 
+    #[cfg(feature = "etcd")]
     pub fn delete_from_cache(&self, key: &str) {
         self.local_cache.remove(key);
     }
@@ -295,6 +383,7 @@ impl EtcdClusterHealthMonitor {
     }
 }
 
+#[cfg(feature = "etcd")]
 impl Clone for EtcdClusterHealthMonitor {
     fn clone(&self) -> Self {
         Self {
@@ -310,7 +399,178 @@ impl Clone for EtcdClusterHealthMonitor {
     }
 }
 
-#[cfg(test)]
+/// EtcdWorkerAllocator - 使用 etcd 的 Worker ID 分配器
+#[cfg(feature = "etcd")]
+pub struct EtcdWorkerAllocator {
+    client: Arc<tokio::sync::Mutex<etcd_client::Client>>,
+    datacenter_id: u8,
+    allocated_id: AtomicU16,
+    lease_id: AtomicI64,
+    health_status: AtomicU8,
+    config: EtcdConfig,
+}
+
+#[cfg(feature = "etcd")]
+impl Clone for EtcdWorkerAllocator {
+    fn clone(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            datacenter_id: self.datacenter_id,
+            allocated_id: AtomicU16::new(self.allocated_id.load(Ordering::SeqCst)),
+            lease_id: AtomicI64::new(self.lease_id.load(Ordering::SeqCst)),
+            health_status: AtomicU8::new(self.health_status.load(Ordering::SeqCst)),
+            config: self.config.clone(),
+        }
+    }
+}
+
+#[cfg(feature = "etcd")]
+impl EtcdWorkerAllocator {
+    const MAX_WORKER_ID: u16 = 255;
+    const WORKER_PATH_PREFIX: &'static str = "/idgen/workers";
+
+    pub async fn new(
+        endpoints: Vec<String>,
+        datacenter_id: u8,
+        config: EtcdConfig,
+    ) -> std::result::Result<Self, WorkerAllocatorError> {
+        use etcd_client::{Client, ConnectOptions};
+
+        let options = ConnectOptions::new()
+            .with_connect_timeout(std::time::Duration::from_millis(config.connect_timeout_ms))
+            .with_timeout(std::time::Duration::from_millis(config.watch_timeout_ms));
+
+        let client = Client::connect(endpoints, Some(options))
+            .await
+            .map_err(|e| WorkerAllocatorError::ConnectionFailed(e.to_string()))?;
+
+        let allocator = Self {
+            client: Arc::new(tokio::sync::Mutex::new(client)),
+            datacenter_id,
+            allocated_id: AtomicU16::new(0),
+            lease_id: AtomicI64::new(0),
+            health_status: AtomicU8::new(0),
+            config,
+        };
+
+        info!("EtcdWorkerAllocator initialized for DC {}", datacenter_id);
+        Ok(allocator)
+    }
+
+    fn worker_path(&self, worker_id: u16) -> String {
+        format!(
+            "{}/{}/{}",
+            Self::WORKER_PATH_PREFIX,
+            self.datacenter_id,
+            worker_id
+        )
+    }
+
+    async fn grant_lease(&self) -> std::result::Result<i64, WorkerAllocatorError> {
+        let lease = self
+            .client
+            .lock()
+            .await
+            .lease_grant(30, None)
+            .await
+            .map_err(|e| WorkerAllocatorError::LeaseRenewalFailed(e.to_string()))?;
+
+        let lease_id = lease.id();
+        self.lease_id.store(lease_id, Ordering::SeqCst);
+        info!("Lease granted: {}", lease_id);
+        Ok(lease_id)
+    }
+
+    async fn try_allocate_id(
+        &self,
+        worker_id: u16,
+        lease_id: i64,
+    ) -> std::result::Result<bool, WorkerAllocatorError> {
+        let path = self.worker_path(worker_id);
+        let value = format!(
+            "dc={},pid={},ts={}",
+            self.datacenter_id,
+            std::process::id(),
+            chrono::Utc::now().timestamp()
+        );
+
+        let get_result = {
+            let mut client = self.client.lock().await;
+            client
+                .get(path.clone(), None)
+                .await
+                .map_err(|e| WorkerAllocatorError::EtcdError(e.to_string()))?
+        };
+
+        if get_result.kvs().is_empty() {
+            let put_options = Some(etcd_client::PutOptions::new().with_lease(lease_id));
+            let mut client = self.client.lock().await;
+            match client.put(path, value, put_options).await {
+                Ok(_) => return Ok(true),
+                Err(e) => return Err(WorkerAllocatorError::EtcdError(e.to_string())),
+            }
+        }
+
+        Ok(false)
+    }
+
+    async fn do_allocate(&self) -> std::result::Result<u16, WorkerAllocatorError> {
+        let lease_id = self.grant_lease().await?;
+
+        for worker_id in 0..=Self::MAX_WORKER_ID {
+            match self.try_allocate_id(worker_id, lease_id).await {
+                Ok(true) => {
+                    self.allocated_id.store(worker_id, Ordering::SeqCst);
+                    info!("Successfully allocated worker_id: {}", worker_id);
+                    return Ok(worker_id);
+                }
+                Ok(false) => continue,
+                Err(e) => {
+                    warn!("Failed to allocate worker_id {}: {}", worker_id, e);
+                    continue;
+                }
+            }
+        }
+
+        Err(WorkerAllocatorError::NoAvailableId)
+    }
+}
+
+#[cfg(feature = "etcd")]
+#[async_trait]
+impl WorkerIdAllocator for EtcdWorkerAllocator {
+    async fn allocate(&self) -> std::result::Result<u16, WorkerAllocatorError> {
+        self.do_allocate().await
+    }
+
+    async fn release(&self, worker_id: u16) -> std::result::Result<(), WorkerAllocatorError> {
+        let path = self.worker_path(worker_id);
+        let mut client = self.client.lock().await;
+        if let Err(e) = client.delete(path, None).await {
+            error!("Failed to release worker_id {}: {}", worker_id, e);
+            return Err(WorkerAllocatorError::EtcdError(e.to_string()));
+        }
+        self.allocated_id.store(0, Ordering::SeqCst);
+        self.lease_id.store(0, Ordering::SeqCst);
+        info!("Released worker_id: {}", worker_id);
+        Ok(())
+    }
+
+    fn get_allocated_id(&self) -> Option<u16> {
+        let id = self.allocated_id.load(Ordering::SeqCst);
+        if id == 0 {
+            None
+        } else {
+            Some(id)
+        }
+    }
+
+    fn is_healthy(&self) -> bool {
+        self.health_status.load(Ordering::Relaxed) == 1
+    }
+}
+
+#[cfg(all(test, feature = "etcd"))]
 mod tests {
     use super::*;
 
@@ -379,5 +639,21 @@ mod tests {
         assert_eq!(entry2.unwrap().value, "value2");
 
         let _ = fs::remove_file("/tmp/test_etcd_cache_persist.json").await;
+    }
+
+    #[tokio::test]
+    #[cfg(all(test, not(feature = "etcd")))]
+    async fn test_local_worker_allocator() {
+        use crate::coordinator::{LocalWorkerAllocator, WorkerIdAllocator};
+
+        let allocator = LocalWorkerAllocator::new(0, 1);
+        assert_eq!(allocator.get_allocated_id(), Some(1));
+        assert!(allocator.is_healthy());
+
+        let id = allocator.allocate().await.unwrap();
+        assert_eq!(id, 1);
+
+        allocator.release(1).await.unwrap();
+        assert_eq!(allocator.get_allocated_id(), Some(1));
     }
 }

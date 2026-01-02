@@ -541,7 +541,7 @@ impl SegmentAlgorithm {
     }
 
     #[cfg(not(feature = "etcd"))]
-    pub fn get_etcd_cluster_health_monitor(&self) -> Option<&Arc<()>> {
+    pub fn get_etcd_cluster_health_monitor(&self) -> Option<&()> {
         self.etcd_cluster_health_monitor.as_ref()
     }
 

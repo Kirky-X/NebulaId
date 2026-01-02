@@ -18,6 +18,7 @@ use std::sync::Arc;
 use crossbeam::queue::ArrayQueue;
 use tracing::debug;
 
+#[allow(dead_code)]
 pub struct RingBuffer<T> {
     buffer: Arc<ArrayQueue<T>>,
     write_idx: AtomicUsize,
@@ -41,6 +42,7 @@ impl<T> std::fmt::Debug for RingBuffer<T> {
     }
 }
 
+#[allow(dead_code)]
 impl<T: Clone> RingBuffer<T> {
     pub fn new(capacity: usize, high_watermark: f64, low_watermark: f64) -> Self {
         assert!(capacity > 0, "Capacity must be greater than 0");
@@ -116,32 +118,12 @@ impl<T: Clone> RingBuffer<T> {
         self.capacity
     }
 
-    pub fn len(&self) -> usize {
-        self.buffer.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.buffer.len() == 0
-    }
-
     pub fn is_full(&self) -> bool {
         self.buffer.len() >= self.capacity
     }
 
     pub fn fill_level(&self) -> f64 {
         self.buffer.len() as f64 / self.capacity as f64
-    }
-
-    pub fn write_idx(&self) -> usize {
-        self.write_idx.load(Ordering::Relaxed)
-    }
-
-    pub fn read_idx(&self) -> usize {
-        self.read_idx.load(Ordering::Relaxed)
-    }
-
-    pub fn remaining_capacity(&self) -> usize {
-        self.capacity - self.buffer.len()
     }
 
     fn check_watermark(&self) {
@@ -169,15 +151,11 @@ impl<T: Clone> RingBuffer<T> {
     }
 
     pub fn drain(&self) -> Vec<T> {
-        let mut items = Vec::with_capacity(self.len());
+        let mut items = Vec::with_capacity(self.capacity);
         while let Some(item) = self.pop() {
             items.push(item);
         }
         items
-    }
-
-    pub fn try_iter(&self) -> impl Iterator<Item = T> + '_ {
-        RingBufferIterator { buffer: self }
     }
 }
 
@@ -196,18 +174,6 @@ impl<T: Clone> Clone for RingBuffer<T> {
     }
 }
 
-pub struct RingBufferIterator<'a, T> {
-    buffer: &'a RingBuffer<T>,
-}
-
-impl<'a, T: Clone> Iterator for RingBufferIterator<'a, T> {
-    type Item = T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.buffer.pop()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,14 +182,13 @@ mod tests {
     fn test_ring_buffer_basic_operations() {
         let buffer: RingBuffer<u64> = RingBuffer::new(10, 0.8, 0.2);
 
-        assert!(buffer.is_empty());
+        assert!(buffer.fill_level() < 0.01);
         assert!(!buffer.is_full());
         assert_eq!(buffer.capacity(), 10);
-        assert_eq!(buffer.len(), 0);
 
         assert!(buffer.push(1));
         assert!(buffer.push(2));
-        assert_eq!(buffer.len(), 2);
+        assert!((buffer.fill_level() - 0.2).abs() < 0.01);
 
         assert_eq!(buffer.pop(), Some(1));
         assert_eq!(buffer.pop(), Some(2));
@@ -246,15 +211,17 @@ mod tests {
 
     #[test]
     fn test_ring_buffer_batch_operations() {
-        let buffer: RingBuffer<u64> = RingBuffer::new(10, 0.8, 0.2);
+        let buffer = RingBuffer::<u64>::new(10, 0.8, 0.2);
 
         let items: Vec<u64> = (1..=5).collect();
-        assert_eq!(buffer.push_batch(&items), 5);
-        assert_eq!(buffer.len(), 5);
+        for &item in &items {
+            buffer.push(item);
+        }
+        assert_eq!(buffer.fill_level(), 0.5);
 
         let collected: Vec<u64> = buffer.drain();
         assert_eq!(collected, vec![1, 2, 3, 4, 5]);
-        assert!(buffer.is_empty());
+        assert_eq!(buffer.fill_level(), 0.0);
     }
 
     #[test]
@@ -279,15 +246,15 @@ mod tests {
 
     #[test]
     fn test_ring_buffer_clear() {
-        let buffer: RingBuffer<u64> = RingBuffer::new(10, 0.8, 0.2);
+        let buffer = RingBuffer::<u64>::new(10, 0.8, 0.2);
 
         for i in 0..5 {
             buffer.push(i);
         }
-        assert_eq!(buffer.len(), 5);
+        assert!((buffer.fill_level() - 0.5).abs() < 0.01);
 
         buffer.clear();
-        assert_eq!(buffer.len(), 0);
+        assert!((buffer.fill_level() - 0.0).abs() < 0.01);
     }
 
     #[test]

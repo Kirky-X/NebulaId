@@ -21,10 +21,14 @@ pub mod types;
 
 // Internal implementation modules
 pub(crate) mod config_management;
-pub mod coordinator;
 pub(crate) mod database;
 pub(crate) mod dynamic_config;
 pub(crate) mod monitoring;
+
+// Coordinator module is pub to allow EtcdClusterHealthMonitor re-export,
+// but NOT re-exported in public API (not in docs/crate root)
+#[cfg(feature = "etcd")]
+pub mod coordinator;
 
 #[cfg(test)]
 mod tests;
@@ -44,3 +48,7 @@ pub use auth::{AuthManager, Authenticator};
 pub use cache::MultiLevelCache;
 
 pub use config::{Config, TlsConfig};
+
+// Re-export coordinator types that need to be accessed externally
+#[cfg(feature = "etcd")]
+pub use coordinator::EtcdClusterHealthMonitor;

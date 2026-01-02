@@ -13,12 +13,16 @@
 // limitations under the License.
 
 mod multi_level_cache;
-mod redis_cache;
-mod ring_buffer;
+pub(crate) mod redis_cache;
+pub(crate) mod ring_buffer;
 
 #[cfg(test)]
 mod redis_integration_test;
 
-pub use multi_level_cache::*;
-pub use redis_cache::*;
-pub use ring_buffer::*;
+// Public API - expose MultiLevelCache and cache backend trait to external consumers
+pub use multi_level_cache::MultiLevelCache;
+pub use multi_level_cache::{CacheBackend, CacheMetrics};
+pub use redis_cache::RedisCacheBackend;
+
+// Internal re-exports (pub(crate) so they're available within the crate but not externally)
+pub(crate) use ring_buffer::RingBuffer;

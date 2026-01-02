@@ -19,6 +19,8 @@ pub mod grpc;
 pub mod router;
 
 // Internal implementation modules
+// Note: These are pub (not pub(crate)) so they're accessible from the binary target
+// but NOT re-exported in the public API
 pub mod audit;
 pub mod audit_middleware;
 pub mod config_hot_reload;

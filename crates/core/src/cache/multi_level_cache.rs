@@ -25,7 +25,7 @@ use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use crate::cache::RingBuffer;
+use super::RingBuffer;
 use crate::types::{CoreError, IdBatch, Result};
 
 #[async_trait]
@@ -509,14 +509,6 @@ impl DoubleBufferCache {
             entry.value().clear().await;
         }
         self.buffers.clear();
-    }
-
-    pub fn len(&self) -> usize {
-        self.buffers.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.buffers.is_empty()
     }
 }
 

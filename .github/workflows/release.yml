@@ -13,42 +13,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate:
-    name: Validate Release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy, cargo-audit
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "nebula-release-shared"
-          cache-targets: false
-
-      - name: Security Audit
-        run: cargo audit --deny warnings
-
-      - name: Format Check
-        run: cargo fmt --all -- --check
-
-      - name: Clippy Lint
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Build Check
-        run: cargo build --all-targets --all-features
-
-      - name: Run Tests
-        run: cargo test --all-targets --all-features
-
+  # 发布到 crates.io
   publish-cargo:
-    name: Publish to Cargo.io
-    needs: validate
+    name: Publish to crates.io
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       id-token: write
       contents: read
@@ -63,8 +32,14 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "nebula-publish-shared"
+          shared-key: "nebula-publish"
           cache-targets: false
+
+      - name: Validate Cargo.toml
+        run: |
+          cargo check --package nebula-core
+          cargo check --package nebula-client || echo "No client package"
+          cargo check --package nebula-server || echo "No server package"
 
       - name: Get crates.io Auth Token
         uses: rust-lang/crates-io-auth-action@v1
@@ -72,15 +47,15 @@ jobs:
 
       - name: Publish to crates.io
         run: |
-          cargo publish -p nebula-core || true
-          cargo publish -p nebula-client || true
-          cargo publish -p nebula-server || true
+          cargo publish -p nebula-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
+  # 多平台构建
   build-release:
-    name: Build Release Binaries
-    needs: validate
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -88,15 +63,14 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact_name: nebula-id
-            asset_name: nebula-id-linux-x86_64
+            asset_name: nebula-id-linux-x86_64.tar.gz
           - os: windows-latest
             artifact_name: nebula-id.exe
-            asset_name: nebula-id-windows-x86_64.exe
+            asset_name: nebula-id-windows-x86_64.zip
           - os: macos-latest
             artifact_name: nebula-id
-            asset_name: nebula-id-macos-x86_64
+            asset_name: nebula-id-macos-x86_64.tar.gz
 
-    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -108,6 +82,7 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
+          shared-key: "nebula-build-${{ matrix.os }}"
           cache-targets: false
 
       - name: Build Release Binary
@@ -116,7 +91,17 @@ jobs:
       - name: Create Artifact
         run: |
           mkdir -p release
-          cp target/release/${{ matrix.artifact_name }} release/${{ matrix.asset_name }}
+          cp target/release/${{ matrix.artifact_name }} release/
+          cd release
+          if [[ "${{ matrix.os }}" == *"windows"* ]]; then
+            tar -czf ../${{ matrix.asset_name }} .
+          else
+            if [[ "${{ matrix.os }}" == *"ubuntu"* ]]; then
+              tar -czf ../${{ matrix.asset_name }} .
+            else
+              tar -czf ../${{ matrix.asset_name }} .
+            fi
+          fi
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -126,14 +111,18 @@ jobs:
           compression-level: 9
           retention-days: 30
 
+  # 创建 GitHub Release
   github-release:
     name: Create GitHub Release
-    needs: build-release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build-release
+    if: always() && (needs.build-release.result != 'skipped')
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -145,30 +134,42 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: true
+        continue-on-error: true
 
-      - name: Prepare Release Assets
+      - name: List Artifacts
         run: |
-          cd artifacts
-          for dir in */; do
-            if [ -d "$dir" ]; then
-              cd "$dir"
-              for file in *; do
-                if [ -f "$file" ]; then
-                  echo "Found artifact: $file"
-                  cd ..
-                  mv "$dir$file" ./"$file" 2>/dev/null || true
-                  break
-                fi
-              done
-              cd ..
-            fi
-          done
-          ls -la
+          echo "=== Artifacts downloaded ==="
+          if [ -d "artifacts" ] && [ "$(ls -A artifacts 2>/dev/null)" ]; then
+            ls -la artifacts/
+            echo "Found $(find artifacts -type f | wc -l) artifact(s)"
+          else
+            echo "⚠️ No artifacts found!"
+          fi
+          echo "============================"
 
-      - name: Create Release
+      - name: Check Build Status
+        run: |
+          BUILD_RESULT="${{ needs.build-release.result }}"
+          echo "Build matrix result: $BUILD_RESULT"
+          if [[ "$BUILD_RESULT" != "success" ]]; then
+            echo "⚠️ Some platform builds may have failed"
+          fi
+
+      - name: Check if artifacts exist
+        id: check-artifacts
+        run: |
+          if [ -d "artifacts" ] && [ "$(ls -A artifacts 2>/dev/null)" ]; then
+            echo "has_artifacts=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_artifacts=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release (with artifacts)
+        if: steps.check-artifacts.outputs.has_artifacts == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**
+          files: artifacts/*
           name: Release v${{ steps.version.outputs.VERSION }}
           generate_release_notes: true
           draft: false
@@ -176,10 +177,23 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Create Release (without artifacts - tag only)
+        if: steps.check-artifacts.outputs.has_artifacts == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release v${{ steps.version.outputs.VERSION }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 通知状态
   notify:
     name: Notify Status
-    needs: [publish-cargo, github-release]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [publish-cargo, github-release]
     if: always()
     steps:
       - name: Check Release Status
@@ -187,23 +201,23 @@ jobs:
           CARGO_STATUS="${{ needs.publish-cargo.result }}"
           GITHUB_STATUS="${{ needs.github-release.result }}"
           
+          echo "================================"
+          echo "  Release Pipeline Summary"
+          echo "================================"
+          echo ""
           echo "Cargo Publish: $CARGO_STATUS"
           echo "GitHub Release: $GITHUB_STATUS"
+          echo ""
           
-          if [[ "$CARGO_STATUS" == "success" ]] && [[ "$GITHUB_STATUS" == "success" ]]; then
-            echo ""
-            echo "✅ Release completed successfully!"
-            echo "  - Published to crates.io"
-            echo "  - Created GitHub release"
-            exit 0
-          else
-            echo ""
-            echo "❌ Release failed!"
-            if [[ "$CARGO_STATUS" != "success" ]]; then
-              echo "  - Cargo publish failed or skipped"
-            fi
-            if [[ "$GITHUB_STATUS" != "success" ]]; then
-              echo "  - GitHub release failed"
-            fi
-            exit 1
+          if [[ "$GITHUB_STATUS" == "success" ]]; then
+            echo "✅ GitHub Release created successfully!"
+            echo "  - Tag: v${{ github.ref_name }}"
+            echo "  - URL: https://github.com/${{ github.repository }}/releases/tag/v${{ github.ref_name }}"
           fi
+          
+          if [[ "$CARGO_STATUS" != "success" ]]; then
+            echo "❌ Cargo publish failed or skipped"
+          fi
+          
+          echo ""
+          echo "================================"

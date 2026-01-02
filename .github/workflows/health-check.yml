@@ -3,8 +3,18 @@ name: Health Check
 on:
   push:
     branches: [ "**" ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE*'
   pull_request:
     branches: [ main, develop ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE*'
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,21 +24,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
-    name: Rust Check
+  # 快速检查：格式和审计
+  quick-check:
+    name: Quick Check (fmt + audit)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy, cargo-audit
+          components: rustfmt, clippy
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "nebula-ci-shared"
+          shared-key: "nebula-health"
           cache-targets: false
 
       - name: Security Audit
@@ -40,8 +52,44 @@ jobs:
       - name: Clippy Lint
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+  # 构建检查
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: quick-check
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "nebula-health"
+          cache-targets: false
+
       - name: Build Project
         run: cargo build --all-targets --all-features
+
+  # 测试
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "nebula-health"
+          cache-targets: false
 
       - name: Run Tests
         run: cargo test --all-targets --all-features
@@ -49,7 +97,7 @@ jobs:
       - name: Generate Code Coverage
         if: github.event_name == 'pull_request'
         run: |
-          cargo install grcov
+          cargo install grcov --locked
           grcov . --binary-path ./target/debug/ --source-dir . --output-type cobertura-xml --output-path cobertura.xml
 
       - name: Upload Coverage Report

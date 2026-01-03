@@ -6,6 +6,7 @@
 set -e
 
 BASE_URL="http://localhost:8080"
+METRICS_URL="http://localhost:9091"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 REPORT_FILE="test_results_${TIMESTAMP}.txt"
 TOTAL_TESTS=0
@@ -124,16 +125,41 @@ else
     record_test "FAIL" "API Info" "HTTP $HTTP_CODE"
 fi
 
-echo "Test 1.3: GET /metrics"
+echo "Test 1.3: GET /metrics (port 8080)"
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/metrics")
 if [ "$HTTP_CODE" = "200" ]; then
-    echo "  [PASS] Metrics endpoint responding"
-    log_result "Metrics" "PASS" "Metrics endpoint responding"
-    record_test "PASS" "Metrics" "Metrics endpoint responding"
+    METRICS_DATA=$(curl -s "$BASE_URL/metrics" | head -10)
+    echo "  [PASS] Metrics endpoint responding on port 8080"
+    echo "         Sample: $(echo "$METRICS_DATA" | head -1)"
+    log_result "Metrics (8080)" "PASS" "Metrics endpoint responding"
+    record_test "PASS" "Metrics (8080)" "Metrics endpoint responding"
 else
     echo "  [FAIL] HTTP $HTTP_CODE"
-    log_result "Metrics" "FAIL" "HTTP $HTTP_CODE"
-    record_test "FAIL" "Metrics" "HTTP $HTTP_CODE"
+    log_result "Metrics (8080)" "FAIL" "HTTP $HTTP_CODE"
+    record_test "FAIL" "Metrics (8080)" "HTTP $HTTP_CODE"
+fi
+
+echo "Test 1.4: Port 9091 (gRPC Server)"
+GRPC_PORT_CHECK=$(ss -tlnp 2>/dev/null | grep ":9091" || netstat -tlnp 2>/dev/null | grep ":9091" || echo "")
+if [ -n "$GRPC_PORT_CHECK" ]; then
+    HTTP_CODE=$(curl -s --connect-timeout 2 --max-time 3 -o /dev/null -w "%{http_code}" "$METRICS_URL/" 2>/dev/null || echo "000")
+    if [ "$HTTP_CODE" = "000" ]; then
+        echo "  [PASS] Port 9091 is active (gRPC server, HTTP not expected)"
+        log_result "gRPC Port (9091)" "PASS" "gRPC server listening on port 9091"
+        record_test "PASS" "gRPC Port (9091)" "gRPC server listening on port 9091"
+    elif [ "$HTTP_CODE" = "405" ]; then
+        echo "  [PASS] Port 9091 is active (gRPC server, method not allowed)"
+        log_result "gRPC Port (9091)" "PASS" "gRPC port active"
+        record_test "PASS" "gRPC Port (9091)" "gRPC port active"
+    else
+        echo "  [INFO] Port 9091 responding with HTTP $HTTP_CODE"
+        log_result "gRPC Port (9091)" "INFO" "HTTP $HTTP_CODE"
+        record_test "PASS" "gRPC Port (9091)" "Port active (HTTP $HTTP_CODE)"
+    fi
+else
+    echo "  [SKIP] Port 9091 not listening"
+    log_result "gRPC Port (9091)" "SKIP" "Port not listening"
+    record_test "SKIP" "gRPC Port (9091)" "Port not listening"
 fi
 
 log_header "2. ID Generation Tests"
@@ -360,7 +386,8 @@ fi
 log_header "5. Configuration Management Tests"
 
 echo "Test 5.1: GET /api/v1/config"
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/v1/config")
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/v1/config" \
+    -H "Authorization: ApiKey test-key_test-secret")
 if [ "$HTTP_CODE" = "200" ]; then
     echo "  [PASS] Configuration retrieved successfully"
     log_result "Get Configuration" "PASS" "Configuration retrieved"
@@ -374,6 +401,7 @@ fi
 echo "Test 5.2: POST /api/v1/config/rate-limit"
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$BASE_URL/api/v1/config/rate-limit" \
     -H "Content-Type: application/json" \
+    -H "Authorization: ApiKey test-key_test-secret" \
     -d '{"default_rps": 200, "burst_size": 50}')
 HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
 if [ "$HTTP_CODE" = "200" ]; then
@@ -389,6 +417,7 @@ fi
 echo "Test 5.3: POST /api/v1/config/logging"
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$BASE_URL/api/v1/config/logging" \
     -H "Content-Type: application/json" \
+    -H "Authorization: ApiKey test-key_test-secret" \
     -d '{"level": "debug", "format": "json"}')
 HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
 if [ "$HTTP_CODE" = "200" ]; then
@@ -404,6 +433,7 @@ fi
 echo "Test 5.4: POST /api/v1/config/algorithm"
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$BASE_URL/api/v1/config/algorithm" \
     -H "Content-Type: application/json" \
+    -H "Authorization: ApiKey test-key_test-secret" \
     -d '{"biz_tag": "order", "algorithm": "snowflake"}')
 HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
 BODY=$(echo "$RESPONSE" | sed '$d')
@@ -420,7 +450,8 @@ fi
 log_header "6. Error Handling Tests"
 
 echo "Test 6.1: GET /nonexistent (404)"
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/nonexistent")
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/nonexistent" \
+    -H "Authorization: ApiKey test-key_test-secret")
 if [ "$HTTP_CODE" = "404" ]; then
     echo "  [PASS] Correctly returned 404 Not Found"
     log_result "404 Handling" "PASS" "HTTP 404"

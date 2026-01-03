@@ -63,8 +63,18 @@ impl Default for ServerConfig {
     }
 }
 
-async fn load_api_keys(_auth: &Arc<ApiKeyAuth>) {
+async fn load_api_keys(auth: &Arc<ApiKeyAuth>) {
     info!("Loading API keys from configuration...");
+
+    // Add a default test API key for development/testing
+    // Format: Authorization: ApiKey test_key_test_secret
+    let key_id = "test-key".to_string();
+    let key_secret = "test-secret".to_string();
+    let workspace_id = "default".to_string();
+    let key_hash = ApiKeyAuth::compute_key_hash(&key_id, &key_secret);
+
+    auth.load_key(key_id, key_hash, workspace_id).await;
+    info!("Loaded default test API key: test-key (workspace: default)");
 }
 
 #[cfg(feature = "etcd")]

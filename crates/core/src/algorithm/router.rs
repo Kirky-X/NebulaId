@@ -190,6 +190,7 @@ impl AlgorithmRouter {
             AlgorithmType::UuidV7,
             AlgorithmType::UuidV4,
         ] {
+            #[allow(unused_mut)]
             let mut builder = AlgorithmBuilder::new(alg_type);
             #[cfg(feature = "etcd")]
             if let Some(ref monitor) = self.etcd_health_monitor {

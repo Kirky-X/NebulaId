@@ -61,19 +61,12 @@ pub async fn create_router(
 ) -> Router {
     // Configure CORS with strict settings
     // In production, specify your actual frontend origins
+    // For Vercel deployment debugging, we allow all origins temporarily
     let cors = CorsLayer::new()
-        .allow_origin(
-            [
-                // Add your frontend domains here
-                // "https://your-frontend.com".parse::<HeaderValue>().unwrap(),
-                // "https://admin.your-domain.com".parse::<HeaderValue>().unwrap(),
-            ]
-            .into_iter()
-            .collect::<Vec<_>>(),
-        )
-        .allow_methods([Method::GET, Method::POST])
-        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT])
-        .allow_credentials(false); // Credentials should be handled via API keys
+        .allow_origin(tower_http::cors::Any)
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS, Method::PUT, Method::DELETE])
+        .allow_headers(tower_http::cors::Any)
+        .allow_credentials(false);
 
     let rate_limit_middleware = RateLimitMiddleware::new(rate_limiter.clone());
     let audit_middleware = AuditMiddleware::new(audit_logger.clone(), auth.clone(), rate_limiter);

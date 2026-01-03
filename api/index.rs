@@ -1,4 +1,8 @@
-use axum::{body::Body as AxumBody, Router};
+use axum::{
+    body::Body as AxumBody,
+    routing::get,
+    Router,
+};
 use nebula_core::{
     algorithm::AlgorithmRouter,
     config::Config,
@@ -15,6 +19,7 @@ use nebula_server::{
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 use tower::ServiceExt;
+use tower_http::trace::TraceLayer;
 use vercel_runtime::{run, Body, Error, Request, Response};
 
 static APP: OnceCell<Router> = OnceCell::const_new();
@@ -27,6 +32,9 @@ async fn get_app() -> Result<&'static Router, Error> {
             eprintln!("Failed to load config from env: {}, using default", e);
             Config::default()
         });
+        
+        // DEBUG: Print config to verify env vars in Vercel logs
+        println!("Loaded Config: DC_ID={}, WORKER_ID={}", config.app.dc_id, config.app.worker_id);
 
         // 2. Initialize Dependencies
         
@@ -55,7 +63,24 @@ async fn get_app() -> Result<&'static Router, Error> {
         
         // Initialize the router (connects to DB/Redis if configured)
         // This might fail if DB is not reachable.
-        router_algo.initialize().await.map_err(|e| Error::from(format!("Failed to initialize algorithm router: {}", e)))?;
+        println!("Initializing AlgorithmRouter...");
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            router_algo.initialize()
+        ).await {
+            Ok(Ok(_)) => println!("AlgorithmRouter initialized successfully"),
+            Ok(Err(e)) => {
+                eprintln!("Failed to initialize algorithm router: {}", e);
+                // We don't panic here, allowing partial functionality if possible, 
+                // or let specific handlers fail later.
+                // But for now, we return error to fail fast.
+                return Err(Error::from(format!("Failed to initialize algorithm router: {}", e)));
+            }
+            Err(_) => {
+                eprintln!("Timeout initializing algorithm router (DB connection slow?)");
+                return Err(Error::from("Timeout initializing algorithm router"));
+            }
+        }
 
         // 4. Initialize Config Service
         // We pass a dummy path for file config since we rely on env vars in Vercel
@@ -75,12 +100,30 @@ async fn get_app() -> Result<&'static Router, Error> {
         // 6. Create Axum Router
         let app = create_router(handlers, auth, rate_limiter, audit_logger).await;
 
+        // 7. Add Debug Routes and Fallback
+        // These are added *after* create_router, so they might miss some middleware from create_router,
+        // but we add TraceLayer at the very end to cover everything.
+        let app = app
+            .route("/", get(|| async { "Nebula ID Generator is running on Vercel!" }))
+            .route("/debug/env", get(|| async { 
+                let config = Config::load_from_env().unwrap_or_default();
+                format!("App Config: DC_ID={}, WORKER_ID={}", config.app.dc_id, config.app.worker_id)
+            }))
+            .fallback(|uri: axum::http::Uri| async move {
+                format!("404 Not Found: Path '{}' not found in router", uri.path())
+            })
+            .layer(TraceLayer::new_for_http());
+
         Ok(app)
     }).await
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    // Fix for Vercel: "error: $HOME differs from euid-obtained home directory"
+    // We explicitly set HOME to /tmp to avoid permission issues and mismatches.
+    std::env::set_var("HOME", "/tmp");
+    
     run(handler).await
 }
 

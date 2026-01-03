@@ -15,4 +15,5 @@ nebula-core = { path = "../crates/core" }
 anyhow = "1.0"
 axum = "0.8"
 tower = "0.4"
+tower-http = { version = "0.5", features = ["trace"] }
 http = "1.0"

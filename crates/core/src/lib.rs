@@ -21,7 +21,7 @@ pub mod types;
 
 // Internal implementation modules
 pub(crate) mod config_management;
-pub(crate) mod database;
+pub mod database;
 pub(crate) mod dynamic_config;
 pub(crate) mod monitoring;
 

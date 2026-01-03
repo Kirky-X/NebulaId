@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use validator::Validate;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -301,4 +302,86 @@ pub struct ApiInfoResponse {
     pub version: String,
     pub description: String,
     pub endpoints: Vec<String>,
+}
+
+// ========== BizTag Models ==========
+
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct CreateBizTagRequest {
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub workspace_id: uuid::Uuid,
+
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub group_id: uuid::Uuid,
+
+    #[validate(length(min = 1, max = 64))]
+    pub name: String,
+
+    pub description: Option<String>,
+
+    #[validate(length(min = 1, max = 20))]
+    pub algorithm: Option<String>,
+
+    #[validate(length(min = 1, max = 20))]
+    pub format: Option<String>,
+
+    #[validate(length(max = 50))]
+    pub prefix: Option<String>,
+
+    #[validate(range(min = 1, max = 1000000))]
+    pub base_step: Option<i32>,
+
+    #[validate(range(min = 1, max = 10000000))]
+    pub max_step: Option<i32>,
+
+    pub datacenter_ids: Option<Vec<i32>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct UpdateBizTagRequest {
+    #[validate(length(min = 1, max = 64))]
+    pub name: Option<String>,
+
+    pub description: Option<String>,
+
+    #[validate(length(min = 1, max = 20))]
+    pub algorithm: Option<String>,
+
+    #[validate(length(min = 1, max = 20))]
+    pub format: Option<String>,
+
+    #[validate(length(max = 50))]
+    pub prefix: Option<String>,
+
+    #[validate(range(min = 1, max = 1000000))]
+    pub base_step: Option<i32>,
+
+    #[validate(range(min = 1, max = 10000000))]
+    pub max_step: Option<i32>,
+
+    pub datacenter_ids: Option<Vec<i32>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BizTagResponse {
+    pub id: String,
+    pub workspace_id: String,
+    pub group_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub algorithm: String,
+    pub format: String,
+    pub prefix: String,
+    pub base_step: i32,
+    pub max_step: i32,
+    pub datacenter_ids: Vec<i32>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BizTagListResponse {
+    pub biz_tags: Vec<BizTagResponse>,
+    pub total: u64,
 }

@@ -19,10 +19,10 @@ backtrace = false
 [database]
 engine = "postgresql"
 host = "localhost"
-port = 5432
+port = 5435
 database = "idgen"
 username = "idgen"
-password = "CHANGE_ME"
+password = "idgen123"
 max_connections = 1200
 min_connections = 100
 acquire_timeout_seconds = 30

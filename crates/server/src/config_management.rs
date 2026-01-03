@@ -23,12 +23,14 @@ use nebula_core::config::Config;
 use nebula_core::types::id::AlgorithmType;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 use validator::Validate;
 
 pub struct ConfigManagementService {
     hot_config: Arc<HotReloadConfig>,
     rate_limiter: Arc<RwLock<Option<(u32, u32)>>>,
     algorithm_router: Arc<nebula_core::algorithm::AlgorithmRouter>,
+    repository: Option<Arc<dyn nebula_core::database::BizTagRepository + Send + Sync>>,
 }
 
 impl ConfigManagementService {
@@ -40,6 +42,20 @@ impl ConfigManagementService {
             hot_config,
             rate_limiter: Arc::new(RwLock::new(None)),
             algorithm_router,
+            repository: None,
+        }
+    }
+
+    pub fn with_repository(
+        hot_config: Arc<HotReloadConfig>,
+        algorithm_router: Arc<nebula_core::algorithm::AlgorithmRouter>,
+        repository: Arc<dyn nebula_core::database::BizTagRepository + Send + Sync>,
+    ) -> Self {
+        Self {
+            hot_config,
+            rate_limiter: Arc::new(RwLock::new(None)),
+            algorithm_router,
+            repository: Some(repository),
         }
     }
 
@@ -245,6 +261,75 @@ impl ConfigManagementService {
             biz_tag,
             algorithm,
             message,
+        }
+    }
+
+    // ========== BizTag CRUD Methods ==========
+
+    pub async fn create_biz_tag(
+        &self,
+        request: &nebula_core::database::CreateBizTagRequest,
+    ) -> nebula_core::Result<nebula_core::database::BizTag> {
+        if let Some(ref repo) = self.repository {
+            repo.create_biz_tag(request).await
+        } else {
+            Err(nebula_core::CoreError::InternalError(
+                "Database repository not configured".to_string(),
+            ))
+        }
+    }
+
+    pub async fn get_biz_tag(&self, id: Uuid) -> nebula_core::Result<Option<nebula_core::database::BizTag>> {
+        if let Some(ref repo) = self.repository {
+            repo.get_biz_tag(id).await
+        } else {
+            Err(nebula_core::CoreError::InternalError(
+                "Database repository not configured".to_string(),
+            ))
+        }
+    }
+
+    pub async fn update_biz_tag(
+        &self,
+        id: Uuid,
+        request: &nebula_core::database::UpdateBizTagRequest,
+    ) -> nebula_core::Result<nebula_core::database::BizTag> {
+        if let Some(ref repo) = self.repository {
+            repo.update_biz_tag(id, request).await
+        } else {
+            Err(nebula_core::CoreError::InternalError(
+                "Database repository not configured".to_string(),
+            ))
+        }
+    }
+
+    pub async fn delete_biz_tag(&self, id: Uuid) -> nebula_core::Result<()> {
+        if let Some(ref repo) = self.repository {
+            repo.delete_biz_tag(id).await
+        } else {
+            Err(nebula_core::CoreError::InternalError(
+                "Database repository not configured".to_string(),
+            ))
+        }
+    }
+
+    pub async fn list_biz_tags(
+        &self,
+        workspace_id: Option<Uuid>,
+        group_id: Option<Uuid>,
+    ) -> nebula_core::Result<Vec<nebula_core::database::BizTag>> {
+        if let Some(ref repo) = self.repository {
+            if let Some(ws_id) = workspace_id {
+                repo.list_biz_tags(ws_id, group_id, None, None).await
+            } else {
+                // If no workspace_id provided, return empty list
+                // In the future, we might want to add a method to list all biz tags across all workspaces
+                Ok(vec![])
+            }
+        } else {
+            Err(nebula_core::CoreError::InternalError(
+                "Database repository not configured".to_string(),
+            ))
         }
     }
 }

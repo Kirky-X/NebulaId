@@ -18,17 +18,18 @@ use crate::config_management::ConfigManagementService;
 use crate::handlers::ApiHandlers;
 use crate::middleware::ApiKeyAuth;
 use crate::models::{
-    ApiInfoResponse, BatchGenerateRequest, BatchGenerateResponse, ConfigResponse, ErrorResponse,
-    GenerateRequest, GenerateResponse, HealthResponse, MetricsResponse, ParseRequest,
-    ParseResponse, SetAlgorithmRequest, SetAlgorithmResponse, UpdateConfigResponse,
+    ApiInfoResponse, BatchGenerateRequest, BatchGenerateResponse, BizTagListResponse,
+    BizTagResponse, ConfigResponse, CreateBizTagRequest, ErrorResponse, GenerateRequest,
+    GenerateResponse, HealthResponse, MetricsResponse, ParseRequest, ParseResponse,
+    SetAlgorithmRequest, SetAlgorithmResponse, UpdateBizTagRequest, UpdateConfigResponse,
     UpdateLoggingRequest, UpdateRateLimitRequest,
 };
 use crate::rate_limit::RateLimiter;
 use crate::rate_limit_middleware::RateLimitMiddleware;
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::{header, HeaderValue, Method, StatusCode},
-    routing::{get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use std::sync::Arc;
@@ -97,6 +98,9 @@ pub async fn create_router(
         .route("/api/v1/config/logging", post(handle_update_logging))
         .route("/api/v1/config/reload", post(handle_reload_config))
         .route("/api/v1/config/algorithm", post(handle_set_algorithm))
+        // BizTag CRUD endpoints
+        .route("/api/v1/biz-tags", post(handle_create_biz_tag).get(handle_list_biz_tags))
+        .route("/api/v1/biz-tags/{id}", get(handle_get_biz_tag).put(handle_update_biz_tag).delete(handle_delete_biz_tag))
         .with_state(app_state)
         // Security headers
         .layer(SetResponseHeaderLayer::overriding(
@@ -280,8 +284,108 @@ async fn handle_api_info() -> Json<ApiInfoResponse> {
             "POST /api/v1/config/logging - Update logging".to_string(),
             "POST /api/v1/config/reload - Reload configuration".to_string(),
             "POST /api/v1/config/algorithm - Set algorithm".to_string(),
+            "POST /api/v1/biz-tags - Create biz tag".to_string(),
+            "GET /api/v1/biz-tags - List biz tags".to_string(),
+            "GET /api/v1/biz-tags/:id - Get biz tag".to_string(),
+            "PUT /api/v1/biz-tags/:id - Update biz tag".to_string(),
+            "DELETE /api/v1/biz-tags/:id - Delete biz tag".to_string(),
         ],
     })
+}
+
+// ========== BizTag Handlers ==========
+
+async fn handle_create_biz_tag(
+    State(state): State<AppState>,
+    Json(req): Json<CreateBizTagRequest>,
+) -> Result<Json<BizTagResponse>, (StatusCode, Json<ErrorResponse>)> {
+    if let Err(validation_errors) = req.validate() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(400, format!("Validation error: {}", validation_errors))),
+        ));
+    }
+
+    state.handlers.create_biz_tag(req).await.map(Json).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(500, e.to_string())),
+        )
+    })
+}
+
+async fn handle_get_biz_tag(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<BizTagResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(400, "Invalid UUID format".to_string())),
+        )
+    })?;
+
+    state.handlers.get_biz_tag(uuid).await.map(Json).map_err(|e| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse::new(404, e.to_string())),
+        )
+    })
+}
+
+async fn handle_update_biz_tag(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateBizTagRequest>,
+) -> Result<Json<BizTagResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(400, "Invalid UUID format".to_string())),
+        )
+    })?;
+
+    if let Err(validation_errors) = req.validate() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(400, format!("Validation error: {}", validation_errors))),
+        ));
+    }
+
+    state.handlers.update_biz_tag(uuid, req).await.map(Json).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(500, e.to_string())),
+        )
+    })
+}
+
+async fn handle_delete_biz_tag(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(400, "Invalid UUID format".to_string())),
+        )
+    })?;
+
+    state.handlers.delete_biz_tag(uuid).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(500, e.to_string())),
+        )
+    })
+}
+
+async fn handle_list_biz_tags(
+    State(state): State<AppState>,
+) -> Json<BizTagListResponse> {
+    Json(state.handlers.list_biz_tags(None, None).await.unwrap_or_else(|_| BizTagListResponse {
+        biz_tags: vec![],
+        total: 0,
+    }))
 }
 
 #[cfg(test)]

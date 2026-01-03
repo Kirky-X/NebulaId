@@ -23,7 +23,6 @@ README*
 # Build artifacts
 target/
 **/target/
-Cargo.lock
 
 # Dependencies
 .cargo/

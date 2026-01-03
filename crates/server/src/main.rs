@@ -16,6 +16,7 @@ use nebula_core::algorithm::AlgorithmRouter;
 use nebula_core::config::Config;
 #[cfg(feature = "etcd")]
 use nebula_core::coordinator::EtcdClusterHealthMonitor;
+use nebula_core::database;
 use nebula_core::types::Result;
 use nebula_server::audit::AuditLogger;
 use nebula_server::config_hot_reload::HotReloadConfig;
@@ -252,6 +253,25 @@ async fn main() -> Result<()> {
 
     let audit_logger = Arc::new(AuditLogger::new(10000));
 
+    // Initialize database connection
+    info!("Connecting to database...");
+    let db_connection = match database::create_connection(&config.database).await {
+        Ok(conn) => {
+            info!("Database connected successfully");
+            Some(conn)
+        }
+        Err(e) => {
+            warn!("Failed to connect to database: {}. BizTag API will be disabled.", e);
+            None
+        }
+    };
+
+    let repository: Option<Arc<database::SeaOrmRepository>> = db_connection.map(|conn| {
+        let repo = Arc::new(database::SeaOrmRepository::new(conn));
+        info!("Database repository initialized");
+        repo
+    });
+
     #[cfg(feature = "etcd")]
     {
         info!("Initializing etcd cluster health monitor...");
@@ -274,10 +294,18 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-        let config_service = Arc::new(ConfigManagementService::new(
-            hot_config,
-            id_generator.clone(),
-        ));
+        let config_service = if let Some(ref repo) = repository {
+            Arc::new(ConfigManagementService::with_repository(
+                hot_config,
+                id_generator.clone(),
+                repo.clone(),
+            ))
+        } else {
+            Arc::new(ConfigManagementService::new(
+                hot_config,
+                id_generator.clone(),
+            ))
+        };
 
         let handlers = Arc::new(ApiHandlers::new(
             id_generator.clone(),
@@ -358,10 +386,18 @@ async fn main() -> Result<()> {
 
         let id_generator = create_id_generator(&config, audit_logger.clone(), None).await?;
 
-        let config_service = Arc::new(ConfigManagementService::new(
-            hot_config,
-            id_generator.clone(),
-        ));
+        let config_service = if let Some(ref repo) = repository {
+            Arc::new(ConfigManagementService::with_repository(
+                hot_config,
+                id_generator.clone(),
+                repo.clone(),
+            ))
+        } else {
+            Arc::new(ConfigManagementService::new(
+                hot_config,
+                id_generator.clone(),
+            ))
+        };
 
         let handlers = Arc::new(ApiHandlers::new(
             id_generator.clone(),

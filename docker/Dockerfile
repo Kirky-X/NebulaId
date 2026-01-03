@@ -1,7 +1,7 @@
 # ============================================
 # Builder Stage
 # ============================================
-FROM rust:1.92-slim AS builder
+FROM rust:1.92.0-bullseye AS builder
 
 # 安装构建依赖
 RUN apt-get update && apt-get install -y \
@@ -16,6 +16,7 @@ WORKDIR /app
 # 优化层缓存：先复制依赖配置文件
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
+COPY protos/ ./protos/
 
 # 下载依赖（利用 Docker 缓存）
 RUN cargo fetch
@@ -27,11 +28,11 @@ RUN cargo build --${BUILD_PROFILE} --locked -p nebula-server --bin nebula-id
 # ============================================
 # Runtime Stage
 # ============================================
-FROM debian:bookworm-slim
+FROM rust:1.92.0-bullseye
 
 # 安装运行时依赖
 RUN apt-get update && apt-get install -y \
-    libssl3 \
+    libssl1.1 \
     ca-certificates \
     curl \
     && rm -rf /var/lib/apt/lists/*

@@ -60,11 +60,26 @@ pub async fn create_router(
     audit_logger: Arc<AuditLogger>,
 ) -> Router {
     // Configure CORS with strict settings
-    // In production, specify your actual frontend origins
-    // For Vercel deployment debugging, we allow all origins temporarily
+    // In production, specify your actual frontend origins via ALLOWED_ORIGINS env var
+    // Format: comma-separated list of allowed origins
+    // Example: ALLOWED_ORIGINS="https://example.com,https://app.example.com"
+    let allowed_origins: Vec<HeaderValue> = std::env::var("ALLOWED_ORIGINS")
+        .ok()
+        .map(|origins| {
+            origins
+                .split(',')
+                .filter_map(|origin| origin.trim().parse().ok())
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            // Development: allow localhost for testing
+            vec!["http://localhost:3000".parse().unwrap()]
+        });
+
+    // Use empty list to deny all origins in production without ALLOWED_ORIGINS
     let cors = CorsLayer::new()
-        .allow_origin(tower_http::cors::Any)
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS, Method::PUT, Method::DELETE])
+        .allow_origin(tower_http::cors::AllowOrigin::list(allowed_origins))
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers(tower_http::cors::Any)
         .allow_credentials(false);
 

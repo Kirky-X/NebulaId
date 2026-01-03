@@ -81,19 +81,21 @@ pub struct DatabaseConfig {
 
 impl Default for DatabaseConfig {
     fn default() -> Self {
+        // SECURITY: Require environment variable for password in production
+        let password = std::env::var("NEBULA_DATABASE_PASSWORD")
+            .expect("NEBULA_DATABASE_PASSWORD environment variable must be set for production use");
+
         Self {
             engine: "postgresql".to_string(),
-            url: std::env::var("NEBULA_DATABASE_URL").unwrap_or_else(|_| {
-                "postgresql://idgen:CHANGE_ME@localhost:5432/idgen".to_string()
-            }),
+            url: std::env::var("NEBULA_DATABASE_URL")
+                .unwrap_or_else(|_| format!("postgresql://idgen:{}@localhost:5432/idgen", password)),
             host: "localhost".to_string(),
             port: 5432,
             username: "idgen".to_string(),
-            password: std::env::var("NEBULA_DATABASE_PASSWORD")
-                .unwrap_or_else(|_| "CHANGE_ME".to_string()),
+            password,
             database: "idgen".to_string(),
-            max_connections: 1200, // Increased to support 1M QPS target
-            min_connections: 100,  // Increased to maintain warm connections
+            max_connections: 1200,
+            min_connections: 100,
             acquire_timeout_seconds: 5,
             idle_timeout_seconds: 300,
         }
@@ -370,11 +372,29 @@ pub struct Config {
 }
 
 impl Config {
+    /// Load configuration from file with environment variable expansion
+    /// Supports ${VAR_NAME} syntax for environment variable substitution
     pub fn load_from_file(path: &str) -> ConfigResult<Self> {
         let content =
             std::fs::read_to_string(path).map_err(|e| ConfigError::FileError(e.to_string()))?;
 
-        toml::from_str(&content).map_err(|e| ConfigError::InvalidValue(e.to_string()))
+        // Expand environment variables in config content
+        let expanded = Self::expand_env_vars(&content);
+
+        toml::from_str(&expanded).map_err(|e| ConfigError::InvalidValue(e.to_string()))
+    }
+
+    /// Expand environment variables in config content
+    /// Pattern: ${VAR_NAME} -> value of VAR_NAME
+    fn expand_env_vars(content: &str) -> String {
+        let re = regex::Regex::new(r"\$\{([^}]+)\}").unwrap();
+        re.replace_all(content, |caps: &regex::Captures| {
+            let var_name = &caps[1];
+            std::env::var(var_name).unwrap_or_else(|_| {
+                // Keep original if env var not set
+                caps[0].to_string()
+            })
+        }).to_string()
     }
 
     pub fn load_from_env() -> ConfigResult<Self> {

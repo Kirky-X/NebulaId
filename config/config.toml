@@ -22,7 +22,10 @@ host = "localhost"
 port = 5435
 database = "idgen"
 username = "idgen"
-password = "idgen123"
+# SECURITY: Use environment variable NEBULA_DATABASE_PASSWORD for production
+# Example: export NEBULA_DATABASE_PASSWORD="your-secure-password-here"
+# Do NOT commit real passwords to version control
+password = "${NEBULA_DATABASE_PASSWORD}"
 max_connections = 1200
 min_connections = 100
 acquire_timeout_seconds = 30

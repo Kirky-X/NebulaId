@@ -14,6 +14,7 @@ default = []
 etcd = ["dep:etcd-client", "nebula-core/etcd"]
 
 [build-dependencies]
+protoc-bin-vendored = "3.2.0"
 tonic-prost-build = "0.14"
 
 [dependencies]
@@ -27,7 +28,7 @@ tower-http = { version = "0.5", features = ["cors", "compression-gzip", "timeout
 hyper = { version = "1", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-tonic = { version = "0.14", features = ["tls-native-roots"] }
+tonic = { version = "0.14", features = ["tls-webpki-roots"] }
 prost = "0.14"
 rustls = "0.22"
 tokio-rustls = "0.25"
@@ -35,7 +36,7 @@ rustls-pemfile = "2"
 futures-util = "0.3"
 dashmap = "6"
 
-sqlx = { version = "0.8", features = ["runtime-tokio", "tls-native-tls", "postgres", "uuid", "chrono"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono"] }
 redis = { version = "0.25", features = ["aio", "tokio-comp"] }
 etcd-client = { version = "0.17", optional = true }
 uuid = { version = "1", features = ["v4", "v7", "v8"] }

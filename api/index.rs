@@ -64,23 +64,44 @@ async fn get_app() -> Result<&'static Router, Error> {
         // Initialize the router (connects to DB/Redis if configured)
         // This might fail if DB is not reachable.
         println!("Initializing AlgorithmRouter...");
-        match tokio::time::timeout(
+        let router_algo = match tokio::time::timeout(
             std::time::Duration::from_secs(5),
             router_algo.initialize()
         ).await {
-            Ok(Ok(_)) => println!("AlgorithmRouter initialized successfully"),
+            Ok(Ok(_)) => {
+                println!("AlgorithmRouter initialized successfully");
+                router_algo
+            },
             Ok(Err(e)) => {
                 eprintln!("Failed to initialize algorithm router: {}", e);
-                // We don't panic here, allowing partial functionality if possible, 
-                // or let specific handlers fail later.
-                // But for now, we return error to fail fast.
-                return Err(Error::from(format!("Failed to initialize algorithm router: {}", e)));
+                // Return a fallback router for debugging instead of crashing
+                let error_msg = format!("Failed to initialize algorithm router: {}", e);
+                return Ok(Router::new()
+                    .route("/", get(move || async move { 
+                        format!("Nebula ID Generator (Initialization Error)\n\nError: {}", error_msg) 
+                    }))
+                    .route("/debug/env", get(|| async { 
+                        let config = Config::load_from_env().unwrap_or_default();
+                        format!("App Config: DC_ID={}, WORKER_ID={}\n\nNote: System initialized with errors.", config.app.dc_id, config.app.worker_id)
+                    }))
+                    .layer(TraceLayer::new_for_http())
+                );
             }
             Err(_) => {
                 eprintln!("Timeout initializing algorithm router (DB connection slow?)");
-                return Err(Error::from("Timeout initializing algorithm router"));
+                let error_msg = "Timeout initializing algorithm router (DB connection slow?)";
+                return Ok(Router::new()
+                    .route("/", get(move || async move { 
+                         format!("Nebula ID Generator (Timeout Error)\n\nError: {}", error_msg)
+                    }))
+                    .route("/debug/env", get(|| async { 
+                        let config = Config::load_from_env().unwrap_or_default();
+                        format!("App Config: DC_ID={}, WORKER_ID={}\n\nNote: System initialized with timeout.", config.app.dc_id, config.app.worker_id)
+                    }))
+                    .layer(TraceLayer::new_for_http())
+                );
             }
-        }
+        };
 
         // 4. Initialize Config Service
         // We pass a dummy path for file config since we rely on env vars in Vercel

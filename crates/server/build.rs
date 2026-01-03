@@ -12,12 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-fn main() {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let manifest_path = std::path::Path::new(&manifest_dir);
-    let project_root = manifest_path.parent().unwrap().parent().unwrap();
-    let proto_path = project_root.join("protos/nebula_id.proto");
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Set PROTOC env var for prost-build using vendored binary
+    let protoc_path = protoc_bin_vendored::protoc_bin_path()?;
+    std::env::set_var("PROTOC", protoc_path.clone());
+    println!("cargo:warning=Using vendored protoc at: {:?}", protoc_path);
 
-    tonic_prost_build::compile_protos(&proto_path).expect("Failed to compile protos");
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")?;
+    let manifest_path = std::path::Path::new(&manifest_dir);
+    // Go up two levels from crates/server to project root
+    let project_root = manifest_path.parent().unwrap().parent().unwrap();
+    let proto_dir = project_root.join("protos");
+    let proto_path = proto_dir.join("nebula_id.proto");
+
+    println!("cargo:warning=Compiling proto: {:?}", proto_path);
+    println!("cargo:warning=Proto include dir: {:?}", proto_dir);
+
+    // Ensure the proto file exists
+    if !proto_path.exists() {
+        return Err(format!("Proto file not found at {:?}", proto_path).into());
+    }
+
+    tonic_prost_build::compile_protos(&proto_path)?;
+
     println!("cargo:rerun-if-changed={}", proto_path.display());
+    Ok(())
 }

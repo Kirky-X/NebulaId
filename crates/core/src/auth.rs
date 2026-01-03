@@ -48,12 +48,11 @@ impl Default for AuthManager {
 impl AuthManager {
     pub fn new() -> Self {
         // Generate or load a secure salt for key hashing
-        let salt = std::env::var("NEBULA_API_KEY_SALT")
-            .unwrap_or_else(|_err| {
-                // Generate a random salt if not provided
-                let salt_bytes: [u8; 32] = rand::random();
-                hex::encode(salt_bytes)
-            });
+        let salt = std::env::var("NEBULA_API_KEY_SALT").unwrap_or_else(|_err| {
+            // Generate a random salt if not provided
+            let salt_bytes: [u8; 32] = rand::random();
+            hex::encode(salt_bytes)
+        });
 
         Self {
             keys: Arc::new(DashMap::new()),

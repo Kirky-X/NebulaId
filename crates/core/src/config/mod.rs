@@ -81,14 +81,30 @@ pub struct DatabaseConfig {
 
 impl Default for DatabaseConfig {
     fn default() -> Self {
+        // If DATABASE_URL is set, password is embedded in URL, not required separately
+        if std::env::var("DATABASE_URL").is_ok() {
+            return Self {
+                engine: "postgresql".to_string(),
+                url: std::env::var("DATABASE_URL").unwrap(),
+                host: "localhost".to_string(),
+                port: 5432,
+                username: "idgen".to_string(),
+                password: String::new(),
+                database: "idgen".to_string(),
+                max_connections: 1200,
+                min_connections: 100,
+                acquire_timeout_seconds: 5,
+                idle_timeout_seconds: 300,
+            };
+        }
+
         // SECURITY: Require environment variable for password in production
         let password = std::env::var("NEBULA_DATABASE_PASSWORD")
             .expect("NEBULA_DATABASE_PASSWORD environment variable must be set for production use");
 
         Self {
             engine: "postgresql".to_string(),
-            url: std::env::var("NEBULA_DATABASE_URL")
-                .unwrap_or_else(|_| format!("postgresql://idgen:{}@localhost:5432/idgen", password)),
+            url: format!("postgresql://idgen:{}@localhost:5432/idgen", password),
             host: "localhost".to_string(),
             port: 5432,
             username: "idgen".to_string(),
@@ -394,7 +410,8 @@ impl Config {
                 // Keep original if env var not set
                 caps[0].to_string()
             })
-        }).to_string()
+        })
+        .to_string()
     }
 
     pub fn load_from_env() -> ConfigResult<Self> {
@@ -460,14 +477,14 @@ impl Config {
             self.app.worker_id = other.app.worker_id;
         }
 
-        if !other.database.url.contains("localhost") {
+        if !other.database.url.is_empty() && other.database.url != self.database.url {
             self.database.url = other.database.url;
         }
         if other.database.max_connections != 100 {
             self.database.max_connections = other.database.max_connections;
         }
 
-        if !other.redis.url.contains("localhost") {
+        if !other.redis.url.is_empty() && other.redis.url != self.redis.url {
             self.redis.url = other.redis.url;
         }
         if other.redis.pool_size != 50 {

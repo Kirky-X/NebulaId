@@ -234,9 +234,12 @@ async fn main() -> Result<()> {
     info!("Starting Nebula ID Generation Service");
     info!("Version: {}", env!("CARGO_PKG_VERSION"));
 
-    let config = Config::load_from_file("config/config.toml")
-        .or_else(|_| Config::load_from_env())
-        .unwrap_or_else(|_| Config::default());
+    // Load config from file first, then merge with environment variables
+    let mut config =
+        Config::load_from_file("config/config.toml").unwrap_or_else(|_| Config::default());
+
+    // Apply environment variable overrides
+    config.merge(Config::load_from_env().unwrap_or_default());
     info!("Configuration loaded successfully");
 
     let server_config = ServerConfig {

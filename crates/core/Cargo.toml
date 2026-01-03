@@ -33,7 +33,7 @@ rand = "0.8"
 redis = { version = "0.25", features = ["tokio-comp", "aio"] }
 regex = "1"
 reqwest = { version = "0.11", features = ["json"] }
-sea-orm = { version = "1.1", features = ["runtime-tokio-rustls", "with-chrono", "with-uuid", "sqlx-sqlite"] }
+sea-orm = { version = "1.1", features = ["runtime-tokio-rustls", "with-chrono", "with-uuid", "sqlx-postgres", "sqlx-sqlite"] }
 sea-orm-migration = "1.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -564,7 +564,10 @@ mod tests {
         let mock_gen = Arc::new(MockIdGenerator::new());
         // Create a minimal config for testing
         let config = nebula_core::config::Config::default();
-        let hot_config = Arc::new(HotReloadConfig::new(config, "config/config.toml".to_string()));
+        let hot_config = Arc::new(HotReloadConfig::new(
+            config,
+            "config/config.toml".to_string(),
+        ));
 
         // Create a minimal AlgorithmRouter for testing
         let router = Arc::new(nebula_core::algorithm::AlgorithmRouter::new(

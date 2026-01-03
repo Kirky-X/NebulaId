@@ -235,8 +235,12 @@ pub async fn watch_config_file<P: AsRef<Path>>(
     callback: impl Fn(Config) + Send + Sync + 'static,
 ) {
     let hot_config = HotReloadConfig::new(
-        Config::load_from_file(path.as_ref().to_str().unwrap_or("config/config.toml")).unwrap_or_default(),
-        path.as_ref().to_str().unwrap_or("config/config.toml").to_string(),
+        Config::load_from_file(path.as_ref().to_str().unwrap_or("config/config.toml"))
+            .unwrap_or_default(),
+        path.as_ref()
+            .to_str()
+            .unwrap_or("config/config.toml")
+            .to_string(),
     );
 
     hot_config.add_reload_callback(callback);
@@ -253,7 +257,9 @@ mod tests {
     #[tokio::test]
     async fn test_hot_reload_config() {
         let temp_dir = TempDir::new().unwrap();
-        let config_path = temp_dir.path().join("config/config.toml");
+        let config_dir = temp_dir.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.toml");
 
         let initial_content = r#"[app]
 name = "test"

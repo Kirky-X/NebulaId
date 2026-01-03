@@ -27,29 +27,39 @@ impl From<DbErr> for CoreError {
 }
 
 pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnection, CoreError> {
-    let connection_string = match config.engine.as_str() {
-        "postgresql" => {
-            format!(
-                "postgresql://{}:{}@{}:{}/{}",
-                config.username, config.password, config.host, config.port, config.database
-            )
-        }
-        "mysql" => {
-            format!(
-                "mysql://{}:{}@{}:{}/{}",
-                config.username, config.password, config.host, config.port, config.database
-            )
-        }
-        "sqlite" => config.database.clone(),
-        _ => {
-            return Err(CoreError::DatabaseError(format!(
-                "Unsupported database engine: {}",
-                config.engine
-            )));
+    // Use URL if it's a complete connection string, otherwise construct from parts
+    let final_url = if config.url.starts_with("postgresql://")
+        || config.url.starts_with("mysql://")
+        || config.url.starts_with("sqlite://")
+        || config.url.starts_with("postgres://")
+    // Also support postgres://
+    {
+        config.url.clone()
+    } else {
+        match config.engine.as_str() {
+            "postgresql" | "postgres" => {
+                format!(
+                    "postgresql://{}:{}@{}:{}/{}",
+                    config.username, config.password, config.host, config.port, config.database
+                )
+            }
+            "mysql" => {
+                format!(
+                    "mysql://{}:{}@{}:{}/{}",
+                    config.username, config.password, config.host, config.port, config.database
+                )
+            }
+            "sqlite" => config.database.clone(),
+            _ => {
+                return Err(CoreError::DatabaseError(format!(
+                    "Unsupported database engine: {}",
+                    config.engine
+                )));
+            }
         }
     };
 
-    let mut connect_options = ConnectOptions::new(connection_string);
+    let mut connect_options = ConnectOptions::new(final_url.clone());
 
     if config.engine != "sqlite" {
         connect_options
@@ -62,8 +72,8 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
     }
 
     info!(
-        "Connecting to {} database at {}:{}",
-        config.engine, config.host, config.port
+        "Connecting to {} database, URL: {}",
+        config.engine, final_url
     );
 
     let db = Database::connect(connect_options)

@@ -466,7 +466,7 @@ mod tests {
         let config = Config::default();
         let hot_config = Arc::new(HotReloadConfig::new(
             config.clone(),
-            "config.toml".to_string(),
+            "config/config.toml".to_string(),
         ));
         let algorithm_router = Arc::new(AlgorithmRouter::new(config.clone(), None));
         let config_service = Arc::new(ConfigManagementService::new(

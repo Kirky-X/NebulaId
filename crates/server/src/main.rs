@@ -234,7 +234,7 @@ async fn main() -> Result<()> {
     info!("Starting Nebula ID Generation Service");
     info!("Version: {}", env!("CARGO_PKG_VERSION"));
 
-    let config = Config::load_from_file("config.toml")
+    let config = Config::load_from_file("config/config.toml")
         .or_else(|_| Config::load_from_env())
         .unwrap_or_else(|_| Config::default());
     info!("Configuration loaded successfully");
@@ -258,7 +258,7 @@ async fn main() -> Result<()> {
 
     let hot_config = Arc::new(HotReloadConfig::new(
         config.clone(),
-        "config.toml".to_string(),
+        "config/config.toml".to_string(),
     ));
 
     let audit_logger = Arc::new(AuditLogger::new(10000));
@@ -517,7 +517,7 @@ mod tests {
         let router = Arc::new(router);
         let hot_config = Arc::new(HotReloadConfig::new(
             config.clone(),
-            "config.toml".to_string(),
+            "config/config.toml".to_string(),
         ));
         let config_service = Arc::new(ConfigManagementService::new(hot_config, router.clone()));
         let handlers = Arc::new(ApiHandlers::new(router, config_service));
@@ -537,7 +537,7 @@ mod tests {
         let router = Arc::new(router);
         let hot_config = Arc::new(HotReloadConfig::new(
             config.clone(),
-            "config.toml".to_string(),
+            "config/config.toml".to_string(),
         ));
         let config_service = Arc::new(ConfigManagementService::new(hot_config, router.clone()));
         let handlers = Arc::new(ApiHandlers::new(router, config_service.clone()));

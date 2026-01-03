@@ -428,7 +428,7 @@ mod tests {
     async fn test_update_rate_limit_request_validation() {
         let hot_config = Arc::new(HotReloadConfig::new(
             Config::default(),
-            "config.toml".to_string(),
+            "config/config.toml".to_string(),
         ));
         let algorithm_router = create_test_algorithm_router();
         let _service = ConfigManagementService::new(hot_config, algorithm_router);
@@ -450,7 +450,7 @@ mod tests {
     async fn test_update_logging_request_validation() {
         let hot_config = Arc::new(HotReloadConfig::new(
             Config::default(),
-            "config.toml".to_string(),
+            "config/config.toml".to_string(),
         ));
         let algorithm_router = create_test_algorithm_router();
         let _service = ConfigManagementService::new(hot_config, algorithm_router);
@@ -473,7 +473,7 @@ mod tests {
     async fn test_set_algorithm() {
         let hot_config = Arc::new(HotReloadConfig::new(
             Config::default(),
-            "config.toml".to_string(),
+            "config/config.toml".to_string(),
         ));
         let algorithm_router = create_test_algorithm_router();
         let service = ConfigManagementService::new(hot_config, algorithm_router.clone());
@@ -493,7 +493,7 @@ mod tests {
     async fn test_set_algorithm_invalid() {
         let hot_config = Arc::new(HotReloadConfig::new(
             Config::default(),
-            "config.toml".to_string(),
+            "config/config.toml".to_string(),
         ));
         let algorithm_router = create_test_algorithm_router();
         let service = ConfigManagementService::new(hot_config, algorithm_router);

@@ -235,8 +235,8 @@ pub async fn watch_config_file<P: AsRef<Path>>(
     callback: impl Fn(Config) + Send + Sync + 'static,
 ) {
     let hot_config = HotReloadConfig::new(
-        Config::load_from_file(path.as_ref().to_str().unwrap_or("config.toml")).unwrap_or_default(),
-        path.as_ref().to_str().unwrap_or("config.toml").to_string(),
+        Config::load_from_file(path.as_ref().to_str().unwrap_or("config/config.toml")).unwrap_or_default(),
+        path.as_ref().to_str().unwrap_or("config/config.toml").to_string(),
     );
 
     hot_config.add_reload_callback(callback);
@@ -253,7 +253,7 @@ mod tests {
     #[tokio::test]
     async fn test_hot_reload_config() {
         let temp_dir = TempDir::new().unwrap();
-        let config_path = temp_dir.path().join("config.toml");
+        let config_path = temp_dir.path().join("config/config.toml");
 
         let initial_content = r#"[app]
 name = "test"
@@ -441,7 +441,7 @@ alpn_protocols = ["h2", "http/1.1"]
 
     #[tokio::test]
     async fn test_get_config() {
-        let hot_config = HotReloadConfig::new(Config::default(), "config.toml".to_string());
+        let hot_config = HotReloadConfig::new(Config::default(), "config/config.toml".to_string());
 
         let config = hot_config.get_config();
         assert_eq!(config.app.name, "nebula-id");
@@ -449,7 +449,7 @@ alpn_protocols = ["h2", "http/1.1"]
 
     #[tokio::test]
     async fn test_update_config() {
-        let hot_config = HotReloadConfig::new(Config::default(), "config.toml".to_string());
+        let hot_config = HotReloadConfig::new(Config::default(), "config/config.toml".to_string());
 
         let mut new_config = Config::default();
         new_config.app.name = "new-name".to_string();

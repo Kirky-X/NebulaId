@@ -110,14 +110,14 @@ impl AdminConfigService {
             },
             database: DatabaseConfigInfo {
                 engine: config.database.engine.clone(),
-                host: config.database.host.clone(),
-                port: config.database.port,
-                database: config.database.database.clone(),
+                host: Some(config.database.host.clone()),
+                port: Some(config.database.port),
+                database: Some(config.database.database.clone()),
                 max_connections: config.database.max_connections,
                 min_connections: config.database.min_connections,
             },
             redis: RedisConfigInfo {
-                url: config.redis.url.clone(),
+                url: Some(config.redis.url.clone()),
                 pool_size: config.redis.pool_size,
                 key_prefix: config.redis.key_prefix.clone(),
                 ttl_seconds: config.redis.ttl_seconds,

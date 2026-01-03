@@ -144,6 +144,7 @@ pub trait BizTagRepository: Send + Sync {
         group_id: Uuid,
     ) -> Result<Vec<BizTag>>;
     async fn count_biz_tags_by_group(&self, group_id: Uuid) -> Result<u64>;
+    async fn count_biz_tags(&self, workspace_id: Uuid, group_id: Option<Uuid>) -> Result<u64>;
 }
 
 use crate::database::biz_tag_entity::{BizTag, CreateBizTagRequest, UpdateBizTagRequest};
@@ -752,6 +753,21 @@ impl BizTagRepository for SeaOrmRepository {
     async fn count_biz_tags_by_group(&self, group_id: Uuid) -> Result<u64> {
         let count = BizTagEntity::find()
             .filter(BizTagColumn::GroupId.eq(group_id))
+            .count(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        Ok(count)
+    }
+
+    async fn count_biz_tags(&self, workspace_id: Uuid, group_id: Option<Uuid>) -> Result<u64> {
+        let mut query = BizTagEntity::find().filter(BizTagColumn::WorkspaceId.eq(workspace_id));
+
+        if let Some(group_id) = group_id {
+            query = query.filter(BizTagColumn::GroupId.eq(group_id));
+        }
+
+        let count = query
             .count(&self.db)
             .await
             .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;

@@ -443,6 +443,7 @@ mod tests {
             async fn update_biz_tag(&self, id: Uuid, biz_tag: &UpdateBizTagRequest) -> Result<BizTag>;
             async fn delete_biz_tag(&self, id: Uuid) -> Result<()>;
             async fn list_biz_tags(&self, workspace_id: Uuid, group_id: Option<Uuid>, limit: Option<u32>, offset: Option<u32>) -> Result<Vec<BizTag>>;
+            async fn count_biz_tags(&self, workspace_id: Uuid, group_id: Option<Uuid>) -> Result<u64>;
         }
     }
 

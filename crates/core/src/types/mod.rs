@@ -24,7 +24,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct SegmentInfo {
+pub struct SegmentInfo {
     pub id: i64,
     pub workspace_id: String,
     pub biz_tag: String,

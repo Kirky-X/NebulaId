@@ -184,19 +184,32 @@ pub struct AppConfigInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseConfigInfo {
     pub engine: String,
-    pub host: String,
-    pub port: u16,
-    pub database: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
     pub max_connections: u32,
     pub min_connections: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RedisConfigInfo {
-    pub url: String,
+    #[serde(skip_serializing)]
+    pub url: Option<String>, // Never expose URL
     pub pool_size: u32,
     pub key_prefix: String,
     pub ttl_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecureConfigResponse {
+    pub app: AppConfigInfo,
+    pub algorithm: AlgorithmConfigInfo,
+    pub monitoring: MonitoringConfigInfo,
+    pub logging: LoggingConfigInfo,
+    pub rate_limit: RateLimitConfigInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -384,4 +397,29 @@ pub struct BizTagResponse {
 pub struct BizTagListResponse {
     pub biz_tags: Vec<BizTagResponse>,
     pub total: u64,
+    pub page: u64,
+    pub page_size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct PaginationParams {
+    #[serde(default = "default_page")]
+    pub page: u64,
+
+    #[serde(default = "default_page_size")]
+    #[validate(range(min = 1, max = 100))]
+    pub page_size: u64,
+}
+
+fn default_page() -> u64 {
+    1
+}
+
+fn default_page_size() -> u64 {
+    20
+}
+
+/// Shared utility: Convert NaiveDateTime to RFC3339 formatted string
+pub fn naive_to_rfc3339(dt: chrono::NaiveDateTime) -> String {
+    chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc).to_rfc3339()
 }

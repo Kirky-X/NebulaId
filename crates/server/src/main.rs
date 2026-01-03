@@ -261,7 +261,10 @@ async fn main() -> Result<()> {
             Some(conn)
         }
         Err(e) => {
-            warn!("Failed to connect to database: {}. BizTag API will be disabled.", e);
+            warn!(
+                "Failed to connect to database: {}. BizTag API will be disabled.",
+                e
+            );
             None
         }
     };

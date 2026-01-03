@@ -138,7 +138,9 @@ impl AlgorithmMetrics {
 pub struct QpsWindow {
     /// 滑动窗口大小（秒）
     window_secs: u64,
-    /// 请求时间戳队列
+    /// 原子计数器（减少锁竞争）
+    request_count: Arc<std::sync::atomic::AtomicU64>,
+    /// 请求时间戳队列（仅用于窗口计算）
     timestamps: Arc<parking_lot::Mutex<Vec<std::time::Instant>>>,
 }
 
@@ -146,26 +148,24 @@ impl QpsWindow {
     pub fn new(window_secs: u64) -> Self {
         Self {
             window_secs,
+            request_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             timestamps: Arc::new(parking_lot::Mutex::new(Vec::new())),
         }
     }
 
-    /// 记录一次请求
+    /// 记录一次请求（无锁，仅原子操作）
     pub fn record(&self) {
-        let mut timestamps = self.timestamps.lock();
-        timestamps.push(std::time::Instant::now());
+        self.request_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// 批量记录请求
     pub fn record_batch(&self, count: usize) {
-        let mut timestamps = self.timestamps.lock();
-        let now = std::time::Instant::now();
-        for _ in 0..count {
-            timestamps.push(now);
-        }
+        self.request_count
+            .fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// 获取当前窗口内的 QPS
+    /// 获取当前窗口内的 QPS（需要锁）
     pub fn get_qps(&self) -> u64 {
         let mut timestamps = self.timestamps.lock();
         let now = std::time::Instant::now();
@@ -174,11 +174,13 @@ impl QpsWindow {
         // 移除过期的时间戳
         timestamps.retain(|&ts| ts > window_start);
 
-        // 计算窗口内的请求数
+        // 估算窗口内的平均 QPS
         let count = timestamps.len();
+        let total = self
+            .request_count
+            .load(std::sync::atomic::Ordering::Relaxed);
 
-        // 估算当前 QPS（基于窗口大小）
-        if count > 0 {
+        if count > 0 && total > 0 {
             // 返回窗口内的请求数作为 QPS 估计
             count as u64
         } else {
@@ -192,6 +194,8 @@ impl QpsWindow {
         let window_start =
             std::time::Instant::now() - std::time::Duration::from_secs(self.window_secs);
         timestamps.retain(|&ts| ts > window_start);
+        self.request_count
+            .store(0, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// 获取窗口大小

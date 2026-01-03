@@ -427,6 +427,7 @@ mod tests {
             async fn delete_biz_tag(&self, id: Uuid) -> Result<()>;
             async fn list_biz_tags(&self, workspace_id: Uuid, group_id: Option<Uuid>, limit: Option<u32>, offset: Option<u32>) -> Result<Vec<BizTag>>;
             async fn list_biz_tags_by_workspace_group(&self, workspace_id: Uuid, group_id: Uuid) -> Result<Vec<BizTag>>;
+            async fn count_biz_tags(&self, workspace_id: Uuid, group_id: Option<Uuid>) -> Result<u64>;
             async fn count_biz_tags_by_group(&self, group_id: Uuid) -> Result<u64>;
         }
     }

@@ -51,8 +51,8 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
 
     if config.engine != "sqlite" {
         connect_options
-            .max_connections(config.max_connections as u32)
-            .min_connections(config.min_connections as u32)
+            .max_connections(config.max_connections)
+            .min_connections(config.min_connections)
             .connect_timeout(std::time::Duration::from_secs(
                 config.acquire_timeout_seconds,
             ))
@@ -73,15 +73,18 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
     Ok(db)
 }
 
+#[allow(dead_code)]
 pub async fn run_migrations(_db: &DatabaseConnection) -> Result<(), CoreError> {
     info!("Database migrations - migration system ready");
     Ok(())
 }
 
+#[allow(dead_code)]
 pub struct DatabaseManager {
     db: DatabaseConnection,
 }
 
+#[allow(dead_code)]
 impl DatabaseManager {
     pub fn new(db: DatabaseConnection) -> Self {
         Self { db }

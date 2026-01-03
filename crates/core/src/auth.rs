@@ -16,11 +16,10 @@ use crate::types::error::CoreError;
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
-use tokio::sync::RwLock;
 
 #[derive(Debug, Clone)]
 pub struct ApiKeyData {
@@ -35,7 +34,7 @@ pub struct ApiKeyData {
 
 #[derive(Debug)]
 pub struct AuthManager {
-    keys: Arc<RwLock<HashMap<String, ApiKeyData>>>,
+    keys: Arc<DashMap<String, ApiKeyData>>,
 }
 
 impl Default for AuthManager {
@@ -47,7 +46,7 @@ impl Default for AuthManager {
 impl AuthManager {
     pub fn new() -> Self {
         Self {
-            keys: Arc::new(RwLock::new(HashMap::new())),
+            keys: Arc::new(DashMap::new()),
         }
     }
 
@@ -71,16 +70,15 @@ impl AuthManager {
             permissions,
         };
 
-        let mut keys = self.keys.write().await;
-        keys.insert(key_id.clone(), key_data);
+        self.keys.insert(key_id.clone(), key_data);
 
         key_id
     }
 
     pub async fn validate_key(&self, key_id: &str, key_secret: &str) -> Option<String> {
-        let keys = self.keys.read().await;
+        if let Some(key_data) = self.keys.get(key_id) {
+            let key_data = key_data.value();
 
-        if let Some(key_data) = keys.get(key_id) {
             if !key_data.enabled {
                 return None;
             }
@@ -106,8 +104,7 @@ impl AuthManager {
     }
 
     pub async fn revoke_key(&self, key_id: &str) -> bool {
-        let mut keys = self.write_lock().await;
-        if let Some(key_data) = keys.get_mut(key_id) {
+        if let Some(mut key_data) = self.keys.get_mut(key_id) {
             key_data.enabled = false;
             true
         } else {
@@ -116,9 +113,9 @@ impl AuthManager {
     }
 
     pub async fn list_keys(&self) -> Vec<(String, bool, Option<DateTime<Utc>>)> {
-        let keys = self.keys.read().await;
-        keys.iter()
-            .map(|(id, data)| (id.clone(), data.enabled, data.expires_at))
+        self.keys
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.enabled, entry.expires_at))
             .collect()
     }
 
@@ -128,10 +125,6 @@ impl AuthManager {
         hasher.update(input.as_bytes());
         let result = hasher.finalize();
         STANDARD.encode(result)
-    }
-
-    async fn write_lock(&self) -> tokio::sync::RwLockWriteGuard<'_, HashMap<String, ApiKeyData>> {
-        self.keys.write().await
     }
 }
 

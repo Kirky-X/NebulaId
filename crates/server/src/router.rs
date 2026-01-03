@@ -19,17 +19,17 @@ use crate::handlers::ApiHandlers;
 use crate::middleware::ApiKeyAuth;
 use crate::models::{
     ApiInfoResponse, BatchGenerateRequest, BatchGenerateResponse, BizTagListResponse,
-    BizTagResponse, ConfigResponse, CreateBizTagRequest, ErrorResponse, GenerateRequest,
-    GenerateResponse, HealthResponse, MetricsResponse, ParseRequest, ParseResponse,
-    SetAlgorithmRequest, SetAlgorithmResponse, UpdateBizTagRequest, UpdateConfigResponse,
-    UpdateLoggingRequest, UpdateRateLimitRequest,
+    BizTagResponse, CreateBizTagRequest, ErrorResponse, GenerateRequest, GenerateResponse,
+    HealthResponse, MetricsResponse, PaginationParams, ParseRequest, ParseResponse,
+    SecureConfigResponse, SetAlgorithmRequest, SetAlgorithmResponse, UpdateBizTagRequest,
+    UpdateConfigResponse, UpdateLoggingRequest, UpdateRateLimitRequest,
 };
 use crate::rate_limit::RateLimiter;
 use crate::rate_limit_middleware::RateLimitMiddleware;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, HeaderValue, Method, StatusCode},
-    routing::{delete, get, post, put},
+    routing::{get, post},
     Json, Router,
 };
 use std::sync::Arc;
@@ -86,21 +86,42 @@ pub async fn create_router(
         config_service: config_service.clone(),
     };
 
-    Router::new()
+    // Public router (no authentication)
+    let public_routes = Router::new()
         .route("/api/v1", get(handle_api_info))
         .route("/api/v1/generate", post(handle_generate))
         .route("/api/v1/generate/batch", post(handle_batch_generate))
         .route("/api/v1/parse", post(handle_parse))
         .route("/metrics", get(handle_metrics))
-        .route("/health", get(handle_health))
+        .route("/health", get(handle_health));
+
+    // Authenticated router (requires API key)
+    let authenticated_routes = Router::new()
         .route("/api/v1/config", get(handle_get_config))
         .route("/api/v1/config/rate-limit", post(handle_update_rate_limit))
         .route("/api/v1/config/logging", post(handle_update_logging))
         .route("/api/v1/config/reload", post(handle_reload_config))
         .route("/api/v1/config/algorithm", post(handle_set_algorithm))
         // BizTag CRUD endpoints
-        .route("/api/v1/biz-tags", post(handle_create_biz_tag).get(handle_list_biz_tags))
-        .route("/api/v1/biz-tags/{id}", get(handle_get_biz_tag).put(handle_update_biz_tag).delete(handle_delete_biz_tag))
+        .route(
+            "/api/v1/biz-tags",
+            post(handle_create_biz_tag).get(handle_list_biz_tags),
+        )
+        .route(
+            "/api/v1/biz-tags/{id}",
+            get(handle_get_biz_tag)
+                .put(handle_update_biz_tag)
+                .delete(handle_delete_biz_tag),
+        )
+        // Apply auth middleware
+        .layer(axum::middleware::from_fn_with_state(
+            auth.clone(),
+            crate::middleware::auth_middleware_fn,
+        ));
+
+    // Merge routes with shared state
+    public_routes
+        .merge(authenticated_routes)
         .with_state(app_state)
         // Security headers
         .layer(SetResponseHeaderLayer::overriding(
@@ -237,8 +258,8 @@ async fn handle_parse(
     })
 }
 
-async fn handle_get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
-    Json(state.config_service.get_config())
+async fn handle_get_config(State(state): State<AppState>) -> Json<SecureConfigResponse> {
+    Json(state.config_service.get_secure_config())
 }
 
 async fn handle_update_rate_limit(
@@ -302,16 +323,24 @@ async fn handle_create_biz_tag(
     if let Err(validation_errors) = req.validate() {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(400, format!("Validation error: {}", validation_errors))),
+            Json(ErrorResponse::new(
+                400,
+                format!("Validation error: {}", validation_errors),
+            )),
         ));
     }
 
-    state.handlers.create_biz_tag(req).await.map(Json).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse::new(500, e.to_string())),
-        )
-    })
+    state
+        .handlers
+        .create_biz_tag(req)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(500, e.to_string())),
+            )
+        })
 }
 
 async fn handle_get_biz_tag(
@@ -325,12 +354,17 @@ async fn handle_get_biz_tag(
         )
     })?;
 
-    state.handlers.get_biz_tag(uuid).await.map(Json).map_err(|e| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse::new(404, e.to_string())),
-        )
-    })
+    state
+        .handlers
+        .get_biz_tag(uuid)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new(404, e.to_string())),
+            )
+        })
 }
 
 async fn handle_update_biz_tag(
@@ -348,16 +382,24 @@ async fn handle_update_biz_tag(
     if let Err(validation_errors) = req.validate() {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(400, format!("Validation error: {}", validation_errors))),
+            Json(ErrorResponse::new(
+                400,
+                format!("Validation error: {}", validation_errors),
+            )),
         ));
     }
 
-    state.handlers.update_biz_tag(uuid, req).await.map(Json).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse::new(500, e.to_string())),
-        )
-    })
+    state
+        .handlers
+        .update_biz_tag(uuid, req)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(500, e.to_string())),
+            )
+        })
 }
 
 async fn handle_delete_biz_tag(
@@ -371,21 +413,45 @@ async fn handle_delete_biz_tag(
         )
     })?;
 
-    state.handlers.delete_biz_tag(uuid).await.map(|_| StatusCode::NO_CONTENT).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse::new(500, e.to_string())),
-        )
-    })
+    state
+        .handlers
+        .delete_biz_tag(uuid)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(500, e.to_string())),
+            )
+        })
 }
 
 async fn handle_list_biz_tags(
     State(state): State<AppState>,
+    Query(params): Query<PaginationParams>,
 ) -> Json<BizTagListResponse> {
-    Json(state.handlers.list_biz_tags(None, None).await.unwrap_or_else(|_| BizTagListResponse {
-        biz_tags: vec![],
-        total: 0,
-    }))
+    let page = params.page.max(1);
+    let page_size = params.page_size.clamp(1, 100);
+    let offset = (page - 1) * page_size;
+
+    match state
+        .handlers
+        .list_biz_tags_with_pagination(None, None, page_size as usize, offset as usize)
+        .await
+    {
+        Ok(response) => Json(BizTagListResponse {
+            biz_tags: response.biz_tags,
+            total: response.total,
+            page,
+            page_size,
+        }),
+        Err(_) => Json(BizTagListResponse {
+            biz_tags: vec![],
+            total: 0,
+            page,
+            page_size,
+        }),
+    }
 }
 
 #[cfg(test)]

@@ -15,9 +15,10 @@
 use crate::config_hot_reload::HotReloadConfig;
 use crate::models::{
     AlgorithmConfigInfo, AppConfigInfo, ConfigResponse, DatabaseConfigInfo, LoggingConfigInfo,
-    MonitoringConfigInfo, RateLimitConfigInfo, RedisConfigInfo, SegmentConfigInfo,
-    SetAlgorithmRequest, SetAlgorithmResponse, SnowflakeConfigInfo, TlsConfigInfo,
-    UpdateConfigResponse, UpdateLoggingRequest, UpdateRateLimitRequest, UuidV7ConfigInfo,
+    MonitoringConfigInfo, RateLimitConfigInfo, RedisConfigInfo, SecureConfigResponse,
+    SegmentConfigInfo, SetAlgorithmRequest, SetAlgorithmResponse, SnowflakeConfigInfo,
+    TlsConfigInfo, UpdateConfigResponse, UpdateLoggingRequest, UpdateRateLimitRequest,
+    UuidV7ConfigInfo,
 };
 use nebula_core::config::Config;
 use nebula_core::types::id::AlgorithmType;
@@ -64,6 +65,11 @@ impl ConfigManagementService {
         Self::config_to_response(&config)
     }
 
+    pub fn get_secure_config(&self) -> SecureConfigResponse {
+        let config = self.hot_config.get_config();
+        Self::secure_config_to_response(&config)
+    }
+
     fn config_to_response(config: &Config) -> ConfigResponse {
         ConfigResponse {
             app: AppConfigInfo {
@@ -76,14 +82,14 @@ impl ConfigManagementService {
             },
             database: DatabaseConfigInfo {
                 engine: config.database.engine.clone(),
-                host: config.database.host.clone(),
-                port: config.database.port,
-                database: config.database.database.clone(),
+                host: Some(config.database.host.clone()),
+                port: Some(config.database.port),
+                database: Some(config.database.database.clone()),
                 max_connections: config.database.max_connections,
                 min_connections: config.database.min_connections,
             },
             redis: RedisConfigInfo {
-                url: config.redis.url.clone(),
+                url: Some(config.redis.url.clone()),
                 pool_size: config.redis.pool_size,
                 key_prefix: config.redis.key_prefix.clone(),
                 ttl_seconds: config.redis.ttl_seconds,
@@ -126,6 +132,52 @@ impl ConfigManagementService {
                 http_enabled: config.tls.http_enabled,
                 grpc_enabled: config.tls.grpc_enabled,
                 has_cert: !config.tls.cert_path.is_empty(),
+            },
+        }
+    }
+
+    fn secure_config_to_response(config: &Config) -> SecureConfigResponse {
+        SecureConfigResponse {
+            app: AppConfigInfo {
+                name: config.app.name.clone(),
+                host: config.app.host.clone(),
+                http_port: config.app.http_port,
+                grpc_port: config.app.grpc_port,
+                dc_id: config.app.dc_id,
+                worker_id: config.app.worker_id,
+            },
+            algorithm: AlgorithmConfigInfo {
+                default: config.algorithm.default.clone(),
+                segment: SegmentConfigInfo {
+                    base_step: config.algorithm.segment.base_step,
+                    min_step: config.algorithm.segment.min_step,
+                    max_step: config.algorithm.segment.max_step,
+                    switch_threshold: config.algorithm.segment.switch_threshold,
+                },
+                snowflake: SnowflakeConfigInfo {
+                    datacenter_id_bits: config.algorithm.snowflake.datacenter_id_bits,
+                    worker_id_bits: config.algorithm.snowflake.worker_id_bits,
+                    sequence_bits: config.algorithm.snowflake.sequence_bits,
+                    clock_drift_threshold_ms: config.algorithm.snowflake.clock_drift_threshold_ms,
+                },
+                uuid_v7: UuidV7ConfigInfo {
+                    enabled: config.algorithm.uuid_v7.enabled,
+                },
+            },
+            monitoring: MonitoringConfigInfo {
+                metrics_enabled: config.monitoring.metrics_enabled,
+                metrics_path: config.monitoring.metrics_path.clone(),
+                tracing_enabled: config.monitoring.tracing_enabled,
+            },
+            logging: LoggingConfigInfo {
+                level: config.logging.level.clone(),
+                format: config.logging.format.clone(),
+                include_location: config.logging.include_location,
+            },
+            rate_limit: RateLimitConfigInfo {
+                enabled: config.rate_limit.enabled,
+                default_rps: config.rate_limit.default_rps,
+                burst_size: config.rate_limit.burst_size,
             },
         }
     }
@@ -279,7 +331,10 @@ impl ConfigManagementService {
         }
     }
 
-    pub async fn get_biz_tag(&self, id: Uuid) -> nebula_core::Result<Option<nebula_core::database::BizTag>> {
+    pub async fn get_biz_tag(
+        &self,
+        id: Uuid,
+    ) -> nebula_core::Result<Option<nebula_core::database::BizTag>> {
         if let Some(ref repo) = self.repository {
             repo.get_biz_tag(id).await
         } else {
@@ -313,19 +368,30 @@ impl ConfigManagementService {
         }
     }
 
+    pub async fn count_biz_tags(
+        &self,
+        workspace_id: Uuid,
+        group_id: Option<Uuid>,
+    ) -> nebula_core::Result<u64> {
+        if let Some(ref repo) = self.repository {
+            repo.count_biz_tags(workspace_id, group_id).await
+        } else {
+            Err(nebula_core::CoreError::InternalError(
+                "Database repository not configured".to_string(),
+            ))
+        }
+    }
+
     pub async fn list_biz_tags(
         &self,
-        workspace_id: Option<Uuid>,
+        workspace_id: Uuid,
         group_id: Option<Uuid>,
+        limit: Option<u32>,
+        offset: Option<u32>,
     ) -> nebula_core::Result<Vec<nebula_core::database::BizTag>> {
         if let Some(ref repo) = self.repository {
-            if let Some(ws_id) = workspace_id {
-                repo.list_biz_tags(ws_id, group_id, None, None).await
-            } else {
-                // If no workspace_id provided, return empty list
-                // In the future, we might want to add a method to list all biz tags across all workspaces
-                Ok(vec![])
-            }
+            repo.list_biz_tags(workspace_id, group_id, limit, offset)
+                .await
         } else {
             Err(nebula_core::CoreError::InternalError(
                 "Database repository not configured".to_string(),

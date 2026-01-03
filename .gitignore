@@ -44,6 +44,7 @@ logs/
 coverage/
 *.lcov
 htmlcov/
+test_results_*.txt
 
 # =============================================================================
 # Temporary Documentation (temp directory)
@@ -54,18 +55,9 @@ temp/
 # Specific Documentation Files
 # =============================================================================
 docs/prd.md
-docs/task.md
 docs/tdd.md
 docs/test.md
 docs/uat.md
-docs/errata.md
 IFLOW.md
-# Backup files
 *.bak
-# Reports
 *_REPORT.md
-IMPROVEMENTS_SUMMARY.md
-# Temporary documentation
-docs/IMPLEMENTATION_PLAN.md
-docs/task.md
-.vercel

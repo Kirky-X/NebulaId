@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use sea_orm::{ConnectOptions, Database, DatabaseConnection, DbErr};
-use tracing::info;
+use sea_orm::{
+    ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend, DbErr, Statement,
+};
+use tracing::{info, warn};
 
 use crate::config::DatabaseConfig;
 use crate::types::CoreError;
@@ -73,9 +75,90 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
     Ok(db)
 }
 
-#[allow(dead_code)]
-pub async fn run_migrations(_db: &DatabaseConnection) -> Result<(), CoreError> {
-    info!("Database migrations - migration system ready");
+/// Auto-create all tables based on SeaORM entities
+pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
+    info!("Running database migrations...");
+
+    // Define all tables with their CREATE statements
+    let tables = vec![
+        // Workspaces table
+        r#"
+        CREATE TABLE IF NOT EXISTS workspaces (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name VARCHAR(255) NOT NULL UNIQUE,
+            description TEXT,
+            status VARCHAR(20) DEFAULT 'active',
+            max_groups INT DEFAULT 100,
+            max_biz_tags INT DEFAULT 1000,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+        "#,
+        // Groups table
+        r#"
+        CREATE TABLE IF NOT EXISTS groups (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            name VARCHAR(255) NOT NULL,
+            description TEXT,
+            max_biz_tags INT DEFAULT 100,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(workspace_id, name)
+        )
+        "#,
+        // BizTags table
+        r#"
+        CREATE TABLE IF NOT EXISTS biz_tags (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+            name VARCHAR(255) NOT NULL,
+            description TEXT,
+            algorithm VARCHAR(20) DEFAULT 'segment',
+            format VARCHAR(20) DEFAULT 'numeric',
+            prefix VARCHAR(50) DEFAULT '',
+            base_step INT DEFAULT 1000,
+            max_step INT DEFAULT 100000,
+            datacenter_ids TEXT DEFAULT '[]',
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(workspace_id, group_id, name)
+        )
+        "#,
+        // Nebula segments table
+        r#"
+        CREATE TABLE IF NOT EXISTS nebula_segments (
+            id BIGSERIAL PRIMARY KEY,
+            workspace_id VARCHAR(255) NOT NULL,
+            biz_tag VARCHAR(255) NOT NULL,
+            current_id BIGINT NOT NULL,
+            max_id BIGINT NOT NULL,
+            step INT NOT NULL DEFAULT 1000,
+            delta INT NOT NULL DEFAULT 1,
+            dc_id INT NOT NULL DEFAULT 0,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+        "#,
+    ];
+
+    for sql in tables {
+        let stmt = Statement::from_string(DbBackend::Postgres, sql);
+        match db.execute(stmt).await {
+            Ok(_) => info!("Table created/verified successfully"),
+            Err(e) => {
+                let error_msg = e.to_string();
+                if error_msg.contains("already exists") || error_msg.contains("duplicate") {
+                    info!("Table already exists, skipping");
+                } else {
+                    warn!("Migration warning: {}", error_msg);
+                }
+            }
+        }
+    }
+
+    info!("Database migrations completed successfully");
     Ok(())
 }
 

@@ -24,6 +24,7 @@ mod workspace_entity;
 pub use crate::types::id::{AlgorithmType, IdFormat};
 pub use biz_tag_entity::{BizTag, CreateBizTagRequest, UpdateBizTagRequest};
 pub use connection::create_connection;
+pub use connection::run_migrations;
 pub use group_entity::{CreateGroupRequest, Group, UpdateGroupRequest};
 pub use repository::{
     BizTagRepository, GroupRepository, SeaOrmRepository, SegmentRepository, WorkspaceRepository,

@@ -258,6 +258,12 @@ async fn main() -> Result<()> {
     let db_connection = match database::create_connection(&config.database).await {
         Ok(conn) => {
             info!("Database connected successfully");
+
+            // Run auto migrations to create tables
+            if let Err(e) = database::run_migrations(&conn).await {
+                warn!("Failed to run database migrations: {}. Tables may need to be created manually.", e);
+            }
+
             Some(conn)
         }
         Err(e) => {

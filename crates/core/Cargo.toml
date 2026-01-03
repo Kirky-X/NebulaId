@@ -6,7 +6,7 @@ description = "Core ID generation algorithms and types"
 authors = ["Tech Team"]
 
 [features]
-default = ["etcd"]
+default = []
 etcd = ["dep:etcd-client"]
 
 [dependencies]

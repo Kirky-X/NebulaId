@@ -10,7 +10,7 @@ name = "nebula-id"
 path = "src/main.rs"
 
 [features]
-default = ["etcd"]
+default = []
 etcd = ["dep:etcd-client", "nebula-core/etcd"]
 
 [build-dependencies]

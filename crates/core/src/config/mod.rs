@@ -398,6 +398,11 @@ impl Config {
                 .parse()
                 .map_err(|_| ConfigError::InvalidValue("DC_ID".to_string()))?;
         }
+        if let Ok(worker_id) = std::env::var("WORKER_ID") {
+            config.app.worker_id = worker_id
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("WORKER_ID".to_string()))?;
+        }
 
         if let Ok(url) = std::env::var("DATABASE_URL") {
             config.database.url = url;

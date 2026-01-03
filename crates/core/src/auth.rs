@@ -35,6 +35,8 @@ pub struct ApiKeyData {
 #[derive(Debug)]
 pub struct AuthManager {
     keys: Arc<DashMap<String, ApiKeyData>>,
+    /// Salt for key hashing - prevents rainbow table attacks
+    salt: String,
 }
 
 impl Default for AuthManager {
@@ -45,8 +47,17 @@ impl Default for AuthManager {
 
 impl AuthManager {
     pub fn new() -> Self {
+        // Generate or load a secure salt for key hashing
+        let salt = std::env::var("NEBULA_API_KEY_SALT")
+            .unwrap_or_else(|_err| {
+                // Generate a random salt if not provided
+                let salt_bytes: [u8; 32] = rand::random();
+                hex::encode(salt_bytes)
+            });
+
         Self {
             keys: Arc::new(DashMap::new()),
+            salt,
         }
     }
 
@@ -58,7 +69,7 @@ impl AuthManager {
         expires_at: Option<DateTime<Utc>>,
         permissions: Vec<String>,
     ) -> String {
-        let key_hash = Self::hash_key(&key_id, &key_secret);
+        let key_hash = self.hash_key(&key_id, &key_secret);
 
         let key_data = ApiKeyData {
             key_id: key_id.clone(),
@@ -89,7 +100,7 @@ impl AuthManager {
                 }
             }
 
-            let expected_hash = Self::hash_key(key_id, key_secret);
+            let expected_hash = self.hash_key(key_id, key_secret);
             // Use constant-time comparison to prevent timing attacks
             if expected_hash
                 .as_bytes()
@@ -119,8 +130,9 @@ impl AuthManager {
             .collect()
     }
 
-    fn hash_key(key_id: &str, key_secret: &str) -> String {
-        let input = format!("{}:{}", key_id, key_secret);
+    fn hash_key(&self, key_id: &str, key_secret: &str) -> String {
+        // Use salt to prevent rainbow table attacks
+        let input = format!("{}:{}:{}", self.salt, key_id, key_secret);
         let mut hasher = Sha256::new();
         hasher.update(input.as_bytes());
         let result = hasher.finalize();

@@ -1,9 +1,0 @@
-# Target
-target/
-.env
-
-# Vercel
-.vercel
-
-# Mac
-.DS_Store

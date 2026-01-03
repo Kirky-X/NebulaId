@@ -20,22 +20,21 @@ use crate::models::{
 };
 use nebula_core::{CoreError, Id, Result};
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 pub struct ApiHandlers {
     id_generator: Arc<dyn nebula_core::algorithm::IdGenerator>,
-    metrics: Arc<RwLock<ApiMetrics>>,
+    metrics: ApiMetrics,
     start_time: std::time::Instant,
     config_service: Arc<ConfigManagementService>,
 }
 
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Default)]
 pub struct ApiMetrics {
-    pub total_requests: Arc<std::sync::atomic::AtomicU64>,
-    pub successful_generations: Arc<std::sync::atomic::AtomicU64>,
-    pub failed_generations: Arc<std::sync::atomic::AtomicU64>,
-    pub total_ids_generated: Arc<std::sync::atomic::AtomicU64>,
-    pub avg_latency_ms: Arc<std::sync::atomic::AtomicU64>,
+    pub total_requests: std::sync::atomic::AtomicU64,
+    pub successful_generations: std::sync::atomic::AtomicU64,
+    pub failed_generations: std::sync::atomic::AtomicU64,
+    pub total_ids_generated: std::sync::atomic::AtomicU64,
+    pub avg_latency_ms: std::sync::atomic::AtomicU64,
 }
 
 impl ApiHandlers {
@@ -45,7 +44,7 @@ impl ApiHandlers {
     ) -> Self {
         Self {
             id_generator,
-            metrics: Arc::new(RwLock::new(ApiMetrics::default())),
+            metrics: ApiMetrics::default(),
             start_time: std::time::Instant::now(),
             config_service,
         }
@@ -82,8 +81,6 @@ impl ApiHandlers {
 
         if let Err(ref e) = result {
             self.metrics
-                .write()
-                .await
                 .failed_generations
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             return Err(e.clone());
@@ -93,32 +90,22 @@ impl ApiHandlers {
 
         let elapsed = start.elapsed();
         self.metrics
-            .write()
-            .await
             .total_requests
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.metrics
-            .write()
-            .await
             .successful_generations
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.metrics
-            .write()
-            .await
             .total_ids_generated
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         let latency_ms = elapsed.as_millis() as u64;
         let current_avg = self
             .metrics
-            .read()
-            .await
             .avg_latency_ms
             .load(std::sync::atomic::Ordering::SeqCst);
         let new_avg = (current_avg + latency_ms) / 2;
         self.metrics
-            .write()
-            .await
             .avg_latency_ms
             .store(new_avg, std::sync::atomic::Ordering::SeqCst);
 
@@ -174,8 +161,6 @@ impl ApiHandlers {
 
         if let Err(ref e) = result {
             self.metrics
-                .write()
-                .await
                 .failed_generations
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             return Err(e.clone());
@@ -185,32 +170,22 @@ impl ApiHandlers {
 
         let elapsed = start.elapsed();
         self.metrics
-            .write()
-            .await
             .total_requests
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.metrics
-            .write()
-            .await
             .successful_generations
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.metrics
-            .write()
-            .await
             .total_ids_generated
             .fetch_add(ids.len() as u64, std::sync::atomic::Ordering::SeqCst);
 
         let latency_ms = elapsed.as_millis() as u64;
         let current_avg = self
             .metrics
-            .read()
-            .await
             .avg_latency_ms
             .load(std::sync::atomic::Ordering::SeqCst);
         let new_avg = (current_avg + latency_ms) / 2;
         self.metrics
-            .write()
-            .await
             .avg_latency_ms
             .store(new_avg, std::sync::atomic::Ordering::SeqCst);
 
@@ -239,21 +214,25 @@ impl ApiHandlers {
     }
 
     pub async fn metrics(&self) -> MetricsResponse {
-        let metrics = self.metrics.read().await;
         MetricsResponse {
-            total_requests: metrics
+            total_requests: self
+                .metrics
                 .total_requests
                 .load(std::sync::atomic::Ordering::SeqCst),
-            successful_generations: metrics
+            successful_generations: self
+                .metrics
                 .successful_generations
                 .load(std::sync::atomic::Ordering::SeqCst),
-            failed_generations: metrics
+            failed_generations: self
+                .metrics
                 .failed_generations
                 .load(std::sync::atomic::Ordering::SeqCst),
-            total_ids_generated: metrics
+            total_ids_generated: self
+                .metrics
                 .total_ids_generated
                 .load(std::sync::atomic::Ordering::SeqCst),
-            avg_latency_ms: metrics
+            avg_latency_ms: self
+                .metrics
                 .avg_latency_ms
                 .load(std::sync::atomic::Ordering::SeqCst),
             uptime_seconds: std::time::Instant::now()

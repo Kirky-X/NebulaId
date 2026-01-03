@@ -22,12 +22,11 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 use tonic::{Code, Request, Response, Status};
 
-pub mod nebula_id {
-    tonic::include_proto!("nebula.id.v1");
-}
+// Use pre-generated proto modules
+use crate::proto::nebula::id::v1;
 
-use nebula_id::nebula_id_service_server::NebulaIdService;
-use nebula_id::{
+use v1::nebula_id_service_server::NebulaIdService;
+use v1::{
     BatchGenerateRequest as GrpcBatchGenerateRequest,
     BatchGenerateResponse as GrpcBatchGenerateResponse, BatchGenerateStreamRequest,
     BatchGenerateStreamResponse, GenerateRequest as GrpcGenerateRequest,
@@ -264,9 +263,9 @@ impl NebulaIdService for GrpcServer {
     ) -> Result<Response<HealthCheckResponse>, Status> {
         let health = self.handlers.health().await;
         let status = if health.status == "healthy" {
-            nebula_id::health_check_response::ServingStatus::Serving
+            v1::health_check_response::ServingStatus::Serving
         } else {
-            nebula_id::health_check_response::ServingStatus::NotServing
+            v1::health_check_response::ServingStatus::NotServing
         };
 
         Ok(Response::new(HealthCheckResponse {

@@ -21,7 +21,7 @@ use nebula_core::types::Result;
 use nebula_server::audit::AuditLogger;
 use nebula_server::config_hot_reload::HotReloadConfig;
 use nebula_server::config_management::ConfigManagementService;
-use nebula_server::grpc::nebula_id::nebula_id_service_server::NebulaIdServiceServer;
+use nebula_server::proto::nebula::id::v1::nebula_id_service_server::NebulaIdServiceServer;
 use nebula_server::grpc::GrpcServer;
 use nebula_server::handlers::ApiHandlers;
 use nebula_server::middleware::ApiKeyAuth;

@@ -13,28 +13,45 @@
 // limitations under the License.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Set PROTOC env var for prost-build using vendored binary
-    let protoc_path = protoc_bin_vendored::protoc_bin_path()?;
-    std::env::set_var("PROTOC", protoc_path.clone());
-    println!("cargo:warning=Using vendored protoc at: {:?}", protoc_path);
-
+    // Check if pre-generated proto files exist
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")?;
     let manifest_path = std::path::Path::new(&manifest_dir);
-    // Go up two levels from crates/server to project root
-    let project_root = manifest_path.parent().unwrap().parent().unwrap();
-    let proto_dir = project_root.join("protos");
-    let proto_path = proto_dir.join("nebula_id.proto");
+    let proto_src_dir = manifest_path.join("src/proto");
+    let generated_mod = proto_src_dir.join("mod.rs");
 
-    println!("cargo:warning=Compiling proto: {:?}", proto_path);
-    println!("cargo:warning=Proto include dir: {:?}", proto_dir);
-
-    // Ensure the proto file exists
-    if !proto_path.exists() {
-        return Err(format!("Proto file not found at {:?}", proto_path).into());
+    if generated_mod.exists() {
+        println!("cargo:warning=Using pre-generated proto files");
+        println!("cargo:rerun-if-changed=src/proto/");
+        return Ok(());
     }
 
-    tonic_prost_build::compile_protos(&proto_path)?;
+    // Try to compile proto files if protoc is available
+    match protoc_bin_vendored::protoc_bin_path() {
+        Ok(protoc_path) => {
+            std::env::set_var("PROTOC", protoc_path.clone());
+            println!("cargo:warning=Using vendored protoc at: {:?}", protoc_path);
 
-    println!("cargo:rerun-if-changed={}", proto_path.display());
+            // Go up two levels from crates/server to project root
+            let project_root = manifest_path.parent().unwrap().parent().unwrap();
+            let proto_dir = project_root.join("protos");
+            let proto_path = proto_dir.join("nebula_id.proto");
+
+            println!("cargo:warning=Compiling proto: {:?}", proto_path);
+            println!("cargo:warning=Proto include dir: {:?}", proto_dir);
+
+            // Ensure the proto file exists
+            if !proto_path.exists() {
+                return Err(format!("Proto file not found at {:?}", proto_path).into());
+            }
+
+            tonic_prost_build::compile_protos(&proto_path)?;
+            println!("cargo:rerun-if-changed={}", proto_path.display());
+        }
+        Err(e) => {
+            println!("cargo:warning=protoc-bin-vendored failed ({}), skipping proto compilation", e);
+            println!("cargo:warning=Pre-generated proto files will be used instead");
+        }
+    }
+
     Ok(())
 }

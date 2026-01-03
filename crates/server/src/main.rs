@@ -122,7 +122,7 @@ async fn create_id_generator(
 }
 
 async fn start_http_server(
-    config: ServerConfig,
+    _config: ServerConfig,
     handlers: Arc<ApiHandlers>,
     auth: Arc<ApiKeyAuth>,
     rate_limiter: Arc<RateLimiter>,
@@ -130,7 +130,7 @@ async fn start_http_server(
     _config_service: Arc<ConfigManagementService>,
     tls_manager: Option<Arc<TlsManager>>,
 ) -> Result<()> {
-    let addr = SocketAddr::from(([0, 0, 0, 0], config.http_port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], DEFAULT_SERVER_PORT));
 
     let router = create_router(handlers, auth, rate_limiter, audit_logger)
         .await

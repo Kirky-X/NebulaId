@@ -1,0 +1,66 @@
+name = "nebula-id"
+host = "0.0.0.0"
+http_port = 8080
+grpc_port = 9091
+dc_id = 0
+worker_id = 0
+
+[logging]
+level = "info"
+format = "json"
+include_location = true
+backtrace = false
+
+[database]
+engine = "postgresql"
+host = "localhost"
+port = 5435
+database = "idgen"
+username = "idgen"
+password = "idgen123"
+max_connections = 100
+min_connections = 10
+acquire_timeout_seconds = 30
+idle_timeout_seconds = 600
+
+[redis]
+url = "redis://localhost:6379"
+pool_size = 50
+key_prefix = "nebula:id:"
+ttl_seconds = 600
+
+[algorithm]
+default = "snowflake"
+
+[algorithm.segment]
+base_step = 1000
+min_step = 500
+max_step = 100000
+switch_threshold = 0.1
+
+[algorithm.snowflake]
+datacenter_id_bits = 3
+worker_id_bits = 8
+sequence_bits = 10
+clock_drift_threshold_ms = 1000
+
+[algorithm.uuid_v7]
+enabled = true
+
+[monitoring]
+metrics_enabled = true
+metrics_path = "/metrics"
+tracing_enabled = false
+otlp_endpoint = ""
+
+[rate_limit]
+enabled = true
+default_rps = 10000
+burst_size = 5000
+
+[tls]
+enabled = false
+http_enabled = false
+grpc_enabled = false
+cert_path = ""
+key_path = ""

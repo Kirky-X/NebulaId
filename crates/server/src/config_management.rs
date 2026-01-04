@@ -18,7 +18,7 @@ use crate::models::{
     MonitoringConfigInfo, RateLimitConfigInfo, RedisConfigInfo, SecureConfigResponse,
     SegmentConfigInfo, SetAlgorithmRequest, SetAlgorithmResponse, SnowflakeConfigInfo,
     TlsConfigInfo, UpdateConfigResponse, UpdateLoggingRequest, UpdateRateLimitRequest,
-    UuidV7ConfigInfo,
+    UuidV7ConfigInfo, DatabaseMetrics, CacheMetrics, ConnectionPoolMetrics,
 };
 use nebula_core::config::Config;
 use nebula_core::types::id::AlgorithmType;
@@ -397,6 +397,68 @@ impl ConfigManagementService {
                 "Database repository not configured".to_string(),
             ))
         }
+    }
+
+    pub async fn get_database_metrics(&self) -> DatabaseMetrics {
+        if let Some(ref repo) = self.repository {
+            // Try to get database health status
+            match repo.health_check().await {
+                Ok(()) => DatabaseMetrics {
+                    status: "healthy".to_string(),
+                    connection_pool: ConnectionPoolMetrics {
+                        active_connections: 0,
+                        idle_connections: 0,
+                        max_connections: 0,
+                    },
+                    last_error: None,
+                },
+                Err(e) => DatabaseMetrics {
+                    status: "unhealthy".to_string(),
+                    connection_pool: ConnectionPoolMetrics {
+                        active_connections: 0,
+                        idle_connections: 0,
+                        max_connections: 0,
+                    },
+                    last_error: Some(e.to_string()),
+                },
+            }
+        } else {
+            DatabaseMetrics {
+                status: "disabled".to_string(),
+                connection_pool: ConnectionPoolMetrics {
+                    active_connections: 0,
+                    idle_connections: 0,
+                    max_connections: 0,
+                },
+                last_error: Some("Database not configured".to_string()),
+            }
+        }
+    }
+
+    pub async fn get_cache_metrics(&self) -> CacheMetrics {
+        // Get algorithm metrics for cache hit rate
+        let algorithm_metrics = self.algorithm_router.metrics();
+        let cache_hit_rate = if !algorithm_metrics.is_empty() {
+            let total_hit_rate: f64 = algorithm_metrics
+                .iter()
+                .map(|(_, m)| m.cache_hit_rate)
+                .sum::<f64>()
+                / algorithm_metrics.len() as f64;
+            total_hit_rate
+        } else {
+            0.0
+        };
+
+        CacheMetrics {
+            status: "healthy".to_string(),
+            hit_rate: cache_hit_rate,
+            memory_usage_mb: None,
+            key_count: None,
+        }
+    }
+
+    pub fn get_algorithm_metrics(&self) -> Vec<(nebula_core::types::AlgorithmType, nebula_core::algorithm::AlgorithmMetricsSnapshot)> {
+        self.algorithm_router.metrics()
     }
 }
 

@@ -120,6 +120,40 @@ pub struct MetricsResponse {
     pub total_ids_generated: u64,
     pub avg_latency_ms: u64,
     pub uptime_seconds: u64,
+    pub database: DatabaseMetrics,
+    pub cache: CacheMetrics,
+    pub algorithms: Vec<AlgorithmMetrics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseMetrics {
+    pub status: String,
+    pub connection_pool: ConnectionPoolMetrics,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectionPoolMetrics {
+    pub active_connections: u32,
+    pub idle_connections: u32,
+    pub max_connections: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheMetrics {
+    pub status: String,
+    pub hit_rate: f64,
+    pub memory_usage_mb: Option<u64>,
+    pub key_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlgorithmMetrics {
+    pub algorithm: String,
+    pub status: String,
+    pub total_generated: u64,
+    pub total_failed: u64,
+    pub cache_hit_rate: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]

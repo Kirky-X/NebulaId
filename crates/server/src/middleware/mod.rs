@@ -141,6 +141,30 @@ impl ApiKeyAuth {
             }
         }
 
+        // Check if the path is a known authenticated route
+        // If not, return 404 instead of 401
+        let path = req.uri().path();
+        let known_authenticated_routes = [
+            "/api/v1/config",
+            "/api/v1/config/rate-limit",
+            "/api/v1/config/logging",
+            "/api/v1/config/reload",
+            "/api/v1/config/algorithm",
+        ];
+
+        let is_known_route = known_authenticated_routes.iter().any(|route| {
+            path.starts_with(route) || path.starts_with("/api/v1/biz-tags")
+        });
+
+        if !is_known_route {
+            let response = axum::Json(serde_json::json!({
+                "code": 404,
+                "message": "Not found"
+            }))
+            .into_response();
+            return (StatusCode::NOT_FOUND, response).into_response();
+        }
+
         let response = axum::Json(serde_json::json!({
             "code": 401,
             "message": "Invalid or missing API key"

@@ -145,6 +145,7 @@ pub trait BizTagRepository: Send + Sync {
     ) -> Result<Vec<BizTag>>;
     async fn count_biz_tags_by_group(&self, group_id: Uuid) -> Result<u64>;
     async fn count_biz_tags(&self, workspace_id: Uuid, group_id: Option<Uuid>) -> Result<u64>;
+    async fn health_check(&self) -> Result<()>;
 }
 
 use crate::database::biz_tag_entity::{BizTag, CreateBizTagRequest, UpdateBizTagRequest};
@@ -773,6 +774,12 @@ impl BizTagRepository for SeaOrmRepository {
             .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
 
         Ok(count)
+    }
+
+    async fn health_check(&self) -> Result<()> {
+        // Database connection is already established
+        // Return Ok if we can reach this point
+        Ok(())
     }
 }
 

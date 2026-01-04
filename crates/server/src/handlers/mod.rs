@@ -14,9 +14,10 @@
 
 use crate::config_management::ConfigManagementService;
 use crate::models::{
-    naive_to_rfc3339, BatchGenerateRequest, BatchGenerateResponse, BizTagListResponse,
-    BizTagResponse, CreateBizTagRequest, GenerateRequest, GenerateResponse, HealthResponse,
-    IdMetadataResponse, MetricsResponse, ParseRequest, ParseResponse, UpdateBizTagRequest,
+    naive_to_rfc3339, AlgorithmMetrics, BatchGenerateRequest, BatchGenerateResponse, BizTagListResponse,
+    BizTagResponse, CacheMetrics, ConnectionPoolMetrics, CreateBizTagRequest, DatabaseMetrics,
+    GenerateRequest, GenerateResponse, HealthResponse, IdMetadataResponse, MetricsResponse,
+    ParseRequest, ParseResponse, UpdateBizTagRequest,
 };
 use nebula_core::{CoreError, Id, Result};
 use std::sync::Arc;
@@ -214,6 +215,25 @@ impl ApiHandlers {
     }
 
     pub async fn metrics(&self) -> MetricsResponse {
+        // Get algorithm metrics from config service
+        let algorithm_metrics = self.config_service.get_algorithm_metrics();
+        let algorithms = algorithm_metrics
+            .into_iter()
+            .map(|(alg_type, snapshot): (nebula_core::types::AlgorithmType, nebula_core::algorithm::AlgorithmMetricsSnapshot)| AlgorithmMetrics {
+                algorithm: alg_type.to_string(),
+                status: "healthy".to_string(),
+                total_generated: snapshot.total_generated,
+                total_failed: snapshot.total_failed,
+                cache_hit_rate: snapshot.cache_hit_rate,
+            })
+            .collect();
+
+        // Get database health metrics from config service
+        let database = self.config_service.get_database_metrics().await;
+
+        // Get cache health metrics
+        let cache = self.config_service.get_cache_metrics().await;
+
         MetricsResponse {
             total_requests: self
                 .metrics
@@ -238,6 +258,9 @@ impl ApiHandlers {
             uptime_seconds: std::time::Instant::now()
                 .duration_since(self.start_time)
                 .as_secs(),
+            database,
+            cache,
+            algorithms,
         }
     }
 

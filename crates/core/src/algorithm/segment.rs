@@ -503,7 +503,7 @@ impl SegmentAlgorithm {
             config: SegmentAlgorithmConfig::default(),
             buffers: DashMap::new(),
             metrics: Arc::new(AlgorithmMetricsInner::default()),
-            segment_loader: Arc::new(DefaultSegmentLoader),
+            segment_loader: Arc::new(DefaultSegmentLoader::default()),
             dc_failure_detector,
             local_dc_id,
             etcd_cluster_health_monitor: None,
@@ -697,14 +697,31 @@ impl IdAlgorithm for SegmentAlgorithm {
     }
 }
 
-struct DefaultSegmentLoader;
+struct DefaultSegmentLoader {
+    counter: AtomicU64,
+}
+
+impl Default for DefaultSegmentLoader {
+    fn default() -> Self {
+        Self {
+            counter: AtomicU64::new(0),
+        }
+    }
+}
 
 #[async_trait]
 impl SegmentLoader for DefaultSegmentLoader {
     async fn load_segment(&self, _ctx: &GenerateContext, _worker_id: u8) -> Result<SegmentData> {
+        // Generate timestamp-based segment for uniqueness
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let base_id = timestamp * 10000; // Use timestamp as base for uniqueness
+
         Ok(SegmentData {
-            start_id: 1,
-            max_id: 1000000,
+            start_id: base_id,
+            max_id: base_id + 1000000,
             step: 1000,
             version: 0,
         })

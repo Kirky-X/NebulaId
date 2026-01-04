@@ -180,14 +180,15 @@ impl ApiHandlers {
                 .await
         };
 
-        if let Err(ref e) = result {
-            self.metrics
-                .failed_generations
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            return Err(e.clone());
-        }
-
-        let ids = result.unwrap();
+        let ids = match result {
+            Ok(ids) => ids,
+            Err(ref e) => {
+                self.metrics
+                    .failed_generations
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Err(e.clone());
+            }
+        };
 
         let elapsed = start.elapsed();
         self.metrics

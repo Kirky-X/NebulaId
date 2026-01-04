@@ -78,23 +78,19 @@ impl ApiHandlers {
     pub async fn generate(&self, req: GenerateRequest) -> Result<GenerateResponse> {
         let start = std::time::Instant::now();
 
-        tracing::info!(
-            "generate called: workspace={}, group={}, biz_tag={}, algorithm={:?}",
+        tracing::debug!(
+            "generate request: workspace={}, group={}, biz_tag={}",
             req.workspace,
             req.group,
-            req.biz_tag,
-            req.algorithm
+            req.biz_tag
         );
 
         let result = if let Some(ref alg_str) = req.algorithm {
-            tracing::info!("Using explicit algorithm: {}", alg_str);
             let algorithm = alg_str.parse::<nebula_core::types::AlgorithmType>()?;
-            tracing::info!("Parsed algorithm type: {:?}", algorithm);
             self.id_generator
                 .generate_with_algorithm(algorithm, &req.workspace, &req.group, &req.biz_tag)
                 .await
         } else {
-            tracing::info!("No algorithm specified, using default");
             self.id_generator
                 .generate(&req.workspace, &req.group, &req.biz_tag)
                 .await

@@ -204,8 +204,10 @@ async fn handle_batch_generate(
     State(state): State<AppState>,
     Json(req): Json<BatchGenerateRequest>,
 ) -> Result<Json<BatchGenerateResponse>, (StatusCode, Json<ErrorResponse>)> {
-    tracing::info!(
-        "Received HTTP batch_generate request with size: {:?}",
+    tracing::debug!(
+        "HTTP batch_generate request: workspace={}, group={}, size={:?}",
+        req.workspace,
+        req.group,
         req.size
     );
 
@@ -221,8 +223,6 @@ async fn handle_batch_generate(
             )),
         ));
     }
-
-    tracing::info!("HTTP batch size validation passed: {:?}", req.size);
 
     state
         .handlers

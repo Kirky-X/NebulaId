@@ -244,7 +244,7 @@ impl DcFailureDetector {
     }
 
     pub fn get_dc_state(&self, dc_id: u8) -> Option<Arc<DcHealthState>> {
-        self.dc_states.get(&dc_id).map(|v| v.value().clone())
+        self.dc_states.get(&dc_id).map(|v| Arc::clone(v.value()))
     }
 
     pub fn get_healthy_dcs(&self) -> Vec<u8> {

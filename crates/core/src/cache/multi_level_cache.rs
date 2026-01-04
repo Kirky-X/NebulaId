@@ -217,9 +217,9 @@ impl MultiLevelCache {
         let evict_count = (self.l1_max_keys / 10).max(1);
         let mut access_order = self.l1_access_order.write().await;
 
-        // 找出最久未访问的条目
+        // 找出最久未访问的条目 (使用 sort_by_key 更高效)
         let mut candidates: Vec<_> = access_order.iter().collect();
-        candidates.sort_by(|a, b| a.1.cmp(b.1));
+        candidates.sort_by_key(|(_, time)| *time);
 
         let to_evict: Vec<String> = candidates
             .into_iter()

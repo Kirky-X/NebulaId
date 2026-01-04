@@ -95,9 +95,10 @@ impl Default for DatabaseConfig {
                 username: "idgen".to_string(),
                 password: String::new(),
                 database: "idgen".to_string(),
-                max_connections: 1200,
-                min_connections: 100,
-                acquire_timeout_seconds: 5,
+                // Optimized connection pool settings for typical workloads
+                max_connections: 100,
+                min_connections: 10,
+                acquire_timeout_seconds: 30,
                 idle_timeout_seconds: 300,
             };
         }
@@ -119,9 +120,10 @@ impl Default for DatabaseConfig {
             username: "idgen".to_string(),
             password,
             database: "idgen".to_string(),
-            max_connections: 1200,
-            min_connections: 100,
-            acquire_timeout_seconds: 5,
+            // Optimized connection pool settings for typical workloads
+            max_connections: 100,
+            min_connections: 10,
+            acquire_timeout_seconds: 30,
             idle_timeout_seconds: 300,
         }
     }

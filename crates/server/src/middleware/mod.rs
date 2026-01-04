@@ -29,6 +29,12 @@ use tokio::sync::RwLock;
 
 pub(crate) mod utils;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ApiKeyRole {
+    Admin,
+    User,
+}
+
 #[derive(Clone)]
 pub struct ApiKeyAuth {
     valid_keys: Arc<RwLock<HashMap<String, ApiKeyData>>>,
@@ -39,6 +45,7 @@ pub struct ApiKeyData {
     pub key_hash: String,
     pub workspace_id: String,
     pub key_prefix: String,
+    pub role: ApiKeyRole,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
     pub enabled: bool,
@@ -57,7 +64,13 @@ impl ApiKeyAuth {
         }
     }
 
-    pub async fn load_key(&self, key_id: String, key_hash: String, workspace_id: String) {
+    pub async fn load_key(
+        &self,
+        key_id: String,
+        key_hash: String,
+        workspace_id: String,
+        role: ApiKeyRole,
+    ) {
         let key_id_clone = key_id.clone();
         let mut keys = self.valid_keys.write().await;
         keys.insert(
@@ -65,7 +78,8 @@ impl ApiKeyAuth {
             ApiKeyData {
                 key_hash,
                 workspace_id,
-                key_prefix: key_id[..8].to_string(),
+                key_prefix: key_id[..8.min(key_id.len())].to_string(),
+                role,
                 created_at: chrono::Utc::now(),
                 expires_at: None,
                 enabled: true,
@@ -73,7 +87,7 @@ impl ApiKeyAuth {
         );
     }
 
-    pub async fn validate_key(&self, key_id: &str, key_secret: &str) -> Option<String> {
+    pub async fn validate_key(&self, key_id: &str, key_secret: &str) -> Option<(String, ApiKeyRole)> {
         let keys = self.valid_keys.read().await;
         if let Some(key_data) = keys.get(key_id) {
             if !key_data.enabled {
@@ -91,7 +105,7 @@ impl ApiKeyAuth {
                 .ct_eq(key_data.key_hash.as_bytes())
                 .into()
             {
-                return Some(key_data.workspace_id.clone());
+                return Some((key_data.workspace_id.clone(), key_data.role.clone()));
             }
         }
         None
@@ -120,10 +134,11 @@ impl ApiKeyAuth {
                             let parts: Vec<&str> = cred_str.splitn(2, ':').collect();
                             if parts.len() == 2 {
                                 let (key_id, key_secret) = (parts[0], parts[1]);
-                                if let Some(workspace_id) =
+                                if let Some((workspace_id, role)) =
                                     self.validate_key(key_id, key_secret).await
                                 {
                                     req.extensions_mut().insert(workspace_id);
+                                    req.extensions_mut().insert(role);
                                     return next.run(req).await;
                                 }
                             }
@@ -132,8 +147,11 @@ impl ApiKeyAuth {
                 } else if let Some(api_key) = value.strip_prefix("ApiKey ") {
                     let parts: Vec<&str> = api_key.splitn(2, '_').collect();
                     if parts.len() == 2 {
-                        if let Some(workspace_id) = self.validate_key(parts[0], parts[1]).await {
+                        if let Some((workspace_id, role)) =
+                            self.validate_key(parts[0], parts[1]).await
+                        {
                             req.extensions_mut().insert(workspace_id);
+                            req.extensions_mut().insert(role);
                             return next.run(req).await;
                         }
                     }
@@ -150,6 +168,8 @@ impl ApiKeyAuth {
             "/api/v1/config/logging",
             "/api/v1/config/reload",
             "/api/v1/config/algorithm",
+            "/metrics",
+            "/api/v1/biz-tags",
         ];
 
         let is_known_route = known_authenticated_routes.iter().any(|route| {
@@ -174,6 +194,25 @@ impl ApiKeyAuth {
     }
 }
 
+pub async fn admin_required_middleware(
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    use axum::Extension;
+    if let Some(role) = req.extensions().get::<ApiKeyRole>() {
+        if *role == ApiKeyRole::Admin {
+            return next.run(req).await;
+        }
+    }
+
+    let response = axum::Json(serde_json::json!({
+        "code": 403,
+        "message": "Admin access required"
+    }))
+    .into_response();
+    (StatusCode::FORBIDDEN, response).into_response()
+}
+
 pub async fn auth_middleware_fn(
     State(auth): State<Arc<ApiKeyAuth>>,
     req: Request<Body>,
@@ -194,13 +233,38 @@ mod tests {
         let workspace_id = "test-workspace";
         let key_hash = ApiKeyAuth::hash_key(key_id, key_secret);
 
-        auth.load_key(key_id.to_string(), key_hash, workspace_id.to_string())
-            .await;
+        auth.load_key(
+            key_id.to_string(),
+            key_hash,
+            workspace_id.to_string(),
+            ApiKeyRole::User,
+        )
+        .await;
 
         let result = auth.validate_key(key_id, key_secret).await;
-        assert_eq!(result, Some(workspace_id.to_string()));
+        assert_eq!(result, Some((workspace_id.to_string(), ApiKeyRole::User)));
 
         let result = auth.validate_key(key_id, "wrong-secret").await;
         assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_admin_api_key() {
+        let auth = ApiKeyAuth::new();
+        let key_id = "admin-key";
+        let key_secret = "admin-secret";
+        let workspace_id = "admin-workspace";
+        let key_hash = ApiKeyAuth::hash_key(key_id, key_secret);
+
+        auth.load_key(
+            key_id.to_string(),
+            key_hash,
+            workspace_id.to_string(),
+            ApiKeyRole::Admin,
+        )
+        .await;
+
+        let result = auth.validate_key(key_id, key_secret).await;
+        assert_eq!(result, Some((workspace_id.to_string(), ApiKeyRole::Admin)));
     }
 }

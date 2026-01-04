@@ -66,15 +66,53 @@ impl Default for ServerConfig {
 async fn load_api_keys(auth: &Arc<ApiKeyAuth>) {
     info!("Loading API keys from configuration...");
 
-    // Add a default test API key for development/testing
-    // Format: Authorization: ApiKey test_key_test_secret
-    let key_id = "test-key".to_string();
-    let key_secret = "test-secret".to_string();
-    let workspace_id = "default".to_string();
-    let key_hash = ApiKeyAuth::compute_key_hash(&key_id, &key_secret);
+    use nebula_server::middleware::ApiKeyRole;
+    use rand::Rng;
 
-    auth.load_key(key_id, key_hash, workspace_id).await;
-    info!("Loaded default test API key: test-key (workspace: default)");
+    // Generate random admin API key
+    let admin_key_id: String = (0..16)
+        .map(|_| {
+            const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            CHARSET[rand::thread_rng().gen_range(0..CHARSET.len())] as char
+        })
+        .collect();
+    let admin_key_secret: String = (0..32)
+        .map(|_| {
+            const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            CHARSET[rand::thread_rng().gen_range(0..CHARSET.len())] as char
+        })
+        .collect();
+    let admin_key_hash = ApiKeyAuth::compute_key_hash(&admin_key_id, &admin_key_secret);
+    auth.load_key(
+        admin_key_id.clone(),
+        admin_key_hash,
+        "admin".to_string(),
+        ApiKeyRole::Admin,
+    )
+    .await;
+    info!(
+        "Generated admin API key: {}_{} (workspace: admin)",
+        admin_key_id, admin_key_secret
+    );
+
+    // Add a default test API key for development/testing
+    // Format: Authorization: ApiKey test-key_test-secret
+    let test_key_id = "test-key".to_string();
+    let test_key_secret = "test-secret".to_string();
+    let test_workspace_id = "default".to_string();
+    let test_key_hash = ApiKeyAuth::compute_key_hash(&test_key_id, &test_key_secret);
+
+    auth.load_key(
+        test_key_id.clone(),
+        test_key_hash,
+        test_workspace_id.clone(),
+        ApiKeyRole::User,
+    )
+    .await;
+    info!(
+        "Loaded default test API key: {}_{} (workspace: {})",
+        test_key_id, test_key_secret, test_workspace_id
+    );
 }
 
 #[cfg(feature = "etcd")]

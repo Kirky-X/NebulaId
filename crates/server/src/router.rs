@@ -94,14 +94,21 @@ pub async fn create_router(
         config_service: config_service.clone(),
     };
 
-    // Public router (no authentication)
+    // Public router (no authentication) - only health check
     let public_routes = Router::new()
         .route("/api/v1", get(handle_api_info))
         .route("/api/v1/generate", post(handle_generate))
         .route("/api/v1/generate/batch", post(handle_batch_generate))
         .route("/api/v1/parse", post(handle_parse))
-        .route("/metrics", get(handle_metrics))
         .route("/health", get(handle_health));
+
+    // Admin-only router (requires admin API key)
+    let admin_only_routes = Router::new()
+        .route("/metrics", get(handle_metrics))
+        // Apply admin requirement middleware
+        .layer(axum::middleware::from_fn(
+            crate::middleware::admin_required_middleware,
+        ));
 
     // Authenticated router (requires API key)
     let authenticated_routes = Router::new()
@@ -130,6 +137,7 @@ pub async fn create_router(
     // Merge routes with shared state
     public_routes
         .merge(authenticated_routes)
+        .merge(admin_only_routes)
         .with_state(app_state)
         // Security headers
         .layer(SetResponseHeaderLayer::overriding(

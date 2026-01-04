@@ -368,6 +368,13 @@ async fn main() -> Result<()> {
     };
     load_api_keys(&auth, &repository).await;
 
+    // Initialize audit logger and config (used by both etcd and non-etcd modes)
+    let audit_logger = Arc::new(AuditLogger::new(config.rate_limit.default_rps as usize));
+    let hot_config = Arc::new(HotReloadConfig::new(
+        config.clone(),
+        "config/config.toml".to_string(),
+    ));
+
     #[cfg(feature = "etcd")]
     {
         info!("Initializing etcd cluster health monitor...");
@@ -390,23 +397,26 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-        let config_service = if let Some(ref repo) = repository {
-            Arc::new(ConfigManagementService::with_repository(
+        let (handlers, config_service) = if let Some(ref repo) = repository {
+            let cs = Arc::new(ConfigManagementService::with_repository(
                 hot_config,
                 id_generator.clone(),
                 repo.clone(),
-            ))
+            ));
+            let h = Arc::new(ApiHandlers::with_api_key_repository(
+                id_generator.clone(),
+                cs.clone(),
+                repo.clone(),
+            ));
+            (h, cs)
         } else {
-            Arc::new(ConfigManagementService::new(
+            let cs = Arc::new(ConfigManagementService::new(
                 hot_config,
                 id_generator.clone(),
-            ))
+            ));
+            let h = Arc::new(ApiHandlers::new(id_generator.clone(), cs.clone()));
+            (h, cs)
         };
-
-        let handlers = Arc::new(ApiHandlers::with_api_key_repository(
-            id_generator.clone(),
-            config_service.clone(),
-        ));
 
         let rate_limiter = Arc::new(RateLimiter::new(
             config.rate_limit.default_rps,
@@ -480,16 +490,10 @@ async fn main() -> Result<()> {
     {
         info!("etcd feature disabled, initializing without etcd cluster health monitor");
 
-        // Initialize audit logger and config for non-etcd mode
-        let audit_logger = Arc::new(AuditLogger::new(config.rate_limit.default_rps as usize));
         let audit_logger_for_core: nebula_core::algorithm::DynAuditLogger =
             audit_logger.clone() as Arc<dyn nebula_core::algorithm::AuditLogger>;
         let router = AlgorithmRouter::new(config.clone(), Some(audit_logger_for_core));
         let _router = Arc::new(router);
-        let hot_config = Arc::new(HotReloadConfig::new(
-            config.clone(),
-            "config/config.toml".to_string(),
-        ));
 
         let id_generator = create_id_generator(&config, audit_logger.clone(), None).await?;
 
@@ -608,7 +612,6 @@ mod tests {
     async fn test_create_router_with_handlers() {
         setup_test_env();
         use async_trait::async_trait;
-        use nebula_core::database::ApiKeyInfo;
 
         #[derive(Clone)]
         struct MockApiKeyRepo;
@@ -714,7 +717,6 @@ mod tests {
     async fn test_graceful_shutdown() {
         setup_test_env();
         use async_trait::async_trait;
-        use nebula_core::database::ApiKeyInfo;
 
         #[derive(Clone)]
         struct MockApiKeyRepo;

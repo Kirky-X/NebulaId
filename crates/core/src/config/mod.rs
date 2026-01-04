@@ -58,13 +58,25 @@ impl AppConfig {
     pub fn http_addr(&self) -> Result<SocketAddr, Box<dyn std::error::Error + Send + Sync>> {
         format!("{}:{}", self.host, self.http_port)
             .parse()
-            .map_err(|e| format!("Invalid HTTP address '{}:{}': {}", self.host, self.http_port, e).into())
+            .map_err(|e| {
+                format!(
+                    "Invalid HTTP address '{}:{}': {}",
+                    self.host, self.http_port, e
+                )
+                .into()
+            })
     }
 
     pub fn grpc_addr(&self) -> Result<SocketAddr, Box<dyn std::error::Error + Send + Sync>> {
         format!("{}:{}", self.host, self.grpc_port)
             .parse()
-            .map_err(|e| format!("Invalid gRPC address '{}:{}': {}", self.host, self.grpc_port, e).into())
+            .map_err(|e| {
+                format!(
+                    "Invalid gRPC address '{}:{}': {}",
+                    self.host, self.grpc_port, e
+                )
+                .into()
+            })
     }
 }
 
@@ -106,10 +118,12 @@ impl Default for DatabaseConfig {
         // SECURITY: Require environment variable for password in production
         // In test mode, allow fallback to avoid breaking unit tests
         let password = if cfg!(test) {
-            std::env::var("NEBULA_DATABASE_PASSWORD").unwrap_or_else(|_| "test_password".to_string())
-        } else {
             std::env::var("NEBULA_DATABASE_PASSWORD")
-                .expect("NEBULA_DATABASE_PASSWORD environment variable must be set for production use")
+                .unwrap_or_else(|_| "test_password".to_string())
+        } else {
+            std::env::var("NEBULA_DATABASE_PASSWORD").expect(
+                "NEBULA_DATABASE_PASSWORD environment variable must be set for production use",
+            )
         };
 
         Self {
@@ -406,7 +420,9 @@ pub struct BatchGenerateConfig {
 
 impl Default for BatchGenerateConfig {
     fn default() -> Self {
-        Self { max_batch_size: 100 }
+        Self {
+            max_batch_size: 100,
+        }
     }
 }
 

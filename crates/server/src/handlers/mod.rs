@@ -629,9 +629,9 @@ impl ApiHandlers {
                 .await
                 .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
 
-            let has_admin = existing_keys.iter().any(|k| {
-                k.role == nebula_core::database::ApiKeyRole::Admin
-            });
+            let has_admin = existing_keys
+                .iter()
+                .any(|k| k.role == nebula_core::database::ApiKeyRole::Admin);
 
             if has_admin {
                 tracing::warn!(

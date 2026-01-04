@@ -31,11 +31,6 @@ async fn get_test_backend() -> Option<RedisCacheBackend> {
     .ok()
 }
 
-/// Check if Redis is available for integration testing
-async fn is_redis_available() -> bool {
-    get_test_backend().await.is_some()
-}
-
 #[cfg(test)]
 mod integration_tests {
     use super::*;

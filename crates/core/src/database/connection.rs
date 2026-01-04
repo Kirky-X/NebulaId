@@ -91,6 +91,26 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
 
     // Define all tables with their CREATE statements
     let tables = vec![
+        // API Keys table
+        r#"
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            key_id VARCHAR(64) NOT NULL UNIQUE,
+            key_secret_hash VARCHAR(128) NOT NULL,
+            key_prefix VARCHAR(16) NOT NULL,
+            role VARCHAR(20) NOT NULL DEFAULT 'user',
+            workspace_id UUID NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            description TEXT,
+            rate_limit INT DEFAULT 1000,
+            enabled BOOLEAN DEFAULT true,
+            expires_at TIMESTAMP WITH TIME ZONE,
+            last_used_at TIMESTAMP WITH TIME ZONE,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(workspace_id, key_id)
+        )
+        "#,
         // Workspaces table
         r#"
         CREATE TABLE IF NOT EXISTS workspaces (
@@ -156,13 +176,16 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
     for sql in tables {
         let stmt = Statement::from_string(DbBackend::Postgres, sql);
         match db.execute(stmt).await {
-            Ok(_) => info!("Table created/verified successfully"),
+            Ok(_) => info!("Table created/verified: {}", sql.lines().nth(3).unwrap_or("").trim()),
             Err(e) => {
                 let error_msg = e.to_string();
                 if error_msg.contains("already exists") || error_msg.contains("duplicate") {
                     info!("Table already exists, skipping");
                 } else {
-                    warn!("Migration warning: {}", error_msg);
+                    return Err(CoreError::DatabaseError(format!(
+                        "Failed to create table: {}",
+                        error_msg
+                    )));
                 }
             }
         }

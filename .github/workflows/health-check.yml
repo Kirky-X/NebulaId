@@ -43,6 +43,9 @@ jobs:
           shared-key: "nebula-health"
           cache-targets: false
 
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
       - name: Security Audit
         run: cargo audit --deny warnings
 

@@ -332,7 +332,9 @@ async fn main() -> Result<()> {
 
             // Run auto migrations to create tables
             if let Err(e) = database::run_migrations(&conn).await {
-                warn!("Failed to run database migrations: {}. Tables may need to be created manually.", e);
+                error!("Failed to run database migrations: {}. Application cannot start without required tables.", e);
+                error!("Shutting down...");
+                std::process::exit(1);
             }
 
             Some(conn)

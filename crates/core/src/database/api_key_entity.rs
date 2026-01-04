@@ -25,8 +25,8 @@ pub struct Model {
     pub key_id: String,
     pub key_secret_hash: String,
     pub key_prefix: String,
-    #[sea_orm(enum_name = "ApiKeyRoleDb")]
-    pub role: ApiKeyRoleDb,
+    #[sea_orm(rename = "role")]
+    pub role: String, // Store as "admin" or "user"
     #[sea_orm(unique)]
     pub workspace_id: Uuid,
     pub name: String,
@@ -87,6 +87,28 @@ impl fmt::Display for ApiKeyRole {
             ApiKeyRole::Admin => write!(f, "admin"),
             ApiKeyRole::User => write!(f, "user"),
         }
+    }
+}
+
+impl From<String> for ApiKeyRole {
+    fn from(s: String) -> Self {
+        s.as_str().into()
+    }
+}
+
+impl From<&str> for ApiKeyRole {
+    fn from(s: &str) -> Self {
+        match s {
+            "admin" => ApiKeyRole::Admin,
+            "user" => ApiKeyRole::User,
+            _ => ApiKeyRole::User,
+        }
+    }
+}
+
+impl From<ApiKeyRole> for String {
+    fn from(role: ApiKeyRole) -> Self {
+        role.to_string()
     }
 }
 
@@ -152,33 +174,6 @@ impl From<Model> for ApiKeyResponse {
             enabled: model.enabled,
             expires_at: model.expires_at,
             created_at: model.created_at,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, EnumIter, DeriveActiveEnum, PartialEq, Eq, Serialize, Deserialize)]
-#[sea_orm(rs_type = "String", db_type = "String(StringLen::N(20))")]
-pub enum ApiKeyRoleDb {
-    #[sea_orm(string_value = "admin")]
-    Admin,
-    #[sea_orm(string_value = "user")]
-    User,
-}
-
-impl From<ApiKeyRoleDb> for ApiKeyRole {
-    fn from(role: ApiKeyRoleDb) -> Self {
-        match role {
-            ApiKeyRoleDb::Admin => ApiKeyRole::Admin,
-            ApiKeyRoleDb::User => ApiKeyRole::User,
-        }
-    }
-}
-
-impl From<ApiKeyRole> for ApiKeyRoleDb {
-    fn from(role: ApiKeyRole) -> Self {
-        match role {
-            ApiKeyRole::Admin => ApiKeyRoleDb::Admin,
-            ApiKeyRole::User => ApiKeyRoleDb::User,
         }
     }
 }

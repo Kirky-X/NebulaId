@@ -207,6 +207,7 @@ mod tests {
     use super::*;
     use crate::config::DatabaseConfig;
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn test_sqlite_connection() {
         let config = DatabaseConfig {

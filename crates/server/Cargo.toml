@@ -7,7 +7,9 @@ name = "nebula-id"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["postgresql"]
+postgresql = ["nebula-core/postgresql", "sqlx/postgres"]
+sqlite = ["nebula-core/sqlite", "sqlx/sqlite"]
 etcd = ["dep:etcd-client", "nebula-core/etcd"]
 
 [build-dependencies]
@@ -43,7 +45,7 @@ redis = { workspace = true }
 dashmap = { workspace = true }
 
 # 数据库
-sqlx = { workspace = true }
+sqlx = { workspace = true, default-features = false }
 
 # 监控与指标
 prometheus = { workspace = true }

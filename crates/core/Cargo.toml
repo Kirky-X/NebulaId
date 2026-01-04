@@ -3,7 +3,9 @@ name = "nebula-core"
 edition = "2021"
 
 [features]
-default = []
+default = ["postgresql"]
+postgresql = ["sea-orm/sqlx-postgres", "sqlx/postgres"]
+sqlite = ["sea-orm/sqlx-sqlite", "sqlx/sqlite"]
 etcd = ["dep:etcd-client"]
 
 [dependencies]
@@ -34,8 +36,9 @@ dashmap = { workspace = true }
 parking_lot = { workspace = true }
 
 # 数据库
-sea-orm = { workspace = true }
-sea-orm-migration = { workspace = true }
+sea-orm = { workspace = true, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
+sea-orm-migration = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true, default-features = false }
 
 # 监控与指标
 prometheus-client = { workspace = true }

@@ -352,7 +352,19 @@ async fn main() -> Result<()> {
     });
 
     // Create API key auth with repository for database-backed storage
-    let auth: Arc<ApiKeyAuth> = Arc::new(ApiKeyAuth::new(repository.as_ref().unwrap().clone()));
+    let auth: Arc<ApiKeyAuth> = if let Some(ref repo) = repository {
+        Arc::new(ApiKeyAuth::new(repo.clone()))
+    } else {
+        error!(
+            "FATAL: API key authentication requires database connection.
+            Nebula ID requires a database for API key storage and validation.
+            Please ensure your configuration has valid database settings:
+            - database.url or database.engine/host/port/database/username/password
+            - database.max_connections should be > 0
+            Shutting down..."
+        );
+        std::process::exit(1);
+    };
     load_api_keys(&auth, &repository).await;
 
     // Initialize audit logger and config (used by both etcd and non-etcd modes)

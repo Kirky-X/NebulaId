@@ -340,6 +340,9 @@ http_enabled = false
 grpc_enabled = false
 min_tls_version = "tls13"
 alpn_protocols = ["h2", "http/1.1"]
+
+[batch_generate]
+max_batch_size = 100
 "#;
         std::fs::write(&config_path, initial_content).unwrap();
 
@@ -437,6 +440,9 @@ http_enabled = false
 grpc_enabled = false
 min_tls_version = "tls13"
 alpn_protocols = ["h2", "http/1.1"]
+
+[batch_generate]
+max_batch_size = 100
 "#;
         std::fs::write(&config_path, updated_content).unwrap();
 

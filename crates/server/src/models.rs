@@ -457,3 +457,53 @@ fn default_page_size() -> u64 {
 pub fn naive_to_rfc3339(dt: chrono::NaiveDateTime) -> String {
     chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc).to_rfc3339()
 }
+
+// ========== API Key Models ==========
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct CreateApiKeyRequest {
+    #[validate(length(min = 1, max = 64))]
+    pub name: String,
+
+    pub description: Option<String>,
+
+    #[validate(length(min = 1, max = 20))]
+    pub role: Option<String>, // "admin" or "user"
+
+    #[validate(range(min = 100, max = 1000000))]
+    pub rate_limit: Option<i32>,
+
+    pub expires_at: Option<String>, // RFC3339 format
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiKeyResponse {
+    pub id: String,
+    pub key_id: String,
+    pub key_prefix: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub role: String,
+    pub rate_limit: i32,
+    pub enabled: bool,
+    pub expires_at: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiKeyWithSecretResponse {
+    pub key: ApiKeyResponse,
+    pub key_secret: String, // Only returned on creation
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiKeyListResponse {
+    pub api_keys: Vec<ApiKeyResponse>,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RevokeApiKeyResponse {
+    pub success: bool,
+    pub message: String,
+}

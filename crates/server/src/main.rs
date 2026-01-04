@@ -16,15 +16,15 @@ use nebula_core::algorithm::AlgorithmRouter;
 use nebula_core::config::Config;
 #[cfg(feature = "etcd")]
 use nebula_core::coordinator::EtcdClusterHealthMonitor;
-use nebula_core::database;
+use nebula_core::database::{self, ApiKeyRepository};
 use nebula_core::types::Result;
 use nebula_server::audit::AuditLogger;
 use nebula_server::config_hot_reload::HotReloadConfig;
 use nebula_server::config_management::ConfigManagementService;
-use nebula_server::proto::nebula::id::v1::nebula_id_service_server::NebulaIdServiceServer;
 use nebula_server::grpc::GrpcServer;
 use nebula_server::handlers::ApiHandlers;
 use nebula_server::middleware::ApiKeyAuth;
+use nebula_server::proto::nebula::id::v1::nebula_id_service_server::NebulaIdServiceServer;
 use nebula_server::rate_limit::RateLimiter;
 use nebula_server::router::create_router;
 use nebula_server::tls_server::TlsManager;
@@ -63,56 +63,82 @@ impl Default for ServerConfig {
     }
 }
 
-async fn load_api_keys(auth: &Arc<ApiKeyAuth>) {
-    info!("Loading API keys from configuration...");
+async fn load_api_keys(
+    _auth: &Arc<ApiKeyAuth>,
+    repository: &Option<Arc<database::SeaOrmRepository>>,
+) {
+    use nebula_core::database::{ApiKeyRole, CreateApiKeyRequest};
+    use uuid::Uuid;
 
-    use nebula_server::middleware::ApiKeyRole;
-    use rand::Rng;
+    info!("Loading API keys...");
 
-    // Generate random admin API key
-    let admin_key_id: String = (0..16)
-        .map(|_| {
-            const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-            CHARSET[rand::thread_rng().gen_range(0..CHARSET.len())] as char
-        })
-        .collect();
-    let admin_key_secret: String = (0..32)
-        .map(|_| {
-            const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-            CHARSET[rand::thread_rng().gen_range(0..CHARSET.len())] as char
-        })
-        .collect();
-    let admin_key_hash = ApiKeyAuth::compute_key_hash(&admin_key_id, &admin_key_secret);
-    auth.load_key(
-        admin_key_id.clone(),
-        admin_key_hash,
-        "admin".to_string(),
-        ApiKeyRole::Admin,
-    )
-    .await;
-    info!(
-        "Generated admin API key: {}_{} (workspace: admin)",
-        admin_key_id, admin_key_secret
-    );
+    if let Some(ref repo) = repository {
+        // Try to get existing admin key from database (use default workspace ID)
+        let default_workspace_id = Uuid::nil(); // Use nil UUID for default workspace
+        match repo.get_admin_api_key(default_workspace_id).await {
+            Ok(Some(admin_key)) => {
+                info!(
+                    "Found existing admin API key: {} (workspace: {})",
+                    admin_key.key_id, admin_key.workspace_id
+                );
+            }
+            Ok(None) => {
+                // Generate new admin API key if none exists
+                let admin_request = CreateApiKeyRequest {
+                    workspace_id: default_workspace_id,
+                    name: "admin".to_string(),
+                    description: Some("Default Admin API Key".to_string()),
+                    role: ApiKeyRole::Admin,
+                    rate_limit: Some(100000),
+                    expires_at: None, // No expiration for admin key
+                };
+                match repo.create_api_key(&admin_request).await {
+                    Ok(key_with_secret) => {
+                        info!(
+                            "Generated new admin API key: {} (workspace: admin)",
+                            key_with_secret.key.key_id
+                        );
+                        // SECURITY: Don't log secrets - user must save the secret when it's returned
+                    }
+                    Err(e) => {
+                        error!("Failed to create admin API key: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to check admin API key: {}", e);
+            }
+        }
 
-    // Add a default test API key for development/testing
-    // Format: Authorization: ApiKey test-key_test-secret
-    let test_key_id = "test-key".to_string();
-    let test_key_secret = "test-secret".to_string();
-    let test_workspace_id = "default".to_string();
-    let test_key_hash = ApiKeyAuth::compute_key_hash(&test_key_id, &test_key_secret);
-
-    auth.load_key(
-        test_key_id.clone(),
-        test_key_hash,
-        test_workspace_id.clone(),
-        ApiKeyRole::User,
-    )
-    .await;
-    info!(
-        "Loaded default test API key: {}_{} (workspace: {})",
-        test_key_id, test_key_secret, test_workspace_id
-    );
+        // Add a default test API key only in development mode
+        // Format: Authorization: ApiKey test-key_test-secret
+        #[cfg(debug_assertions)]
+        {
+            let test_workspace_id = Uuid::nil();
+            let test_request = CreateApiKeyRequest {
+                workspace_id: test_workspace_id,
+                name: "Test API Key".to_string(),
+                description: Some("Default test API key".to_string()),
+                role: ApiKeyRole::User,
+                rate_limit: Some(10000),
+                expires_at: None,
+            };
+            match repo.create_api_key(&test_request).await {
+                Ok(key_with_secret) => {
+                    info!(
+                        "Created test API key: {} (workspace: {})",
+                        key_with_secret.key.key_id, test_workspace_id
+                    );
+                    // SECURITY: Don't log secrets in debug mode either
+                }
+                Err(e) => {
+                    warn!("Failed to create test API key (may already exist): {}", e);
+                }
+            }
+        }
+    } else {
+        warn!("No database connection, API keys cannot be stored persistently");
+    }
 }
 
 #[cfg(feature = "etcd")]
@@ -294,17 +320,7 @@ async fn main() -> Result<()> {
         server_config.http_port, server_config.grpc_port
     );
 
-    let auth = Arc::new(ApiKeyAuth::new());
-    load_api_keys(&auth).await;
-
-    let hot_config = Arc::new(HotReloadConfig::new(
-        config.clone(),
-        "config/config.toml".to_string(),
-    ));
-
-    let audit_logger = Arc::new(AuditLogger::new(10000));
-
-    // Initialize database connection
+    // Initialize database connection first (needed for API key auth)
     info!("Connecting to database...");
     let db_connection = match database::create_connection(&config.database).await {
         Ok(conn) => {
@@ -331,6 +347,14 @@ async fn main() -> Result<()> {
         info!("Database repository initialized");
         repo
     });
+
+    // Create API key auth with repository for database-backed storage
+    let auth: Arc<ApiKeyAuth> = if let Some(ref repo) = repository {
+        Arc::new(ApiKeyAuth::new(repo.clone()))
+    } else {
+        panic!("API key authentication requires database connection. Please configure database settings.");
+    };
+    load_api_keys(&auth, &repository).await;
 
     #[cfg(feature = "etcd")]
     {
@@ -367,7 +391,7 @@ async fn main() -> Result<()> {
             ))
         };
 
-        let handlers = Arc::new(ApiHandlers::new(
+        let handlers = Arc::new(ApiHandlers::with_api_key_repository(
             id_generator.clone(),
             config_service.clone(),
         ));
@@ -444,25 +468,39 @@ async fn main() -> Result<()> {
     {
         info!("etcd feature disabled, initializing without etcd cluster health monitor");
 
+        // Initialize audit logger and config for non-etcd mode
+        let audit_logger = Arc::new(AuditLogger::new(config.rate_limit.default_rps as usize));
+        let audit_logger_for_core: nebula_core::algorithm::DynAuditLogger =
+            audit_logger.clone() as Arc<dyn nebula_core::algorithm::AuditLogger>;
+        let router = AlgorithmRouter::new(config.clone(), Some(audit_logger_for_core));
+        let _router = Arc::new(router);
+        let hot_config = Arc::new(HotReloadConfig::new(
+            config.clone(),
+            "config/config.toml".to_string(),
+        ));
+
         let id_generator = create_id_generator(&config, audit_logger.clone(), None).await?;
 
-        let config_service = if let Some(ref repo) = repository {
-            Arc::new(ConfigManagementService::with_repository(
+        let (handlers, config_service) = if let Some(ref repo) = repository {
+            let cs = Arc::new(ConfigManagementService::with_repository(
                 hot_config,
                 id_generator.clone(),
                 repo.clone(),
-            ))
+            ));
+            let h = Arc::new(ApiHandlers::with_api_key_repository(
+                id_generator.clone(),
+                cs.clone(),
+                repo.clone(),
+            ));
+            (h, cs)
         } else {
-            Arc::new(ConfigManagementService::new(
+            let cs = Arc::new(ConfigManagementService::new(
                 hot_config,
                 id_generator.clone(),
-            ))
+            ));
+            let h = Arc::new(ApiHandlers::new(id_generator.clone(), cs.clone()));
+            (h, cs)
         };
-
-        let handlers = Arc::new(ApiHandlers::new(
-            id_generator.clone(),
-            config_service.clone(),
-        ));
 
         let rate_limiter = Arc::new(RateLimiter::new(
             config.rate_limit.default_rps,
@@ -551,6 +589,87 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_router_with_handlers() {
+        use async_trait::async_trait;
+        use nebula_core::database::ApiKeyInfo;
+
+        #[derive(Clone)]
+        struct MockApiKeyRepo;
+
+        #[async_trait]
+        impl database::ApiKeyRepository for MockApiKeyRepo {
+            async fn create_api_key(
+                &self,
+                _request: &database::CreateApiKeyRequest,
+            ) -> nebula_core::types::Result<database::ApiKeyWithSecret> {
+                Ok(database::ApiKeyWithSecret {
+                    key: database::ApiKeyResponse {
+                        id: uuid::Uuid::new_v4(),
+                        key_id: "mock_key_id".to_string(),
+                        key_prefix: "nino_".to_string(),
+                        name: "Mock Key".to_string(),
+                        description: None,
+                        role: database::ApiKeyRole::User,
+                        rate_limit: 10000,
+                        enabled: true,
+                        expires_at: None,
+                        created_at: chrono::Utc::now().naive_utc(),
+                    },
+                    key_secret: "mock_secret".to_string(),
+                })
+            }
+
+            async fn get_api_key_by_id(
+                &self,
+                _key_id: &str,
+            ) -> nebula_core::types::Result<Option<database::ApiKeyInfo>> {
+                Ok(None)
+            }
+
+            async fn validate_api_key(
+                &self,
+                _key_id: &str,
+                _key_secret: &str,
+            ) -> nebula_core::types::Result<Option<(uuid::Uuid, database::ApiKeyRole)>>
+            {
+                Ok(None)
+            }
+
+            async fn list_api_keys(
+                &self,
+                _workspace_id: uuid::Uuid,
+                _limit: Option<u32>,
+                _offset: Option<u32>,
+            ) -> nebula_core::types::Result<Vec<database::ApiKeyInfo>> {
+                Ok(vec![])
+            }
+
+            async fn delete_api_key(&self, _id: uuid::Uuid) -> nebula_core::types::Result<()> {
+                Ok(())
+            }
+
+            async fn revoke_api_key(&self, _id: uuid::Uuid) -> nebula_core::types::Result<()> {
+                Ok(())
+            }
+
+            async fn update_last_used(&self, _id: uuid::Uuid) -> nebula_core::types::Result<()> {
+                Ok(())
+            }
+
+            async fn get_admin_api_key(
+                &self,
+                _workspace_id: uuid::Uuid,
+            ) -> nebula_core::types::Result<Option<database::ApiKeyInfo>> {
+                Ok(None)
+            }
+
+            async fn count_api_keys(
+                &self,
+                _workspace_id: uuid::Uuid,
+            ) -> nebula_core::types::Result<u64> {
+                Ok(0)
+            }
+        }
+
         let config = Config::default();
         let audit_logger: Arc<dyn nebula_core::algorithm::AuditLogger> =
             Arc::new(AuditLogger::new(10000));
@@ -561,8 +680,12 @@ mod tests {
             "config/config.toml".to_string(),
         ));
         let config_service = Arc::new(ConfigManagementService::new(hot_config, router.clone()));
-        let handlers = Arc::new(ApiHandlers::new(router, config_service));
-        let auth = Arc::new(ApiKeyAuth::new());
+        let handlers = Arc::new(ApiHandlers::with_api_key_repository(
+            router,
+            config_service,
+            Arc::new(MockApiKeyRepo),
+        ));
+        let auth = Arc::new(ApiKeyAuth::new(Arc::new(MockApiKeyRepo)));
         let rate_limiter = Arc::new(RateLimiter::new(10000, 100));
         let audit_logger = Arc::new(AuditLogger::new(10000));
 
@@ -571,6 +694,87 @@ mod tests {
 
     #[tokio::test]
     async fn test_graceful_shutdown() {
+        use async_trait::async_trait;
+        use nebula_core::database::ApiKeyInfo;
+
+        #[derive(Clone)]
+        struct MockApiKeyRepo;
+
+        #[async_trait]
+        impl database::ApiKeyRepository for MockApiKeyRepo {
+            async fn create_api_key(
+                &self,
+                _request: &database::CreateApiKeyRequest,
+            ) -> nebula_core::types::Result<database::ApiKeyWithSecret> {
+                Ok(database::ApiKeyWithSecret {
+                    key: database::ApiKeyResponse {
+                        id: uuid::Uuid::new_v4(),
+                        key_id: "mock_key_id".to_string(),
+                        key_prefix: "nino_".to_string(),
+                        name: "Mock Key".to_string(),
+                        description: None,
+                        role: database::ApiKeyRole::User,
+                        rate_limit: 10000,
+                        enabled: true,
+                        expires_at: None,
+                        created_at: chrono::Utc::now().naive_utc(),
+                    },
+                    key_secret: "mock_secret".to_string(),
+                })
+            }
+
+            async fn get_api_key_by_id(
+                &self,
+                _key_id: &str,
+            ) -> nebula_core::types::Result<Option<database::ApiKeyInfo>> {
+                Ok(None)
+            }
+
+            async fn validate_api_key(
+                &self,
+                _key_id: &str,
+                _key_secret: &str,
+            ) -> nebula_core::types::Result<Option<(uuid::Uuid, database::ApiKeyRole)>>
+            {
+                Ok(None)
+            }
+
+            async fn list_api_keys(
+                &self,
+                _workspace_id: uuid::Uuid,
+                _limit: Option<u32>,
+                _offset: Option<u32>,
+            ) -> nebula_core::types::Result<Vec<database::ApiKeyInfo>> {
+                Ok(vec![])
+            }
+
+            async fn delete_api_key(&self, _id: uuid::Uuid) -> nebula_core::types::Result<()> {
+                Ok(())
+            }
+
+            async fn revoke_api_key(&self, _id: uuid::Uuid) -> nebula_core::types::Result<()> {
+                Ok(())
+            }
+
+            async fn update_last_used(&self, _id: uuid::Uuid) -> nebula_core::types::Result<()> {
+                Ok(())
+            }
+
+            async fn get_admin_api_key(
+                &self,
+                _workspace_id: uuid::Uuid,
+            ) -> nebula_core::types::Result<Option<database::ApiKeyInfo>> {
+                Ok(None)
+            }
+
+            async fn count_api_keys(
+                &self,
+                _workspace_id: uuid::Uuid,
+            ) -> nebula_core::types::Result<u64> {
+                Ok(0)
+            }
+        }
+
         let config = Config::default();
         let audit_logger: Arc<dyn nebula_core::algorithm::AuditLogger> =
             Arc::new(AuditLogger::new(10000));
@@ -581,8 +785,12 @@ mod tests {
             "config/config.toml".to_string(),
         ));
         let config_service = Arc::new(ConfigManagementService::new(hot_config, router.clone()));
-        let handlers = Arc::new(ApiHandlers::new(router, config_service.clone()));
-        let auth = Arc::new(ApiKeyAuth::new());
+        let handlers = Arc::new(ApiHandlers::with_api_key_repository(
+            router,
+            config_service.clone(),
+            Arc::new(MockApiKeyRepo),
+        ));
+        let auth = Arc::new(ApiKeyAuth::new(Arc::new(MockApiKeyRepo)));
         let rate_limiter = Arc::new(RateLimiter::new(10000, 100));
         let audit_logger = Arc::new(AuditLogger::new(10000));
 

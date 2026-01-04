@@ -14,6 +14,7 @@
 
 #![allow(unused_imports)]
 
+mod api_key_entity;
 mod biz_tag_entity;
 mod connection;
 mod group_entity;
@@ -22,12 +23,16 @@ mod segment_entity;
 mod workspace_entity;
 
 pub use crate::types::id::{AlgorithmType, IdFormat};
+pub use api_key_entity::{
+    ApiKey, ApiKeyInfo, ApiKeyResponse, ApiKeyRole, ApiKeyWithSecret, CreateApiKeyRequest,
+};
 pub use biz_tag_entity::{BizTag, CreateBizTagRequest, UpdateBizTagRequest};
 pub use connection::create_connection;
 pub use connection::run_migrations;
 pub use group_entity::{CreateGroupRequest, Group, UpdateGroupRequest};
 pub use repository::{
-    BizTagRepository, GroupRepository, SeaOrmRepository, SegmentRepository, WorkspaceRepository,
+    ApiKeyRepository, BizTagRepository, GroupRepository, SeaOrmRepository, SegmentRepository,
+    WorkspaceRepository,
 };
 pub use workspace_entity::{
     CreateWorkspaceRequest, UpdateWorkspaceRequest, Workspace, WorkspaceStatus,

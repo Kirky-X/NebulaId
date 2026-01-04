@@ -385,6 +385,18 @@ pub struct Config {
     pub logging: LoggingConfig,
     pub rate_limit: RateLimitConfig,
     pub tls: TlsConfig,
+    pub batch_generate: BatchGenerateConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BatchGenerateConfig {
+    pub max_batch_size: u32,
+}
+
+impl Default for BatchGenerateConfig {
+    fn default() -> Self {
+        Self { max_batch_size: 100 }
+    }
 }
 
 impl Config {

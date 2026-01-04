@@ -14,11 +14,11 @@
 
 use crate::config_hot_reload::HotReloadConfig;
 use crate::models::{
-    AlgorithmConfigInfo, AppConfigInfo, ConfigResponse, DatabaseConfigInfo, LoggingConfigInfo,
-    MonitoringConfigInfo, RateLimitConfigInfo, RedisConfigInfo, SecureConfigResponse,
-    SegmentConfigInfo, SetAlgorithmRequest, SetAlgorithmResponse, SnowflakeConfigInfo,
-    TlsConfigInfo, UpdateConfigResponse, UpdateLoggingRequest, UpdateRateLimitRequest,
-    UuidV7ConfigInfo, DatabaseMetrics, CacheMetrics, ConnectionPoolMetrics,
+    AlgorithmConfigInfo, AppConfigInfo, CacheMetrics, ConfigResponse, ConnectionPoolMetrics,
+    DatabaseConfigInfo, DatabaseMetrics, LoggingConfigInfo, MonitoringConfigInfo,
+    RateLimitConfigInfo, RedisConfigInfo, SecureConfigResponse, SegmentConfigInfo,
+    SetAlgorithmRequest, SetAlgorithmResponse, SnowflakeConfigInfo, TlsConfigInfo,
+    UpdateConfigResponse, UpdateLoggingRequest, UpdateRateLimitRequest, UuidV7ConfigInfo,
 };
 use nebula_core::config::Config;
 use nebula_core::types::id::AlgorithmType;
@@ -457,8 +457,18 @@ impl ConfigManagementService {
         }
     }
 
-    pub fn get_algorithm_metrics(&self) -> Vec<(nebula_core::types::AlgorithmType, nebula_core::algorithm::AlgorithmMetricsSnapshot)> {
+    pub fn get_algorithm_metrics(
+        &self,
+    ) -> Vec<(
+        nebula_core::types::AlgorithmType,
+        nebula_core::algorithm::AlgorithmMetricsSnapshot,
+    )> {
         self.algorithm_router.metrics()
+    }
+
+    pub fn get_batch_max_size(&self) -> u32 {
+        let config = self.hot_config.get_config();
+        config.batch_generate.max_batch_size
     }
 }
 

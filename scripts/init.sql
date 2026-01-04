@@ -66,19 +66,36 @@ CREATE TABLE IF NOT EXISTS biz_tags (
 );
 
 -- API Keys table
+DO $$ BEGIN
+    CREATE TYPE api_key_role AS ENUM ('admin', 'user');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+-- Drop existing table if upgrading (uncomment if needed for migration)
+-- DROP TABLE IF EXISTS api_keys CASCADE;
+
 CREATE TABLE IF NOT EXISTS api_keys (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    key_hash VARCHAR(64) NOT NULL UNIQUE,
-    key_prefix VARCHAR(8) NOT NULL,
+    key_id VARCHAR(36) NOT NULL UNIQUE,  -- Public key identifier (UUID format)
+    key_secret_hash VARCHAR(64) NOT NULL,  -- SHA-256 hash of key_secret
+    key_prefix VARCHAR(8) NOT NULL,  -- niad_ for admin, nino_ for user
+    role api_key_role DEFAULT 'user',
     name VARCHAR(255) NOT NULL,
+    description TEXT,
     rate_limit INT DEFAULT 10000,
     enabled BOOLEAN DEFAULT true,
-    expires_at TIMESTAMP WITH TIME ZONE,
+    expires_at TIMESTAMP WITH TIME ZONE DEFAULT (CURRENT_TIMESTAMP + INTERVAL '30 days'),
     last_used_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_api_keys_workspace ON api_keys(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_api_keys_key_id ON api_keys(key_id);
+CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(key_prefix);
+CREATE INDEX IF NOT EXISTS idx_api_keys_role ON api_keys(role);
 
 -- Segments table (号段分配表)
 CREATE TABLE IF NOT EXISTS segments (

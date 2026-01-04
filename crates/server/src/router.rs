@@ -18,9 +18,10 @@ use crate::config_management::ConfigManagementService;
 use crate::handlers::ApiHandlers;
 use crate::middleware::ApiKeyAuth;
 use crate::models::{
-    ApiInfoResponse, BatchGenerateRequest, BatchGenerateResponse, BizTagListResponse,
-    BizTagResponse, CreateBizTagRequest, ErrorResponse, GenerateRequest, GenerateResponse,
-    HealthResponse, MetricsResponse, PaginationParams, ParseRequest, ParseResponse,
+    ApiInfoResponse, ApiKeyListResponse, ApiKeyWithSecretResponse, BatchGenerateRequest,
+    BatchGenerateResponse, BizTagListResponse, BizTagResponse, CreateApiKeyRequest,
+    CreateBizTagRequest, ErrorResponse, GenerateRequest, GenerateResponse, HealthResponse,
+    MetricsResponse, PaginationParams, ParseRequest, ParseResponse, RevokeApiKeyResponse,
     SecureConfigResponse, SetAlgorithmRequest, SetAlgorithmResponse, UpdateBizTagRequest,
     UpdateConfigResponse, UpdateLoggingRequest, UpdateRateLimitRequest,
 };
@@ -29,7 +30,7 @@ use crate::rate_limit_middleware::RateLimitMiddleware;
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderValue, Method, StatusCode},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use std::sync::Arc;
@@ -105,6 +106,12 @@ pub async fn create_router(
     // Admin-only router (requires admin API key)
     let admin_only_routes = Router::new()
         .route("/metrics", get(handle_metrics))
+        // API Key management endpoints (admin only)
+        .route(
+            "/api/v1/api-keys",
+            post(handle_create_api_key).get(handle_list_api_keys),
+        )
+        .route("/api/v1/api-keys/{id}", delete(handle_revoke_api_key))
         // Apply admin requirement middleware
         .layer(axum::middleware::from_fn(
             crate::middleware::admin_required_middleware,
@@ -470,6 +477,86 @@ async fn handle_list_biz_tags(
     }
 }
 
+// ========== API Key Handlers ==========
+
+async fn handle_create_api_key(
+    State(state): State<AppState>,
+    Json(req): Json<CreateApiKeyRequest>,
+) -> Result<Json<ApiKeyWithSecretResponse>, (StatusCode, Json<ErrorResponse>)> {
+    if let Err(validation_errors) = req.validate() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                400,
+                format!("Validation error: {}", validation_errors),
+            )),
+        ));
+    }
+
+    // Use nil UUID as default workspace for API keys
+    let workspace_id = uuid::Uuid::nil();
+
+    state
+        .handlers
+        .create_api_key(workspace_id, req)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(500, e.to_string())),
+            )
+        })
+}
+
+async fn handle_list_api_keys(
+    State(state): State<AppState>,
+    Query(params): Query<PaginationParams>,
+) -> Json<ApiKeyListResponse> {
+    let page = params.page.max(1);
+    let page_size = params.page_size.clamp(1, 100);
+    let offset = (page - 1) * page_size;
+
+    // Use nil UUID as default workspace for API keys
+    let workspace_id = uuid::Uuid::nil();
+
+    match state
+        .handlers
+        .list_api_keys(workspace_id, Some(page_size as u32), Some(offset as u32))
+        .await
+    {
+        Ok(response) => Json(response),
+        Err(_) => Json(ApiKeyListResponse {
+            api_keys: vec![],
+            total: 0,
+        }),
+    }
+}
+
+async fn handle_revoke_api_key(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<RevokeApiKeyResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(400, "Invalid UUID format".to_string())),
+        )
+    })?;
+
+    state
+        .handlers
+        .revoke_api_key(uuid)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(500, e.to_string())),
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,7 +581,83 @@ mod tests {
     }
 
     fn create_test_auth() -> Arc<ApiKeyAuth> {
-        Arc::new(ApiKeyAuth::new())
+        use async_trait::async_trait;
+        use nebula_core::database::{
+            ApiKeyInfo, ApiKeyRepository, ApiKeyResponse, ApiKeyRole as CoreApiKeyRole,
+            ApiKeyWithSecret, CreateApiKeyRequest,
+        };
+        use nebula_core::types::Result;
+        use uuid::Uuid;
+
+        #[derive(Clone)]
+        struct MockApiKeyRepo;
+
+        #[async_trait]
+        impl ApiKeyRepository for MockApiKeyRepo {
+            async fn create_api_key(
+                &self,
+                _request: &CreateApiKeyRequest,
+            ) -> Result<ApiKeyWithSecret> {
+                Ok(ApiKeyWithSecret {
+                    key: ApiKeyResponse {
+                        id: Uuid::new_v4(),
+                        key_id: "mock_key_id".to_string(),
+                        key_prefix: "nino_".to_string(),
+                        name: "Mock Key".to_string(),
+                        description: None,
+                        role: CoreApiKeyRole::User,
+                        rate_limit: 10000,
+                        enabled: true,
+                        expires_at: None,
+                        created_at: chrono::Utc::now().naive_utc(),
+                    },
+                    key_secret: "mock_secret".to_string(),
+                })
+            }
+
+            async fn get_api_key_by_id(&self, _key_id: &str) -> Result<Option<ApiKeyInfo>> {
+                Ok(None)
+            }
+
+            async fn validate_api_key(
+                &self,
+                _key_id: &str,
+                _key_secret: &str,
+            ) -> Result<Option<(Uuid, nebula_core::database::ApiKeyRole)>> {
+                Ok(None)
+            }
+
+            async fn list_api_keys(
+                &self,
+                _workspace_id: Uuid,
+                _limit: Option<u32>,
+                _offset: Option<u32>,
+            ) -> Result<Vec<ApiKeyInfo>> {
+                Ok(vec![])
+            }
+
+            async fn delete_api_key(&self, _id: Uuid) -> Result<()> {
+                Ok(())
+            }
+
+            async fn revoke_api_key(&self, _id: Uuid) -> Result<()> {
+                Ok(())
+            }
+
+            async fn update_last_used(&self, _id: Uuid) -> Result<()> {
+                Ok(())
+            }
+
+            async fn get_admin_api_key(&self, _workspace_id: Uuid) -> Result<Option<ApiKeyInfo>> {
+                Ok(None)
+            }
+
+            async fn count_api_keys(&self, _workspace_id: Uuid) -> Result<u64> {
+                Ok(0)
+            }
+        }
+
+        Arc::new(ApiKeyAuth::new(Arc::new(MockApiKeyRepo)))
     }
 
     fn create_test_rate_limiter() -> Arc<RateLimiter> {

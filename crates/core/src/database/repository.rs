@@ -16,14 +16,22 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use rand::Rng;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QuerySelect, Set,
     TransactionTrait,
 };
 use serde_json::to_string;
+use sha2::Digest;
+use subtle::ConstantTimeEq;
 use tracing::{debug, info};
 use uuid::Uuid;
 
+use crate::database::api_key_entity::{
+    ActiveModel as ApiKeyActiveModel, ApiKey as ApiKeyInfo, ApiKeyResponse, ApiKeyRole,
+    ApiKeyWithSecret, Column as ApiKeyColumn, CreateApiKeyRequest, Entity as ApiKeyEntity,
+    Model as ApiKeyModel,
+};
 use crate::database::biz_tag_entity::{
     ActiveModel as BizTagActiveModel, Column as BizTagColumn, Entity as BizTagEntity,
 };
@@ -146,6 +154,28 @@ pub trait BizTagRepository: Send + Sync {
     async fn count_biz_tags_by_group(&self, group_id: Uuid) -> Result<u64>;
     async fn count_biz_tags(&self, workspace_id: Uuid, group_id: Option<Uuid>) -> Result<u64>;
     async fn health_check(&self) -> Result<()>;
+}
+
+#[async_trait]
+pub trait ApiKeyRepository: Send + Sync {
+    async fn create_api_key(&self, request: &CreateApiKeyRequest) -> Result<ApiKeyWithSecret>;
+    async fn get_api_key_by_id(&self, key_id: &str) -> Result<Option<ApiKeyInfo>>;
+    async fn validate_api_key(
+        &self,
+        key_id: &str,
+        key_secret: &str,
+    ) -> Result<Option<(Uuid, ApiKeyRole)>>;
+    async fn list_api_keys(
+        &self,
+        workspace_id: Uuid,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> Result<Vec<ApiKeyInfo>>;
+    async fn delete_api_key(&self, id: Uuid) -> Result<()>;
+    async fn revoke_api_key(&self, id: Uuid) -> Result<()>;
+    async fn update_last_used(&self, id: Uuid) -> Result<()>;
+    async fn get_admin_api_key(&self, workspace_id: Uuid) -> Result<Option<ApiKeyInfo>>;
+    async fn count_api_keys(&self, workspace_id: Uuid) -> Result<u64>;
 }
 
 use crate::database::biz_tag_entity::{BizTag, CreateBizTagRequest, UpdateBizTagRequest};
@@ -784,6 +814,228 @@ impl BizTagRepository for SeaOrmRepository {
 }
 
 #[async_trait]
+impl ApiKeyRepository for SeaOrmRepository {
+    async fn create_api_key(&self, request: &CreateApiKeyRequest) -> Result<ApiKeyWithSecret> {
+        let key_id = Uuid::new_v4().to_string();
+        let key_secret = generate_secret();
+        let key_secret_hash = hash_secret(&key_secret);
+        let prefix = match request.role {
+            ApiKeyRole::Admin => "niad_",
+            ApiKeyRole::User => "nino_",
+        };
+
+        // Calculate expiration: use provided or default to 30 days from now
+        let expires_at_naive = request.expires_at.or_else(|| {
+            chrono::Utc::now()
+                .naive_utc()
+                .checked_add_signed(chrono::Duration::days(30))
+        });
+
+        let new_key = ApiKeyActiveModel {
+            id: Set(Uuid::new_v4()),
+            key_id: Set(key_id.clone()),
+            key_secret_hash: Set(key_secret_hash),
+            key_prefix: Set(prefix.to_string()),
+            role: Set(request.role.clone().into()),
+            workspace_id: Set(request.workspace_id),
+            name: Set(request.name.clone()),
+            description: Set(request.description.clone()),
+            rate_limit: Set(request.rate_limit.unwrap_or(10000)),
+            enabled: Set(true),
+            expires_at: Set(expires_at_naive),
+            last_used_at: Set(None),
+            created_at: Set(chrono::Utc::now().naive_utc()),
+            updated_at: Set(chrono::Utc::now().naive_utc()),
+        };
+
+        let inserted = new_key
+            .insert(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        let response = ApiKeyWithSecret {
+            key: ApiKeyResponse {
+                id: inserted.id,
+                key_id: inserted.key_id,
+                key_prefix: inserted.key_prefix,
+                name: inserted.name,
+                description: inserted.description,
+                role: inserted.role.into(),
+                rate_limit: inserted.rate_limit,
+                enabled: inserted.enabled,
+                expires_at: inserted.expires_at,
+                created_at: inserted.created_at,
+            },
+            key_secret,
+        };
+
+        Ok(response)
+    }
+
+    async fn get_api_key_by_id(&self, key_id: &str) -> Result<Option<ApiKeyInfo>> {
+        let result = ApiKeyEntity::find()
+            .filter(ApiKeyColumn::KeyId.eq(key_id))
+            .one(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        Ok(result.map(|m| m.into()))
+    }
+
+    async fn validate_api_key(
+        &self,
+        key_id: &str,
+        key_secret: &str,
+    ) -> Result<Option<(Uuid, ApiKeyRole)>> {
+        let key_model = ApiKeyEntity::find()
+            .filter(ApiKeyColumn::KeyId.eq(key_id))
+            .one(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        if let Some(model) = key_model {
+            if !model.enabled {
+                return Ok(None);
+            }
+
+            if let Some(expires_at) = model.expires_at {
+                let expires_at_utc = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+                    expires_at,
+                    chrono::Utc,
+                );
+                if expires_at_utc < chrono::Utc::now() {
+                    return Ok(None);
+                }
+            }
+
+            let expected_hash = hash_secret(key_secret);
+            if expected_hash
+                .as_bytes()
+                .ct_eq(model.key_secret_hash.as_bytes())
+                .into()
+            {
+                let _ = self.update_last_used(model.id).await;
+                return Ok(Some((model.workspace_id, model.role.into())));
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn list_api_keys(
+        &self,
+        workspace_id: Uuid,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> Result<Vec<ApiKeyInfo>> {
+        let mut query = ApiKeyEntity::find().filter(ApiKeyColumn::WorkspaceId.eq(workspace_id));
+
+        if let Some(limit) = limit {
+            query = query.limit(limit as u64);
+        }
+
+        if let Some(offset) = offset {
+            query = query.offset(offset as u64);
+        }
+
+        let results = query
+            .all(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        Ok(results.into_iter().map(|m| m.into()).collect())
+    }
+
+    async fn delete_api_key(&self, id: Uuid) -> Result<()> {
+        let result = ApiKeyEntity::delete_by_id(id)
+            .exec(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        if result.rows_affected == 0 {
+            return Err(crate::CoreError::NotFound(format!(
+                "API key not found: {}",
+                id
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn revoke_api_key(&self, id: Uuid) -> Result<()> {
+        let existing = ApiKeyEntity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        if existing.is_none() {
+            return Err(crate::CoreError::NotFound(format!(
+                "API key not found: {}",
+                id
+            )));
+        }
+
+        let updated = ApiKeyActiveModel {
+            id: Set(existing.unwrap().id),
+            enabled: Set(false),
+            updated_at: Set(chrono::Utc::now().naive_utc()),
+            ..Default::default()
+        };
+
+        updated
+            .update(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn update_last_used(&self, id: Uuid) -> Result<()> {
+        let existing = ApiKeyEntity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        if let Some(model) = existing {
+            let updated = ApiKeyActiveModel {
+                id: Set(model.id),
+                last_used_at: Set(Some(chrono::Utc::now().naive_utc())),
+                updated_at: Set(chrono::Utc::now().naive_utc()),
+                ..Default::default()
+            };
+
+            updated
+                .update(&self.db)
+                .await
+                .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+        }
+
+        Ok(())
+    }
+
+    async fn get_admin_api_key(&self, workspace_id: Uuid) -> Result<Option<ApiKeyInfo>> {
+        let result = ApiKeyEntity::find()
+            .filter(ApiKeyColumn::WorkspaceId.eq(workspace_id))
+            .filter(ApiKeyColumn::KeyPrefix.eq("niad_"))
+            .one(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        Ok(result.filter(|m| m.enabled).map(|m| m.into()))
+    }
+
+    async fn count_api_keys(&self, workspace_id: Uuid) -> Result<u64> {
+        let count = ApiKeyEntity::find()
+            .filter(ApiKeyColumn::WorkspaceId.eq(workspace_id))
+            .count(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        Ok(count)
+    }
+}
+
+#[async_trait]
 impl SegmentRepository for SeaOrmRepository {
     async fn get_segment(&self, workspace_id: &str, biz_tag: &str) -> Result<Option<SegmentInfo>> {
         let result = SegmentEntity::find()
@@ -1127,6 +1379,29 @@ fn naive_to_utc(naive: Option<NaiveDateTime>) -> DateTime<Utc> {
     naive
         .map(|n| Utc.from_utc_datetime(&n))
         .unwrap_or_else(Utc::now)
+}
+
+/// Generate a cryptographically secure random secret
+fn generate_secret() -> String {
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+    const SECRET_LENGTH: usize = 32;
+
+    let mut rng = rand::thread_rng();
+    let secret: String = (0..SECRET_LENGTH)
+        .map(|_| {
+            let idx = rand::Rng::gen_range(&mut rng, 0..CHARSET.len());
+            CHARSET[idx] as char
+        })
+        .collect();
+
+    secret
+}
+
+/// Hash a secret using SHA-256
+fn hash_secret(secret: &str) -> String {
+    let mut hasher = sha2::Sha256::default();
+    hasher.update(secret);
+    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]

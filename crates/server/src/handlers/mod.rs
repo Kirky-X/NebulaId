@@ -14,10 +14,14 @@
 
 use crate::config_management::ConfigManagementService;
 use crate::models::{
-    naive_to_rfc3339, AlgorithmMetrics, BatchGenerateRequest, BatchGenerateResponse, BizTagListResponse,
-    BizTagResponse, CacheMetrics, ConnectionPoolMetrics, CreateBizTagRequest, DatabaseMetrics,
-    GenerateRequest, GenerateResponse, HealthResponse, IdMetadataResponse, MetricsResponse,
-    ParseRequest, ParseResponse, UpdateBizTagRequest,
+    naive_to_rfc3339, AlgorithmMetrics, ApiKeyListResponse, ApiKeyResponse,
+    ApiKeyWithSecretResponse, BatchGenerateRequest, BatchGenerateResponse, BizTagListResponse,
+    BizTagResponse, CreateApiKeyRequest, CreateBizTagRequest, GenerateRequest, GenerateResponse,
+    HealthResponse, IdMetadataResponse, MetricsResponse, ParseRequest, ParseResponse,
+    RevokeApiKeyResponse, UpdateBizTagRequest,
+};
+use nebula_core::database::{
+    ApiKeyRepository, ApiKeyRole, CreateApiKeyRequest as CoreCreateApiKeyRequest,
 };
 use nebula_core::{CoreError, Id, Result};
 use std::sync::Arc;
@@ -27,6 +31,7 @@ pub struct ApiHandlers {
     metrics: ApiMetrics,
     start_time: std::time::Instant,
     config_service: Arc<ConfigManagementService>,
+    api_key_repo: Option<Arc<dyn ApiKeyRepository>>,
 }
 
 #[derive(Default)]
@@ -48,6 +53,21 @@ impl ApiHandlers {
             metrics: ApiMetrics::default(),
             start_time: std::time::Instant::now(),
             config_service,
+            api_key_repo: None,
+        }
+    }
+
+    pub fn with_api_key_repository(
+        id_generator: Arc<dyn nebula_core::algorithm::IdGenerator>,
+        config_service: Arc<ConfigManagementService>,
+        api_key_repo: Arc<dyn ApiKeyRepository>,
+    ) -> Self {
+        Self {
+            id_generator,
+            metrics: ApiMetrics::default(),
+            start_time: std::time::Instant::now(),
+            config_service,
+            api_key_repo: Some(api_key_repo),
         }
     }
 
@@ -129,6 +149,9 @@ impl ApiHandlers {
     pub async fn batch_generate(&self, req: BatchGenerateRequest) -> Result<BatchGenerateResponse> {
         let start = std::time::Instant::now();
 
+        // Get max batch size from config
+        let max_batch_size = self.config_service.get_batch_max_size();
+
         // Validate batch size
         let size = req.size.unwrap_or(10);
         if size == 0 {
@@ -136,10 +159,10 @@ impl ApiHandlers {
                 "Batch size cannot be zero".to_string(),
             ));
         }
-        if size > 100 {
+        if size > max_batch_size as usize {
             return Err(CoreError::InvalidInput(format!(
-                "Batch size {} exceeds maximum allowed value of 100",
-                size
+                "Batch size {} exceeds maximum allowed value of {}",
+                size, max_batch_size
             )));
         }
 
@@ -219,13 +242,18 @@ impl ApiHandlers {
         let algorithm_metrics = self.config_service.get_algorithm_metrics();
         let algorithms = algorithm_metrics
             .into_iter()
-            .map(|(alg_type, snapshot): (nebula_core::types::AlgorithmType, nebula_core::algorithm::AlgorithmMetricsSnapshot)| AlgorithmMetrics {
-                algorithm: alg_type.to_string(),
-                status: "healthy".to_string(),
-                total_generated: snapshot.total_generated,
-                total_failed: snapshot.total_failed,
-                cache_hit_rate: snapshot.cache_hit_rate,
-            })
+            .map(
+                |(alg_type, snapshot): (
+                    nebula_core::types::AlgorithmType,
+                    nebula_core::algorithm::AlgorithmMetricsSnapshot,
+                )| AlgorithmMetrics {
+                    algorithm: alg_type.to_string(),
+                    status: "healthy".to_string(),
+                    total_generated: snapshot.total_generated,
+                    total_failed: snapshot.total_failed,
+                    cache_hit_rate: snapshot.cache_hit_rate,
+                },
+            )
             .collect();
 
         // Get database health metrics from config service
@@ -570,6 +598,181 @@ impl ApiHandlers {
 
     pub async fn delete_biz_tag(&self, id: uuid::Uuid) -> Result<()> {
         self.config_service.delete_biz_tag(id).await
+    }
+
+    // ========== API Key Management ==========
+
+    /// Create a new API Key (admin only)
+    pub async fn create_api_key(
+        &self,
+        workspace_id: uuid::Uuid,
+        req: CreateApiKeyRequest,
+    ) -> Result<ApiKeyWithSecretResponse> {
+        let repo = self
+            .api_key_repo
+            .as_ref()
+            .ok_or_else(|| CoreError::NotFound("API key repository not configured".to_string()))?;
+
+        let role = match req.role.as_deref() {
+            Some("admin") => ApiKeyRole::Admin,
+            Some("user") | None => ApiKeyRole::User,
+            Some(r) => {
+                return Err(CoreError::AuthenticationError(format!(
+                    "Invalid role: {}",
+                    r
+                )))
+            }
+        };
+
+        // Validate admin key creation: check if workspace already has an admin key
+        if role == ApiKeyRole::Admin {
+            let existing_keys = repo
+                .list_api_keys(workspace_id, Some(1000), Some(0))
+                .await
+                .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
+
+            let has_admin = existing_keys.iter().any(|k| {
+                k.role == nebula_core::database::ApiKeyRole::Admin
+            });
+
+            if has_admin {
+                tracing::warn!(
+                    event = "admin_key_creation",
+                    workspace_id = %workspace_id,
+                    "Creating additional admin key for workspace"
+                );
+            }
+        }
+
+        let expires_at = match req.expires_at {
+            Some(ts) => Some(
+                chrono::DateTime::parse_from_rfc3339(&ts)
+                    .map_err(|_| {
+                        CoreError::InvalidIdFormat("Invalid expires_at format".to_string())
+                    })?
+                    .with_timezone(&chrono::Utc)
+                    .naive_utc(),
+            ),
+            None => None,
+        };
+
+        let core_req = CoreCreateApiKeyRequest {
+            workspace_id,
+            name: req.name,
+            description: req.description,
+            role,
+            rate_limit: req.rate_limit,
+            expires_at,
+        };
+
+        let key_with_secret = repo
+            .create_api_key(&core_req)
+            .await
+            .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
+
+        Ok(ApiKeyWithSecretResponse {
+            key: ApiKeyResponse {
+                id: key_with_secret.key.id.to_string(),
+                key_id: key_with_secret.key.key_id,
+                key_prefix: key_with_secret.key.key_prefix,
+                name: key_with_secret.key.name,
+                description: key_with_secret.key.description,
+                role: key_with_secret.key.role.to_string(),
+                rate_limit: key_with_secret.key.rate_limit,
+                enabled: key_with_secret.key.enabled,
+                expires_at: key_with_secret.key.expires_at.map(naive_to_rfc3339),
+                created_at: naive_to_rfc3339(key_with_secret.key.created_at),
+            },
+            key_secret: key_with_secret.key_secret,
+        })
+    }
+
+    /// List API Keys for a workspace (admin only)
+    pub async fn list_api_keys(
+        &self,
+        workspace_id: uuid::Uuid,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> Result<ApiKeyListResponse> {
+        let repo = self
+            .api_key_repo
+            .as_ref()
+            .ok_or_else(|| CoreError::NotFound("API key repository not configured".to_string()))?;
+
+        let keys = repo
+            .list_api_keys(workspace_id, limit, offset)
+            .await
+            .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
+
+        let responses: Vec<ApiKeyResponse> = keys
+            .into_iter()
+            .map(|k| ApiKeyResponse {
+                id: k.id.to_string(),
+                key_id: k.key_id,
+                key_prefix: k.key_prefix,
+                name: k.name,
+                description: k.description,
+                role: k.role.to_string(),
+                rate_limit: k.rate_limit,
+                enabled: k.enabled,
+                expires_at: k.expires_at.map(naive_to_rfc3339),
+                created_at: naive_to_rfc3339(k.created_at),
+            })
+            .collect();
+
+        let total = repo
+            .count_api_keys(workspace_id)
+            .await
+            .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
+
+        Ok(ApiKeyListResponse {
+            api_keys: responses,
+            total,
+        })
+    }
+
+    /// Revoke (delete) an API Key (admin only)
+    pub async fn revoke_api_key(&self, id: uuid::Uuid) -> Result<RevokeApiKeyResponse> {
+        let repo = self
+            .api_key_repo
+            .as_ref()
+            .ok_or_else(|| CoreError::NotFound("API key repository not configured".to_string()))?;
+
+        // Get the key info before deletion to check if it's an admin key
+        let key_info = repo
+            .get_api_key_by_id(&id.to_string())
+            .await
+            .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
+
+        if let Some(key) = key_info {
+            // If it's an admin key, check if it's the last one
+            if key.role == nebula_core::database::ApiKeyRole::Admin {
+                let existing_keys = repo
+                    .list_api_keys(key.workspace_id, Some(1000), Some(0))
+                    .await
+                    .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
+
+                let admin_count = existing_keys
+                    .iter()
+                    .filter(|k| k.role == nebula_core::database::ApiKeyRole::Admin)
+                    .count();
+
+                if admin_count <= 1 {
+                    return Err(CoreError::AuthenticationError(
+                        "Cannot revoke the last admin key".to_string(),
+                    ));
+                }
+            }
+        }
+
+        repo.delete_api_key(id)
+            .await
+            .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
+
+        Ok(RevokeApiKeyResponse {
+            success: true,
+            message: format!("API key {} revoked successfully", id),
+        })
     }
 }
 

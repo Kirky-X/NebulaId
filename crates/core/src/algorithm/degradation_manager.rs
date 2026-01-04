@@ -25,10 +25,13 @@ use std::time::{Duration, Instant};
 use tokio::time;
 use tracing::{debug, info, warn};
 
+// Circuit breaker constants tuned for production stability
 const DEFAULT_DEGRADATION_CHECK_INTERVAL_MS: u64 = 5000;
 const DEFAULT_RECOVERY_CHECK_INTERVAL_MS: u64 = 30000;
-const DEFAULT_FAILURE_THRESHOLD: u8 = 3;
-const DEFAULT_RECOVERY_THRESHOLD: u8 = 5;
+// Higher failure threshold to avoid false positives during temporary network glitches
+const DEFAULT_FAILURE_THRESHOLD: u8 = 5;
+// Higher recovery threshold to ensure stability before closing circuit
+const DEFAULT_RECOVERY_THRESHOLD: u8 = 10;
 const DEFAULT_CIRCUIT_BREAKER_TIMEOUT_MS: u64 = 60000;
 const DEFAULT_HALF_OPEN_SUCCESS_THRESHOLD: u8 = 2;
 

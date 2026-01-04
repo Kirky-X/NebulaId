@@ -48,7 +48,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("cargo:rerun-if-changed={}", proto_path.display());
         }
         Err(e) => {
-            println!("cargo:warning=protoc-bin-vendored failed ({}), skipping proto compilation", e);
+            println!(
+                "cargo:warning=protoc-bin-vendored failed ({}), skipping proto compilation",
+                e
+            );
             println!("cargo:warning=Pre-generated proto files will be used instead");
         }
     }

@@ -153,8 +153,84 @@ mod tests {
 
     #[tokio::test]
     async fn test_audit_middleware_creation() {
+        use async_trait::async_trait;
+        use nebula_core::database::{
+            ApiKeyInfo, ApiKeyRepository, ApiKeyResponse, ApiKeyRole as CoreApiKeyRole,
+            ApiKeyWithSecret, CreateApiKeyRequest,
+        };
+        use nebula_core::types::Result;
+        use uuid::Uuid;
+
+        #[derive(Clone)]
+        struct MockApiKeyRepo;
+
+        #[async_trait]
+        impl ApiKeyRepository for MockApiKeyRepo {
+            async fn create_api_key(
+                &self,
+                _request: &CreateApiKeyRequest,
+            ) -> Result<ApiKeyWithSecret> {
+                Ok(ApiKeyWithSecret {
+                    key: ApiKeyResponse {
+                        id: Uuid::new_v4(),
+                        key_id: "mock_key_id".to_string(),
+                        key_prefix: "nino_".to_string(),
+                        name: "Mock Key".to_string(),
+                        description: None,
+                        role: CoreApiKeyRole::User,
+                        rate_limit: 10000,
+                        enabled: true,
+                        expires_at: None,
+                        created_at: chrono::Utc::now().naive_utc(),
+                    },
+                    key_secret: "mock_secret".to_string(),
+                })
+            }
+
+            async fn get_api_key_by_id(&self, _key_id: &str) -> Result<Option<ApiKeyInfo>> {
+                Ok(None)
+            }
+
+            async fn validate_api_key(
+                &self,
+                _key_id: &str,
+                _key_secret: &str,
+            ) -> Result<Option<(Uuid, nebula_core::database::ApiKeyRole)>> {
+                Ok(None)
+            }
+
+            async fn list_api_keys(
+                &self,
+                _workspace_id: Uuid,
+                _limit: Option<u32>,
+                _offset: Option<u32>,
+            ) -> Result<Vec<ApiKeyInfo>> {
+                Ok(vec![])
+            }
+
+            async fn delete_api_key(&self, _id: Uuid) -> Result<()> {
+                Ok(())
+            }
+
+            async fn revoke_api_key(&self, _id: Uuid) -> Result<()> {
+                Ok(())
+            }
+
+            async fn update_last_used(&self, _id: Uuid) -> Result<()> {
+                Ok(())
+            }
+
+            async fn get_admin_api_key(&self, _workspace_id: Uuid) -> Result<Option<ApiKeyInfo>> {
+                Ok(None)
+            }
+
+            async fn count_api_keys(&self, _workspace_id: Uuid) -> Result<u64> {
+                Ok(0)
+            }
+        }
+
         let audit_logger = Arc::new(AuditLogger::new(100));
-        let auth = Arc::new(ApiKeyAuth::new());
+        let auth = Arc::new(ApiKeyAuth::new(Arc::new(MockApiKeyRepo)));
         let rate_limiter = Arc::new(RateLimiter::new(10000, 100));
 
         let middleware = AuditMiddleware::new(audit_logger, auth, rate_limiter);

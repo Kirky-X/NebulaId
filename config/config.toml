@@ -11,9 +11,10 @@ cpu_limit = 2
 memory_limit_mb = 2048
 
 [logging]
-level = "info"
+# Log level for production: info (debug), warn (production), error (minimal)
+level = "warn"
 format = "json"
-include_location = true
+include_location = false
 backtrace = false
 
 [database]
@@ -26,14 +27,18 @@ username = "idgen"
 # Example: export NEBULA_DATABASE_PASSWORD="your-secure-password-here"
 # Do NOT commit real passwords to version control
 password = "${NEBULA_DATABASE_PASSWORD}"
-max_connections = 1200
-min_connections = 100
+# Connection pool tuning for production
+# Adjust based on actual load: 200-500 for high throughput, 50-100 for normal use
+max_connections = 200
+min_connections = 20
 acquire_timeout_seconds = 30
-idle_timeout_seconds = 600
+idle_timeout_seconds = 300
 
 [redis]
 url = "redis://localhost:6379"
-pool_size = 50
+# Connection pool tuning for production
+# Adjust based on actual load: 32-64 for high throughput, 16-32 for normal use
+pool_size = 32
 key_prefix = "nebula:id:"
 ttl_seconds = 600
 
@@ -76,3 +81,6 @@ key_path = ""
 [etcd]
 endpoints = ["http://localhost:2379"]
 timeout_ms = 5000
+
+[batch_generate]
+max_batch_size = 100

@@ -6,9 +6,10 @@ dc_id = 0
 worker_id = 0
 
 [logging]
-level = "info"
+# Log level for production: info (debug), warn (production), error (minimal)
+level = "warn"
 format = "json"
-include_location = true
+include_location = false
 backtrace = false
 
 [database]
@@ -18,14 +19,18 @@ port = 5435
 database = "idgen"
 username = "idgen"
 password = "idgen123"
-max_connections = 100
-min_connections = 10
+# Connection pool tuning for production
+# Adjust based on actual load: 200-500 for high throughput, 50-100 for normal use
+max_connections = 200
+min_connections = 20
 acquire_timeout_seconds = 30
-idle_timeout_seconds = 600
+idle_timeout_seconds = 300
 
 [redis]
 url = "redis://localhost:6379"
-pool_size = 50
+# Connection pool tuning for production
+# Adjust based on actual load: 32-64 for high throughput, 16-32 for normal use
+pool_size = 32
 key_prefix = "nebula:id:"
 ttl_seconds = 600
 
@@ -64,3 +69,6 @@ http_enabled = false
 grpc_enabled = false
 cert_path = ""
 key_path = ""
+
+[batch_generate]
+max_batch_size = 100

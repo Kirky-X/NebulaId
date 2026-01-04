@@ -12,20 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use axum::body::Body;
 use axum::extract::State;
+use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
-use axum::{
-    body::Body,
-    http::{Request, StatusCode},
-    response::IntoResponse,
-    response::Response,
-};
+use axum::response::IntoResponse;
+use axum::response::Response;
 use base64::Engine;
-use sha2::Digest;
-use std::collections::HashMap;
+use nebula_core::database::ApiKeyRepository;
 use std::sync::Arc;
-use subtle::ConstantTimeEq;
-use tokio::sync::RwLock;
 
 pub(crate) mod utils;
 
@@ -35,90 +30,58 @@ pub enum ApiKeyRole {
     User,
 }
 
+impl From<&str> for ApiKeyRole {
+    fn from(s: &str) -> Self {
+        match s {
+            "admin" => ApiKeyRole::Admin,
+            _ => ApiKeyRole::User,
+        }
+    }
+}
+
+impl From<ApiKeyRole> for &str {
+    fn from(role: ApiKeyRole) -> Self {
+        match role {
+            ApiKeyRole::Admin => "admin",
+            ApiKeyRole::User => "user",
+        }
+    }
+}
+
+impl From<ApiKeyRole> for nebula_core::database::ApiKeyRole {
+    fn from(role: ApiKeyRole) -> Self {
+        match role {
+            ApiKeyRole::Admin => nebula_core::database::ApiKeyRole::Admin,
+            ApiKeyRole::User => nebula_core::database::ApiKeyRole::User,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ApiKeyAuth {
-    valid_keys: Arc<RwLock<HashMap<String, ApiKeyData>>>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ApiKeyData {
-    pub key_hash: String,
-    pub workspace_id: String,
-    pub key_prefix: String,
-    pub role: ApiKeyRole,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub enabled: bool,
-}
-
-impl Default for ApiKeyAuth {
-    fn default() -> Self {
-        Self::new()
-    }
+    pub(crate) repo: Arc<dyn ApiKeyRepository>,
 }
 
 impl ApiKeyAuth {
-    pub fn new() -> Self {
-        Self {
-            valid_keys: Arc::new(RwLock::new(HashMap::new())),
-        }
+    pub fn new(repo: Arc<dyn ApiKeyRepository>) -> Self {
+        Self { repo }
     }
 
-    pub async fn load_key(
+    pub async fn validate_key(
         &self,
-        key_id: String,
-        key_hash: String,
-        workspace_id: String,
-        role: ApiKeyRole,
-    ) {
-        let key_id_clone = key_id.clone();
-        let mut keys = self.valid_keys.write().await;
-        keys.insert(
-            key_id_clone,
-            ApiKeyData {
-                key_hash,
-                workspace_id,
-                key_prefix: key_id[..8.min(key_id.len())].to_string(),
-                role,
-                created_at: chrono::Utc::now(),
-                expires_at: None,
-                enabled: true,
-            },
-        );
-    }
-
-    pub async fn validate_key(&self, key_id: &str, key_secret: &str) -> Option<(String, ApiKeyRole)> {
-        let keys = self.valid_keys.read().await;
-        if let Some(key_data) = keys.get(key_id) {
-            if !key_data.enabled {
-                return None;
+        key_id: &str,
+        key_secret: &str,
+    ) -> Option<(uuid::Uuid, ApiKeyRole)> {
+        match self.repo.validate_api_key(key_id, key_secret).await {
+            Ok(Some((workspace_id, role))) => {
+                let role: ApiKeyRole = match role {
+                    nebula_core::database::ApiKeyRole::Admin => ApiKeyRole::Admin,
+                    nebula_core::database::ApiKeyRole::User => ApiKeyRole::User,
+                };
+                Some((workspace_id, role))
             }
-            if let Some(expires_at) = key_data.expires_at {
-                if expires_at < chrono::Utc::now() {
-                    return None;
-                }
-            }
-            let expected_hash = Self::hash_key(key_id, key_secret);
-            // Use constant-time comparison to prevent timing attacks
-            if expected_hash
-                .as_bytes()
-                .ct_eq(key_data.key_hash.as_bytes())
-                .into()
-            {
-                return Some((key_data.workspace_id.clone(), key_data.role.clone()));
-            }
+            _ => None,
         }
-        None
-    }
-
-    pub(crate) fn hash_key(key_id: &str, key_secret: &str) -> String {
-        let mut hasher = sha2::Sha256::default();
-        hasher.update(format!("{}-{}", key_id, key_secret));
-        hex::encode(hasher.finalize())
-    }
-
-    pub fn compute_key_hash(key_id: &str, key_secret: &str) -> String {
-        Self::hash_key(key_id, key_secret)
     }
 
     pub async fn auth_middleware(&self, mut req: Request<Body>, next: Next) -> Response {
@@ -126,65 +89,88 @@ impl ApiKeyAuth {
 
         if let Some(header) = auth_header {
             if let Ok(value) = header.to_str() {
-                if let Some(credentials) = value.strip_prefix("Basic ") {
+                // Support both "Basic base64(key_id:key_secret)" and "ApiKey key_id:key_secret"
+                let (key_id, key_secret) = if let Some(credentials) = value.strip_prefix("Basic ") {
                     if let Ok(decoded) =
                         base64::engine::general_purpose::STANDARD.decode(credentials)
                     {
                         if let Ok(cred_str) = String::from_utf8(decoded) {
                             let parts: Vec<&str> = cred_str.splitn(2, ':').collect();
                             if parts.len() == 2 {
-                                let (key_id, key_secret) = (parts[0], parts[1]);
-                                if let Some((workspace_id, role)) =
-                                    self.validate_key(key_id, key_secret).await
-                                {
-                                    req.extensions_mut().insert(workspace_id);
-                                    req.extensions_mut().insert(role);
-                                    return next.run(req).await;
-                                }
+                                (parts[0].to_string(), parts[1].to_string())
+                            } else {
+                                tracing::warn!(
+                                    event = "auth_failure",
+                                    reason = "invalid_basic_format",
+                                    "Invalid Basic auth format: no colon separator"
+                                );
+                                return self.unauthorized_response();
                             }
+                        } else {
+                            tracing::warn!(
+                                event = "auth_failure",
+                                reason = "invalid_encoding",
+                                "Invalid Base64 encoding in auth header"
+                            );
+                            return self.unauthorized_response();
                         }
+                    } else {
+                        tracing::warn!(
+                            event = "auth_failure",
+                            reason = "base64_decode_failed",
+                            "Failed to decode Base64 auth header"
+                        );
+                        return self.unauthorized_response();
                     }
                 } else if let Some(api_key) = value.strip_prefix("ApiKey ") {
-                    let parts: Vec<&str> = api_key.splitn(2, '_').collect();
+                    let parts: Vec<&str> = api_key.splitn(2, ':').collect();
                     if parts.len() == 2 {
-                        if let Some((workspace_id, role)) =
-                            self.validate_key(parts[0], parts[1]).await
-                        {
-                            req.extensions_mut().insert(workspace_id);
-                            req.extensions_mut().insert(role);
-                            return next.run(req).await;
-                        }
+                        (parts[0].to_string(), parts[1].to_string())
+                    } else {
+                        tracing::warn!(
+                            event = "auth_failure",
+                            reason = "invalid_apikey_format",
+                            "Invalid ApiKey format: no colon separator"
+                        );
+                        return self.unauthorized_response();
                     }
+                } else {
+                    tracing::warn!(
+                        event = "auth_failure",
+                        reason = "unsupported_format",
+                        "Unsupported auth format"
+                    );
+                    return self.unauthorized_response();
+                };
+
+                // Validate input lengths to prevent empty credentials
+                if key_id.is_empty() || key_secret.is_empty() {
+                    tracing::warn!(
+                        event = "auth_failure",
+                        reason = "empty_credentials",
+                        "Empty key_id or key_secret"
+                    );
+                    return self.unauthorized_response();
+                }
+
+                if let Some((workspace_id, role)) = self.validate_key(&key_id, &key_secret).await {
+                    req.extensions_mut().insert(workspace_id);
+                    req.extensions_mut().insert(role);
+                    return next.run(req).await;
+                } else {
+                    // Log auth failure with key_id prefix (masked for security)
+                    let key_id_prefix = key_id.chars().take(8).collect::<String>();
+                    tracing::warn!(event = "auth_failure", reason = "invalid_credentials", key_id_prefix = %key_id_prefix, "Invalid API key credentials");
                 }
             }
         }
 
-        // Check if the path is a known authenticated route
-        // If not, return 404 instead of 401
-        let path = req.uri().path();
-        let known_authenticated_routes = [
-            "/api/v1/config",
-            "/api/v1/config/rate-limit",
-            "/api/v1/config/logging",
-            "/api/v1/config/reload",
-            "/api/v1/config/algorithm",
-            "/metrics",
-            "/api/v1/biz-tags",
-        ];
+        // Return 401 for both unknown routes and missing auth to avoid information disclosure
+        // This prevents attackers from discovering which API endpoints exist
+        self.unauthorized_response()
+    }
 
-        let is_known_route = known_authenticated_routes.iter().any(|route| {
-            path.starts_with(route) || path.starts_with("/api/v1/biz-tags")
-        });
-
-        if !is_known_route {
-            let response = axum::Json(serde_json::json!({
-                "code": 404,
-                "message": "Not found"
-            }))
-            .into_response();
-            return (StatusCode::NOT_FOUND, response).into_response();
-        }
-
+    fn unauthorized_response(&self) -> Response {
         let response = axum::Json(serde_json::json!({
             "code": 401,
             "message": "Invalid or missing API key"
@@ -194,11 +180,7 @@ impl ApiKeyAuth {
     }
 }
 
-pub async fn admin_required_middleware(
-    req: Request<Body>,
-    next: Next,
-) -> Response {
-    use axum::Extension;
+pub async fn admin_required_middleware(req: Request<Body>, next: Next) -> Response {
     if let Some(role) = req.extensions().get::<ApiKeyRole>() {
         if *role == ApiKeyRole::Admin {
             return next.run(req).await;
@@ -224,47 +206,136 @@ pub async fn auth_middleware_fn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use nebula_core::database::{
+        ApiKeyInfo, ApiKeyRepository, ApiKeyResponse, ApiKeyRole as CoreApiKeyRole,
+        ApiKeyWithSecret, CreateApiKeyRequest,
+    };
+    use nebula_core::types::Result;
+    use sha2::Digest;
+    use uuid::Uuid;
 
-    #[tokio::test]
-    async fn test_api_key_auth() {
-        let auth = ApiKeyAuth::new();
-        let key_id = "test-key-id";
-        let key_secret = "test-secret";
-        let workspace_id = "test-workspace";
-        let key_hash = ApiKeyAuth::hash_key(key_id, key_secret);
+    #[derive(Clone)]
+    struct MockApiKeyRepo {
+        keys: std::collections::HashMap<String, (String, ApiKeyRole)>,
+    }
 
-        auth.load_key(
-            key_id.to_string(),
-            key_hash,
-            workspace_id.to_string(),
-            ApiKeyRole::User,
-        )
-        .await;
+    impl MockApiKeyRepo {
+        fn hash_secret(secret: &str) -> String {
+            let mut hasher = sha2::Sha256::default();
+            hasher.update(secret);
+            hex::encode(hasher.finalize())
+        }
+    }
 
-        let result = auth.validate_key(key_id, key_secret).await;
-        assert_eq!(result, Some((workspace_id.to_string(), ApiKeyRole::User)));
+    #[async_trait]
+    impl ApiKeyRepository for MockApiKeyRepo {
+        async fn create_api_key(&self, _request: &CreateApiKeyRequest) -> Result<ApiKeyWithSecret> {
+            Ok(ApiKeyWithSecret {
+                key: ApiKeyResponse {
+                    id: Uuid::new_v4(),
+                    key_id: "mock_key_id".to_string(),
+                    key_prefix: "nino_".to_string(),
+                    name: "Mock Key".to_string(),
+                    description: None,
+                    role: CoreApiKeyRole::User,
+                    rate_limit: 10000,
+                    enabled: true,
+                    expires_at: None,
+                    created_at: chrono::Utc::now().naive_utc(),
+                },
+                key_secret: "mock_secret".to_string(),
+            })
+        }
 
-        let result = auth.validate_key(key_id, "wrong-secret").await;
-        assert_eq!(result, None);
+        async fn get_api_key_by_id(&self, _key_id: &str) -> Result<Option<ApiKeyInfo>> {
+            Ok(None)
+        }
+
+        async fn validate_api_key(
+            &self,
+            key_id: &str,
+            key_secret: &str,
+        ) -> Result<Option<(Uuid, nebula_core::database::ApiKeyRole)>> {
+            use subtle::ConstantTimeEq;
+            if let Some((expected_secret, role)) = self.keys.get(key_id) {
+                let incoming_hash = MockApiKeyRepo::hash_secret(key_secret);
+                if expected_secret
+                    .as_bytes()
+                    .ct_eq(incoming_hash.as_bytes())
+                    .into()
+                {
+                    return Ok(Some((Uuid::nil(), role.clone().into())));
+                }
+            }
+            Ok(None)
+        }
+
+        async fn list_api_keys(
+            &self,
+            _workspace_id: Uuid,
+            _limit: Option<u32>,
+            _offset: Option<u32>,
+        ) -> Result<Vec<ApiKeyInfo>> {
+            Ok(vec![])
+        }
+
+        async fn delete_api_key(&self, _id: Uuid) -> Result<()> {
+            Ok(())
+        }
+
+        async fn revoke_api_key(&self, _id: Uuid) -> Result<()> {
+            Ok(())
+        }
+
+        async fn update_last_used(&self, _id: Uuid) -> Result<()> {
+            Ok(())
+        }
+
+        async fn get_admin_api_key(&self, _workspace_id: Uuid) -> Result<Option<ApiKeyInfo>> {
+            Ok(None)
+        }
+
+        async fn count_api_keys(&self, _workspace_id: Uuid) -> Result<u64> {
+            Ok(0)
+        }
     }
 
     #[tokio::test]
-    async fn test_admin_api_key() {
-        let auth = ApiKeyAuth::new();
-        let key_id = "admin-key";
-        let key_secret = "admin-secret";
-        let workspace_id = "admin-workspace";
-        let key_hash = ApiKeyAuth::hash_key(key_id, key_secret);
+    async fn test_api_key_auth_with_mock_repo() {
+        let mut mock_keys = std::collections::HashMap::new();
+        // Use hash_secret which only hashes the secret, matching the real validation logic
+        mock_keys.insert(
+            "test-key-id".to_string(),
+            (MockApiKeyRepo::hash_secret("test-secret"), ApiKeyRole::User),
+        );
+        mock_keys.insert(
+            "admin-key".to_string(),
+            (
+                MockApiKeyRepo::hash_secret("admin-secret"),
+                ApiKeyRole::Admin,
+            ),
+        );
 
-        auth.load_key(
-            key_id.to_string(),
-            key_hash,
-            workspace_id.to_string(),
-            ApiKeyRole::Admin,
-        )
-        .await;
+        let repo = MockApiKeyRepo { keys: mock_keys };
+        let auth = ApiKeyAuth::new(Arc::new(repo));
 
-        let result = auth.validate_key(key_id, key_secret).await;
-        assert_eq!(result, Some((workspace_id.to_string(), ApiKeyRole::Admin)));
+        // Test valid user key
+        let result = auth.validate_key("test-key-id", "test-secret").await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().1, ApiKeyRole::User);
+
+        // Test valid admin key
+        let result = auth.validate_key("admin-key", "admin-secret").await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().1, ApiKeyRole::Admin);
+
+        // Test invalid secret
+        let result = auth.validate_key("test-key-id", "wrong-secret").await;
+        assert!(result.is_none());
+
+        // Test non-existent key
+        let result = auth.validate_key("non-existent", "secret").await;
+        assert!(result.is_none());
     }
 }

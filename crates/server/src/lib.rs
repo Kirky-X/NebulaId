@@ -16,9 +16,9 @@
 
 // Public API modules
 pub mod grpc;
-pub mod router;
 #[path = "proto/mod.rs"]
 pub mod proto;
+pub mod router;
 
 // Internal implementation modules
 // Note: These are pub (not pub(crate)) so they're accessible from the binary target

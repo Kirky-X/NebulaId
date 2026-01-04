@@ -267,6 +267,7 @@ mod tests {
 
         #[async_trait]
         impl BizTagRepository for TestRepository {
+            async fn health_check(&self) -> Result<()>;
             async fn create_biz_tag(&self, biz_tag: &CreateBizTagRequest) -> Result<BizTag>;
             async fn get_biz_tag(&self, id: Uuid) -> Result<Option<BizTag>>;
             async fn get_biz_tag_by_workspace_group_and_name(&self, workspace_id: Uuid, group_id: Uuid, name: &str) -> Result<Option<BizTag>>;

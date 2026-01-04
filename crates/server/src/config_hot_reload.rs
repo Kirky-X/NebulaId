@@ -254,8 +254,14 @@ mod tests {
 
     use tempfile::TempDir;
 
+    /// Setup test environment - must be called at the start of each test
+    fn setup_test_env() {
+        std::env::set_var("NEBULA_DATABASE_PASSWORD", "test_password");
+    }
+
     #[tokio::test]
     async fn test_hot_reload_config() {
+        setup_test_env();
         let temp_dir = TempDir::new().unwrap();
         let config_dir = temp_dir.path().join("config");
         std::fs::create_dir_all(&config_dir).unwrap();
@@ -271,11 +277,12 @@ worker_id = 1
 
 [database]
 engine = "postgresql"
-url = "postgresql://idgen:idgen123@localhost:5432/idgen"
+# Use environment variables for credentials in production
+url = "postgresql://idgen:${TEST_DB_PASSWORD:?idgen123}@localhost:5432/idgen"
 host = "localhost"
 port = 5432
 username = "idgen"
-password = "idgen123"
+password = "${TEST_DB_PASSWORD:idgen123}"
 database = "idgen"
 max_connections = 10
 min_connections = 1
@@ -296,7 +303,8 @@ watch_timeout_ms = 5000
 [auth]
 enabled = true
 cache_ttl_seconds = 300
-api_keys = [{ key = "test-api-key", workspace = "test", rate_limit = 10000 }]
+# NOTE: Remove or randomize test API key in production
+api_keys = [{ key = "test-api-key-change-in-prod", workspace = "test", rate_limit = 10000 }]
 
 [algorithm]
 default = "segment"
@@ -371,11 +379,11 @@ worker_id = 1
 
 [database]
 engine = "postgresql"
-url = "postgresql://idgen:idgen123@localhost:5432/idgen"
+url = "postgresql://idgen:${TEST_DB_PASSWORD:?idgen123}@localhost:5432/idgen"
 host = "localhost"
 port = 5432
 username = "idgen"
-password = "idgen123"
+password = "${TEST_DB_PASSWORD:idgen123}"
 database = "idgen"
 max_connections = 10
 min_connections = 1
@@ -396,7 +404,7 @@ watch_timeout_ms = 5000
 [auth]
 enabled = true
 cache_ttl_seconds = 300
-api_keys = [{ key = "test-api-key", workspace = "test", rate_limit = 10000 }]
+api_keys = [{ key = "test-api-key-change-in-prod", workspace = "test", rate_limit = 10000 }]
 
 [algorithm]
 default = "segment"
@@ -453,6 +461,7 @@ max_batch_size = 100
 
     #[tokio::test]
     async fn test_get_config() {
+        setup_test_env();
         let hot_config = HotReloadConfig::new(Config::default(), "config/config.toml".to_string());
 
         let config = hot_config.get_config();
@@ -461,6 +470,7 @@ max_batch_size = 100
 
     #[tokio::test]
     async fn test_update_config() {
+        setup_test_env();
         let hot_config = HotReloadConfig::new(Config::default(), "config/config.toml".to_string());
 
         let mut new_config = Config::default();

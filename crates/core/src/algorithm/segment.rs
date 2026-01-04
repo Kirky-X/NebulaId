@@ -153,8 +153,9 @@ impl StepCalculator {
 
     /// 获取 CPU 使用率 (模拟值，实际应从系统监控获取)
     fn get_cpu_usage(&self) -> f64 {
-        // TODO: 集成系统监控获取实际 CPU 使用率
-        // 当前返回默认低负载值
+        // TODO(#NEBULA-XXX): Integrate with system monitoring (e.g., /proc/stat on Linux)
+        // to get actual CPU usage for dynamic step calculation.
+        // For now, returns a conservative default to avoid over-allocation.
         DEFAULT_CPU_USAGE
     }
 

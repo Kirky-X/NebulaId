@@ -55,12 +55,16 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
-    pub fn http_addr(&self) -> SocketAddr {
-        format!("{}:{}", self.host, self.http_port).parse().unwrap()
+    pub fn http_addr(&self) -> Result<SocketAddr, Box<dyn std::error::Error + Send + Sync>> {
+        format!("{}:{}", self.host, self.http_port)
+            .parse()
+            .map_err(|e| format!("Invalid HTTP address '{}:{}': {}", self.host, self.http_port, e).into())
     }
 
-    pub fn grpc_addr(&self) -> SocketAddr {
-        format!("{}:{}", self.host, self.grpc_port).parse().unwrap()
+    pub fn grpc_addr(&self) -> Result<SocketAddr, Box<dyn std::error::Error + Send + Sync>> {
+        format!("{}:{}", self.host, self.grpc_port)
+            .parse()
+            .map_err(|e| format!("Invalid gRPC address '{}:{}': {}", self.host, self.grpc_port, e).into())
     }
 }
 
@@ -99,8 +103,13 @@ impl Default for DatabaseConfig {
         }
 
         // SECURITY: Require environment variable for password in production
-        let password = std::env::var("NEBULA_DATABASE_PASSWORD")
-            .expect("NEBULA_DATABASE_PASSWORD environment variable must be set for production use");
+        // In test mode, allow fallback to avoid breaking unit tests
+        let password = if cfg!(test) {
+            std::env::var("NEBULA_DATABASE_PASSWORD").unwrap_or_else(|_| "test_password".to_string())
+        } else {
+            std::env::var("NEBULA_DATABASE_PASSWORD")
+                .expect("NEBULA_DATABASE_PASSWORD environment variable must be set for production use")
+        };
 
         Self {
             engine: "postgresql".to_string(),
@@ -415,7 +424,9 @@ impl Config {
     /// Expand environment variables in config content
     /// Pattern: ${VAR_NAME} -> value of VAR_NAME
     fn expand_env_vars(content: &str) -> String {
-        let re = regex::Regex::new(r"\$\{([^}]+)\}").unwrap();
+        // Safe unwrap: regex pattern is hardcoded and valid
+        let re = regex::Regex::new(r"\$\{([^}]+)\}")
+            .expect("Failed to compile environment variable regex");
         re.replace_all(content, |caps: &regex::Captures| {
             let var_name = &caps[1];
             std::env::var(var_name).unwrap_or_else(|_| {

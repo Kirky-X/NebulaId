@@ -80,12 +80,20 @@ impl SnowflakeAlgorithm {
         now.as_millis() as u64
     }
 
+    /// Wait for the next millisecond timestamp.
+    ///
+    /// NOTE: This uses `std::thread::sleep` because:
+    /// 1. This is only called in rare clock drift scenarios
+    /// 2. The sleep duration is minimal (1ms)
+    /// 3. Making this async would require significant refactoring
+    /// 4. Clock drift beyond threshold returns error immediately
     fn wait_for_next_ms(&self, last_ts: u64) -> u64 {
         loop {
             let current = Self::get_timestamp();
             if current > last_ts {
                 return current;
             }
+            // Using std::thread::sleep for minimal duration in sync context
             std::thread::sleep(Duration::from_millis(1));
         }
     }

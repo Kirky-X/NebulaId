@@ -352,7 +352,15 @@ async fn main() -> Result<()> {
     let auth: Arc<ApiKeyAuth> = if let Some(ref repo) = repository {
         Arc::new(ApiKeyAuth::new(repo.clone()))
     } else {
-        panic!("API key authentication requires database connection. Please configure database settings.");
+        error!(
+            "FATAL: API key authentication requires database connection.
+            Nebula ID requires a database for API key storage and validation.
+            Please ensure your configuration has valid database settings:
+            - database.url or database.engine/host/port/database/username/password
+            - database.max_connections should be > 0
+            Shutting down..."
+        );
+        std::process::exit(1);
     };
     load_api_keys(&auth, &repository).await;
 
@@ -579,6 +587,11 @@ mod tests {
     use nebula_server::config_hot_reload::HotReloadConfig;
     use std::sync::Arc;
 
+    /// Setup test environment - must be called at the start of each test
+    fn setup_test_env() {
+        std::env::set_var("NEBULA_DATABASE_PASSWORD", "test_password");
+    }
+
     #[tokio::test]
     async fn test_server_config_default() {
         let config = ServerConfig::default();
@@ -589,6 +602,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_router_with_handlers() {
+        setup_test_env();
         use async_trait::async_trait;
         use nebula_core::database::ApiKeyInfo;
 
@@ -694,6 +708,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_graceful_shutdown() {
+        setup_test_env();
         use async_trait::async_trait;
         use nebula_core::database::ApiKeyInfo;
 

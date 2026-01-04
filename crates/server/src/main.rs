@@ -98,7 +98,11 @@ async fn load_api_keys(
                             "Generated new admin API key: {} (workspace: admin)",
                             key_with_secret.key.key_id
                         );
-                        // SECURITY: Don't log secrets - user must save the secret when it's returned
+                        // CRITICAL: Output secret only on first generation - user MUST save this!
+                        info!(
+                            "⚠️  ADMIN KEY SECRET (save this now, it will not be shown again): {}",
+                            key_with_secret.key_secret
+                        );
                     }
                     Err(e) => {
                         error!("Failed to create admin API key: {}", e);

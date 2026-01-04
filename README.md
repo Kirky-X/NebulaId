@@ -3,10 +3,10 @@
 # 🚀 Nebula ID
 
 <p>
-  <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.1.1-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
   <img src="https://img.shields.io/badge/build-passing-brightgreen.svg" alt="Build">
-  <img src="https://img.shields.io/badge/coverage-85%25-success.svg" alt="Coverage">
+  <img src="https://img.shields.io/badge/coverage-29.98%25-success.svg" alt="Coverage">
 </p>
 
 <p align="center">
@@ -189,7 +189,7 @@ uuid = { version = "1", features = ["v7"] }
 
 ```toml
 [dependencies.nebula-id]
-version = "0.1.0"
+version = "0.1.1"
 features = ["monitoring", "audit", "grpc"]
 default-features = false
 ```
@@ -619,9 +619,9 @@ cargo test --test integration
 
 | Category | Tests | Coverage |
 |----------|-------|----------|
-| Unit Tests | 102 | 85% |
-| Integration Tests | 30 | 80% |
-| **Total** | **132** | **33.97%** |
+| Unit Tests | 109 | 30% |
+| Integration Tests | 42 | 30% |
+| **Total** | **151** | **29.98%** |
 
 </details>
 
@@ -731,7 +731,7 @@ Track all ID generation operations
 
 ```toml
 [dependencies.nebula-id]
-version = "0.1.0"
+version = "0.1.1"
 features = ["audit", "tls"]
 ```
 

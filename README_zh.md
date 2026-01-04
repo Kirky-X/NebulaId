@@ -3,10 +3,10 @@
 # 🚀 Nebula ID
 
 <p>
-  <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.1.1-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
   <img src="https://img.shields.io/badge/build-passing-brightgreen.svg" alt="Build">
-  <img src="https://img.shields.io/badge/coverage-85%25-success.svg" alt="Coverage">
+  <img src="https://img.shields.io/badge/coverage-29.98%25-success.svg" alt="Coverage">
 </p>
 
 <p align="center">
@@ -190,7 +190,7 @@ uuid = { version = "1", features = ["v7"] }
 
 ```toml
 [dependencies.nebula-id]
-version = "0.1.0"
+version = "0.1.1"
 features = ["monitoring", "audit", "grpc"]
 default-features = false
 ```
@@ -621,9 +621,9 @@ cargo test --test integration
 
 | 类别 | 测试数量 | 覆盖率 |
 |----------|-------|----------|
-| 单元测试 | 102 | 85% |
-| 集成测试 | 30 | 80% |
-| **总计** | **132** | **33.97%** |
+| 单元测试 | 109 | 30% |
+| 集成测试 | 42 | 30% |
+| **总计** | **151** | **29.98%** |
 
 </details>
 
@@ -733,7 +733,7 @@ test uuid_v4_next_id    ... bench: 50 ns/iter (+/- 5)
 
 ```toml
 [dependencies.nebula-id]
-version = "0.1.0"
+version = "0.1.1"
 features = ["audit", "tls"]
 ```
 

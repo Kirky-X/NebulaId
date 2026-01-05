@@ -31,6 +31,46 @@ pub enum ConfigError {
 
 pub type ConfigResult<T> = std::result::Result<T, ConfigError>;
 
+/// Database engine types supported by Nebula ID
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub enum DatabaseEngine {
+    /// PostgreSQL database
+    Postgresql,
+    /// PostgreSQL (alias)
+    Postgres,
+    /// MySQL database
+    Mysql,
+    /// SQLite database
+    Sqlite,
+}
+
+impl std::fmt::Display for DatabaseEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DatabaseEngine::Postgresql | DatabaseEngine::Postgres => write!(f, "postgresql"),
+            DatabaseEngine::Mysql => write!(f, "mysql"),
+            DatabaseEngine::Sqlite => write!(f, "sqlite"),
+        }
+    }
+}
+
+impl From<&str> for DatabaseEngine {
+    fn from(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "postgresql" | "postgres" => DatabaseEngine::Postgresql,
+            "mysql" => DatabaseEngine::Mysql,
+            "sqlite" => DatabaseEngine::Sqlite,
+            _ => DatabaseEngine::Postgresql, // Default to PostgreSQL
+        }
+    }
+}
+
+impl From<String> for DatabaseEngine {
+    fn from(s: String) -> Self {
+        s.as_str().into()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
     pub name: String,
@@ -82,7 +122,7 @@ impl AppConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DatabaseConfig {
-    pub engine: String,
+    pub engine: DatabaseEngine,
     pub url: String,
     pub host: String,
     pub port: u16,
@@ -100,7 +140,7 @@ impl Default for DatabaseConfig {
         // If DATABASE_URL is set, password is embedded in URL, not required separately
         if std::env::var("DATABASE_URL").is_ok() {
             return Self {
-                engine: "postgresql".to_string(),
+                engine: DatabaseEngine::Postgresql,
                 url: std::env::var("DATABASE_URL").unwrap(),
                 host: "localhost".to_string(),
                 port: 5432,
@@ -127,7 +167,7 @@ impl Default for DatabaseConfig {
         };
 
         Self {
-            engine: "postgresql".to_string(),
+            engine: DatabaseEngine::Postgresql,
             url: format!("postgresql://idgen:{}@localhost:5432/idgen", password),
             host: "localhost".to_string(),
             port: 5432,
@@ -314,18 +354,98 @@ impl Default for MonitoringConfig {
     }
 }
 
+/// Log level for the application
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub enum LogLevel {
+    /// Trace level - most verbose
+    Trace,
+    /// Debug level
+    Debug,
+    /// Info level - default
+    Info,
+    /// Warning level
+    Warn,
+    /// Error level
+    Error,
+}
+
+impl std::fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LogLevel::Trace => write!(f, "trace"),
+            LogLevel::Debug => write!(f, "debug"),
+            LogLevel::Info => write!(f, "info"),
+            LogLevel::Warn => write!(f, "warn"),
+            LogLevel::Error => write!(f, "error"),
+        }
+    }
+}
+
+impl From<&str> for LogLevel {
+    fn from(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "trace" => LogLevel::Trace,
+            "debug" => LogLevel::Debug,
+            "info" => LogLevel::Info,
+            "warn" => LogLevel::Warn,
+            "error" => LogLevel::Error,
+            _ => LogLevel::Info, // Default to info
+        }
+    }
+}
+
+impl From<String> for LogLevel {
+    fn from(s: String) -> Self {
+        s.as_str().into()
+    }
+}
+
+/// Log format for the application
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub enum LogFormat {
+    /// JSON format - structured logging
+    Json,
+    /// Pretty format - human readable
+    Pretty,
+}
+
+impl std::fmt::Display for LogFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LogFormat::Json => write!(f, "json"),
+            LogFormat::Pretty => write!(f, "pretty"),
+        }
+    }
+}
+
+impl From<&str> for LogFormat {
+    fn from(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "json" => LogFormat::Json,
+            "pretty" => LogFormat::Pretty,
+            _ => LogFormat::Json, // Default to json
+        }
+    }
+}
+
+impl From<String> for LogFormat {
+    fn from(s: String) -> Self {
+        s.as_str().into()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LoggingConfig {
-    pub level: String,
-    pub format: String,
+    pub level: LogLevel,
+    pub format: LogFormat,
     pub include_location: bool,
 }
 
 impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
-            level: "info".to_string(),
-            format: "json".to_string(),
+            level: LogLevel::Info,
+            format: LogFormat::Json,
             include_location: true,
         }
     }
@@ -436,7 +556,155 @@ impl Config {
         // Expand environment variables in config content
         let expanded = Self::expand_env_vars(&content);
 
-        toml::from_str(&expanded).map_err(|e| ConfigError::InvalidValue(e.to_string()))
+        let config: Config =
+            toml::from_str(&expanded).map_err(|e| ConfigError::InvalidValue(e.to_string()))?;
+
+        // Validate configuration
+        config.validate()?;
+
+        Ok(config)
+    }
+
+    /// Validate configuration values are reasonable
+    pub fn validate(&self) -> ConfigResult<()> {
+        // Validate app configuration
+        if self.app.http_port == 0 {
+            return Err(ConfigError::InvalidValue(
+                "HTTP port must be between 1 and 65535".to_string(),
+            ));
+        }
+
+        if self.app.grpc_port == 0 {
+            return Err(ConfigError::InvalidValue(
+                "gRPC port must be between 1 and 65535".to_string(),
+            ));
+        }
+
+        if self.app.dc_id > 31 {
+            return Err(ConfigError::InvalidValue(
+                "Datacenter ID must be between 0 and 31".to_string(),
+            ));
+        }
+
+        // Worker ID is u8, so it's always between 0 and 255
+
+        // Validate database configuration
+        if self.database.max_connections == 0 {
+            return Err(ConfigError::InvalidValue(
+                "Database max_connections must be greater than 0".to_string(),
+            ));
+        }
+
+        if self.database.min_connections > self.database.max_connections {
+            return Err(ConfigError::InvalidValue(
+                "Database min_connections cannot be greater than max_connections".to_string(),
+            ));
+        }
+
+        if self.database.acquire_timeout_seconds == 0 {
+            return Err(ConfigError::InvalidValue(
+                "Database acquire_timeout_seconds must be greater than 0".to_string(),
+            ));
+        }
+
+        // Validate Redis configuration
+        if self.redis.pool_size == 0 {
+            return Err(ConfigError::InvalidValue(
+                "Redis pool_size must be greater than 0".to_string(),
+            ));
+        }
+
+        if self.redis.ttl_seconds == 0 {
+            return Err(ConfigError::InvalidValue(
+                "Redis ttl_seconds must be greater than 0".to_string(),
+            ));
+        }
+
+        // Validate rate limit configuration
+        if self.rate_limit.enabled {
+            if self.rate_limit.default_rps == 0 {
+                return Err(ConfigError::InvalidValue(
+                    "Rate limit default_rps must be greater than 0 when enabled".to_string(),
+                ));
+            }
+
+            if self.rate_limit.burst_size == 0 {
+                return Err(ConfigError::InvalidValue(
+                    "Rate limit burst_size must be greater than 0 when enabled".to_string(),
+                ));
+            }
+
+            if self.rate_limit.burst_size > self.rate_limit.default_rps * 10 {
+                return Err(ConfigError::InvalidValue(
+                    "Rate limit burst_size should not exceed 10x default_rps".to_string(),
+                ));
+            }
+        }
+
+        // Validate algorithm configuration
+        if !["segment", "snowflake", "uuid_v7", "uuid_v4"]
+            .contains(&self.algorithm.default.as_str())
+        {
+            return Err(ConfigError::InvalidValue(
+                "Default algorithm must be one of: segment, snowflake, uuid_v7, uuid_v4"
+                    .to_string(),
+            ));
+        }
+
+        // Validate segment algorithm configuration
+        if self.algorithm.segment.min_step > self.algorithm.segment.max_step {
+            return Err(ConfigError::InvalidValue(
+                "Segment min_step cannot be greater than max_step".to_string(),
+            ));
+        }
+
+        if self.algorithm.segment.base_step < self.algorithm.segment.min_step
+            || self.algorithm.segment.base_step > self.algorithm.segment.max_step
+        {
+            return Err(ConfigError::InvalidValue(
+                "Segment base_step must be between min_step and max_step".to_string(),
+            ));
+        }
+
+        if self.algorithm.segment.switch_threshold < 0.0
+            || self.algorithm.segment.switch_threshold > 1.0
+        {
+            return Err(ConfigError::InvalidValue(
+                "Segment switch_threshold must be between 0.0 and 1.0".to_string(),
+            ));
+        }
+
+        // Validate snowflake algorithm configuration
+        let total_bits = self.algorithm.snowflake.datacenter_id_bits
+            + self.algorithm.snowflake.worker_id_bits
+            + self.algorithm.snowflake.sequence_bits;
+
+        if total_bits >= 64 {
+            return Err(ConfigError::InvalidValue(
+                "Snowflake total bits (datacenter_id_bits + worker_id_bits + sequence_bits) must be less than 64".to_string(),
+            ));
+        }
+
+        if self.algorithm.snowflake.clock_drift_threshold_ms == 0 {
+            return Err(ConfigError::InvalidValue(
+                "Snowflake clock_drift_threshold_ms must be greater than 0".to_string(),
+            ));
+        }
+
+        // Validate batch generate configuration
+        if self.batch_generate.max_batch_size == 0 {
+            return Err(ConfigError::InvalidValue(
+                "Batch generate max_batch_size must be greater than 0".to_string(),
+            ));
+        }
+
+        if self.batch_generate.max_batch_size > 10000 {
+            return Err(ConfigError::InvalidValue(
+                "Batch generate max_batch_size should not exceed 10000".to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     /// Expand environment variables in config content
@@ -495,7 +763,7 @@ impl Config {
         }
 
         if let Ok(level) = std::env::var("RUST_LOG") {
-            config.logging.level = level;
+            config.logging.level = LogLevel::from(level);
         }
 
         Ok(config)
@@ -557,7 +825,7 @@ impl Config {
             self.monitoring.otlp_endpoint = other.monitoring.otlp_endpoint;
         }
 
-        if other.logging.level != "info" {
+        if other.logging.level != LogLevel::Info {
             self.logging.level = other.logging.level;
         }
     }

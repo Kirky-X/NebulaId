@@ -20,10 +20,12 @@ use crate::middleware::ApiKeyAuth;
 use crate::models::{
     ApiInfoResponse, ApiKeyListResponse, ApiKeyWithSecretResponse, BatchGenerateRequest,
     BatchGenerateResponse, BizTagListResponse, BizTagResponse, CreateApiKeyRequest,
-    CreateBizTagRequest, ErrorResponse, GenerateRequest, GenerateResponse, HealthResponse,
-    MetricsResponse, PaginationParams, ParseRequest, ParseResponse, RevokeApiKeyResponse,
-    SecureConfigResponse, SetAlgorithmRequest, SetAlgorithmResponse, UpdateBizTagRequest,
-    UpdateConfigResponse, UpdateLoggingRequest, UpdateRateLimitRequest,
+    CreateBizTagRequest, CreateGroupRequest, CreateWorkspaceRequest, ErrorResponse,
+    GenerateRequest, GenerateResponse, GroupListParams, GroupListResponse, GroupResponse,
+    HealthResponse, MetricsResponse, PaginationParams, ParseRequest, ParseResponse, ReadyResponse,
+    RevokeApiKeyResponse, SecureConfigResponse, SetAlgorithmRequest, SetAlgorithmResponse,
+    UpdateBizTagRequest, UpdateConfigResponse, UpdateLoggingRequest, UpdateRateLimitRequest,
+    WorkspaceListResponse, WorkspaceResponse,
 };
 use crate::rate_limit::RateLimiter;
 use crate::rate_limit_middleware::RateLimitMiddleware;
@@ -73,8 +75,19 @@ pub async fn create_router(
                 .collect()
         })
         .unwrap_or_else(|| {
-            // Development: allow localhost for testing
-            vec!["http://localhost:3000".parse().unwrap()]
+            // Check if running in production environment
+            let is_production = std::env::var("NEBULA_ENV")
+                .unwrap_or_else(|_| "development".to_string())
+                .to_lowercase()
+                == "production";
+
+            if is_production {
+                // Production: deny all origins if not explicitly configured
+                vec![]
+            } else {
+                // Development: allow localhost for testing
+                vec!["http://localhost:3000".parse().unwrap()]
+            }
         });
 
     // Use empty list to deny all origins in production without ALLOWED_ORIGINS
@@ -98,10 +111,8 @@ pub async fn create_router(
     // Public router (no authentication) - only health check
     let public_routes = Router::new()
         .route("/api/v1", get(handle_api_info))
-        .route("/api/v1/generate", post(handle_generate))
-        .route("/api/v1/generate/batch", post(handle_batch_generate))
-        .route("/api/v1/parse", post(handle_parse))
-        .route("/health", get(handle_health));
+        .route("/health", get(handle_health))
+        .route("/ready", get(handle_ready));
 
     // Admin-only router (requires admin API key)
     let admin_only_routes = Router::new()
@@ -112,9 +123,21 @@ pub async fn create_router(
             post(handle_create_api_key).get(handle_list_api_keys),
         )
         .route("/api/v1/api-keys/{id}", delete(handle_revoke_api_key))
-        // Apply admin requirement middleware
+        // Workspace creation (admin only)
+        .route("/api/v1/workspaces", post(handle_create_workspace))
+        // Workspace user key regeneration (admin only)
+        .route(
+            "/api/v1/workspaces/{name}/regenerate-user-key",
+            post(handle_regenerate_user_key),
+        )
+        // Apply admin requirement middleware first, then auth middleware
+        // This ensures auth runs first to set the ApiKeyRole extension
         .layer(axum::middleware::from_fn(
             crate::middleware::admin_required_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            auth.clone(),
+            crate::middleware::auth_middleware_fn,
         ));
 
     // Authenticated router (requires API key)
@@ -124,6 +147,18 @@ pub async fn create_router(
         .route("/api/v1/config/logging", post(handle_update_logging))
         .route("/api/v1/config/reload", post(handle_reload_config))
         .route("/api/v1/config/algorithm", post(handle_set_algorithm))
+        // ID generation (user only)
+        .route("/api/v1/generate", post(handle_generate))
+        .route("/api/v1/generate/batch", post(handle_batch_generate))
+        .route("/api/v1/parse", post(handle_parse))
+        // Workspace query endpoints
+        .route("/api/v1/workspaces", get(handle_list_workspaces))
+        .route("/api/v1/workspaces/{name}", get(handle_get_workspace))
+        // Group CRUD endpoints
+        .route(
+            "/api/v1/groups",
+            post(handle_create_group).get(handle_list_groups),
+        )
         // BizTag CRUD endpoints
         .route(
             "/api/v1/biz-tags",
@@ -179,8 +214,21 @@ pub async fn create_router(
 
 async fn handle_generate(
     State(state): State<AppState>,
+    extensions: axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: axum::Extension<crate::middleware::ApiKeyRole>,
     Json(req): Json<GenerateRequest>,
 ) -> Result<Json<GenerateResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Only User API Key can generate IDs
+    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse::new(
+                403,
+                "Admin API key cannot generate IDs".to_string(),
+            )),
+        ));
+    }
+
     // Validate request parameters
     if let Err(validation_errors) = req.validate() {
         return Err((
@@ -190,6 +238,83 @@ async fn handle_generate(
                 format!("Validation error: {}", validation_errors),
             )),
         ));
+    }
+
+    // Only User API Key can create groups
+    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse::new(
+                403,
+                "Admin API key cannot create groups".to_string(),
+            )),
+        ));
+    }
+
+    // Only User API Key can create biz_tags
+    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse::new(
+                403,
+                "Admin API key cannot create biz_tags".to_string(),
+            )),
+        ));
+    }
+
+    // Verify workspace_id match for User API Key
+    // Verify workspace_id match for User API Key
+    // Only User API Key can create biz_tags
+    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse::new(
+                403,
+                "Admin API key cannot create biz_tags".to_string(),
+            )),
+        ));
+    }
+
+    // Verify workspace_id match for User API Key
+    // Verify workspace_id match for User API Key
+    if extensions_role.0 == crate::middleware::ApiKeyRole::User {
+        let workspace = state
+            .handlers
+            .get_workspace(&req.workspace)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(500, e.to_string())),
+                )
+            })?;
+
+        let workspace = workspace.ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new(
+                    404,
+                    format!("Workspace '{}' not found", req.workspace),
+                )),
+            )
+        })?;
+
+        let workspace_uuid = uuid::Uuid::parse_str(&workspace.id).map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(500, "Invalid workspace ID".to_string())),
+            )
+        })?;
+
+        if Some(workspace_uuid) != extensions.0 {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse::new(
+                    403,
+                    "Access denied: workspace mismatch".to_string(),
+                )),
+            ));
+        }
     }
 
     state.handlers.generate(req).await.map(Json).map_err(|e| {
@@ -202,8 +327,21 @@ async fn handle_generate(
 
 async fn handle_batch_generate(
     State(state): State<AppState>,
+    extensions: axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: axum::Extension<crate::middleware::ApiKeyRole>,
     Json(req): Json<BatchGenerateRequest>,
 ) -> Result<Json<BatchGenerateResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Only User API Key can generate IDs
+    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse::new(
+                403,
+                "Admin API key cannot generate IDs".to_string(),
+            )),
+        ));
+    }
+
     tracing::debug!(
         "HTTP batch_generate request: workspace={}, group={}, size={:?}",
         req.workspace,
@@ -222,6 +360,83 @@ async fn handle_batch_generate(
                 format!("Validation error: {}", errors),
             )),
         ));
+    }
+
+    // Only User API Key can create groups
+    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse::new(
+                403,
+                "Admin API key cannot create groups".to_string(),
+            )),
+        ));
+    }
+
+    // Only User API Key can create biz_tags
+    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse::new(
+                403,
+                "Admin API key cannot create biz_tags".to_string(),
+            )),
+        ));
+    }
+
+    // Verify workspace_id match for User API Key
+    // Verify workspace_id match for User API Key
+    // Only User API Key can create biz_tags
+    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse::new(
+                403,
+                "Admin API key cannot create biz_tags".to_string(),
+            )),
+        ));
+    }
+
+    // Verify workspace_id match for User API Key
+    // Verify workspace_id match for User API Key
+    if extensions_role.0 == crate::middleware::ApiKeyRole::User {
+        let workspace = state
+            .handlers
+            .get_workspace(&req.workspace)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(500, e.to_string())),
+                )
+            })?;
+
+        let workspace = workspace.ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new(
+                    404,
+                    format!("Workspace '{}' not found", req.workspace),
+                )),
+            )
+        })?;
+
+        let workspace_uuid = uuid::Uuid::parse_str(&workspace.id).map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(500, "Invalid workspace ID".to_string())),
+            )
+        })?;
+
+        if Some(workspace_uuid) != extensions.0 {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse::new(
+                    403,
+                    "Access denied: workspace mismatch".to_string(),
+                )),
+            ));
+        }
     }
 
     state
@@ -252,6 +467,10 @@ async fn handle_batch_generate(
 
 async fn handle_health(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(state.handlers.health().await)
+}
+
+async fn handle_ready(State(state): State<AppState>) -> Json<ReadyResponse> {
+    Json(state.handlers.ready().await)
 }
 
 async fn handle_metrics(State(state): State<AppState>) -> Json<MetricsResponse> {
@@ -318,6 +537,7 @@ async fn handle_api_info() -> Json<ApiInfoResponse> {
         description: "Distributed ID Generation Service".to_string(),
         endpoints: vec![
             "GET /health - Health check".to_string(),
+            "GET /ready - Readiness probe".to_string(),
             "GET /metrics - Prometheus metrics".to_string(),
             "GET /api/v1 - API information".to_string(),
             "POST /api/v1/generate - Generate ID".to_string(),
@@ -341,6 +561,8 @@ async fn handle_api_info() -> Json<ApiInfoResponse> {
 
 async fn handle_create_biz_tag(
     State(state): State<AppState>,
+    extensions: axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: axum::Extension<crate::middleware::ApiKeyRole>,
     Json(req): Json<CreateBizTagRequest>,
 ) -> Result<Json<BizTagResponse>, (StatusCode, Json<ErrorResponse>)> {
     if let Err(validation_errors) = req.validate() {
@@ -349,6 +571,54 @@ async fn handle_create_biz_tag(
             Json(ErrorResponse::new(
                 400,
                 format!("Validation error: {}", validation_errors),
+            )),
+        ));
+    }
+
+    // Only User API Key can create groups
+    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse::new(
+                403,
+                "Admin API key cannot create groups".to_string(),
+            )),
+        ));
+    }
+
+    // Only User API Key can create biz_tags
+    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse::new(
+                403,
+                "Admin API key cannot create biz_tags".to_string(),
+            )),
+        ));
+    }
+
+    // Verify workspace_id match for User API Key
+    // Verify workspace_id match for User API Key
+    // Only User API Key can create biz_tags
+    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse::new(
+                403,
+                "Admin API key cannot create biz_tags".to_string(),
+            )),
+        ));
+    }
+
+    // Verify workspace_id match for User API Key
+    if extensions_role.0 == crate::middleware::ApiKeyRole::User
+        && Some(req.workspace_id) != extensions.0
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse::new(
+                403,
+                "Access denied: workspace mismatch".to_string(),
             )),
         ));
     }
@@ -477,6 +747,202 @@ async fn handle_list_biz_tags(
     }
 }
 
+// ========== Workspace Handlers ==========
+
+async fn handle_create_workspace(
+    State(state): State<AppState>,
+    Json(req): Json<CreateWorkspaceRequest>,
+) -> Result<Json<WorkspaceResponse>, (StatusCode, Json<ErrorResponse>)> {
+    if let Err(validation_errors) = req.validate() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                400,
+                format!("Validation error: {}", validation_errors),
+            )),
+        ));
+    }
+
+    state
+        .handlers
+        .create_workspace(req)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(500, e.to_string())),
+            )
+        })
+}
+
+async fn handle_list_workspaces(State(state): State<AppState>) -> Json<WorkspaceListResponse> {
+    match state.handlers.list_workspaces().await {
+        Ok(response) => Json(response),
+        Err(_) => Json(WorkspaceListResponse {
+            workspaces: vec![],
+            total: 0,
+        }),
+    }
+}
+
+async fn handle_get_workspace(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<WorkspaceResponse>, (StatusCode, Json<ErrorResponse>)> {
+    match state.handlers.get_workspace(&name).await {
+        Ok(Some(ws)) => Ok(Json(ws)),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse::new(404, "Workspace not found".to_string())),
+        )),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(500, e.to_string())),
+        )),
+    }
+}
+
+// ========== Group Handlers ==========
+
+async fn handle_create_group(
+    State(state): State<AppState>,
+    extensions: axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: axum::Extension<crate::middleware::ApiKeyRole>,
+    Json(req): Json<CreateGroupRequest>,
+) -> Result<Json<GroupResponse>, (StatusCode, Json<ErrorResponse>)> {
+    if let Err(validation_errors) = req.validate() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                400,
+                format!("Validation error: {}", validation_errors),
+            )),
+        ));
+    }
+
+    // Only User API Key can create groups
+    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse::new(
+                403,
+                "Admin API key cannot create groups".to_string(),
+            )),
+        ));
+    }
+
+    // Only User API Key can create biz_tags
+    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse::new(
+                403,
+                "Admin API key cannot create biz_tags".to_string(),
+            )),
+        ));
+    }
+
+    // Verify workspace_id match for User API Key
+    // Verify workspace_id match for User API Key
+    // Only User API Key can create biz_tags
+    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse::new(
+                403,
+                "Admin API key cannot create biz_tags".to_string(),
+            )),
+        ));
+    }
+
+    // Verify workspace_id match for User API Key
+    // Verify workspace_id match for User API Key
+    if extensions_role.0 == crate::middleware::ApiKeyRole::User {
+        let workspace = state
+            .handlers
+            .get_workspace(&req.workspace)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(500, e.to_string())),
+                )
+            })?;
+
+        let workspace = workspace.ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new(
+                    404,
+                    format!("Workspace '{}' not found", req.workspace),
+                )),
+            )
+        })?;
+
+        let workspace_uuid = uuid::Uuid::parse_str(&workspace.id).map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(500, "Invalid workspace ID".to_string())),
+            )
+        })?;
+
+        if Some(workspace_uuid) != extensions.0 {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse::new(
+                    403,
+                    "Access denied: workspace mismatch".to_string(),
+                )),
+            ));
+        }
+    }
+
+    state
+        .handlers
+        .create_group(req)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(500, e.to_string())),
+            )
+        })
+}
+
+async fn handle_regenerate_user_key(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<ApiKeyWithSecretResponse>, (StatusCode, Json<ErrorResponse>)> {
+    state
+        .handlers
+        .regenerate_user_api_key(&name)
+        .await
+        .map(Json)
+        .map_err(|e: nebula_core::CoreError| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(500, e.to_string())),
+            )
+        })
+}
+
+async fn handle_list_groups(
+    State(state): State<AppState>,
+    Query(params): Query<GroupListParams>,
+) -> Json<GroupListResponse> {
+    let workspace = params.workspace.clone();
+
+    match state.handlers.list_groups(&workspace).await {
+        Ok(response) => Json(response),
+        Err(_) => Json(GroupListResponse {
+            groups: vec![],
+            total: 0,
+        }),
+    }
+}
+
 // ========== API Key Handlers ==========
 
 async fn handle_create_api_key(
@@ -493,8 +959,45 @@ async fn handle_create_api_key(
         ));
     }
 
-    // Use nil UUID as default workspace for API keys
-    let workspace_id = uuid::Uuid::nil();
+    // Determine workspace_id based on role
+    let workspace_id = if let Some(ref role_str) = req.role {
+        if role_str == "admin" {
+            // Admin keys are global, not bound to any workspace
+            None
+        } else {
+            // User keys must be bound to a workspace
+            Some(
+                req.workspace_id
+                    .as_ref()
+                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                    .ok_or_else(|| {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse::new(
+                                400,
+                                "workspace_id is required for user keys".to_string(),
+                            )),
+                        )
+                    })?,
+            )
+        }
+    } else {
+        // Default to user role if not specified
+        Some(
+            req.workspace_id
+                .as_ref()
+                .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                .ok_or_else(|| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse::new(
+                            400,
+                            "workspace_id is required for user keys".to_string(),
+                        )),
+                    )
+                })?,
+        )
+    };
 
     state
         .handlers
@@ -517,8 +1020,12 @@ async fn handle_list_api_keys(
     let page_size = params.page_size.clamp(1, 100);
     let offset = (page - 1) * page_size;
 
-    // Use nil UUID as default workspace for API keys
-    let workspace_id = uuid::Uuid::nil();
+    // Get workspace_id from query parameters
+    let workspace_id = params
+        .workspace_id
+        .as_ref()
+        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+        .unwrap_or_else(uuid::Uuid::nil);
 
     match state
         .handlers
@@ -623,7 +1130,7 @@ mod tests {
                 &self,
                 _key_id: &str,
                 _key_secret: &str,
-            ) -> Result<Option<(Uuid, nebula_core::database::ApiKeyRole)>> {
+            ) -> Result<Option<(Option<Uuid>, nebula_core::database::ApiKeyRole)>> {
                 Ok(None)
             }
 

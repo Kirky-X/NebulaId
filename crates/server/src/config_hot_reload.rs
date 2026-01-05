@@ -276,13 +276,15 @@ dc_id = 1
 worker_id = 1
 
 [database]
-engine = "postgresql"
-# Use environment variables for credentials in production
-url = "postgresql://idgen:${TEST_DB_PASSWORD:?idgen123}@localhost:5432/idgen"
+engine = "Postgresql"
+# Use environment variable NEBULA_DATABASE_PASSWORD for credentials
+# For tests, set NEBULA_DATABASE_PASSWORD environment variable
+# WARNING: Never use default passwords in production
+url = "postgresql://idgen:${NEBULA_DATABASE_PASSWORD}@localhost:5432/idgen"
 host = "localhost"
 port = 5432
 username = "idgen"
-password = "${TEST_DB_PASSWORD:idgen123}"
+password = "${NEBULA_DATABASE_PASSWORD}"
 database = "idgen"
 max_connections = 10
 min_connections = 1
@@ -331,8 +333,8 @@ tracing_enabled = true
 otlp_endpoint = ""
 
 [logging]
-level = "info"
-format = "json"
+level = "Info"
+format = "Json"
 include_location = true
 
 [rate_limit]
@@ -378,12 +380,15 @@ dc_id = 1
 worker_id = 1
 
 [database]
-engine = "postgresql"
-url = "postgresql://idgen:${TEST_DB_PASSWORD:?idgen123}@localhost:5432/idgen"
+engine = "Postgresql"
+# Use environment variable NEBULA_DATABASE_PASSWORD for credentials
+# For tests, set NEBULA_DATABASE_PASSWORD environment variable
+# WARNING: Never use default passwords in production
+url = "postgresql://idgen:${NEBULA_DATABASE_PASSWORD}@localhost:5432/idgen"
 host = "localhost"
 port = 5432
 username = "idgen"
-password = "${TEST_DB_PASSWORD:idgen123}"
+password = "${NEBULA_DATABASE_PASSWORD}"
 database = "idgen"
 max_connections = 10
 min_connections = 1
@@ -431,8 +436,8 @@ tracing_enabled = true
 otlp_endpoint = ""
 
 [logging]
-level = "info"
-format = "json"
+level = "Info"
+format = "Json"
 include_location = true
 
 [rate_limit]

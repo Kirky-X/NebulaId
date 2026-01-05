@@ -43,7 +43,7 @@ use crate::database::segment_entity::{
 };
 use crate::database::workspace_entity::{
     ActiveModel as WorkspaceActiveModel, Column as WorkspaceColumn, Entity as WorkspaceEntity,
-    Workspace, WorkspaceStatusDb,
+    Workspace,
 };
 use crate::types::{Result, SegmentInfo};
 
@@ -164,7 +164,7 @@ pub trait ApiKeyRepository: Send + Sync {
         &self,
         key_id: &str,
         key_secret: &str,
-    ) -> Result<Option<(Uuid, ApiKeyRole)>>;
+    ) -> Result<Option<(Option<Uuid>, ApiKeyRole)>>; // workspace_id is optional for admin keys
     async fn list_api_keys(
         &self,
         workspace_id: Uuid,
@@ -199,7 +199,7 @@ impl WorkspaceRepository for SeaOrmRepository {
             id: Set(uuid::Uuid::new_v4()),
             name: Set(workspace.name.clone()),
             description: Set(workspace.description.clone()),
-            status: Set(WorkspaceStatusDb::Active), // 默认设置为Active
+            status: Set(super::workspace_entity::WorkspaceStatus::Active.to_string()),
             max_groups: Set(workspace.max_groups.unwrap_or(10)), // 默认值
             max_biz_tags: Set(workspace.max_biz_tags.unwrap_or(100)), // 默认值
             created_at: Set(chrono::Utc::now().naive_utc()),
@@ -886,7 +886,7 @@ impl ApiKeyRepository for SeaOrmRepository {
         &self,
         key_id: &str,
         key_secret: &str,
-    ) -> Result<Option<(Uuid, ApiKeyRole)>> {
+    ) -> Result<Option<(Option<Uuid>, ApiKeyRole)>> {
         let key_model = ApiKeyEntity::find()
             .filter(ApiKeyColumn::KeyId.eq(key_id))
             .one(&self.db)
@@ -1013,9 +1013,11 @@ impl ApiKeyRepository for SeaOrmRepository {
         Ok(())
     }
 
-    async fn get_admin_api_key(&self, workspace_id: Uuid) -> Result<Option<ApiKeyInfo>> {
+    async fn get_admin_api_key(&self, _workspace_id: Uuid) -> Result<Option<ApiKeyInfo>> {
+        // Admin keys are global (workspace_id is NULL), so we don't filter by workspace_id
+        // The workspace_id parameter is kept for backward compatibility but not used
         let result = ApiKeyEntity::find()
-            .filter(ApiKeyColumn::WorkspaceId.eq(workspace_id))
+            .filter(ApiKeyColumn::Role.eq(super::api_key_entity::ApiKeyRole::Admin.to_string()))
             .filter(ApiKeyColumn::KeyPrefix.eq("niad_"))
             .one(&self.db)
             .await

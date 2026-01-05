@@ -109,7 +109,7 @@ impl AdminConfigService {
                 worker_id: config.app.worker_id,
             },
             database: DatabaseConfigInfo {
-                engine: config.database.engine.clone(),
+                engine: config.database.engine.to_string(),
                 host: Some(config.database.host.clone()),
                 port: Some(config.database.port),
                 database: Some(config.database.database.clone()),
@@ -146,8 +146,8 @@ impl AdminConfigService {
                 tracing_enabled: config.monitoring.tracing_enabled,
             },
             logging: LoggingConfigInfo {
-                level: config.logging.level.clone(),
-                format: config.logging.format.clone(),
+                level: config.logging.level.to_string(),
+                format: config.logging.format.to_string(),
                 include_location: config.logging.include_location,
             },
             rate_limit: RateLimitConfigInfo {
@@ -209,19 +209,7 @@ impl AdminConfigService {
         let mut config = self.hot_config.get_config();
 
         if let Some(level) = req.level {
-            let valid_levels = ["debug", "info", "warn", "error"];
-            if valid_levels.contains(&level.as_str()) {
-                config.logging.level = level;
-            } else {
-                return UpdateConfigResponse {
-                    success: false,
-                    message: format!(
-                        "Invalid log level. Valid levels: {}",
-                        valid_levels.join(", ")
-                    ),
-                    config: None,
-                };
-            }
+            config.logging.level = nebula_core::config::LogLevel::from(level);
         }
 
         self.hot_config.update_config(config.clone());

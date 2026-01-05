@@ -71,7 +71,7 @@ impl ApiKeyAuth {
         &self,
         key_id: &str,
         key_secret: &str,
-    ) -> Option<(uuid::Uuid, ApiKeyRole)> {
+    ) -> Option<(Option<uuid::Uuid>, ApiKeyRole)> {
         match self.repo.validate_api_key(key_id, key_secret).await {
             Ok(Some((workspace_id, role))) => {
                 let role: ApiKeyRole = match role {
@@ -85,6 +85,9 @@ impl ApiKeyAuth {
     }
 
     pub async fn auth_middleware(&self, mut req: Request<Body>, next: Next) -> Response {
+        let path = req.uri().path().to_string();
+        tracing::debug!(event = "auth_middleware", path = %path, "Auth middleware called");
+
         let auth_header = req.headers().get("authorization").cloned();
 
         if let Some(header) = auth_header {
@@ -256,7 +259,7 @@ mod tests {
             &self,
             key_id: &str,
             key_secret: &str,
-        ) -> Result<Option<(Uuid, nebula_core::database::ApiKeyRole)>> {
+        ) -> Result<Option<(Option<Uuid>, nebula_core::database::ApiKeyRole)>> {
             use subtle::ConstantTimeEq;
             if let Some((expected_secret, role)) = self.keys.get(key_id) {
                 let incoming_hash = MockApiKeyRepo::hash_secret(key_secret);
@@ -265,7 +268,13 @@ mod tests {
                     .ct_eq(incoming_hash.as_bytes())
                     .into()
                 {
-                    return Ok(Some((Uuid::nil(), role.clone().into())));
+                    // Admin keys have None workspace_id, user keys have Some(workspace_id)
+                    let workspace_id = if *role == ApiKeyRole::Admin {
+                        None
+                    } else {
+                        Some(Uuid::nil())
+                    };
+                    return Ok(Some((workspace_id, role.clone().into())));
                 }
             }
             Ok(None)

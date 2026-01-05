@@ -16,6 +16,44 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use validator::Validate;
 
+/// Health status of the system
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum HealthStatus {
+    /// System is operating normally
+    Healthy,
+    /// System is degraded but still operational
+    Degraded,
+    /// System is not operational
+    Unhealthy,
+}
+
+impl std::fmt::Display for HealthStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HealthStatus::Healthy => write!(f, "healthy"),
+            HealthStatus::Degraded => write!(f, "degraded"),
+            HealthStatus::Unhealthy => write!(f, "unhealthy"),
+        }
+    }
+}
+
+impl From<&str> for HealthStatus {
+    fn from(s: &str) -> Self {
+        match s {
+            "healthy" => HealthStatus::Healthy,
+            "degraded" => HealthStatus::Degraded,
+            "unhealthy" => HealthStatus::Unhealthy,
+            _ => HealthStatus::Unhealthy,
+        }
+    }
+}
+
+impl From<String> for HealthStatus {
+    fn from(s: String) -> Self {
+        s.as_str().into()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct GenerateRequest {
     #[validate(length(min = 1, max = 64))]
@@ -66,8 +104,16 @@ pub struct BatchGenerateResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthResponse {
-    pub status: String,
+    pub status: HealthStatus,
     pub algorithm: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadyResponse {
+    pub ready: bool,
+    pub database: bool,
+    pub cache: bool,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,7 +173,7 @@ pub struct MetricsResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseMetrics {
-    pub status: String,
+    pub status: HealthStatus,
     pub connection_pool: ConnectionPoolMetrics,
     pub last_error: Option<String>,
 }
@@ -141,7 +187,7 @@ pub struct ConnectionPoolMetrics {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheMetrics {
-    pub status: String,
+    pub status: HealthStatus,
     pub hit_rate: f64,
     pub memory_usage_mb: Option<u64>,
     pub key_count: Option<u64>,
@@ -150,7 +196,7 @@ pub struct CacheMetrics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlgorithmMetrics {
     pub algorithm: String,
-    pub status: String,
+    pub status: HealthStatus,
     pub total_generated: u64,
     pub total_failed: u64,
     pub cache_hit_rate: f64,
@@ -437,6 +483,7 @@ pub struct BizTagListResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct PaginationParams {
+    pub workspace_id: Option<String>, // Optional: filter by workspace
     #[serde(default = "default_page")]
     pub page: u64,
 
@@ -453,6 +500,17 @@ fn default_page_size() -> u64 {
     20
 }
 
+/// Query params for listing groups (requires workspace parameter)
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct GroupListParams {
+    pub workspace: String,
+    #[serde(default = "default_page")]
+    pub page: u64,
+    #[serde(default = "default_page_size")]
+    #[validate(range(min = 1, max = 100))]
+    pub page_size: u64,
+}
+
 /// Shared utility: Convert NaiveDateTime to RFC3339 formatted string
 pub fn naive_to_rfc3339(dt: chrono::NaiveDateTime) -> String {
     chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc).to_rfc3339()
@@ -462,6 +520,7 @@ pub fn naive_to_rfc3339(dt: chrono::NaiveDateTime) -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct CreateApiKeyRequest {
+    pub workspace_id: Option<String>, // Optional: None for admin keys, required for user keys
     #[validate(length(min = 1, max = 64))]
     pub name: String,
 
@@ -506,4 +565,80 @@ pub struct ApiKeyListResponse {
 pub struct RevokeApiKeyResponse {
     pub success: bool,
     pub message: String,
+}
+
+// ========== Workspace Models ==========
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct CreateWorkspaceRequest {
+    #[validate(length(min = 1, max = 64))]
+    pub name: String,
+
+    pub description: Option<String>,
+
+    #[validate(range(min = 1, max = 1000))]
+    pub max_groups: Option<i32>,
+
+    #[validate(range(min = 1, max = 10000))]
+    pub max_biz_tags: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserApiKeyInfo {
+    pub key_id: String,
+    pub key_secret: String,
+    pub key_prefix: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceResponse {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub max_groups: i32,
+    pub max_biz_tags: i32,
+    pub created_at: String,
+    pub updated_at: String,
+    pub user_api_key: Option<UserApiKeyInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceListResponse {
+    pub workspaces: Vec<WorkspaceResponse>,
+    pub total: u64,
+}
+
+// ========== Group Models ==========
+
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct CreateGroupRequest {
+    #[validate(length(min = 1, max = 64))]
+    pub workspace: String, // workspace name
+
+    #[validate(length(min = 1, max = 64))]
+    pub name: String,
+
+    pub description: Option<String>,
+
+    #[validate(range(min = 1, max = 1000))]
+    pub max_biz_tags: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupResponse {
+    pub id: String,
+    pub workspace_id: String,
+    pub workspace_name: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub max_biz_tags: i32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupListResponse {
+    pub groups: Vec<GroupResponse>,
+    pub total: u64,
 }

@@ -33,6 +33,7 @@ etcd-client = { workspace = true, optional = true }
 # 缓存与存储
 redis = { workspace = true }
 dashmap = { workspace = true }
+lru = { workspace = true }
 parking_lot = { workspace = true }
 
 # 数据库

@@ -15,12 +15,18 @@
 use crate::config_hot_reload::HotReloadConfig;
 use crate::models::{
     AlgorithmConfigInfo, AppConfigInfo, CacheMetrics, ConfigResponse, ConnectionPoolMetrics,
-    DatabaseConfigInfo, DatabaseMetrics, LoggingConfigInfo, MonitoringConfigInfo,
-    RateLimitConfigInfo, RedisConfigInfo, SecureConfigResponse, SegmentConfigInfo,
-    SetAlgorithmRequest, SetAlgorithmResponse, SnowflakeConfigInfo, TlsConfigInfo,
-    UpdateConfigResponse, UpdateLoggingRequest, UpdateRateLimitRequest, UuidV7ConfigInfo,
+    CreateGroupRequest, CreateWorkspaceRequest, DatabaseConfigInfo, DatabaseMetrics,
+    GroupListResponse, GroupResponse, LoggingConfigInfo, MonitoringConfigInfo, RateLimitConfigInfo,
+    RedisConfigInfo, SecureConfigResponse, SegmentConfigInfo, SetAlgorithmRequest,
+    SetAlgorithmResponse, SnowflakeConfigInfo, TlsConfigInfo, UpdateConfigResponse,
+    UpdateLoggingRequest, UpdateRateLimitRequest, UuidV7ConfigInfo, WorkspaceListResponse,
+    WorkspaceResponse,
 };
 use nebula_core::config::Config;
+use nebula_core::database::{
+    CreateGroupRequest as CoreCreateGroupRequest,
+    CreateWorkspaceRequest as CoreCreateWorkspaceRequest,
+};
 use nebula_core::types::id::AlgorithmType;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -32,6 +38,8 @@ pub struct ConfigManagementService {
     rate_limiter: Arc<RwLock<Option<(u32, u32)>>>,
     algorithm_router: Arc<nebula_core::algorithm::AlgorithmRouter>,
     repository: Option<Arc<dyn nebula_core::database::BizTagRepository + Send + Sync>>,
+    workspace_repository: Option<Arc<dyn nebula_core::database::WorkspaceRepository + Send + Sync>>,
+    group_repository: Option<Arc<dyn nebula_core::database::GroupRepository + Send + Sync>>,
 }
 
 impl ConfigManagementService {
@@ -44,6 +52,8 @@ impl ConfigManagementService {
             rate_limiter: Arc::new(RwLock::new(None)),
             algorithm_router,
             repository: None,
+            workspace_repository: None,
+            group_repository: None,
         }
     }
 
@@ -51,12 +61,16 @@ impl ConfigManagementService {
         hot_config: Arc<HotReloadConfig>,
         algorithm_router: Arc<nebula_core::algorithm::AlgorithmRouter>,
         repository: Arc<dyn nebula_core::database::BizTagRepository + Send + Sync>,
+        workspace_repository: Arc<dyn nebula_core::database::WorkspaceRepository + Send + Sync>,
+        group_repository: Arc<dyn nebula_core::database::GroupRepository + Send + Sync>,
     ) -> Self {
         Self {
             hot_config,
             rate_limiter: Arc::new(RwLock::new(None)),
             algorithm_router,
             repository: Some(repository),
+            workspace_repository: Some(workspace_repository),
+            group_repository: Some(group_repository),
         }
     }
 
@@ -81,7 +95,7 @@ impl ConfigManagementService {
                 worker_id: config.app.worker_id,
             },
             database: DatabaseConfigInfo {
-                engine: config.database.engine.clone(),
+                engine: config.database.engine.to_string(),
                 host: Some(config.database.host.clone()),
                 port: Some(config.database.port),
                 database: Some(config.database.database.clone()),
@@ -118,8 +132,8 @@ impl ConfigManagementService {
                 tracing_enabled: config.monitoring.tracing_enabled,
             },
             logging: LoggingConfigInfo {
-                level: config.logging.level.clone(),
-                format: config.logging.format.clone(),
+                level: config.logging.level.to_string(),
+                format: config.logging.format.to_string(),
                 include_location: config.logging.include_location,
             },
             rate_limit: RateLimitConfigInfo {
@@ -170,8 +184,8 @@ impl ConfigManagementService {
                 tracing_enabled: config.monitoring.tracing_enabled,
             },
             logging: LoggingConfigInfo {
-                level: config.logging.level.clone(),
-                format: config.logging.format.clone(),
+                level: config.logging.level.to_string(),
+                format: config.logging.format.to_string(),
                 include_location: config.logging.include_location,
             },
             rate_limit: RateLimitConfigInfo {
@@ -227,19 +241,7 @@ impl ConfigManagementService {
         let mut config = self.hot_config.get_config();
 
         if let Some(level) = req.level {
-            let valid_levels = ["debug", "info", "warn", "error"];
-            if valid_levels.contains(&level.as_str()) {
-                config.logging.level = level;
-            } else {
-                return UpdateConfigResponse {
-                    success: false,
-                    message: format!(
-                        "Invalid log level. Valid levels: {}",
-                        valid_levels.join(", ")
-                    ),
-                    config: None,
-                };
-            }
+            config.logging.level = nebula_core::config::LogLevel::from(level);
         }
 
         self.hot_config.update_config(config.clone());
@@ -399,12 +401,187 @@ impl ConfigManagementService {
         }
     }
 
+    // ========== Workspace CRUD Methods ==========
+
+    pub async fn create_workspace(
+        &self,
+        req: CreateWorkspaceRequest,
+    ) -> nebula_core::Result<WorkspaceResponse> {
+        if let Some(ref repo) = self.workspace_repository {
+            let request = CoreCreateWorkspaceRequest {
+                name: req.name.clone(),
+                description: req.description.clone(),
+                max_groups: req.max_groups,
+                max_biz_tags: req.max_biz_tags,
+            };
+            let workspace = repo.create_workspace(&request).await?;
+            Ok(WorkspaceResponse {
+                id: workspace.id.to_string(),
+                name: workspace.name,
+                description: workspace.description,
+                status: workspace.status.to_string(),
+                max_groups: workspace.max_groups,
+                max_biz_tags: workspace.max_biz_tags,
+                created_at: workspace.created_at.and_utc().to_rfc3339(),
+                updated_at: workspace.updated_at.and_utc().to_rfc3339(),
+                user_api_key: None,
+            })
+        } else {
+            Err(nebula_core::CoreError::InternalError(
+                "Workspace repository not configured".to_string(),
+            ))
+        }
+    }
+
+    pub async fn list_workspaces(&self) -> nebula_core::Result<WorkspaceListResponse> {
+        if let Some(ref repo) = self.workspace_repository {
+            let workspaces = repo.list_workspaces(None, None).await?;
+            let total = workspaces.len() as u64;
+            let workspace_responses: Vec<WorkspaceResponse> = workspaces
+                .into_iter()
+                .map(|w| WorkspaceResponse {
+                    id: w.id.to_string(),
+                    name: w.name,
+                    description: w.description,
+                    status: w.status.to_string(),
+                    max_groups: w.max_groups,
+                    max_biz_tags: w.max_biz_tags,
+                    created_at: w.created_at.and_utc().to_rfc3339(),
+                    updated_at: w.updated_at.and_utc().to_rfc3339(),
+                    user_api_key: None,
+                })
+                .collect();
+            Ok(WorkspaceListResponse {
+                workspaces: workspace_responses,
+                total,
+            })
+        } else {
+            Err(nebula_core::CoreError::InternalError(
+                "Workspace repository not configured".to_string(),
+            ))
+        }
+    }
+
+    pub async fn get_workspace(
+        &self,
+        name: &str,
+    ) -> nebula_core::Result<Option<WorkspaceResponse>> {
+        if let Some(ref repo) = self.workspace_repository {
+            let workspace = repo.get_workspace_by_name(name).await?;
+            Ok(workspace.map(|w| WorkspaceResponse {
+                id: w.id.to_string(),
+                name: w.name,
+                description: w.description,
+                status: w.status.to_string(),
+                max_groups: w.max_groups,
+                max_biz_tags: w.max_biz_tags,
+                created_at: w.created_at.and_utc().to_rfc3339(),
+                updated_at: w.updated_at.and_utc().to_rfc3339(),
+                user_api_key: None,
+            }))
+        } else {
+            Err(nebula_core::CoreError::InternalError(
+                "Workspace repository not configured".to_string(),
+            ))
+        }
+    }
+
+    // ========== Group CRUD Methods ==========
+
+    pub async fn create_group(
+        &self,
+        req: CreateGroupRequest,
+    ) -> nebula_core::Result<GroupResponse> {
+        if let Some(ref workspace_repo) = self.workspace_repository {
+            if let Some(ref group_repo) = self.group_repository {
+                // First get the workspace by name
+                let workspace = workspace_repo.get_workspace_by_name(&req.workspace).await?;
+                match workspace {
+                    Some(ws) => {
+                        let request = CoreCreateGroupRequest {
+                            workspace_id: ws.id,
+                            name: req.name.clone(),
+                            description: req.description.clone(),
+                            max_biz_tags: req.max_biz_tags,
+                        };
+                        let group = group_repo.create_group(&request).await?;
+                        Ok(GroupResponse {
+                            id: group.id.to_string(),
+                            workspace_id: ws.id.to_string(),
+                            workspace_name: ws.name,
+                            name: group.name,
+                            description: group.description,
+                            max_biz_tags: group.max_biz_tags,
+                            created_at: group.created_at.and_utc().to_rfc3339(),
+                            updated_at: group.updated_at.and_utc().to_rfc3339(),
+                        })
+                    }
+                    None => Err(nebula_core::CoreError::InternalError(format!(
+                        "Workspace '{}' not found",
+                        req.workspace
+                    ))),
+                }
+            } else {
+                Err(nebula_core::CoreError::InternalError(
+                    "Group repository not configured".to_string(),
+                ))
+            }
+        } else {
+            Err(nebula_core::CoreError::InternalError(
+                "Workspace repository not configured".to_string(),
+            ))
+        }
+    }
+
+    pub async fn list_groups(&self, workspace: &str) -> nebula_core::Result<GroupListResponse> {
+        if let Some(ref workspace_repo) = self.workspace_repository {
+            if let Some(ref group_repo) = self.group_repository {
+                let workspace = workspace_repo.get_workspace_by_name(workspace).await?;
+                match workspace {
+                    Some(ws) => {
+                        let groups = group_repo.list_groups(ws.id, None, None).await?;
+                        let total = groups.len() as u64;
+                        let group_responses: Vec<GroupResponse> = groups
+                            .into_iter()
+                            .map(|g| GroupResponse {
+                                id: g.id.to_string(),
+                                workspace_id: ws.id.to_string(),
+                                workspace_name: ws.name.clone(),
+                                name: g.name,
+                                description: g.description,
+                                max_biz_tags: g.max_biz_tags,
+                                created_at: g.created_at.and_utc().to_rfc3339(),
+                                updated_at: g.updated_at.and_utc().to_rfc3339(),
+                            })
+                            .collect();
+                        Ok(GroupListResponse {
+                            groups: group_responses,
+                            total,
+                        })
+                    }
+                    None => Ok(GroupListResponse {
+                        groups: vec![],
+                        total: 0,
+                    }),
+                }
+            } else {
+                Err(nebula_core::CoreError::InternalError(
+                    "Group repository not configured".to_string(),
+                ))
+            }
+        } else {
+            Err(nebula_core::CoreError::InternalError(
+                "Workspace repository not configured".to_string(),
+            ))
+        }
+    }
+
     pub async fn get_database_metrics(&self) -> DatabaseMetrics {
         if let Some(ref repo) = self.repository {
             // Try to get database health status
             match repo.health_check().await {
                 Ok(()) => DatabaseMetrics {
-                    status: "healthy".to_string(),
+                    status: crate::models::HealthStatus::Healthy,
                     connection_pool: ConnectionPoolMetrics {
                         active_connections: 0,
                         idle_connections: 0,
@@ -413,7 +590,7 @@ impl ConfigManagementService {
                     last_error: None,
                 },
                 Err(e) => DatabaseMetrics {
-                    status: "unhealthy".to_string(),
+                    status: crate::models::HealthStatus::Unhealthy,
                     connection_pool: ConnectionPoolMetrics {
                         active_connections: 0,
                         idle_connections: 0,
@@ -424,7 +601,7 @@ impl ConfigManagementService {
             }
         } else {
             DatabaseMetrics {
-                status: "disabled".to_string(),
+                status: crate::models::HealthStatus::Unhealthy,
                 connection_pool: ConnectionPoolMetrics {
                     active_connections: 0,
                     idle_connections: 0,
@@ -450,7 +627,7 @@ impl ConfigManagementService {
         };
 
         CacheMetrics {
-            status: "healthy".to_string(),
+            status: crate::models::HealthStatus::Healthy,
             hit_rate: cache_hit_rate,
             memory_usage_mb: None,
             key_count: None,

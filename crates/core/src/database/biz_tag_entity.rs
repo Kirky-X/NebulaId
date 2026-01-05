@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::from_str;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize)]
-#[sea_orm(table_name = "biz_tags")]
+#[sea_orm(table_name = "biz_tags", schema_name = "nebula_id")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
@@ -28,14 +28,12 @@ pub struct Model {
     pub group_id: Uuid,
     pub name: String,
     pub description: Option<String>,
-    #[sea_orm(enum_name = "AlgorithmTypeDb")]
     pub algorithm: AlgorithmTypeDb,
-    #[sea_orm(enum_name = "IdFormatDb")]
     pub format: IdFormatDb,
     pub prefix: String,
     pub base_step: i32,
     pub max_step: i32,
-    pub datacenter_ids: String, // 使用String存储JSON格式的数组
+    pub datacenter_ids: String,
     pub created_at: DateTime,
     pub updated_at: DateTime,
 }
@@ -82,7 +80,7 @@ pub struct BizTag {
     pub prefix: String,
     pub base_step: i32,
     pub max_step: i32,
-    pub datacenter_ids: Vec<i32>, // 在业务逻辑中使用Vec<i32>
+    pub datacenter_ids: Vec<i32>,
     pub created_at: DateTime,
     pub updated_at: DateTime,
 }
@@ -140,7 +138,7 @@ impl From<Model> for BizTag {
 }
 
 #[derive(Debug, Clone, Copy, EnumIter, DeriveActiveEnum, PartialEq, Eq, Serialize, Deserialize)]
-#[sea_orm(rs_type = "String", db_type = "String(StringLen::N(20))")]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "algorithm_type")]
 pub enum AlgorithmTypeDb {
     #[sea_orm(string_value = "segment")]
     Segment,
@@ -153,7 +151,7 @@ pub enum AlgorithmTypeDb {
 }
 
 #[derive(Debug, Clone, Copy, EnumIter, DeriveActiveEnum, PartialEq, Eq, Serialize, Deserialize)]
-#[sea_orm(rs_type = "String", db_type = "String(StringLen::N(20))")]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "id_format")]
 pub enum IdFormatDb {
     #[sea_orm(string_value = "numeric")]
     Numeric,

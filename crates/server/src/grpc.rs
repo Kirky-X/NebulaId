@@ -262,7 +262,7 @@ impl NebulaIdService for GrpcServer {
         _request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckResponse>, Status> {
         let health = self.handlers.health().await;
-        let status = if health.status == "healthy" {
+        let status = if health.status == crate::models::HealthStatus::Healthy {
             v1::health_check_response::ServingStatus::Serving
         } else {
             v1::health_check_response::ServingStatus::NotServing

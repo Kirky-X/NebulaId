@@ -20,6 +20,9 @@ use tracing::{info, warn};
 use crate::config::DatabaseConfig;
 use crate::types::CoreError;
 
+/// Schema name for Nebula ID tables
+pub const NEBULA_SCHEMA: &str = "nebula_id";
+
 impl From<DbErr> for CoreError {
     fn from(e: DbErr) -> Self {
         CoreError::DatabaseError(e.to_string())
@@ -32,36 +35,29 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
         || config.url.starts_with("mysql://")
         || config.url.starts_with("sqlite://")
         || config.url.starts_with("postgres://")
-    // Also support postgres://
     {
         config.url.clone()
     } else {
-        match config.engine.as_str() {
-            "postgresql" | "postgres" => {
+        match config.engine {
+            crate::config::DatabaseEngine::Postgresql | crate::config::DatabaseEngine::Postgres => {
                 format!(
                     "postgresql://{}:{}@{}:{}/{}",
                     config.username, config.password, config.host, config.port, config.database
                 )
             }
-            "mysql" => {
+            crate::config::DatabaseEngine::Mysql => {
                 format!(
                     "mysql://{}:{}@{}:{}/{}",
                     config.username, config.password, config.host, config.port, config.database
                 )
             }
-            "sqlite" => config.database.clone(),
-            _ => {
-                return Err(CoreError::DatabaseError(format!(
-                    "Unsupported database engine: {}",
-                    config.engine
-                )));
-            }
+            crate::config::DatabaseEngine::Sqlite => config.database.clone(),
         }
     };
 
     let mut connect_options = ConnectOptions::new(final_url.clone());
 
-    if config.engine != "sqlite" {
+    if config.engine != crate::config::DatabaseEngine::Sqlite {
         connect_options
             .max_connections(config.max_connections)
             .min_connections(config.min_connections)
@@ -85,15 +81,27 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
     Ok(db)
 }
 
-/// Auto-create all tables based on SeaORM entities
+/// Auto-create schema and tables for Nebula ID
 pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
     info!("Running database migrations...");
 
+    // Create schema if not exists (only for PostgreSQL)
+    let create_schema_sql = format!(r#"CREATE SCHEMA IF NOT EXISTS {}"#, NEBULA_SCHEMA);
+    let stmt = Statement::from_string(DbBackend::Postgres, &create_schema_sql);
+    match db.execute(stmt).await {
+        Ok(_) => info!("Schema '{}' created/verified", NEBULA_SCHEMA),
+        Err(e) => {
+            warn!("Could not create schema (may not be PostgreSQL): {}", e);
+        }
+    }
+
     // Define all tables with their CREATE statements
+    // All tables are created in the nebula_id schema
     let tables = vec![
         // API Keys table
-        r#"
-        CREATE TABLE IF NOT EXISTS api_keys (
+        format!(
+            r#"
+        CREATE TABLE IF NOT EXISTS {}.api_keys (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             key_id VARCHAR(64) NOT NULL UNIQUE,
             key_secret_hash VARCHAR(128) NOT NULL,
@@ -104,45 +112,54 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
             description TEXT,
             rate_limit INT DEFAULT 1000,
             enabled BOOLEAN DEFAULT true,
-            expires_at TIMESTAMP WITH TIME ZONE,
-            last_used_at TIMESTAMP WITH TIME ZONE,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP,
+            last_used_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(workspace_id, key_id)
         )
         "#,
+            NEBULA_SCHEMA
+        ),
         // Workspaces table
-        r#"
-        CREATE TABLE IF NOT EXISTS workspaces (
+        format!(
+            r#"
+        CREATE TABLE IF NOT EXISTS {}.workspaces (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             name VARCHAR(255) NOT NULL UNIQUE,
             description TEXT,
             status VARCHAR(20) DEFAULT 'active',
             max_groups INT DEFAULT 100,
             max_biz_tags INT DEFAULT 1000,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         "#,
+            NEBULA_SCHEMA
+        ),
         // Groups table
-        r#"
-        CREATE TABLE IF NOT EXISTS groups (
+        format!(
+            r#"
+        CREATE TABLE IF NOT EXISTS {}.groups (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            workspace_id UUID NOT NULL REFERENCES {}.workspaces(id) ON DELETE CASCADE,
             name VARCHAR(255) NOT NULL,
             description TEXT,
             max_biz_tags INT DEFAULT 100,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(workspace_id, name)
         )
         "#,
+            NEBULA_SCHEMA, NEBULA_SCHEMA
+        ),
         // BizTags table
-        r#"
-        CREATE TABLE IF NOT EXISTS biz_tags (
+        format!(
+            r#"
+        CREATE TABLE IF NOT EXISTS {}.biz_tags (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-            group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+            workspace_id UUID NOT NULL REFERENCES {}.workspaces(id) ON DELETE CASCADE,
+            group_id UUID NOT NULL REFERENCES {}.groups(id) ON DELETE CASCADE,
             name VARCHAR(255) NOT NULL,
             description TEXT,
             algorithm VARCHAR(20) DEFAULT 'segment',
@@ -151,14 +168,17 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
             base_step INT DEFAULT 1000,
             max_step INT DEFAULT 100000,
             datacenter_ids TEXT DEFAULT '[]',
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(workspace_id, group_id, name)
         )
         "#,
+            NEBULA_SCHEMA, NEBULA_SCHEMA, NEBULA_SCHEMA
+        ),
         // Nebula segments table
-        r#"
-        CREATE TABLE IF NOT EXISTS nebula_segments (
+        format!(
+            r#"
+        CREATE TABLE IF NOT EXISTS {}.nebula_segments (
             id BIGSERIAL PRIMARY KEY,
             workspace_id VARCHAR(255) NOT NULL,
             biz_tag VARCHAR(255) NOT NULL,
@@ -167,16 +187,21 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
             step INT NOT NULL DEFAULT 1000,
             delta INT NOT NULL DEFAULT 1,
             dc_id INT NOT NULL DEFAULT 0,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         "#,
+            NEBULA_SCHEMA
+        ),
     ];
 
     for sql in tables {
-        let stmt = Statement::from_string(DbBackend::Postgres, sql);
+        let stmt = Statement::from_string(DbBackend::Postgres, &sql);
         match db.execute(stmt).await {
-            Ok(_) => info!("Table created/verified: {}", sql.lines().nth(3).unwrap_or("").trim()),
+            Ok(_) => {
+                let table_name = sql.split_whitespace().nth(4).unwrap_or("").replace('(', "");
+                info!("Table created/verified: {}", table_name);
+            }
             Err(e) => {
                 let error_msg = e.to_string();
                 if error_msg.contains("already exists") || error_msg.contains("duplicate") {
@@ -228,13 +253,13 @@ impl DatabaseManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::DatabaseConfig;
+    use crate::config::{DatabaseConfig, DatabaseEngine};
 
     #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn test_sqlite_connection() {
         let config = DatabaseConfig {
-            engine: "sqlite".to_string(),
+            engine: DatabaseEngine::Sqlite,
             url: "sqlite::memory:".to_string(),
             host: "".to_string(),
             port: 0,

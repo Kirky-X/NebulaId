@@ -1,0 +1,124 @@
+name: Code Review
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - '**.rs'
+      - '**/Cargo.toml'
+      - 'tools/code-review/**'
+  pull_request:
+    paths:
+      - '**.rs'
+      - '**/Cargo.toml'
+      - 'tools/code-review/**'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_LOG: info
+
+jobs:
+  code-review:
+    name: Multi-Agent Code Review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Build code review tool
+        run: |
+          cargo build --release -p nebula-code-review
+
+      - name: Run Security Review Agent
+        id: security-review
+        run: |
+          echo "=== Security Review ===" 
+          ./target/release/nebula-code-review --agent security --format text
+
+      - name: Run Performance Review Agent
+        id: performance-review
+        run: |
+          echo "=== Performance Review ==="
+          ./target/release/nebula-code-review --agent performance --format text
+
+      - name: Run Quality Review Agent
+        id: quality-review
+        run: |
+          echo "=== Quality Review ==="
+          ./target/release/nebula-code-review --agent quality --format text
+
+      - name: Run Architecture Review Agent
+        id: architecture-review
+        run: |
+          echo "=== Architecture Review ==="
+          ./target/release/nebula-code-review --agent architecture --format text
+
+      - name: Run Full Code Review
+        id: full-review
+        run: |
+          echo "=== Full Code Review ==="
+          ./target/release/nebula-code-review --format markdown --output review-report.md
+          cat review-report.md
+
+      - name: Upload Review Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-review-report
+          path: review-report.md
+
+      - name: Check Critical Issues
+        run: |
+          CRITICAL_COUNT=$(grep -c "Critical" review-report.md || echo "0")
+          if [ "$CRITICAL_COUNT" -gt 0 ]; then
+            echo "::error::Found $CRITICAL_COUNT critical issues in code review"
+            exit 1
+          fi
+          echo "No critical issues found ✅"
+
+  rust-checks:
+    name: Rust Quality Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-targets
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run cargo-deny
+        uses:EmbarkStudios/cargo-deny-action@v1
+        with:
+          command: check security
+
+      - name: Run cargo-audit
+        uses: actions-rs/audit-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          vulnerability: ignore

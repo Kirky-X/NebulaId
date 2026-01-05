@@ -73,19 +73,18 @@ async fn load_api_keys(
     info!("Loading API keys...");
 
     if let Some(ref repo) = repository {
-        // Try to get existing admin key from database (use default workspace ID)
-        let default_workspace_id = Uuid::nil(); // Use nil UUID for default workspace
-        match repo.get_admin_api_key(default_workspace_id).await {
+        // Try to get existing admin key from database (admin keys are global, workspace_id is NULL)
+        match repo.get_admin_api_key(Uuid::nil()).await {
             Ok(Some(admin_key)) => {
                 info!(
-                    "Found existing admin API key: {} (workspace: {})",
+                    "Found existing admin API key: {} (workspace: {:?})",
                     admin_key.key_id, admin_key.workspace_id
                 );
             }
             Ok(None) => {
                 // Generate new admin API key if none exists
                 let admin_request = CreateApiKeyRequest {
-                    workspace_id: default_workspace_id,
+                    workspace_id: None, // Admin key is global, not bound to any workspace
                     name: "admin".to_string(),
                     description: Some("Default Admin API Key".to_string()),
                     role: ApiKeyRole::Admin,
@@ -95,7 +94,7 @@ async fn load_api_keys(
                 match repo.create_api_key(&admin_request).await {
                     Ok(key_with_secret) => {
                         info!(
-                            "Generated new admin API key: {} (workspace: admin)",
+                            "Generated new admin API key: {} (workspace: None)",
                             key_with_secret.key.key_id
                         );
                         // CRITICAL: Output secret only on first generation - user MUST save this!
@@ -118,20 +117,19 @@ async fn load_api_keys(
         // Format: Authorization: ApiKey test-key_test-secret
         #[cfg(debug_assertions)]
         {
-            let test_workspace_id = Uuid::nil();
             let test_request = CreateApiKeyRequest {
-                workspace_id: test_workspace_id,
-                name: "Test API Key".to_string(),
-                description: Some("Default test API key".to_string()),
-                role: ApiKeyRole::User,
+                workspace_id: None, // Test admin key is also global
+                name: "Test Admin API Key".to_string(),
+                description: Some("Default test admin API key".to_string()),
+                role: ApiKeyRole::Admin,
                 rate_limit: Some(10000),
                 expires_at: None,
             };
             match repo.create_api_key(&test_request).await {
                 Ok(key_with_secret) => {
                     info!(
-                        "Created test API key: {} (workspace: {})",
-                        key_with_secret.key.key_id, test_workspace_id
+                        "Created test admin API key: {} (workspace: None)",
+                        key_with_secret.key.key_id
                     );
                     // SECURITY: Don't log secrets in debug mode either
                 }
@@ -341,7 +339,9 @@ async fn main() -> Result<()> {
         }
         Err(e) => {
             error!("Failed to connect to database: {}.", e);
-            error!("Please check your DATABASE_URL environment variable or database configuration.");
+            error!(
+                "Please check your DATABASE_URL environment variable or database configuration."
+            );
             error!("Shutting down...");
             std::process::exit(1);
         }
@@ -402,6 +402,8 @@ async fn main() -> Result<()> {
             let cs = Arc::new(ConfigManagementService::with_repository(
                 hot_config,
                 id_generator.clone(),
+                repo.clone(),
+                repo.clone(),
                 repo.clone(),
             ));
             let h = Arc::new(ApiHandlers::with_api_key_repository(
@@ -502,6 +504,8 @@ async fn main() -> Result<()> {
             let cs = Arc::new(ConfigManagementService::with_repository(
                 hot_config,
                 id_generator.clone(),
+                repo.clone(),
+                repo.clone(),
                 repo.clone(),
             ));
             let h = Arc::new(ApiHandlers::with_api_key_repository(
@@ -651,7 +655,7 @@ mod tests {
                 &self,
                 _key_id: &str,
                 _key_secret: &str,
-            ) -> nebula_core::types::Result<Option<(uuid::Uuid, database::ApiKeyRole)>>
+            ) -> nebula_core::types::Result<Option<(Option<uuid::Uuid>, database::ApiKeyRole)>>
             {
                 Ok(None)
             }
@@ -756,7 +760,7 @@ mod tests {
                 &self,
                 _key_id: &str,
                 _key_secret: &str,
-            ) -> nebula_core::types::Result<Option<(uuid::Uuid, database::ApiKeyRole)>>
+            ) -> nebula_core::types::Result<Option<(Option<uuid::Uuid>, database::ApiKeyRole)>>
             {
                 Ok(None)
             }

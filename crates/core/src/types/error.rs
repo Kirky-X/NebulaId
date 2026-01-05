@@ -144,3 +144,60 @@ pub const ERROR_CODE_NOT_FOUND: i32 = 404;
 pub const ERROR_CODE_RATE_LIMIT: i32 = 429;
 pub const ERROR_CODE_INTERNAL_ERROR: i32 = 500;
 pub const ERROR_CODE_SERVICE_UNAVAILABLE: i32 = 503;
+
+impl CoreError {
+    /// Convert CoreError to HTTP status code and error response
+    pub fn to_http_response(&self) -> (i32, ErrorResponse) {
+        let (status_code, error_code) = match self {
+            CoreError::InvalidIdFormat(_)
+            | CoreError::InvalidIdString(_)
+            | CoreError::InvalidAlgorithmType(_)
+            | CoreError::InvalidInput(_)
+            | CoreError::ParseError(_) => (ERROR_CODE_INVALID_REQUEST, ERROR_CODE_INVALID_REQUEST),
+
+            CoreError::AuthenticationError(_)
+            | CoreError::InvalidApiKeySignature
+            | CoreError::ApiKeyDisabled
+            | CoreError::ApiKeyExpired => (ERROR_CODE_UNAUTHORIZED, ERROR_CODE_UNAUTHORIZED),
+
+            CoreError::WorkspaceDisabled(_) => (ERROR_CODE_FORBIDDEN, ERROR_CODE_FORBIDDEN),
+
+            CoreError::NotFound(_) | CoreError::BizTagNotFound(_) => {
+                (ERROR_CODE_NOT_FOUND, ERROR_CODE_NOT_FOUND)
+            }
+
+            CoreError::RateLimitExceeded => (ERROR_CODE_RATE_LIMIT, ERROR_CODE_RATE_LIMIT),
+
+            CoreError::TimeoutError => (
+                ERROR_CODE_SERVICE_UNAVAILABLE,
+                ERROR_CODE_SERVICE_UNAVAILABLE,
+            ),
+
+            CoreError::ClockMovedBackward { .. }
+            | CoreError::SequenceOverflow { .. }
+            | CoreError::SegmentExhausted { .. }
+            | CoreError::DatabaseError(_)
+            | CoreError::CacheError(_)
+            | CoreError::ConfigurationError(_)
+            | CoreError::EtcdError(_)
+            | CoreError::IoError(_)
+            | CoreError::InternalError(_)
+            | CoreError::Unknown => (ERROR_CODE_INTERNAL_ERROR, ERROR_CODE_INTERNAL_ERROR),
+        };
+
+        (
+            status_code,
+            ErrorResponse::new(error_code, self.to_string()),
+        )
+    }
+
+    /// Get HTTP status code for this error
+    pub fn http_status_code(&self) -> i32 {
+        self.to_http_response().0
+    }
+
+    /// Get error code for this error
+    pub fn error_code(&self) -> i32 {
+        self.to_http_response().1.code
+    }
+}

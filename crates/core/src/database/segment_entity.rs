@@ -15,7 +15,7 @@
 use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
-#[sea_orm(table_name = "nebula_segments")]
+#[sea_orm(table_name = "nebula_segments", schema_name = "nebula_id")]
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i64,

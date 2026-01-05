@@ -195,7 +195,7 @@ mod tests {
                 &self,
                 _key_id: &str,
                 _key_secret: &str,
-            ) -> Result<Option<(Uuid, nebula_core::database::ApiKeyRole)>> {
+            ) -> Result<Option<(Option<Uuid>, nebula_core::database::ApiKeyRole)>> {
                 Ok(None)
             }
 

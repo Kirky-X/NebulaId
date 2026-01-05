@@ -35,6 +35,19 @@ pub enum AuditEventType {
     RateLimitExceeded,
     HealthCheck,
     MetricsAccess,
+    WorkspaceCreated,
+    WorkspaceUpdated,
+    WorkspaceDeleted,
+    GroupCreated,
+    GroupUpdated,
+    GroupDeleted,
+    BizTagCreated,
+    BizTagUpdated,
+    BizTagDeleted,
+    ApiKeyCreated,
+    ApiKeyUpdated,
+    ApiKeyDeleted,
+    ApiKeyRegenerated,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +112,11 @@ impl AuditEvent {
 
     pub fn with_user_agent(mut self, ua: String) -> Self {
         self.user_agent = Some(ua);
+        self
+    }
+
+    pub fn with_user_id(mut self, user_id: String) -> Self {
+        self.user_id = Some(user_id);
         self
     }
 
@@ -323,6 +341,276 @@ impl AuditLogger {
         )
         .with_client_ip(client_ip)
         .with_error("Rate limit exceeded".to_string());
+
+        self.log(event).await;
+    }
+
+    pub async fn log_workspace_created(
+        &self,
+        workspace_id: String,
+        workspace_name: String,
+        user_id: Option<String>,
+        client_ip: Option<String>,
+    ) {
+        let event = AuditEvent::new(
+            AuditEventType::WorkspaceCreated,
+            Some(workspace_id),
+            "create_workspace".to_string(),
+            format!("workspace:{}", workspace_name),
+            AuditResult::Success,
+        )
+        .with_user_id(user_id.unwrap_or_default())
+        .with_client_ip(client_ip.unwrap_or_default());
+
+        self.log(event).await;
+    }
+
+    pub async fn log_workspace_updated(
+        &self,
+        workspace_id: String,
+        workspace_name: String,
+        user_id: Option<String>,
+        client_ip: Option<String>,
+    ) {
+        let event = AuditEvent::new(
+            AuditEventType::WorkspaceUpdated,
+            Some(workspace_id),
+            "update_workspace".to_string(),
+            format!("workspace:{}", workspace_name),
+            AuditResult::Success,
+        )
+        .with_user_id(user_id.unwrap_or_default())
+        .with_client_ip(client_ip.unwrap_or_default());
+
+        self.log(event).await;
+    }
+
+    pub async fn log_workspace_deleted(
+        &self,
+        workspace_id: String,
+        workspace_name: String,
+        user_id: Option<String>,
+        client_ip: Option<String>,
+    ) {
+        let event = AuditEvent::new(
+            AuditEventType::WorkspaceDeleted,
+            Some(workspace_id),
+            "delete_workspace".to_string(),
+            format!("workspace:{}", workspace_name),
+            AuditResult::Success,
+        )
+        .with_user_id(user_id.unwrap_or_default())
+        .with_client_ip(client_ip.unwrap_or_default());
+
+        self.log(event).await;
+    }
+
+    pub async fn log_group_created(
+        &self,
+        workspace_id: String,
+        group_id: String,
+        group_name: String,
+        user_id: Option<String>,
+        client_ip: Option<String>,
+    ) {
+        let event = AuditEvent::new(
+            AuditEventType::GroupCreated,
+            Some(workspace_id),
+            "create_group".to_string(),
+            format!("group:{}:{}", group_id, group_name),
+            AuditResult::Success,
+        )
+        .with_user_id(user_id.unwrap_or_default())
+        .with_client_ip(client_ip.unwrap_or_default());
+
+        self.log(event).await;
+    }
+
+    pub async fn log_group_updated(
+        &self,
+        workspace_id: String,
+        group_id: String,
+        group_name: String,
+        user_id: Option<String>,
+        client_ip: Option<String>,
+    ) {
+        let event = AuditEvent::new(
+            AuditEventType::GroupUpdated,
+            Some(workspace_id),
+            "update_group".to_string(),
+            format!("group:{}:{}", group_id, group_name),
+            AuditResult::Success,
+        )
+        .with_user_id(user_id.unwrap_or_default())
+        .with_client_ip(client_ip.unwrap_or_default());
+
+        self.log(event).await;
+    }
+
+    pub async fn log_group_deleted(
+        &self,
+        workspace_id: String,
+        group_id: String,
+        group_name: String,
+        user_id: Option<String>,
+        client_ip: Option<String>,
+    ) {
+        let event = AuditEvent::new(
+            AuditEventType::GroupDeleted,
+            Some(workspace_id),
+            "delete_group".to_string(),
+            format!("group:{}:{}", group_id, group_name),
+            AuditResult::Success,
+        )
+        .with_user_id(user_id.unwrap_or_default())
+        .with_client_ip(client_ip.unwrap_or_default());
+
+        self.log(event).await;
+    }
+
+    pub async fn log_biz_tag_created(
+        &self,
+        workspace_id: String,
+        biz_tag_id: String,
+        biz_tag_name: String,
+        user_id: Option<String>,
+        client_ip: Option<String>,
+    ) {
+        let event = AuditEvent::new(
+            AuditEventType::BizTagCreated,
+            Some(workspace_id),
+            "create_biz_tag".to_string(),
+            format!("biz_tag:{}:{}", biz_tag_id, biz_tag_name),
+            AuditResult::Success,
+        )
+        .with_user_id(user_id.unwrap_or_default())
+        .with_client_ip(client_ip.unwrap_or_default());
+
+        self.log(event).await;
+    }
+
+    pub async fn log_biz_tag_updated(
+        &self,
+        workspace_id: String,
+        biz_tag_id: String,
+        biz_tag_name: String,
+        user_id: Option<String>,
+        client_ip: Option<String>,
+    ) {
+        let event = AuditEvent::new(
+            AuditEventType::BizTagUpdated,
+            Some(workspace_id),
+            "update_biz_tag".to_string(),
+            format!("biz_tag:{}:{}", biz_tag_id, biz_tag_name),
+            AuditResult::Success,
+        )
+        .with_user_id(user_id.unwrap_or_default())
+        .with_client_ip(client_ip.unwrap_or_default());
+
+        self.log(event).await;
+    }
+
+    pub async fn log_biz_tag_deleted(
+        &self,
+        workspace_id: String,
+        biz_tag_id: String,
+        biz_tag_name: String,
+        user_id: Option<String>,
+        client_ip: Option<String>,
+    ) {
+        let event = AuditEvent::new(
+            AuditEventType::BizTagDeleted,
+            Some(workspace_id),
+            "delete_biz_tag".to_string(),
+            format!("biz_tag:{}:{}", biz_tag_id, biz_tag_name),
+            AuditResult::Success,
+        )
+        .with_user_id(user_id.unwrap_or_default())
+        .with_client_ip(client_ip.unwrap_or_default());
+
+        self.log(event).await;
+    }
+
+    pub async fn log_api_key_created(
+        &self,
+        workspace_id: Option<String>,
+        key_id: String,
+        key_role: String,
+        user_id: Option<String>,
+        client_ip: Option<String>,
+    ) {
+        let event = AuditEvent::new(
+            AuditEventType::ApiKeyCreated,
+            workspace_id,
+            "create_api_key".to_string(),
+            format!("api_key:{}:{}", key_id, key_role),
+            AuditResult::Success,
+        )
+        .with_user_id(user_id.unwrap_or_default())
+        .with_client_ip(client_ip.unwrap_or_default());
+
+        self.log(event).await;
+    }
+
+    pub async fn log_api_key_updated(
+        &self,
+        workspace_id: Option<String>,
+        key_id: String,
+        key_role: String,
+        user_id: Option<String>,
+        client_ip: Option<String>,
+    ) {
+        let event = AuditEvent::new(
+            AuditEventType::ApiKeyUpdated,
+            workspace_id,
+            "update_api_key".to_string(),
+            format!("api_key:{}:{}", key_id, key_role),
+            AuditResult::Success,
+        )
+        .with_user_id(user_id.unwrap_or_default())
+        .with_client_ip(client_ip.unwrap_or_default());
+
+        self.log(event).await;
+    }
+
+    pub async fn log_api_key_deleted(
+        &self,
+        workspace_id: Option<String>,
+        key_id: String,
+        key_role: String,
+        user_id: Option<String>,
+        client_ip: Option<String>,
+    ) {
+        let event = AuditEvent::new(
+            AuditEventType::ApiKeyDeleted,
+            workspace_id,
+            "delete_api_key".to_string(),
+            format!("api_key:{}:{}", key_id, key_role),
+            AuditResult::Success,
+        )
+        .with_user_id(user_id.unwrap_or_default())
+        .with_client_ip(client_ip.unwrap_or_default());
+
+        self.log(event).await;
+    }
+
+    pub async fn log_api_key_regenerated(
+        &self,
+        workspace_id: String,
+        key_id: String,
+        key_role: String,
+        user_id: Option<String>,
+        client_ip: Option<String>,
+    ) {
+        let event = AuditEvent::new(
+            AuditEventType::ApiKeyRegenerated,
+            Some(workspace_id),
+            "regenerate_api_key".to_string(),
+            format!("api_key:{}:{}", key_id, key_role),
+            AuditResult::Success,
+        )
+        .with_user_id(user_id.unwrap_or_default())
+        .with_client_ip(client_ip.unwrap_or_default());
 
         self.log(event).await;
     }

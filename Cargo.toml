@@ -57,6 +57,7 @@ etcd-client = "0.17"
 # 缓存与存储
 redis = { version = "0.25", features = ["tokio-comp", "aio"] }
 dashmap = "6"
+lru = "0.12"
 parking_lot = "0.12"
 
 # 数据库

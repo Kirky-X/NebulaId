@@ -14,16 +14,17 @@
 
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize)]
-#[sea_orm(table_name = "workspaces")]
+#[sea_orm(table_name = "workspaces", schema_name = "nebula_id")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
     pub name: String,
     pub description: Option<String>,
-    #[sea_orm(enum_name = "WorkspaceStatusDb")]
-    pub status: WorkspaceStatusDb,
+    #[sea_orm(rs_type = "String", db_type = "String(StringLen::N(20))")]
+    pub status: String,
     pub max_groups: i32,
     pub max_biz_tags: i32,
     pub created_at: DateTime,
@@ -63,6 +64,45 @@ pub enum WorkspaceStatus {
     Suspended,
 }
 
+impl WorkspaceStatus {
+    pub fn as_str(&self) -> &str {
+        match self {
+            WorkspaceStatus::Active => "active",
+            WorkspaceStatus::Inactive => "inactive",
+            WorkspaceStatus::Suspended => "suspended",
+        }
+    }
+}
+
+impl fmt::Display for WorkspaceStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl From<String> for WorkspaceStatus {
+    fn from(s: String) -> Self {
+        s.as_str().into()
+    }
+}
+
+impl From<&str> for WorkspaceStatus {
+    fn from(s: &str) -> Self {
+        match s {
+            "active" => WorkspaceStatus::Active,
+            "inactive" => WorkspaceStatus::Inactive,
+            "suspended" => WorkspaceStatus::Suspended,
+            _ => WorkspaceStatus::Inactive,
+        }
+    }
+}
+
+impl From<WorkspaceStatus> for String {
+    fn from(status: WorkspaceStatus) -> Self {
+        status.to_string()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CreateWorkspaceRequest {
     pub name: String,
@@ -91,37 +131,6 @@ impl From<Model> for Workspace {
             max_biz_tags: model.max_biz_tags,
             created_at: model.created_at,
             updated_at: model.updated_at,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, EnumIter, DeriveActiveEnum, PartialEq, Eq, Serialize, Deserialize)]
-#[sea_orm(rs_type = "String", db_type = "String(StringLen::N(20))")]
-pub enum WorkspaceStatusDb {
-    #[sea_orm(string_value = "active")]
-    Active,
-    #[sea_orm(string_value = "inactive")]
-    Inactive,
-    #[sea_orm(string_value = "suspended")]
-    Suspended,
-}
-
-impl From<WorkspaceStatusDb> for WorkspaceStatus {
-    fn from(status: WorkspaceStatusDb) -> Self {
-        match status {
-            WorkspaceStatusDb::Active => WorkspaceStatus::Active,
-            WorkspaceStatusDb::Inactive => WorkspaceStatus::Inactive,
-            WorkspaceStatusDb::Suspended => WorkspaceStatus::Suspended,
-        }
-    }
-}
-
-impl From<WorkspaceStatus> for WorkspaceStatusDb {
-    fn from(status: WorkspaceStatus) -> Self {
-        match status {
-            WorkspaceStatus::Active => WorkspaceStatusDb::Active,
-            WorkspaceStatus::Inactive => WorkspaceStatusDb::Inactive,
-            WorkspaceStatus::Suspended => WorkspaceStatusDb::Suspended,
         }
     }
 }

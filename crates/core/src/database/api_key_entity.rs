@@ -16,8 +16,10 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+use super::connection::NEBULA_SCHEMA;
+
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize)]
-#[sea_orm(table_name = "api_keys")]
+#[sea_orm(table_name = "api_keys", schema_name = "nebula_id")]
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: Uuid,
@@ -26,9 +28,8 @@ pub struct Model {
     pub key_secret_hash: String,
     pub key_prefix: String,
     #[sea_orm(rename = "role")]
-    pub role: String, // Store as "admin" or "user"
-    #[sea_orm(unique)]
-    pub workspace_id: Uuid,
+    pub role: String,
+    pub workspace_id: Option<Uuid>, // Optional: NULL for global admin keys
     pub name: String,
     pub description: Option<String>,
     pub rate_limit: i32,
@@ -63,7 +64,7 @@ pub struct ApiKey {
     pub key_id: String,
     pub key_prefix: String,
     pub role: ApiKeyRole,
-    pub workspace_id: Uuid,
+    pub workspace_id: Option<Uuid>, // Optional: NULL for global admin keys
     pub name: String,
     pub description: Option<String>,
     pub rate_limit: i32,
@@ -114,7 +115,7 @@ impl From<ApiKeyRole> for String {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CreateApiKeyRequest {
-    pub workspace_id: Uuid,
+    pub workspace_id: Option<Uuid>, // Optional: NULL for global admin keys
     pub name: String,
     pub description: Option<String>,
     pub role: ApiKeyRole,
@@ -139,7 +140,7 @@ pub struct ApiKeyResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ApiKeyWithSecret {
     pub key: ApiKeyResponse,
-    pub key_secret: String, // Only returned on creation
+    pub key_secret: String,
 }
 
 impl From<Model> for ApiKey {

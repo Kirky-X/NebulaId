@@ -77,7 +77,7 @@ END $$;
 
 CREATE TABLE IF NOT EXISTS api_keys (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,  -- Optional: NULL for global admin keys
     key_id VARCHAR(36) NOT NULL UNIQUE,  -- Public key identifier (UUID format)
     key_secret_hash VARCHAR(64) NOT NULL,  -- SHA-256 hash of key_secret
     key_prefix VARCHAR(8) NOT NULL,  -- niad_ for admin, nino_ for user
@@ -164,43 +164,3 @@ CREATE TABLE IF NOT EXISTS id_generation_logs (
 ) PARTITION BY RANGE (created_at);
 
 CREATE INDEX IF NOT EXISTS idx_id_gen_logs_lookup ON id_generation_logs(workspace_id, group_id, biz_tag_id);
-
--- Initialize default workspace and group
-INSERT INTO workspaces (id, name, description)
-VALUES ('11111111-1111-1111-1111-111111111111', 'default', 'Default workspace')
-ON CONFLICT (name) DO NOTHING;
-
-INSERT INTO groups (id, workspace_id, name, description)
-SELECT gen_random_uuid(), id, 'default', 'Default group'
-FROM workspaces WHERE name = 'default'
-ON CONFLICT (workspace_id, name) DO NOTHING;
-
--- Insert test biz_tag
-INSERT INTO biz_tags (id, workspace_id, group_id, name, algorithm, base_step)
-SELECT 
-    '22222222-2222-2222-2222-222222222222',
-    w.id,
-    g.id,
-    'test-order',
-    'segment',
-    1000
-FROM workspaces w, groups g
-WHERE w.name = 'default' AND g.name = 'default'
-ON CONFLICT (workspace_id, group_id, name) DO NOTHING;
-
--- Initialize segment for test biz_tag
-INSERT INTO segments (id, workspace_id, group_id, biz_tag_id, datacenter_id, worker_id, start_id, max_id, current_id, step)
-SELECT 
-    '33333333-3333-3333-3333-333333333333',
-    s.workspace_id,
-    s.group_id,
-    s.id,
-    0,
-    0,
-    1,
-    1000000000000000,
-    1,
-    1000
-FROM workspaces w, groups g, biz_tags s
-WHERE w.name = 'default' AND g.name = 'default' AND s.name = 'test-order'
-ON CONFLICT (biz_tag_id, datacenter_id, worker_id) DO NOTHING;

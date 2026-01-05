@@ -16,15 +16,27 @@ use crate::config_management::ConfigManagementService;
 use crate::models::{
     naive_to_rfc3339, AlgorithmMetrics, ApiKeyListResponse, ApiKeyResponse,
     ApiKeyWithSecretResponse, BatchGenerateRequest, BatchGenerateResponse, BizTagListResponse,
-    BizTagResponse, CreateApiKeyRequest, CreateBizTagRequest, GenerateRequest, GenerateResponse,
+    BizTagResponse, CreateApiKeyRequest, CreateBizTagRequest, CreateGroupRequest,
+    CreateWorkspaceRequest, GenerateRequest, GenerateResponse, GroupListResponse, GroupResponse,
     HealthResponse, IdMetadataResponse, MetricsResponse, ParseRequest, ParseResponse,
-    RevokeApiKeyResponse, UpdateBizTagRequest,
+    ReadyResponse, RevokeApiKeyResponse, UpdateBizTagRequest, UserApiKeyInfo,
+    WorkspaceListResponse, WorkspaceResponse,
 };
 use nebula_core::database::{
     ApiKeyRepository, ApiKeyRole, CreateApiKeyRequest as CoreCreateApiKeyRequest,
 };
 use nebula_core::{CoreError, Id, Result};
 use std::sync::Arc;
+
+/// Helper function to convert database errors to CoreError
+fn map_db_error<E: std::fmt::Display>(error: E) -> CoreError {
+    CoreError::DatabaseError(error.to_string())
+}
+
+/// Helper function to convert UUID parse errors to CoreError
+fn map_uuid_error<E: std::fmt::Display>(error: E) -> CoreError {
+    CoreError::InvalidInput(format!("Invalid UUID: {}", error))
+}
 
 pub struct ApiHandlers {
     id_generator: Arc<dyn nebula_core::algorithm::IdGenerator>,
@@ -227,11 +239,31 @@ impl ApiHandlers {
         let health_status = self.id_generator.health_check().await;
         HealthResponse {
             status: if health_status.is_healthy() {
-                "healthy".to_string()
+                crate::models::HealthStatus::Healthy
             } else {
-                "degraded".to_string()
+                crate::models::HealthStatus::Degraded
             },
             algorithm: self.id_generator.get_primary_algorithm().await.to_string(),
+        }
+    }
+
+    pub async fn ready(&self) -> ReadyResponse {
+        let db_metrics = self.config_service.get_database_metrics().await;
+        let cache_metrics = self.config_service.get_cache_metrics().await;
+
+        let db_healthy = db_metrics.status == crate::models::HealthStatus::Healthy;
+        let cache_healthy = cache_metrics.status == crate::models::HealthStatus::Healthy;
+
+        let ready = db_healthy && cache_healthy;
+        ReadyResponse {
+            ready,
+            database: db_healthy,
+            cache: cache_healthy,
+            message: if ready {
+                "Ready to serve traffic".to_string()
+            } else {
+                "Not ready: database or cache unavailable".to_string()
+            },
         }
     }
 
@@ -246,7 +278,7 @@ impl ApiHandlers {
                     nebula_core::algorithm::AlgorithmMetricsSnapshot,
                 )| AlgorithmMetrics {
                     algorithm: alg_type.to_string(),
-                    status: "healthy".to_string(),
+                    status: crate::models::HealthStatus::Healthy,
                     total_generated: snapshot.total_generated,
                     total_failed: snapshot.total_failed,
                     cache_hit_rate: snapshot.cache_hit_rate,
@@ -598,12 +630,167 @@ impl ApiHandlers {
         self.config_service.delete_biz_tag(id).await
     }
 
+    // ========== Workspace Management ==========
+
+    /// Create a new Workspace
+    pub async fn create_workspace(&self, req: CreateWorkspaceRequest) -> Result<WorkspaceResponse> {
+        // Create workspace
+        let workspace = self
+            .config_service
+            .create_workspace(req.clone())
+            .await
+            .map_err(map_db_error)?;
+
+        // Auto-generate User API Key for the workspace
+        let repo = self
+            .api_key_repo
+            .as_ref()
+            .ok_or_else(|| CoreError::NotFound("API key repository not configured".to_string()))?;
+
+        let workspace_uuid = uuid::Uuid::parse_str(&workspace.id).map_err(map_uuid_error)?;
+
+        let user_key_request = nebula_core::database::CreateApiKeyRequest {
+            workspace_id: Some(workspace_uuid),
+            name: format!("{}-user-key", workspace.name),
+            description: Some(format!("User API key for workspace: {}", workspace.name)),
+            role: nebula_core::database::ApiKeyRole::User,
+            rate_limit: Some(10000),
+            expires_at: None,
+        };
+
+        let user_key = repo
+            .create_api_key(&user_key_request)
+            .await
+            .map_err(map_db_error)?;
+
+        // Return WorkspaceResponse with user_api_key
+        Ok(WorkspaceResponse {
+            id: workspace.id,
+            name: workspace.name,
+            description: workspace.description,
+            status: workspace.status,
+            max_groups: workspace.max_groups,
+            max_biz_tags: workspace.max_biz_tags,
+            created_at: workspace.created_at,
+            updated_at: workspace.updated_at,
+            user_api_key: Some(UserApiKeyInfo {
+                key_id: user_key.key.key_id,
+                key_secret: user_key.key_secret,
+                key_prefix: user_key.key.key_prefix,
+            }),
+        })
+    }
+
+    /// Regenerate User API Key for a Workspace
+    pub async fn regenerate_user_api_key(
+        &self,
+        workspace_name: &str,
+    ) -> Result<ApiKeyWithSecretResponse> {
+        // Find workspace
+        let workspace = self
+            .config_service
+            .get_workspace(workspace_name)
+            .await
+            .map_err(map_db_error)?
+            .ok_or_else(|| {
+                CoreError::NotFound(format!("Workspace '{}' not found", workspace_name))
+            })?;
+
+        // Get API key repository
+        let repo = self
+            .api_key_repo
+            .as_ref()
+            .ok_or_else(|| CoreError::NotFound("API key repository not configured".to_string()))?;
+
+        let workspace_uuid = uuid::Uuid::parse_str(&workspace.id).map_err(map_uuid_error)?;
+
+        // Find and delete existing User API Key
+        let existing_keys = repo
+            .list_api_keys(workspace_uuid, Some(1000), Some(0))
+            .await
+            .map_err(map_db_error)?;
+
+        for key in existing_keys {
+            if key.role == nebula_core::database::ApiKeyRole::User {
+                repo.delete_api_key(key.id).await.map_err(map_db_error)?;
+            }
+        }
+
+        // Create new User API Key
+        let user_key_request = nebula_core::database::CreateApiKeyRequest {
+            workspace_id: Some(workspace_uuid),
+            name: format!("{}-user-key", workspace.name),
+            description: Some(format!("User API key for workspace: {}", workspace.name)),
+            role: nebula_core::database::ApiKeyRole::User,
+            rate_limit: Some(10000),
+            expires_at: None,
+        };
+
+        let user_key = repo
+            .create_api_key(&user_key_request)
+            .await
+            .map_err(map_db_error)?;
+
+        Ok(ApiKeyWithSecretResponse {
+            key: ApiKeyResponse {
+                id: user_key.key.id.to_string(),
+                key_id: user_key.key.key_id,
+                key_prefix: user_key.key.key_prefix,
+                name: user_key.key.name,
+                description: user_key.key.description,
+                role: match user_key.key.role {
+                    nebula_core::database::ApiKeyRole::Admin => "admin".to_string(),
+                    nebula_core::database::ApiKeyRole::User => "user".to_string(),
+                },
+                rate_limit: user_key.key.rate_limit,
+                enabled: user_key.key.enabled,
+                expires_at: user_key.key.expires_at.map(|dt| dt.and_utc().to_rfc3339()),
+                created_at: user_key.key.created_at.and_utc().to_rfc3339(),
+            },
+            key_secret: user_key.key_secret,
+        })
+    }
+
+    /// List all Workspaces
+    pub async fn list_workspaces(&self) -> Result<WorkspaceListResponse> {
+        self.config_service
+            .list_workspaces()
+            .await
+            .map_err(|e| CoreError::DatabaseError(e.to_string()))
+    }
+
+    /// Get Workspace by name
+    pub async fn get_workspace(&self, name: &str) -> Result<Option<WorkspaceResponse>> {
+        self.config_service
+            .get_workspace(name)
+            .await
+            .map_err(|e| CoreError::DatabaseError(e.to_string()))
+    }
+
+    // ========== Group Management ==========
+
+    /// Create a new Group
+    pub async fn create_group(&self, req: CreateGroupRequest) -> Result<GroupResponse> {
+        self.config_service
+            .create_group(req)
+            .await
+            .map_err(|e| CoreError::DatabaseError(e.to_string()))
+    }
+
+    /// List all Groups for a workspace
+    pub async fn list_groups(&self, workspace: &str) -> Result<GroupListResponse> {
+        self.config_service
+            .list_groups(workspace)
+            .await
+            .map_err(|e| CoreError::DatabaseError(e.to_string()))
+    }
+
     // ========== API Key Management ==========
 
     /// Create a new API Key (admin only)
     pub async fn create_api_key(
         &self,
-        workspace_id: uuid::Uuid,
+        workspace_id: Option<uuid::Uuid>, // Optional: None for admin keys
         req: CreateApiKeyRequest,
     ) -> Result<ApiKeyWithSecretResponse> {
         let repo = self
@@ -624,10 +811,11 @@ impl ApiHandlers {
 
         // Validate admin key creation: check if workspace already has an admin key
         if role == ApiKeyRole::Admin {
+            // Admin keys are global, check if any admin key exists
             let existing_keys = repo
-                .list_api_keys(workspace_id, Some(1000), Some(0))
+                .list_api_keys(uuid::Uuid::nil(), Some(1000), Some(0))
                 .await
-                .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
+                .map_err(map_db_error)?;
 
             let has_admin = existing_keys
                 .iter()
@@ -636,9 +824,32 @@ impl ApiHandlers {
             if has_admin {
                 tracing::warn!(
                     event = "admin_key_creation",
-                    workspace_id = %workspace_id,
-                    "Creating additional admin key for workspace"
+                    workspace_id = ?workspace_id,
+                    "Creating additional admin key"
                 );
+            }
+        }
+
+        // Validate user key creation: check if workspace already has a user key
+        if role == ApiKeyRole::User {
+            let ws_id = workspace_id.ok_or_else(|| {
+                CoreError::InvalidInput("workspace_id is required for user keys".to_string())
+            })?;
+
+            let existing_keys = repo
+                .list_api_keys(ws_id, Some(1000), Some(0))
+                .await
+                .map_err(map_db_error)?;
+
+            let has_user_key = existing_keys
+                .iter()
+                .any(|k| k.role == nebula_core::database::ApiKeyRole::User);
+
+            if has_user_key {
+                return Err(CoreError::AuthenticationError(format!(
+                    "User API key already exists for workspace: {}",
+                    ws_id
+                )));
             }
         }
 
@@ -663,10 +874,7 @@ impl ApiHandlers {
             expires_at,
         };
 
-        let key_with_secret = repo
-            .create_api_key(&core_req)
-            .await
-            .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
+        let key_with_secret = repo.create_api_key(&core_req).await.map_err(map_db_error)?;
 
         Ok(ApiKeyWithSecretResponse {
             key: ApiKeyResponse {
@@ -700,7 +908,7 @@ impl ApiHandlers {
         let keys = repo
             .list_api_keys(workspace_id, limit, offset)
             .await
-            .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
+            .map_err(map_db_error)?;
 
         let responses: Vec<ApiKeyResponse> = keys
             .into_iter()
@@ -721,7 +929,7 @@ impl ApiHandlers {
         let total = repo
             .count_api_keys(workspace_id)
             .await
-            .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
+            .map_err(map_db_error)?;
 
         Ok(ApiKeyListResponse {
             api_keys: responses,
@@ -740,15 +948,19 @@ impl ApiHandlers {
         let key_info = repo
             .get_api_key_by_id(&id.to_string())
             .await
-            .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
+            .map_err(map_db_error)?;
 
         if let Some(key) = key_info {
             // If it's an admin key, check if it's the last one
             if key.role == nebula_core::database::ApiKeyRole::Admin {
+                // Admin keys are global, list all admin keys (workspace_id is None)
+                // We need to handle this differently since list_api_keys expects a workspace_id
+                // For now, we'll skip this check for admin keys or implement a different approach
+                // TODO: Implement proper admin key counting
                 let existing_keys = repo
-                    .list_api_keys(key.workspace_id, Some(1000), Some(0))
+                    .list_api_keys(uuid::Uuid::nil(), Some(1000), Some(0))
                     .await
-                    .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
+                    .map_err(map_db_error)?;
 
                 let admin_count = existing_keys
                     .iter()
@@ -763,9 +975,7 @@ impl ApiHandlers {
             }
         }
 
-        repo.delete_api_key(id)
-            .await
-            .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
+        repo.delete_api_key(id).await.map_err(map_db_error)?;
 
         Ok(RevokeApiKeyResponse {
             success: true,

@@ -825,7 +825,8 @@ impl ApiKeyRepository for SeaOrmRepository {
             }
         }
 
-        let key_id = Uuid::new_v4().to_string();
+        let uuid = Uuid::new_v4();
+        let key_id = uuid.to_string();
         // Use provided secret or generate a new one
         let key_secret = request.key_secret.clone().unwrap_or_else(generate_secret);
         let key_secret_hash = hash_secret(&key_secret);
@@ -833,6 +834,9 @@ impl ApiKeyRepository for SeaOrmRepository {
             ApiKeyRole::Admin => "niad_",
             ApiKeyRole::User => "nino_",
         };
+
+        // Store full key_id with prefix for consistency
+        let full_key_id = format!("{}{}", prefix, key_id);
 
         // Calculate expiration: use provided or default to 30 days from now
         let now = chrono::Utc::now();
@@ -843,7 +847,7 @@ impl ApiKeyRepository for SeaOrmRepository {
 
         let new_key = ApiKeyActiveModel {
             id: Set(Uuid::new_v4()),
-            key_id: Set(key_id.clone()),
+            key_id: Set(full_key_id.clone()),
             key_secret_hash: Set(key_secret_hash),
             key_prefix: Set(prefix.to_string()),
             role: Set(request.role.clone().into()),

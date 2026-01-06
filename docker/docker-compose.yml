@@ -169,6 +169,7 @@ services:
       - METRICS_HOST=0.0.0.0
       - METRICS_PORT=9091
       - TZ=Asia/Shanghai
+      - NEBULA_API_KEY_SALT=${NEBULA_API_KEY_SALT:-e0646f19177783fc7bc6823666fa10aa}
     deploy:
       resources:
         limits:

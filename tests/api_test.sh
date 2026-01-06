@@ -17,10 +17,10 @@
 #      export USER_API_KEY_ID="your-user-key-id"
 #      export USER_API_KEY_SECRET="your-user-key-secret"
 #
-# Default values configured for production server:
-#   BASE_URL="https://nebulaid.onrender.com/"
-#   ADMIN_API_KEY_ID="c54dbd84-ad33-4a13-a3d1-02b21d35e031"
-#   ADMIN_API_KEY_SECRET="be3f3c4d03743a3273ac805a77a8324d"
+# Environment setup:
+#   BASE_URL - Server URL (default: production server)
+#   For local development:
+#     export BASE_URL="http://localhost:8080"
 
 set -e
 
@@ -31,9 +31,31 @@ set -e
 BASE_URL="${BASE_URL:-https://nebulaid.onrender.com}"
 METRICS_URL="${METRICS_URL:-http://localhost:9091}"
 
-# Admin API Key (Required for setup - get from environment or use production defaults)
-ADMIN_API_KEY_ID="${ADMIN_API_KEY_ID:-c54dbd84-ad33-4a13-a3d1-02b21d35e031}"
-ADMIN_API_KEY_SECRET="${ADMIN_API_KEY_SECRET:-be3f3c4d03743a3273ac805a77a8324d}"
+# Admin API Key (Required for setup)
+# SECURITY: These must be set via environment variables for security
+# For local testing, export these before running the script:
+#   export ADMIN_API_KEY_ID="your-admin-key-id"
+#   export ADMIN_API_KEY_SECRET="your-admin-key-secret"
+if [ -z "$ADMIN_API_KEY_ID" ] || [ -z "$ADMIN_API_KEY_SECRET" ]; then
+    cat << 'EOF'
+╔══════════════════════════════════════════════════════════════════════╗
+║  ERROR: Admin API Key credentials not provided                       ║
+╠══════════════════════════════════════════════════════════════════════╣
+║  For testing, you need to provide admin credentials:                ║
+║                                                                     ║
+║    export ADMIN_API_KEY_ID="your-admin-key-id"                      ║
+║    export ADMIN_API_KEY_SECRET="your-admin-key-secret"              ║
+║                                                                     ║
+║  Then run: ./api_test.sh                                            ║
+║                                                                     ║
+║  For local development with Docker:                                ║
+║    make dev-up                                                      ║
+║    export ADMIN_API_KEY_ID="..."  # Check docker logs              ║
+║    export ADMIN_API_KEY_SECRET="..."                                ║
+╚══════════════════════════════════════════════════════════════════════╝
+EOF
+    exit 1
+fi
 
 # Pre-configured User API Key (for production testing without admin key)
 # Set these if you have a pre-configured user key in the database

@@ -748,7 +748,7 @@ mod tests {
                 Ok(())
             }
 
-            async fn update_last_used(&self, _key: String) -> nebula_core::types::Result<()> {
+            async fn update_last_used(&self, _key: uuid::Uuid) -> nebula_core::types::Result<()> {
                 Ok(())
             }
 
@@ -853,7 +853,7 @@ mod tests {
                 Ok(())
             }
 
-            async fn update_last_used(&self, _key: String) -> nebula_core::types::Result<()> {
+            async fn update_last_used(&self, _key: uuid::Uuid) -> nebula_core::types::Result<()> {
                 Ok(())
             }
 

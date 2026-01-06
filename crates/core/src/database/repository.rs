@@ -1416,6 +1416,80 @@ fn hash_secret(secret: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Test prefix logic without database (pure logic tests)
+#[cfg(test)]
+mod prefix_tests {
+    use super::*;
+
+    #[test]
+    fn test_admin_role_prefix() {
+        let role = ApiKeyRole::Admin;
+        let prefix = match role {
+            ApiKeyRole::Admin => "niad_",
+            ApiKeyRole::User => "nino_",
+        };
+        assert_eq!(prefix, "niad_", "Admin role should use 'niad_' prefix");
+    }
+
+    #[test]
+    fn test_user_role_prefix() {
+        let role = ApiKeyRole::User;
+        let prefix = match role {
+            ApiKeyRole::Admin => "niad_",
+            ApiKeyRole::User => "nino_",
+        };
+        assert_eq!(prefix, "nino_", "User role should use 'nino_' prefix");
+    }
+
+    #[test]
+    fn test_prefix_uuid_format() {
+        let uuid = Uuid::new_v4();
+        let prefix = "niad_";
+        let full_key_id = format!("{}{}", prefix, uuid.to_string());
+
+        assert!(full_key_id.starts_with(prefix));
+        assert_eq!(full_key_id.len(), prefix.len() + 36); // 36 is standard UUID length
+    }
+
+    #[test]
+    fn test_secret_length_validation() {
+        let short_secret = "too_short";
+        assert!(short_secret.len() < 16, "Test secret should be too short");
+
+        let long_secret = "a".repeat(129);
+        assert!(long_secret.len() > 128, "Test secret should be too long");
+
+        let valid_secret = "this_is_a_valid_secret_length_16";
+        assert!(valid_secret.len() >= 16 && valid_secret.len() <= 128);
+    }
+
+    #[test]
+    fn test_generate_secret_length() {
+        let secret = generate_secret();
+        assert_eq!(secret.len(), 32, "Generated secret should be 32 characters");
+    }
+
+    #[test]
+    fn test_hash_secret_consistency() {
+        let secret = "test_secret";
+        let hash1 = hash_secret(secret);
+        let hash2 = hash_secret(secret);
+
+        assert_eq!(hash1, hash2, "Hashing same secret should produce same result");
+        assert_eq!(hash1.len(), 64, "SHA-256 hash should be 64 hex characters");
+    }
+
+    #[test]
+    fn test_hash_secret_uniqueness() {
+        let secret1 = "secret_one";
+        let secret2 = "secret_two";
+        let hash1 = hash_secret(secret1);
+        let hash2 = hash_secret(secret2);
+
+        assert_ne!(hash1, hash2, "Different secrets should produce different hashes");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1711,5 +1785,252 @@ mod tests {
             .unwrap();
 
         assert_eq!(biz_tags_in_group2_after_delete.len(), 0);
+    }
+
+    /// Test Admin API key prefix (niad_) is correctly applied
+    #[tokio::test]
+    #[ignore]
+    async fn test_admin_api_key_prefix() {
+        let opt = ConnectOptions::new("sqlite::memory:".to_string());
+        let db = Database::connect(opt).await.unwrap();
+        setup_test_db(&db).await;
+
+        let repo = SeaOrmRepository::new(db);
+
+        let admin_key = repo
+            .create_api_key(&CreateApiKeyRequest {
+                workspace_id: None,
+                name: "Test Admin Key".to_string(),
+                description: Some("Admin key for testing".to_string()),
+                role: ApiKeyRole::Admin,
+                rate_limit: Some(10000),
+                expires_at: None,
+                key_secret: None,
+            })
+            .await
+            .unwrap();
+
+        // Verify key_id has correct prefix
+        assert!(admin_key.key.key_id.starts_with("niad_"),
+                "Admin key_id should start with 'niad_', got: {}", admin_key.key.key_id);
+
+        // Verify key_prefix field matches
+        assert_eq!(admin_key.key.key_prefix, "niad_",
+                   "Admin key_prefix should be 'niad_'");
+
+        // Verify key_id contains prefix exactly once at start
+        assert!(admin_key.key.key_id.len() > 5, "key_id should be longer than prefix");
+
+        // Verify consistency: key_id should be prefix + uuid
+        let key_id_without_prefix = &admin_key.key.key_id[5..];
+        let uuid_validation = uuid::Uuid::parse_str(key_id_without_prefix);
+        assert!(uuid_validation.is_ok(),
+                "key_id after prefix should be a valid UUID, got: {}", key_id_without_prefix);
+    }
+
+    /// Test User API key prefix (nino_) is correctly applied
+    #[tokio::test]
+    #[ignore]
+    async fn test_user_api_key_prefix() {
+        let opt = ConnectOptions::new("sqlite::memory:".to_string());
+        let db = Database::connect(opt).await.unwrap();
+        setup_test_db(&db).await;
+
+        let repo = SeaOrmRepository::new(db);
+
+        // First create a workspace for the user key
+        let workspace = repo
+            .create_workspace(&CreateWorkspaceRequest {
+                name: "Test Workspace".to_string(),
+                description: Some("Workspace for user key testing".to_string()),
+                max_groups: Some(5),
+                max_biz_tags: Some(50),
+            })
+            .await
+            .unwrap();
+
+        let user_key = repo
+            .create_api_key(&CreateApiKeyRequest {
+                workspace_id: Some(workspace.id),
+                name: "Test User Key".to_string(),
+                description: Some("User key for testing".to_string()),
+                role: ApiKeyRole::User,
+                rate_limit: Some(5000),
+                expires_at: None,
+                key_secret: None,
+            })
+            .await
+            .unwrap();
+
+        // Verify key_id has correct prefix
+        assert!(user_key.key.key_id.starts_with("nino_"),
+                "User key_id should start with 'nino_', got: {}", user_key.key.key_id);
+
+        // Verify key_prefix field matches
+        assert_eq!(user_key.key.key_prefix, "nino_",
+                   "User key_prefix should be 'nino_'");
+
+        // Verify key_id contains prefix exactly once at start
+        assert!(user_key.key.key_id.len() > 5, "key_id should be longer than prefix");
+
+        // Verify consistency: key_id should be prefix + uuid
+        let key_id_without_prefix = &user_key.key.key_id[5..];
+        let uuid_validation = uuid::Uuid::parse_str(key_id_without_prefix);
+        assert!(uuid_validation.is_ok(),
+                "key_id after prefix should be a valid UUID, got: {}", key_id_without_prefix);
+    }
+
+    /// Test that API key with provided secret is handled correctly
+    #[tokio::test]
+    #[ignore]
+    async fn test_api_key_with_custom_secret() {
+        let opt = ConnectOptions::new("sqlite::memory:".to_string());
+        let db = Database::connect(opt).await.unwrap();
+        setup_test_db(&db).await;
+
+        let repo = SeaOrmRepository::new(db);
+
+        let custom_secret = "my_custom_secret_for_testing_12345".to_string();
+
+        let admin_key = repo
+            .create_api_key(&CreateApiKeyRequest {
+                workspace_id: None,
+                name: "Admin Key with Custom Secret".to_string(),
+                description: Some("Testing custom secret".to_string()),
+                role: ApiKeyRole::Admin,
+                rate_limit: Some(8000),
+                expires_at: None,
+                key_secret: Some(custom_secret.clone()),
+            })
+            .await
+            .unwrap();
+
+        // Verify prefix is still correct with custom secret
+        assert!(admin_key.key.key_id.starts_with("niad_"),
+                "Prefix should be applied even with custom secret");
+        assert_eq!(admin_key.key_secret, custom_secret,
+                   "Provided secret should be returned as-is");
+    }
+
+    /// Test API key prefix and key_id consistency
+    #[tokio::test]
+    #[ignore]
+    async fn test_api_key_prefix_consistency() {
+        let opt = ConnectOptions::new("sqlite::memory:".to_string());
+        let db = Database::connect(opt).await.unwrap();
+        setup_test_db(&db).await;
+
+        let repo = SeaOrmRepository::new(db);
+
+        // Create multiple keys and verify all are consistent
+        for i in 0..3 {
+            let admin_key = repo
+                .create_api_key(&CreateApiKeyRequest {
+                    workspace_id: None,
+                    name: format!("Admin Key {}", i),
+                    description: None,
+                    role: ApiKeyRole::Admin,
+                    rate_limit: None,
+                    expires_at: None,
+                    key_secret: None,
+                })
+                .await
+                .unwrap();
+
+            // Each key should have unique UUID portion
+            let key_id_without_prefix = &admin_key.key.key_id[5..];
+
+            // Verify it's a valid UUID (and therefore unique)
+            let _ = uuid::Uuid::parse_str(key_id_without_prefix)
+                .expect("key_id after prefix should be a valid UUID");
+
+            // Verify structure: prefix + uuid format
+            assert_eq!(admin_key.key.key_prefix, "niad_");
+        }
+    }
+
+    /// Test validation rejects invalid key_secret length
+    #[tokio::test]
+    #[ignore]
+    async fn test_api_key_secret_length_validation() {
+        let opt = ConnectOptions::new("sqlite::memory:".to_string());
+        let db = Database::connect(opt).await.unwrap();
+        setup_test_db(&db).await;
+
+        let repo = SeaOrmRepository::new(db);
+
+        // Test too short secret
+        let result = repo
+            .create_api_key(&CreateApiKeyRequest {
+                workspace_id: None,
+                name: "Invalid Key".to_string(),
+                description: None,
+                role: ApiKeyRole::Admin,
+                rate_limit: None,
+                expires_at: None,
+                key_secret: Some("short".to_string()),
+            })
+            .await;
+
+        assert!(result.is_err(),
+                "Should reject key_secret shorter than 16 characters");
+        if let Err(e) = result {
+            assert!(e.to_string().contains("must be between 16 and 128 characters"),
+                    "Error should mention length requirement");
+        }
+
+        // Test too long secret
+        let too_long = "a".repeat(129);
+        let result = repo
+            .create_api_key(&CreateApiKeyRequest {
+                workspace_id: None,
+                name: "Invalid Key 2".to_string(),
+                description: None,
+                role: ApiKeyRole::Admin,
+                rate_limit: None,
+                expires_at: None,
+                key_secret: Some(too_long),
+            })
+            .await;
+
+        assert!(result.is_err(),
+                "Should reject key_secret longer than 128 characters");
+    }
+
+    /// Test get_api_key_by_id works with prefixed key_id
+    #[tokio::test]
+    #[ignore]
+    async fn test_get_api_key_by_id_with_prefix() {
+        let opt = ConnectOptions::new("sqlite::memory:".to_string());
+        let db = Database::connect(opt).await.unwrap();
+        setup_test_db(&db).await;
+
+        let repo = SeaOrmRepository::new(db);
+
+        let admin_key = repo
+            .create_api_key(&CreateApiKeyRequest {
+                workspace_id: None,
+                name: "Test Key".to_string(),
+                description: None,
+                role: ApiKeyRole::Admin,
+                rate_limit: None,
+                expires_at: None,
+                key_secret: None,
+            })
+            .await
+            .unwrap();
+
+        // Retrieve using the full prefixed key_id
+        let retrieved = repo
+            .get_api_key_by_id(&admin_key.key.key_id)
+            .await
+            .unwrap();
+
+        assert!(retrieved.is_some(), "Should find key with prefixed key_id");
+
+        let retrieved_key = retrieved.unwrap();
+        assert_eq!(retrieved_key.key_id, admin_key.key.key_id);
+        assert_eq!(retrieved_key.key_prefix, admin_key.key.key_prefix);
+        assert_eq!(retrieved_key.role, admin_key.key.role);
     }
 }

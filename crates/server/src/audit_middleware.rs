@@ -216,7 +216,7 @@ mod tests {
                 Ok(())
             }
 
-            async fn update_last_used(&self, _key: String) -> Result<()> {
+            async fn update_last_used(&self, _key: Uuid) -> Result<()> {
                 Ok(())
             }
 

@@ -1445,7 +1445,7 @@ mod prefix_tests {
     fn test_prefix_uuid_format() {
         let uuid = Uuid::new_v4();
         let prefix = "niad_";
-        let full_key_id = format!("{}{}", prefix, uuid.to_string());
+        let full_key_id = format!("{}{}", prefix, uuid);
 
         assert!(full_key_id.starts_with(prefix));
         assert_eq!(full_key_id.len(), prefix.len() + 36); // 36 is standard UUID length
@@ -1475,7 +1475,10 @@ mod prefix_tests {
         let hash1 = hash_secret(secret);
         let hash2 = hash_secret(secret);
 
-        assert_eq!(hash1, hash2, "Hashing same secret should produce same result");
+        assert_eq!(
+            hash1, hash2,
+            "Hashing same secret should produce same result"
+        );
         assert_eq!(hash1.len(), 64, "SHA-256 hash should be 64 hex characters");
     }
 
@@ -1486,7 +1489,10 @@ mod prefix_tests {
         let hash1 = hash_secret(secret1);
         let hash2 = hash_secret(secret2);
 
-        assert_ne!(hash1, hash2, "Different secrets should produce different hashes");
+        assert_ne!(
+            hash1, hash2,
+            "Different secrets should produce different hashes"
+        );
     }
 }
 
@@ -1811,21 +1817,32 @@ mod tests {
             .unwrap();
 
         // Verify key_id has correct prefix
-        assert!(admin_key.key.key_id.starts_with("niad_"),
-                "Admin key_id should start with 'niad_', got: {}", admin_key.key.key_id);
+        assert!(
+            admin_key.key.key_id.starts_with("niad_"),
+            "Admin key_id should start with 'niad_', got: {}",
+            admin_key.key.key_id
+        );
 
         // Verify key_prefix field matches
-        assert_eq!(admin_key.key.key_prefix, "niad_",
-                   "Admin key_prefix should be 'niad_'");
+        assert_eq!(
+            admin_key.key.key_prefix, "niad_",
+            "Admin key_prefix should be 'niad_'"
+        );
 
         // Verify key_id contains prefix exactly once at start
-        assert!(admin_key.key.key_id.len() > 5, "key_id should be longer than prefix");
+        assert!(
+            admin_key.key.key_id.len() > 5,
+            "key_id should be longer than prefix"
+        );
 
         // Verify consistency: key_id should be prefix + uuid
         let key_id_without_prefix = &admin_key.key.key_id[5..];
         let uuid_validation = uuid::Uuid::parse_str(key_id_without_prefix);
-        assert!(uuid_validation.is_ok(),
-                "key_id after prefix should be a valid UUID, got: {}", key_id_without_prefix);
+        assert!(
+            uuid_validation.is_ok(),
+            "key_id after prefix should be a valid UUID, got: {}",
+            key_id_without_prefix
+        );
     }
 
     /// Test User API key prefix (nino_) is correctly applied
@@ -1863,21 +1880,32 @@ mod tests {
             .unwrap();
 
         // Verify key_id has correct prefix
-        assert!(user_key.key.key_id.starts_with("nino_"),
-                "User key_id should start with 'nino_', got: {}", user_key.key.key_id);
+        assert!(
+            user_key.key.key_id.starts_with("nino_"),
+            "User key_id should start with 'nino_', got: {}",
+            user_key.key.key_id
+        );
 
         // Verify key_prefix field matches
-        assert_eq!(user_key.key.key_prefix, "nino_",
-                   "User key_prefix should be 'nino_'");
+        assert_eq!(
+            user_key.key.key_prefix, "nino_",
+            "User key_prefix should be 'nino_'"
+        );
 
         // Verify key_id contains prefix exactly once at start
-        assert!(user_key.key.key_id.len() > 5, "key_id should be longer than prefix");
+        assert!(
+            user_key.key.key_id.len() > 5,
+            "key_id should be longer than prefix"
+        );
 
         // Verify consistency: key_id should be prefix + uuid
         let key_id_without_prefix = &user_key.key.key_id[5..];
         let uuid_validation = uuid::Uuid::parse_str(key_id_without_prefix);
-        assert!(uuid_validation.is_ok(),
-                "key_id after prefix should be a valid UUID, got: {}", key_id_without_prefix);
+        assert!(
+            uuid_validation.is_ok(),
+            "key_id after prefix should be a valid UUID, got: {}",
+            key_id_without_prefix
+        );
     }
 
     /// Test that API key with provided secret is handled correctly
@@ -1906,10 +1934,14 @@ mod tests {
             .unwrap();
 
         // Verify prefix is still correct with custom secret
-        assert!(admin_key.key.key_id.starts_with("niad_"),
-                "Prefix should be applied even with custom secret");
-        assert_eq!(admin_key.key_secret, custom_secret,
-                   "Provided secret should be returned as-is");
+        assert!(
+            admin_key.key.key_id.starts_with("niad_"),
+            "Prefix should be applied even with custom secret"
+        );
+        assert_eq!(
+            admin_key.key_secret, custom_secret,
+            "Provided secret should be returned as-is"
+        );
     }
 
     /// Test API key prefix and key_id consistency
@@ -1972,11 +2004,16 @@ mod tests {
             })
             .await;
 
-        assert!(result.is_err(),
-                "Should reject key_secret shorter than 16 characters");
+        assert!(
+            result.is_err(),
+            "Should reject key_secret shorter than 16 characters"
+        );
         if let Err(e) = result {
-            assert!(e.to_string().contains("must be between 16 and 128 characters"),
-                    "Error should mention length requirement");
+            assert!(
+                e.to_string()
+                    .contains("must be between 16 and 128 characters"),
+                "Error should mention length requirement"
+            );
         }
 
         // Test too long secret
@@ -1993,8 +2030,10 @@ mod tests {
             })
             .await;
 
-        assert!(result.is_err(),
-                "Should reject key_secret longer than 128 characters");
+        assert!(
+            result.is_err(),
+            "Should reject key_secret longer than 128 characters"
+        );
     }
 
     /// Test get_api_key_by_id works with prefixed key_id
@@ -2021,10 +2060,7 @@ mod tests {
             .unwrap();
 
         // Retrieve using the full prefixed key_id
-        let retrieved = repo
-            .get_api_key_by_id(&admin_key.key.key_id)
-            .await
-            .unwrap();
+        let retrieved = repo.get_api_key_by_id(&admin_key.key.key_id).await.unwrap();
 
         assert!(retrieved.is_some(), "Should find key with prefixed key_id");
 

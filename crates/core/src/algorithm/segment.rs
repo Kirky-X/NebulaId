@@ -271,12 +271,24 @@ impl DcFailureDetector {
         preferred_dc
     }
 
-    pub async fn start_health_check(&self, check_interval: Duration) {
+    pub async fn start_health_check_with_shutdown(
+        &self,
+        check_interval: Duration,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) {
         let detector = self.clone();
+
         tokio::spawn(async move {
             loop {
-                sleep(check_interval).await;
-                detector.check_recovery().await;
+                tokio::select! {
+                    _ = shutdown_rx.changed() => {
+                        info!("Health check task received shutdown signal");
+                        break;
+                    }
+                    _ = sleep(check_interval) => {
+                        detector.check_recovery().await;
+                    }
+                }
             }
         });
     }
@@ -456,6 +468,10 @@ pub struct SegmentAlgorithm {
     etcd_cluster_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
     #[cfg(not(feature = "etcd"))]
     etcd_cluster_health_monitor: Option<()>,
+    /// Shutdown channel for graceful termination of background tasks
+    shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
+    /// Handle to the health check task
+    health_check_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 struct AlgorithmMetricsInner {
@@ -500,6 +516,8 @@ impl SegmentAlgorithm {
         let dc_failure_detector = Arc::new(DcFailureDetector::new(5, Duration::from_secs(300)));
         dc_failure_detector.add_dc(local_dc_id);
 
+        let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+
         Self {
             config: SegmentAlgorithmConfig::default(),
             buffers: DashMap::new(),
@@ -508,6 +526,8 @@ impl SegmentAlgorithm {
             dc_failure_detector,
             local_dc_id,
             etcd_cluster_health_monitor: None,
+            shutdown_tx: Arc::new(shutdown_tx),
+            health_check_task: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -686,14 +706,23 @@ impl IdAlgorithm for SegmentAlgorithm {
     async fn initialize(&mut self, config: &Config) -> Result<()> {
         self.config = config.algorithm.segment.clone();
 
-        self.dc_failure_detector
-            .start_health_check(Duration::from_secs(60))
-            .await;
+        let detector = self.dc_failure_detector.clone();
+        let shutdown_rx = self.shutdown_tx.subscribe();
+        let task = tokio::spawn(async move {
+            detector.start_health_check_with_shutdown(Duration::from_secs(60), shutdown_rx).await;
+        });
+
+        *self.health_check_task.lock().await = Some(task);
 
         Ok(())
     }
 
     async fn shutdown(&self) -> Result<()> {
+        // Signal shutdown and wait for health check task to complete
+        let _ = self.shutdown_tx.send(true);
+        if let Some(task) = self.health_check_task.lock().await.take() {
+            let _ = task.await;
+        }
         Ok(())
     }
 }
@@ -896,5 +925,63 @@ mod tests {
 
         let id = algo.generate(&ctx).await.unwrap();
         assert!(id.as_u128() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_dc_failure_detector() {
+        let detector = DcFailureDetector::new(5, Duration::from_secs(300));
+        detector.add_dc(0);
+        detector.add_dc(1);
+
+        // Test selecting best DC
+        let best = detector.select_best_dc(0);
+        assert_eq!(best, 0);
+
+        // Test get healthy DCs
+        let healthy = detector.get_healthy_dcs();
+        assert!(healthy.contains(&0));
+    }
+
+    #[tokio::test]
+    async fn test_dc_health_state() {
+        let state = DcHealthState::new(1);
+
+        assert_eq!(state.get_status(), DcStatus::Healthy);
+        assert!(state.should_use_dc());
+
+        state.record_failure();
+        state.record_failure();
+        state.record_failure();
+        assert_eq!(state.get_status(), DcStatus::Degraded);
+        assert!(state.should_use_dc());
+
+        state.record_failure();
+        state.record_failure();
+        assert_eq!(state.get_status(), DcStatus::Failed);
+        assert!(!state.should_use_dc());
+
+        state.record_success();
+        assert_eq!(state.get_status(), DcStatus::Healthy);
+    }
+
+    #[test]
+    fn test_step_calculator_qps_based() {
+        let calculator = StepCalculator::new(0.5, 0.5);
+        let config = SegmentAlgorithmConfig::default();
+        let step = calculator.calculate(1000, 100, &config);
+        assert!(step >= 100);
+        assert!(step <= 1000000);
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_shutdown() {
+        let mut algo = SegmentAlgorithm::new(0);
+
+        // Initialize algorithm
+        let config = Config::default();
+        algo.initialize(&config).await;
+
+        // Shutdown should complete without hanging
+        algo.shutdown().await.unwrap();
     }
 }

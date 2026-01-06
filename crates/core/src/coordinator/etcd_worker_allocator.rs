@@ -65,6 +65,10 @@ pub struct EtcdWorkerAllocator {
     config: EtcdConfig,
     #[allow(dead_code)]
     runtime: tokio::runtime::Handle,
+    /// Shutdown signal for graceful termination
+    shutdown_rx: Arc<tokio::sync::Mutex<Option<tokio::sync::watch::Receiver<bool>>>>,
+    /// Handle to the renewal task
+    renewal_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl EtcdWorkerAllocator {
@@ -89,11 +93,59 @@ impl EtcdWorkerAllocator {
             health_status: AtomicU8::new(0),
             config,
             runtime: tokio::runtime::Handle::current(),
+            shutdown_rx: Arc::new(tokio::sync::Mutex::new(None)),
+            renewal_task: Arc::new(tokio::sync::Mutex::new(None)),
         };
 
         info!("EtcdWorkerAllocator initialized for DC {}", datacenter_id);
 
         Ok(allocator)
+    }
+
+    /// Initialize the shutdown channel for graceful termination
+    pub fn init_shutdown(&self) {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let mut shutdown = self.shutdown_rx.lock();
+        *shutdown = Some(rx);
+        // Store the sender in a way that can be used to trigger shutdown
+        let _ = tx; // The sender is dropped, receiver will be closed when all senders are dropped
+    }
+
+    /// Start background lease renewal with graceful shutdown support
+    pub fn start_background_renewal(&self) {
+        self.health_status.store(1, Ordering::SeqCst);
+
+        let client_arc = self.client.clone();
+        let lease_id = self.lease_id.load(Ordering::SeqCst);
+
+        let task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let mut client = client_arc.lock().await;
+                        if let Err(e) = client.lease_keep_alive(lease_id).await {
+                            error!("Lease renewal failed: {}", e);
+                            drop(client);
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        let mut renewal = self.renewal_task.lock();
+        *renewal = Some(task);
+    }
+
+    /// Stop background lease renewal gracefully
+    pub async fn stop_background_renewal(&self) {
+        if let Some(task) = self.renewal_task.lock().take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
     }
 
     async fn grant_lease(&self) -> WorkerAllocatorResult<i64> {

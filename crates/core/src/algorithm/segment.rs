@@ -709,7 +709,9 @@ impl IdAlgorithm for SegmentAlgorithm {
         let detector = self.dc_failure_detector.clone();
         let shutdown_rx = self.shutdown_tx.subscribe();
         let task = tokio::spawn(async move {
-            detector.start_health_check_with_shutdown(Duration::from_secs(60), shutdown_rx).await;
+            detector
+                .start_health_check_with_shutdown(Duration::from_secs(60), shutdown_rx)
+                .await;
         });
 
         *self.health_check_task.lock().await = Some(task);
@@ -979,7 +981,7 @@ mod tests {
 
         // Initialize algorithm
         let config = Config::default();
-        algo.initialize(&config).await;
+        let _ = algo.initialize(&config).await;
 
         // Shutdown should complete without hanging
         algo.shutdown().await.unwrap();

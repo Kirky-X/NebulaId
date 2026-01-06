@@ -164,7 +164,7 @@ pub trait ApiKeyRepository: Send + Sync {
         &self,
         key_id: &str,
         key_secret: &str,
-    ) -> Result<Option<(Option<Uuid>, ApiKeyRole)>>; // workspace_id is optional for admin keys
+    ) -> Result<Option<(Option<Uuid>, ApiKeyRole)>>; // workspace_id is Uuid
     async fn list_api_keys(
         &self,
         workspace_id: Uuid,
@@ -173,7 +173,7 @@ pub trait ApiKeyRepository: Send + Sync {
     ) -> Result<Vec<ApiKeyInfo>>;
     async fn delete_api_key(&self, id: Uuid) -> Result<()>;
     async fn revoke_api_key(&self, id: Uuid) -> Result<()>;
-    async fn update_last_used(&self, id: Uuid) -> Result<()>;
+    async fn update_last_used(&self, id: Uuid) -> Result<()>; // Changed from String to Uuid
     async fn get_admin_api_key(&self, workspace_id: Uuid) -> Result<Option<ApiKeyInfo>>;
     async fn count_api_keys(&self, workspace_id: Uuid) -> Result<u64>;
 }
@@ -816,8 +816,18 @@ impl BizTagRepository for SeaOrmRepository {
 #[async_trait]
 impl ApiKeyRepository for SeaOrmRepository {
     async fn create_api_key(&self, request: &CreateApiKeyRequest) -> Result<ApiKeyWithSecret> {
+        // Validate key_secret length if provided (prevent DoS attacks)
+        if let Some(ref secret) = request.key_secret {
+            if secret.len() < 16 || secret.len() > 128 {
+                return Err(crate::CoreError::InvalidInput(
+                    "key_secret must be between 16 and 128 characters".to_string(),
+                ));
+            }
+        }
+
         let key_id = Uuid::new_v4().to_string();
-        let key_secret = generate_secret();
+        // Use provided secret or generate a new one
+        let key_secret = request.key_secret.clone().unwrap_or_else(generate_secret);
         let key_secret_hash = hash_secret(&key_secret);
         let prefix = match request.role {
             ApiKeyRole::Admin => "niad_",
@@ -825,9 +835,9 @@ impl ApiKeyRepository for SeaOrmRepository {
         };
 
         // Calculate expiration: use provided or default to 30 days from now
-        let expires_at_naive = request.expires_at.or_else(|| {
-            chrono::Utc::now()
-                .naive_utc()
+        let now = chrono::Utc::now();
+        let expires_at = request.expires_at.or_else(|| {
+            now.naive_utc()
                 .checked_add_signed(chrono::Duration::days(30))
         });
 
@@ -842,10 +852,10 @@ impl ApiKeyRepository for SeaOrmRepository {
             description: Set(request.description.clone()),
             rate_limit: Set(request.rate_limit.unwrap_or(10000)),
             enabled: Set(true),
-            expires_at: Set(expires_at_naive),
+            expires_at: Set(expires_at),
             last_used_at: Set(None),
-            created_at: Set(chrono::Utc::now().naive_utc()),
-            updated_at: Set(chrono::Utc::now().naive_utc()),
+            created_at: Set(now.naive_utc()),
+            updated_at: Set(now.naive_utc()),
         };
 
         let inserted = new_key
@@ -899,11 +909,7 @@ impl ApiKeyRepository for SeaOrmRepository {
             }
 
             if let Some(expires_at) = model.expires_at {
-                let expires_at_utc = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
-                    expires_at,
-                    chrono::Utc,
-                );
-                if expires_at_utc < chrono::Utc::now() {
+                if expires_at < chrono::Utc::now().naive_utc() {
                     return Ok(None);
                 }
             }

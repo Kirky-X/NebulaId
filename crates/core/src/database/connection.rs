@@ -107,7 +107,7 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
             key_secret_hash VARCHAR(128) NOT NULL,
             key_prefix VARCHAR(16) NOT NULL,
             role VARCHAR(20) NOT NULL DEFAULT 'user',
-            workspace_id UUID NOT NULL,
+            workspace_id UUID,  -- 允许 NULL，用于全局 admin key
             name VARCHAR(255) NOT NULL,
             description TEXT,
             rate_limit INT DEFAULT 1000,
@@ -116,7 +116,7 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
             last_used_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(workspace_id, key_id)
+            CONSTRAINT check_admin_key CHECK (workspace_id IS NULL AND role = 'admin' OR workspace_id IS NOT NULL)
         )
         "#,
             NEBULA_SCHEMA

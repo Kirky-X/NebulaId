@@ -656,6 +656,7 @@ impl ApiHandlers {
             role: nebula_core::database::ApiKeyRole::User,
             rate_limit: Some(10000),
             expires_at: None,
+            key_secret: None,
         };
 
         let user_key = repo
@@ -724,6 +725,7 @@ impl ApiHandlers {
             role: nebula_core::database::ApiKeyRole::User,
             rate_limit: Some(10000),
             expires_at: None,
+            key_secret: None,
         };
 
         let user_key = repo
@@ -744,8 +746,8 @@ impl ApiHandlers {
                 },
                 rate_limit: user_key.key.rate_limit,
                 enabled: user_key.key.enabled,
-                expires_at: user_key.key.expires_at.map(|dt| dt.and_utc().to_rfc3339()),
-                created_at: user_key.key.created_at.and_utc().to_rfc3339(),
+                expires_at: user_key.key.expires_at.map(naive_to_rfc3339),
+                created_at: naive_to_rfc3339(user_key.key.created_at),
             },
             key_secret: user_key.key_secret,
         })
@@ -872,6 +874,7 @@ impl ApiHandlers {
             role,
             rate_limit: req.rate_limit,
             expires_at,
+            key_secret: None,
         };
 
         let key_with_secret = repo.create_api_key(&core_req).await.map_err(map_db_error)?;

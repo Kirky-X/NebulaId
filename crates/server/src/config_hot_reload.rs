@@ -305,8 +305,7 @@ watch_timeout_ms = 5000
 [auth]
 enabled = true
 cache_ttl_seconds = 300
-# NOTE: Remove or randomize test API key in production
-api_keys = [{ key = "test-api-key-change-in-prod", workspace = "test", rate_limit = 10000 }]
+api_keys = [{ key_id = "test-key-id-12345", key_secret = "test-secret-key-change-in-prod", workspace = "test", role = "user", rate_limit = 10000, name = "Test Key" }]
 
 [algorithm]
 default = "segment"
@@ -409,7 +408,7 @@ watch_timeout_ms = 5000
 [auth]
 enabled = true
 cache_ttl_seconds = 300
-api_keys = [{ key = "test-api-key-change-in-prod", workspace = "test", rate_limit = 10000 }]
+api_keys = [{ key_id = "test-key-id-12345", key_secret = "test-secret-key-change-in-prod", workspace = "test", role = "user", rate_limit = 10000, name = "Test Key" }]
 
 [algorithm]
 default = "segment"

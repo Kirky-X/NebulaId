@@ -16,6 +16,7 @@ use crate::types::error::CoreError;
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
+use getrandom::getrandom;
 use lru::LruCache;
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
@@ -58,8 +59,9 @@ impl AuthManager {
     pub fn new() -> Self {
         // Generate or load a secure salt for key hashing
         let salt = std::env::var("NEBULA_API_KEY_SALT").unwrap_or_else(|_err| {
-            // Generate a random salt if not provided
-            let salt_bytes: [u8; 32] = rand::random();
+            // Generate a cryptographically secure random salt
+            let mut salt_bytes = [0u8; 32];
+            getrandom(&mut salt_bytes).expect("Failed to generate secure random salt");
             hex::encode(salt_bytes)
         });
 
@@ -86,7 +88,8 @@ impl AuthManager {
     /// Create AuthManager with custom cache settings
     pub fn with_cache_settings(cache_ttl_seconds: i64, max_cache_size: usize) -> Self {
         let salt = std::env::var("NEBULA_API_KEY_SALT").unwrap_or_else(|_err| {
-            let salt_bytes: [u8; 32] = rand::random();
+            let mut salt_bytes = [0u8; 32];
+            getrandom(&mut salt_bytes).expect("Failed to generate secure random salt");
             hex::encode(salt_bytes)
         });
 

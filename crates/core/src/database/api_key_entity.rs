@@ -27,9 +27,9 @@ pub struct Model {
     pub key_id: String,
     pub key_secret_hash: String,
     pub key_prefix: String,
-    #[sea_orm(rename = "role")]
+    #[sea_orm(column_name = "role")]
     pub role: String,
-    pub workspace_id: Option<Uuid>, // Optional: NULL for global admin keys
+    pub workspace_id: Option<Uuid>, // UUID for proper foreign key
     pub name: String,
     pub description: Option<String>,
     pub rate_limit: i32,
@@ -64,7 +64,7 @@ pub struct ApiKey {
     pub key_id: String,
     pub key_prefix: String,
     pub role: ApiKeyRole,
-    pub workspace_id: Option<Uuid>, // Optional: NULL for global admin keys
+    pub workspace_id: Option<Uuid>,
     pub name: String,
     pub description: Option<String>,
     pub rate_limit: i32,
@@ -121,6 +121,7 @@ pub struct CreateApiKeyRequest {
     pub role: ApiKeyRole,
     pub rate_limit: Option<i32>,
     pub expires_at: Option<DateTime>,
+    pub key_secret: Option<String>, // Optional: use provided secret instead of generating
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -221,9 +221,12 @@ impl Default for EtcdConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ApiKeyEntry {
-    pub key: String,
+    pub key_id: String,
+    pub key_secret: String,
     pub workspace: String,
+    pub role: String,
     pub rate_limit: u32,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -238,7 +241,7 @@ impl Default for AuthConfig {
         Self {
             enabled: true,
             cache_ttl_seconds: 300,
-            api_keys: vec![], // Empty by default, should be configured via environment
+            api_keys: vec![], // Configure via config.toml or environment variables
         }
     }
 }

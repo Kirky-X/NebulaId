@@ -84,3 +84,15 @@ timeout_ms = 5000
 
 [batch_generate]
 max_batch_size = 100
+
+[auth]
+enabled = true
+cache_ttl_seconds = 300
+
+# API Keys configuration
+# Configure admin or user API keys here. If empty, keys will be auto-generated on first startup.
+# Format: Authorization: ApiKey <key_id>_<key_secret>
+# api_keys = [
+#     { key_id = "admin-key-id", key_secret = "admin-secret", workspace = "global", role = "admin", rate_limit = 100000, name = "Admin Key" }
+# ]
+api_keys = []

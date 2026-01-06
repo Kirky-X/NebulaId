@@ -259,7 +259,7 @@ mod tests {
             &self,
             key_id: &str,
             key_secret: &str,
-        ) -> Result<Option<(Option<Uuid>, nebula_core::database::ApiKeyRole)>> {
+        ) -> Result<Option<(Option<uuid::Uuid>, nebula_core::database::ApiKeyRole)>> {
             use subtle::ConstantTimeEq;
             if let Some((expected_secret, role)) = self.keys.get(key_id) {
                 let incoming_hash = MockApiKeyRepo::hash_secret(key_secret);
@@ -272,7 +272,7 @@ mod tests {
                     let workspace_id = if *role == ApiKeyRole::Admin {
                         None
                     } else {
-                        Some(Uuid::nil())
+                        Some(uuid::Uuid::nil())
                     };
                     return Ok(Some((workspace_id, role.clone().into())));
                 }
@@ -297,7 +297,7 @@ mod tests {
             Ok(())
         }
 
-        async fn update_last_used(&self, _id: Uuid) -> Result<()> {
+        async fn update_last_used(&self, _key: String) -> Result<()> {
             Ok(())
         }
 

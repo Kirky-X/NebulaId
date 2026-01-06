@@ -66,6 +66,7 @@ impl Default for ServerConfig {
 async fn load_api_keys(
     _auth: &Arc<ApiKeyAuth>,
     repository: &Option<Arc<database::SeaOrmRepository>>,
+    config: &Config,
 ) {
     use nebula_core::database::{ApiKeyRole, CreateApiKeyRequest};
     use uuid::Uuid;
@@ -73,68 +74,138 @@ async fn load_api_keys(
     info!("Loading API keys...");
 
     if let Some(ref repo) = repository {
-        // Try to get existing admin key from database (admin keys are global, workspace_id is NULL)
-        match repo.get_admin_api_key(Uuid::nil()).await {
-            Ok(Some(admin_key)) => {
-                info!(
-                    "Found existing admin API key: {} (workspace: {:?})",
-                    admin_key.key_id, admin_key.workspace_id
-                );
-            }
-            Ok(None) => {
-                // Generate new admin API key if none exists
-                let admin_request = CreateApiKeyRequest {
-                    workspace_id: None, // Admin key is global, not bound to any workspace
-                    name: "admin".to_string(),
-                    description: Some("Default Admin API Key".to_string()),
-                    role: ApiKeyRole::Admin,
-                    rate_limit: Some(100000),
-                    expires_at: None, // No expiration for admin key
-                };
-                match repo.create_api_key(&admin_request).await {
-                    Ok(key_with_secret) => {
-                        info!(
-                            "Generated new admin API key: {} (workspace: None)",
-                            key_with_secret.key.key_id
-                        );
-                        // CRITICAL: Output secret only on first generation - user MUST save this!
-                        info!(
-                            "⚠️  ADMIN KEY SECRET (save this now, it will not be shown again): {}",
-                            key_with_secret.key_secret
-                        );
-                    }
-                    Err(e) => {
+        // First, create API key from environment variable if configured
+        // Format: NEBULA_ADMIN_API_KEY_SECRET=your-secret-key
+        let admin_key_secret_from_env = std::env::var("NEBULA_ADMIN_API_KEY_SECRET").ok();
+
+        // Second, create API keys from config if configured
+        // Config format: api_keys = [{ key_secret = "xxx", workspace = "global", role = "admin", rate_limit = 100000, name = "Admin" }]
+        let configured_keys = if !config.auth.api_keys.is_empty() {
+            Some(config.auth.api_keys.clone())
+        } else {
+            None
+        };
+
+        // If configured via env or config, create the key (key_id generated internally)
+        if let Some(ref secret) = admin_key_secret_from_env {
+            info!("Creating admin API key from environment variable");
+
+            let request = CreateApiKeyRequest {
+                workspace_id: None,
+                name: "admin".to_string(),
+                description: Some("Admin API key from environment".to_string()),
+                role: ApiKeyRole::Admin,
+                rate_limit: Some(100000),
+                expires_at: None,
+                key_secret: Some(secret.to_string()),
+            };
+
+            match repo.create_api_key(&request).await {
+                Ok(key) => {
+                    info!("Admin API key created: {}", key.key.key_id);
+                }
+                Err(e) => {
+                    if !e.to_string().contains("duplicate key") {
                         error!("Failed to create admin API key: {}", e);
                     }
                 }
             }
-            Err(e) => {
-                error!("Failed to check admin API key: {}", e);
+        } else if let Some(ref keys) = configured_keys {
+            if let Some(first_key) = keys.first() {
+                info!("Creating API key from configuration");
+
+                let role = match first_key.role.to_lowercase().as_str() {
+                    "admin" => ApiKeyRole::Admin,
+                    _ => ApiKeyRole::User,
+                };
+
+                let request = CreateApiKeyRequest {
+                    workspace_id: if first_key.workspace == "global" {
+                        None
+                    } else {
+                        Some(Uuid::parse_str(&first_key.workspace).unwrap_or(Uuid::nil()))
+                    },
+                    name: first_key.name.clone(),
+                    description: Some(format!("Configured via config, role: {}", first_key.role)),
+                    role,
+                    rate_limit: Some(first_key.rate_limit as i32),
+                    expires_at: None,
+                    key_secret: None,
+                };
+
+                match repo.create_api_key(&request).await {
+                    Ok(key) => {
+                        info!(
+                            "API key created from config: {} (role: {})",
+                            key.key.key_id, first_key.role
+                        );
+                    }
+                    Err(e) => {
+                        if !e.to_string().contains("duplicate key") {
+                            warn!("Failed to create API key from config: {}", e);
+                        }
+                    }
+                }
+            }
+        } else {
+            // No configuration, check if admin key already exists
+            match repo.get_admin_api_key(Uuid::nil()).await {
+                Ok(Some(admin_key)) => {
+                    info!(
+                        "Found existing admin API key: {:?} (workspace: {:?})",
+                        admin_key.key_id, admin_key.workspace_id
+                    );
+                }
+                Ok(None) => {
+                    // Generate new admin API key
+                    let admin_request = CreateApiKeyRequest {
+                        workspace_id: None,
+                        name: "admin".to_string(),
+                        description: Some("Default Admin API Key".to_string()),
+                        role: ApiKeyRole::Admin,
+                        rate_limit: Some(100000),
+                        expires_at: None,
+                        key_secret: None,
+                    };
+                    match repo.create_api_key(&admin_request).await {
+                        Ok(key) => {
+                            info!(
+                                "Generated new admin API key: {} (workspace: None)",
+                                key.key.key_id
+                            );
+                            info!("⚠️  ADMIN KEY SECRET (save this now): {}", key.key_secret);
+                        }
+                        Err(e) => {
+                            error!("Failed to create admin API key: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to check admin API key: {}", e);
+                }
             }
         }
 
-        // Add a default test API key only in development mode
-        // Format: Authorization: ApiKey test-key_test-secret
+        // Add test API key in development mode only if no configuration provided
         #[cfg(debug_assertions)]
-        {
+        if admin_key_secret_from_env.is_none() && configured_keys.is_none() {
             let test_request = CreateApiKeyRequest {
-                workspace_id: None, // Test admin key is also global
+                workspace_id: None,
                 name: "Test Admin API Key".to_string(),
                 description: Some("Default test admin API key".to_string()),
                 role: ApiKeyRole::Admin,
                 rate_limit: Some(10000),
                 expires_at: None,
+                key_secret: None,
             };
             match repo.create_api_key(&test_request).await {
-                Ok(key_with_secret) => {
-                    info!(
-                        "Created test admin API key: {} (workspace: None)",
-                        key_with_secret.key.key_id
-                    );
-                    // SECURITY: Don't log secrets in debug mode either
+                Ok(key) => {
+                    info!("Created test admin API key: {}", key.key.key_id);
                 }
                 Err(e) => {
-                    warn!("Failed to create test API key (may already exist): {}", e);
+                    if !e.to_string().contains("duplicate key") {
+                        warn!("Failed to create test API key: {}", e);
+                    }
                 }
             }
         }
@@ -367,7 +438,7 @@ async fn main() -> Result<()> {
         );
         std::process::exit(1);
     };
-    load_api_keys(&auth, &repository).await;
+    load_api_keys(&auth, &repository, &config).await;
 
     // Initialize audit logger and config (used by both etcd and non-etcd modes)
     let audit_logger = Arc::new(AuditLogger::new(config.rate_limit.default_rps as usize));
@@ -677,7 +748,7 @@ mod tests {
                 Ok(())
             }
 
-            async fn update_last_used(&self, _id: uuid::Uuid) -> nebula_core::types::Result<()> {
+            async fn update_last_used(&self, _key: String) -> nebula_core::types::Result<()> {
                 Ok(())
             }
 
@@ -782,7 +853,7 @@ mod tests {
                 Ok(())
             }
 
-            async fn update_last_used(&self, _id: uuid::Uuid) -> nebula_core::types::Result<()> {
+            async fn update_last_used(&self, _key: String) -> nebula_core::types::Result<()> {
                 Ok(())
             }
 

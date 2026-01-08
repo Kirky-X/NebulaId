@@ -30,10 +30,44 @@ cargo fmt --all -- --check
 cargo fmt --all
 
 # Run Clippy lints
-cargo clippy --all -- -D warnings -A clippy::derivable-clones -A clippy::redundant-pub-crate
+cargo clippy --lib --bins -- -D warnings -A clippy::derivable-clones -A clippy::redundant-pub-crate
 
 # Run pre-commit checks (format, clippy, build, tests)
 ./scripts/pre-commit-check.sh
+```
+
+## Pre-commit Hooks
+
+Install and configure pre-commit hooks for automatic code quality checks before commits:
+
+```bash
+# Install pre-commit hooks
+./scripts/install-pre-commit-hooks.sh
+
+# Manually run all hooks on all files
+pre-commit run --all-files
+
+# Update pre-commit hooks to latest versions
+pre-commit autoupdate
+```
+
+### Hooks Configuration (`.pre-commit-config.yaml`)
+
+| Hook | Command | Purpose |
+|------|---------|---------|
+| cargo-fmt | `cargo fmt --all -- --check` | Code formatting |
+| cargo-clippy | `cargo clippy --lib --bins` | Static analysis |
+| cargo-check | `cargo check --workspace` | Compilation check |
+
+### Troubleshooting
+
+If pre-commit fails with "command not found":
+```bash
+# Add pip user bin to PATH
+export PATH="$HOME/.local/bin:$PATH"
+
+# Reinstall if needed
+pip install --user --upgrade pre-commit
 ```
 
 ## Test Commands

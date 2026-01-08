@@ -1,0 +1,66 @@
+# Pre-commit hooks for Nebula ID Rust Project
+#
+# This configuration provides automatic code quality checks before commits.
+# Install pre-commit: pip install pre-commit
+# Install hooks: pre-commit install
+# Update hooks: pre-commit autoupdate
+#
+# See AGENTS.md for code quality requirements.
+
+repos:
+  # Rust Code Formatting (cargo fmt)
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: Rust Code Formatting
+        description: Check code formatting with cargo fmt
+        entry: bash -c 'cargo fmt --all -- --check'
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
+  # Rust Static Analysis (cargo clippy)
+  - repo: local
+    hooks:
+      - id: cargo-clippy
+        name: Rust Static Analysis
+        description: Run cargo clippy for code quality analysis
+        entry: bash -c 'cargo clippy --lib --bins -- -D warnings'
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
+  # Rust Compilation Check (cargo check)
+  - repo: local
+    hooks:
+      - id: cargo-check
+        name: Rust Compilation Check
+        description: Verify nebula-core compiles without errors
+        entry: bash -c 'cargo check -p nebula-core'
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
+  # License Header Check
+  - repo: local
+    hooks:
+      - id: rust-license-header
+        name: Rust License Header
+        description: Ensure Rust files have Apache 2.0 license header
+        entry: bash -c 'grep -L "Apache License, Version 2.0" $(find . -name "*.rs" -type f 2>/dev/null) 2>/dev/null | head -0'
+        language: system
+        pass_filenames: true
+        always_run: false
+        stages: [pre-commit]
+        require_serial: true
+
+# Global Settings
+default_install_hook_types: [pre-commit]
+default_stages: [pre-commit]
+minimum_pre_commit_version: '3.0.0'
+
+# Fail fast on first error
+fail_fast: true

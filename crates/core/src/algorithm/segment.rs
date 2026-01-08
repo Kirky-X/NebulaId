@@ -857,7 +857,7 @@ impl SegmentLoader for DefaultSegmentLoader {
         // Generate timestamp-based segment for uniqueness
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .map_err(|e| crate::CoreError::InternalError(format!("Failed to get system time: {}", e)))?
             .as_secs();
         let base_id = timestamp * 10000; // Use timestamp as base for uniqueness
 

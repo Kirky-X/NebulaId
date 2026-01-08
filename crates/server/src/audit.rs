@@ -137,6 +137,7 @@ pub struct AuditLogger {
     max_events: usize,
     total_logged: Arc<AtomicU64>,
     total_errors: Arc<AtomicU64>,
+    log_file_path: Option<String>, // 审计日志文件路径
 }
 
 impl AuditLogger {
@@ -146,6 +147,18 @@ impl AuditLogger {
             max_events,
             total_logged: Arc::new(AtomicU64::new(0)),
             total_errors: Arc::new(AtomicU64::new(0)),
+            log_file_path: None,
+        }
+    }
+
+    /// 创建支持文件持久化的审计日志记录器
+    pub fn with_file_logging(max_events: usize, log_file_path: String) -> Self {
+        Self {
+            events: Arc::new(Mutex::new(VecDeque::with_capacity(max_events + 1))),
+            max_events,
+            total_logged: Arc::new(AtomicU64::new(0)),
+            total_errors: Arc::new(AtomicU64::new(0)),
+            log_file_path: Some(log_file_path),
         }
     }
 
@@ -159,6 +172,13 @@ impl AuditLogger {
         events.push_back(event.clone());
         self.total_logged.fetch_add(1, Ordering::SeqCst);
 
+        // 持久化到文件
+        if let Some(ref path) = self.log_file_path {
+            if let Err(e) = self.persist_to_file(&event, path).await {
+                tracing::error!("Failed to persist audit log: {}", e);
+            }
+        }
+
         info!(
             event_id = event.id,
             event_type = ?event.event_type,
@@ -168,6 +188,23 @@ impl AuditLogger {
             result = ?event.result,
             "Audit event recorded"
         );
+    }
+
+    /// 将审计事件持久化到文件
+    async fn persist_to_file(&self, event: &AuditEvent, path: &str) -> std::io::Result<()> {
+        use tokio::fs::OpenOptions;
+        use tokio::io::AsyncWriteExt;
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .await?;
+
+        let log_line = serde_json::to_string(event)?;
+        file.write_all(log_line.as_bytes()).await?;
+        file.write_all(b"\n").await?;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]

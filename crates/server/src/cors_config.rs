@@ -134,11 +134,21 @@ pub fn create_env_aware_cors_layer() -> CorsLayer {
         .unwrap_or_default();
 
     if is_production {
-        // 生产环境：使用显式配置的源，如果没有配置则拒绝所有
+        // 生产环境必须显式配置允许的源
+        if allowed_origins.is_empty() {
+            tracing::error!("ALLOWED_ORIGINS must be configured in production environment");
+            panic!(
+                "Security: ALLOWED_ORIGINS environment variable is required in production. \
+                 Example: ALLOWED_ORIGINS=https://example.com,https://app.example.com"
+            );
+        }
         create_cors_layer(allowed_origins)
     } else {
-        // 开发环境：使用宽松的配置
+        // 开发环境使用更严格的默认配置
         if allowed_origins.is_empty() {
+            tracing::warn!(
+                "ALLOWED_ORIGINS not configured in development, using default localhost origins"
+            );
             create_dev_cors_layer()
         } else {
             create_cors_layer(allowed_origins)

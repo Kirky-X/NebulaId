@@ -15,7 +15,6 @@
 #![allow(clippy::type_complexity)]
 
 use async_trait::async_trait;
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -38,8 +37,8 @@ pub trait CacheBackend: Send + Sync {
 
 pub struct MultiLevelCache {
     l1_cache: Arc<DashMap<String, Arc<RingBuffer<u64>>>>,
-    l1_access_order: Arc<RwLock<HashMap<String, Instant>>>, // LRU 访问追踪
-    l1_max_keys: usize,                                     // L1 最大 key 数量限制
+    l1_access_time: Arc<DashMap<String, Instant>>, // 使用 DashMap 替代 RwLock<HashMap>，支持并发更新
+    l1_max_keys: usize,                           // L1 最大 key 数量限制
     l2_buffer: DoubleBufferCache,
     l3_backend: Option<Arc<dyn CacheBackend>>,
     l1_capacity: usize,
@@ -83,7 +82,7 @@ impl MultiLevelCache {
     ) -> Self {
         Self {
             l1_cache: Arc::new(DashMap::new()),
-            l1_access_order: Arc::new(RwLock::new(HashMap::new())),
+            l1_access_time: Arc::new(DashMap::new()),
             l1_max_keys: if l1_max_keys > 0 {
                 l1_max_keys
             } else {
@@ -195,9 +194,8 @@ impl MultiLevelCache {
             .l1_items_refilled
             .fetch_add(pushed, Ordering::Relaxed);
 
-        // 更新访问时间
-        let mut access_order = self.l1_access_order.write().await;
-        access_order.insert(key.to_string(), Instant::now());
+        // 更新访问时间（DashMap 的 insert 是无锁的）
+        self.l1_access_time.insert(key.to_string(), Instant::now());
 
         debug!("Refilled L1 cache for key: {} with {} items", key, pushed);
     }
@@ -215,29 +213,32 @@ impl MultiLevelCache {
 
         // 需要淘汰 10% 的条目
         let evict_count = (self.l1_max_keys / 10).max(1);
-        let mut access_order = self.l1_access_order.write().await;
 
-        // 找出最久未访问的条目 (使用 sort_by_key 更高效)
-        let mut candidates: Vec<_> = access_order.iter().collect();
-        candidates.sort_by_key(|(_, time)| *time);
-
-        let to_evict: Vec<String> = candidates
-            .into_iter()
-            .take(evict_count)
-            .map(|(k, _)| k.clone())
+        // 使用 DashMap 的迭代器收集候选条目（无需锁）
+        let mut candidates: Vec<(String, Instant)> = self
+            .l1_access_time
+            .iter()
+            .map(|entry| (entry.key().clone(), *entry.value()))
             .collect();
 
-        for key in &to_evict {
+        // 只对候选条目进行排序（而不是所有条目）
+        if candidates.len() > evict_count {
+            // 使用部分排序优化性能
+            candidates.select_nth_unstable_by(evict_count, |a, b| a.1.cmp(&b.1));
+            candidates.truncate(evict_count);
+        }
+
+        for (key, _) in &candidates {
             self.l1_cache.remove(key);
-            access_order.remove(key);
+            self.l1_access_time.remove(key);
             self.metrics.l1_evictions.fetch_add(1, Ordering::Relaxed);
             debug!("Evicted L1 cache key: {} (LRU)", key);
         }
 
-        if !to_evict.is_empty() {
+        if !candidates.is_empty() {
             info!(
                 "Evicted {} old entries from L1 cache (max_keys={})",
-                to_evict.len(),
+                candidates.len(),
                 self.l1_max_keys
             );
         }
@@ -246,18 +247,19 @@ impl MultiLevelCache {
     /// 手动触发 L1 缓存清理
     pub async fn evict_l1_expired(&self, max_age: Duration) -> usize {
         let cutoff = Instant::now() - max_age;
-        let mut access_order = self.l1_access_order.write().await;
         let mut evicted = 0;
 
-        let to_evict: Vec<String> = access_order
+        // 使用 DashMap 的 retain 方法过滤过期条目（无需锁）
+        let to_evict: Vec<String> = self
+            .l1_access_time
             .iter()
-            .filter(|(_key, time): &(&String, &Instant)| **time < cutoff)
-            .map(|(k, _)| k.clone())
+            .filter(|entry| *entry.value() < cutoff)
+            .map(|entry| entry.key().clone())
             .collect();
 
         for key in &to_evict {
             self.l1_cache.remove(key);
-            access_order.remove(key);
+            self.l1_access_time.remove(key);
             evicted += 1;
         }
 
@@ -288,9 +290,8 @@ impl MultiLevelCache {
         self.l1_cache.remove(key);
         self.l2_buffer.invalidate(key).await;
 
-        // 清理 access_order
-        let mut access_order = self.l1_access_order.write().await;
-        access_order.remove(key);
+        // 清理 l1_access_time（DashMap 的 remove 是无锁的）
+        self.l1_access_time.remove(key);
 
         if let Some(ref backend) = self.l3_backend {
             backend.delete(key).await?;
@@ -306,9 +307,8 @@ impl MultiLevelCache {
             entry.value().clear();
         }
 
-        // 清理 access_order
-        let mut access_order = self.l1_access_order.write().await;
-        access_order.clear();
+        // 清理 l1_access_time（DashMap 的 clear 是无锁的）
+        self.l1_access_time.clear();
 
         self.l2_buffer.clear().await;
 

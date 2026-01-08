@@ -71,7 +71,7 @@ impl SnowflakeAlgorithm {
     fn get_timestamp() -> u64 {
         let start = SystemTime::UNIX_EPOCH
             .checked_add(Duration::from_millis(DEFAULT_START_TIME))
-            .unwrap();
+            .expect("Invalid timestamp configuration: DEFAULT_START_TIME causes overflow");
 
         let now = SystemTime::now()
             .duration_since(start)
@@ -87,18 +87,18 @@ impl SnowflakeAlgorithm {
     /// 2. The sleep duration is minimal (1ms)
     /// 3. Making this async would require significant refactoring
     /// 4. Clock drift beyond threshold returns error immediately
-    fn wait_for_next_ms(&self, last_ts: u64) -> u64 {
+    async fn wait_for_next_ms(&self, last_ts: u64) -> u64 {
         loop {
             let current = Self::get_timestamp();
             if current > last_ts {
                 return current;
             }
-            // Using std::thread::sleep for minimal duration in sync context
-            std::thread::sleep(Duration::from_millis(1));
+            // Use tokio::time::sleep for async-friendly waiting
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     }
 
-    pub fn generate_id(&self) -> Result<Id> {
+    async fn generate_id(&self) -> Result<Id> {
         let timestamp = Self::get_timestamp();
         let last_ts = self.last_timestamp.load(Ordering::SeqCst);
         let sequence_mask = self.config.sequence_mask();
@@ -114,7 +114,7 @@ impl SnowflakeAlgorithm {
                 });
             }
 
-            let wait_ts = self.wait_for_next_ms(last_ts);
+            let wait_ts = self.wait_for_next_ms(last_ts).await;
             return self.generate_id_with_timestamp(wait_ts, sequence_mask);
         }
 
@@ -123,7 +123,7 @@ impl SnowflakeAlgorithm {
 
             if seq & sequence_mask == 0 {
                 self.rotation_count.fetch_add(1, Ordering::SeqCst);
-                let next_ts = self.wait_for_next_ms(timestamp);
+                let next_ts = self.wait_for_next_ms(timestamp).await;
                 return self.generate_id_with_timestamp(next_ts, sequence_mask);
             }
 
@@ -193,7 +193,7 @@ impl SnowflakeAlgorithm {
 #[async_trait]
 impl IdAlgorithm for SnowflakeAlgorithm {
     async fn generate(&self, _ctx: &GenerateContext) -> Result<Id> {
-        self.generate_id()
+        self.generate_id().await
     }
 
     async fn batch_generate(&self, _ctx: &GenerateContext, size: usize) -> Result<IdBatch> {
@@ -202,7 +202,7 @@ impl IdAlgorithm for SnowflakeAlgorithm {
         const MAX_RETRIES: usize = 100;
 
         while ids.len() < size && retries < MAX_RETRIES {
-            match self.generate_id() {
+            match self.generate_id().await {
                 Ok(id) => ids.push(id),
                 Err(_) => {
                     tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
@@ -454,7 +454,7 @@ mod tests {
     #[tokio::test]
     async fn test_snowflake_generate() {
         let algo = SnowflakeAlgorithm::new(0, 0);
-        let id = algo.generate_id().unwrap();
+        let id = algo.generate_id().await.unwrap();
         assert!(id.as_u128() > 0);
     }
 
@@ -464,7 +464,7 @@ mod tests {
         let mut ids = std::collections::HashSet::new();
 
         for _ in 0..100 {
-            let id = algo.generate_id().unwrap();
+            let id = algo.generate_id().await.unwrap();
             assert!(
                 ids.insert(id.as_u128()),
                 "Duplicate ID generated: {}",

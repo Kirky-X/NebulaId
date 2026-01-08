@@ -59,7 +59,25 @@ impl AuthManager {
     pub fn new() -> Self {
         // Generate or load a secure salt for key hashing
         let salt = std::env::var("NEBULA_API_KEY_SALT").unwrap_or_else(|_err| {
-            // Generate a cryptographically secure random salt
+            let is_production = std::env::var("NEBULA_ENV")
+                .unwrap_or_else(|_| "development".to_string())
+                .to_lowercase()
+                == "production";
+
+            if is_production {
+                tracing::error!("NEBULA_API_KEY_SALT environment variable not set. This is a critical security issue.");
+                panic!(
+                    "NEBULA_API_KEY_SALT must be set to a fixed value for production use. \
+                     Generate with: openssl rand -hex 32"
+                );
+            }
+
+            tracing::warn!(
+                "NEBULA_API_KEY_SALT not set. Using random salt for development. \
+                 This will cause all API keys to be invalidated on restart."
+            );
+
+            // Generate a cryptographically secure random salt for development only
             let mut salt_bytes = [0u8; 32];
             getrandom(&mut salt_bytes).expect("Failed to generate secure random salt");
             hex::encode(salt_bytes)

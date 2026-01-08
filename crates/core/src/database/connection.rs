@@ -30,6 +30,20 @@ impl From<DbErr> for CoreError {
 }
 
 pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnection, CoreError> {
+    // Validate database password
+    if config.engine != crate::config::DatabaseEngine::Sqlite {
+        if config.password.is_empty() || config.password.contains("${") {
+            return Err(CoreError::ConfigurationError(
+                "Database password not configured. Set NEBULA_DATABASE_PASSWORD environment variable".to_string()
+            ));
+        }
+        if config.username.is_empty() {
+            return Err(CoreError::ConfigurationError(
+                "Database username not configured".to_string()
+            ));
+        }
+    }
+
     // Use URL if it's a complete connection string, otherwise construct from parts
     let final_url = if config.url.starts_with("postgresql://")
         || config.url.starts_with("mysql://")

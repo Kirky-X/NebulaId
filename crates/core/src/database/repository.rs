@@ -1657,18 +1657,78 @@ mod tests {
     async fn setup_test_db(db: &sea_orm::DatabaseConnection) {
         let backend = db.get_database_backend();
 
+        // Create schema if it doesn't exist
+        db.execute(Statement::from_string(
+            backend,
+            r#"CREATE SCHEMA IF NOT EXISTS nebula_id"#,
+        ))
+        .await
+        .unwrap();
+
+        // Create enums
+        db.execute(Statement::from_string(
+            backend,
+            r#"DO $$ BEGIN
+                CREATE TYPE "nebula_id"."algorithm_type" AS ENUM ('segment', 'snowflake', 'uuid_v7', 'uuid_v4');
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$"#,
+        ))
+        .await
+        .unwrap();
+
+        db.execute(Statement::from_string(
+            backend,
+            r#"DO $$ BEGIN
+                CREATE TYPE "nebula_id"."id_format" AS ENUM ('numeric', 'prefixed', 'uuid');
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$"#,
+        ))
+        .await
+        .unwrap();
+
+        db.execute(Statement::from_string(
+            backend,
+            r#"DO $$ BEGIN
+                CREATE TYPE "nebula_id"."workspace_status" AS ENUM ('active', 'inactive', 'suspended');
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$"#,
+        ))
+        .await
+        .unwrap();
+
         db.execute(Statement::from_string(
             backend,
             r#"
-            CREATE TABLE IF NOT EXISTS nebula_workspaces (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
+            CREATE TABLE IF NOT EXISTS "nebula_id"."workspaces" (
+                id UUID PRIMARY KEY,
+                name VARCHAR(255) NOT NULL UNIQUE,
                 description TEXT,
-                status INTEGER NOT NULL DEFAULT 1,
-                max_groups INTEGER NOT NULL DEFAULT 10,
+                status "nebula_id"."workspace_status" NOT NULL DEFAULT 'active',
+                max_groups INTEGER NOT NULL DEFAULT 100,
+                max_biz_tags INTEGER NOT NULL DEFAULT 1000,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        ))
+        .await
+        .unwrap();
+
+        db.execute(Statement::from_string(
+            backend,
+            r#"
+            CREATE TABLE IF NOT EXISTS "nebula_id"."groups" (
+                id UUID PRIMARY KEY,
+                workspace_id UUID NOT NULL REFERENCES "nebula_id"."workspaces"(id) ON DELETE CASCADE,
+                name VARCHAR(255) NOT NULL,
+                description TEXT,
                 max_biz_tags INTEGER NOT NULL DEFAULT 100,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(workspace_id, name)
             )
             "#,
         ))
@@ -1678,15 +1738,21 @@ mod tests {
         db.execute(Statement::from_string(
             backend,
             r#"
-            CREATE TABLE IF NOT EXISTS nebula_groups (
-                id TEXT PRIMARY KEY,
-                workspace_id TEXT NOT NULL,
-                name TEXT NOT NULL,
+            CREATE TABLE IF NOT EXISTS "nebula_id"."biz_tags" (
+                id UUID PRIMARY KEY,
+                workspace_id UUID NOT NULL REFERENCES "nebula_id"."workspaces"(id) ON DELETE CASCADE,
+                group_id UUID NOT NULL REFERENCES "nebula_id"."groups"(id) ON DELETE CASCADE,
+                name VARCHAR(255) NOT NULL,
                 description TEXT,
-                max_biz_tags INTEGER NOT NULL DEFAULT 50,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY (workspace_id) REFERENCES nebula_workspaces(id)
+                algorithm "nebula_id"."algorithm_type" NOT NULL DEFAULT 'segment',
+                format "nebula_id"."id_format" NOT NULL DEFAULT 'numeric',
+                prefix VARCHAR(50) DEFAULT '',
+                base_step INTEGER NOT NULL DEFAULT 1000,
+                max_step INTEGER NOT NULL DEFAULT 100000,
+                datacenter_ids INTEGER[] DEFAULT ARRAY[0],
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(workspace_id, group_id, name)
             )
             "#,
         ))
@@ -1696,42 +1762,41 @@ mod tests {
         db.execute(Statement::from_string(
             backend,
             r#"
-            CREATE TABLE IF NOT EXISTS nebula_biz_tags (
-                id TEXT PRIMARY KEY,
-                workspace_id TEXT NOT NULL,
-                group_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                description TEXT,
-                algorithm INTEGER NOT NULL DEFAULT 0,
-                format INTEGER NOT NULL DEFAULT 0,
-                prefix TEXT,
-                base_step INTEGER NOT NULL DEFAULT 100,
-                max_step INTEGER NOT NULL DEFAULT 1000,
-                datacenter_ids TEXT NOT NULL DEFAULT '[]',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY (workspace_id) REFERENCES nebula_workspaces(id),
-                FOREIGN KEY (group_id) REFERENCES nebula_groups(id)
-            )
-            "#,
-        ))
-        .await
-        .unwrap();
-
-        db.execute(Statement::from_string(
-            backend,
-            r#"
-            CREATE TABLE IF NOT EXISTS nebula_segments (
-                id TEXT PRIMARY KEY,
-                workspace_id TEXT NOT NULL,
-                biz_tag TEXT NOT NULL,
-                current_id INTEGER NOT NULL DEFAULT 1,
-                max_id INTEGER NOT NULL,
+            CREATE TABLE IF NOT EXISTS "nebula_id"."segments" (
+                id BIGINT PRIMARY KEY,
+                workspace_id VARCHAR(255) NOT NULL,
+                biz_tag VARCHAR(255) NOT NULL,
+                current_id BIGINT NOT NULL DEFAULT 1,
+                max_id BIGINT NOT NULL,
                 step INTEGER NOT NULL DEFAULT 100,
                 delta INTEGER NOT NULL DEFAULT 1,
                 dc_id INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        ))
+        .await
+        .unwrap();
+
+        db.execute(Statement::from_string(
+            backend,
+            r#"
+            CREATE TABLE IF NOT EXISTS "nebula_id"."api_keys" (
+                id UUID PRIMARY KEY,
+                key_id VARCHAR(36) NOT NULL UNIQUE,
+                key_secret_hash VARCHAR(64) NOT NULL,
+                key_prefix VARCHAR(8) NOT NULL,
+                role VARCHAR(20) NOT NULL DEFAULT 'user',
+                workspace_id UUID REFERENCES "nebula_id"."workspaces"(id) ON DELETE CASCADE,
+                name VARCHAR(255) NOT NULL,
+                description TEXT,
+                rate_limit INTEGER NOT NULL DEFAULT 10000,
+                enabled BOOLEAN NOT NULL DEFAULT true,
+                expires_at TIMESTAMP WITH TIME ZONE DEFAULT (CURRENT_TIMESTAMP + INTERVAL '30 days'),
+                last_used_at TIMESTAMP WITH TIME ZONE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             )
             "#,
         ))
@@ -1742,8 +1807,9 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_repository_operations() {
-        let opt = ConnectOptions::new("sqlite::memory:".to_string());
-        let db = Database::connect(opt).await.unwrap();
+        let db_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
         let repo = SeaOrmRepository::new(db);
@@ -1783,8 +1849,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_cascading_operations() {
-        let opt = ConnectOptions::new("sqlite::memory:".to_string());
-        let db = Database::connect(opt).await.unwrap();
+        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
         let repo = SeaOrmRepository::new(db);
@@ -1950,8 +2016,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_admin_api_key_prefix() {
-        let opt = ConnectOptions::new("sqlite::memory:".to_string());
-        let db = Database::connect(opt).await.unwrap();
+        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
         let repo = SeaOrmRepository::new(db);
@@ -2002,8 +2068,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_user_api_key_prefix() {
-        let opt = ConnectOptions::new("sqlite::memory:".to_string());
-        let db = Database::connect(opt).await.unwrap();
+        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
         let repo = SeaOrmRepository::new(db);
@@ -2065,8 +2131,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_api_key_with_custom_secret() {
-        let opt = ConnectOptions::new("sqlite::memory:".to_string());
-        let db = Database::connect(opt).await.unwrap();
+        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
         let repo = SeaOrmRepository::new(db);
@@ -2101,8 +2167,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_api_key_prefix_consistency() {
-        let opt = ConnectOptions::new("sqlite::memory:".to_string());
-        let db = Database::connect(opt).await.unwrap();
+        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
         let repo = SeaOrmRepository::new(db);
@@ -2138,8 +2204,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_api_key_secret_length_validation() {
-        let opt = ConnectOptions::new("sqlite::memory:".to_string());
-        let db = Database::connect(opt).await.unwrap();
+        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
         let repo = SeaOrmRepository::new(db);
@@ -2193,8 +2259,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_get_api_key_by_id_with_prefix() {
-        let opt = ConnectOptions::new("sqlite::memory:".to_string());
-        let db = Database::connect(opt).await.unwrap();
+        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
         let repo = SeaOrmRepository::new(db);

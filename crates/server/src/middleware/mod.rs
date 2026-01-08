@@ -19,8 +19,10 @@ use axum::middleware::Next;
 use axum::response::IntoResponse;
 use axum::response::Response;
 use base64::Engine;
+use dashmap::DashMap;
 use nebula_core::database::ApiKeyRepository;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub mod size_limit;
 pub(crate) mod utils;
@@ -61,11 +63,73 @@ impl From<ApiKeyRole> for nebula_core::database::ApiKeyRole {
 #[derive(Clone)]
 pub struct ApiKeyAuth {
     pub(crate) repo: Arc<dyn ApiKeyRepository>,
+    auth_failures: Arc<DashMap<String, Vec<Instant>>>, // IP -> failure timestamps
 }
 
 impl ApiKeyAuth {
     pub fn new(repo: Arc<dyn ApiKeyRepository>) -> Self {
-        Self { repo }
+        Self {
+            repo,
+            auth_failures: Arc::new(DashMap::new()),
+        }
+    }
+
+    fn check_auth_failure_rate(&self, client_ip: &str) -> bool {
+        let now = Instant::now();
+        let mut failures = self.auth_failures.entry(client_ip.to_string()).or_default();
+
+        // 移除 5 分钟前的记录
+        failures.retain(|t| now.duration_since(*t) < Duration::from_secs(300));
+
+        // 如果 5 分钟内失败超过 10 次，则阻止
+        if failures.len() >= 10 {
+            tracing::warn!(
+                client_ip = %client_ip,
+                failure_count = failures.len(),
+                "Too many authentication failures"
+            );
+            return false;
+        }
+
+        failures.push(now);
+        true
+    }
+
+    fn too_many_requests_response(&self) -> Response {
+        let response = axum::Json(serde_json::json!({
+            "code": 429,
+            "message": "Too many authentication attempts. Please try again later."
+        }))
+        .into_response();
+        (StatusCode::TOO_MANY_REQUESTS, response).into_response()
+    }
+
+    fn get_client_ip(&self, req: &Request<Body>) -> Option<String> {
+        // 尝试从 X-Forwarded-For 获取
+        if let Some(xff) = req.headers().get("x-forwarded-for") {
+            if let Ok(xff_str) = xff.to_str() {
+                if let Some(first_ip) = xff_str.split(',').next() {
+                    let ip = first_ip.trim();
+                    if !ip.is_empty() {
+                        return Some(ip.to_string());
+                    }
+                }
+            }
+        }
+
+        // 尝试从 X-Real-IP 获取
+        if let Some(xri) = req.headers().get("x-real-ip") {
+            if let Ok(xri_str) = xri.to_str() {
+                if !xri_str.is_empty() {
+                    return Some(xri_str.to_string());
+                }
+            }
+        }
+
+        // 尝试从连接信息获取
+        req.extensions()
+            .get::<std::net::SocketAddr>()
+            .map(|addr| addr.ip().to_string())
     }
 
     pub async fn validate_key(
@@ -88,6 +152,16 @@ impl ApiKeyAuth {
     pub async fn auth_middleware(&self, mut req: Request<Body>, next: Next) -> Response {
         let path = req.uri().path().to_string();
         tracing::debug!(event = "auth_middleware", path = %path, "Auth middleware called");
+
+        // 获取客户端 IP
+        let client_ip = self
+            .get_client_ip(&req)
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // 检查认证失败速率
+        if !self.check_auth_failure_rate(&client_ip) {
+            return self.too_many_requests_response();
+        }
 
         let auth_header = req.headers().get("authorization").cloned();
 

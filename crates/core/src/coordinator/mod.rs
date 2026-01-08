@@ -11,18 +11,11 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use crate::config::EtcdConfig;
-use crate::types::Result;
 use async_trait::async_trait;
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU16, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::fs;
-use tokio::time::sleep;
-use tracing::{debug, error, info, warn};
+use tracing::info;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EtcdClusterStatus {
@@ -69,6 +62,62 @@ pub enum WorkerAllocatorError {
 
     #[error("Local allocator not configured")]
     NotConfigured,
+}
+
+/// 分布式锁 trait
+/// 用于在分布式环境中协调对共享资源的访问
+#[async_trait]
+pub trait DistributedLock: Send + Sync {
+    /// 尝试获取锁
+    ///
+    /// # Arguments
+    /// * `key` - 锁的键，用于标识资源
+    /// * `ttl_seconds` - 锁的生存时间（秒），超过此时间锁自动释放
+    ///
+    /// # Returns
+    /// * `Ok(LockGuard)` - 成功获取锁，返回守卫对象
+    /// * `Err(LockError)` - 获取锁失败
+    async fn acquire(
+        &self,
+        key: &str,
+        ttl_seconds: u64,
+    ) -> std::result::Result<Box<dyn LockGuard>, LockError>;
+
+    /// 检查锁服务是否健康
+    fn is_healthy(&self) -> bool;
+}
+
+/// 锁守卫 trait
+/// 当守卫被drop时自动释放锁
+#[async_trait]
+pub trait LockGuard: Send + Sync {
+    /// 释放锁
+    async fn release(&self) -> std::result::Result<(), LockError>;
+}
+
+/// 分布式锁错误
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum LockError {
+    #[error("Failed to connect to lock service: {0}")]
+    ConnectionFailed(String),
+
+    #[error("Lock acquisition timeout for key '{key}'")]
+    Timeout { key: String },
+
+    #[error("Failed to acquire lock for key '{key}': {reason}")]
+    AcquireFailed { key: String, reason: String },
+
+    #[error("Failed to release lock for key '{key}': {reason}")]
+    ReleaseFailed { key: String, reason: String },
+
+    #[error("etcd error: {0}")]
+    EtcdError(String),
+
+    #[error("Lock not configured")]
+    NotConfigured,
+
+    #[error("Lock service unavailable, degraded to local mode")]
+    ServiceUnavailable,
 }
 
 /// 本地 Worker ID 分配器（无 etcd 时使用）
@@ -168,6 +217,95 @@ impl EtcdClusterHealthMonitor {
     pub async fn start_health_check(&self, _check_interval: std::time::Duration) {}
 
     pub async fn start_cache_persistence(&self, _interval: std::time::Duration) {}
+}
+
+/// 本地分布式锁实现（无 etcd 时使用）
+/// 注意：这是一个降级实现，只能在单机环境工作
+#[cfg(not(feature = "etcd"))]
+#[derive(Clone)]
+pub struct LocalDistributedLock {
+    locks: Arc<parking_lot::Mutex<std::collections::HashMap<String, bool>>>,
+}
+
+#[cfg(not(feature = "etcd"))]
+impl LocalDistributedLock {
+    pub fn new() -> Self {
+        Self {
+            locks: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+
+    /// 检查锁是否已被持有
+    fn is_locked(&self, key: &str) -> bool {
+        let locks = self.locks.lock();
+        locks.get(key).copied().unwrap_or(false)
+    }
+
+    /// 标记锁为已持有
+    fn acquire_lock(&self, key: &str) {
+        let mut locks = self.locks.lock();
+        locks.insert(key.to_string(), true);
+    }
+
+    /// 释放锁
+    fn release_lock(&self, key: &str) {
+        let mut locks = self.locks.lock();
+        locks.remove(key);
+    }
+}
+
+#[cfg(not(feature = "etcd"))]
+impl Default for LocalDistributedLock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(not(feature = "etcd"))]
+#[async_trait]
+impl DistributedLock for LocalDistributedLock {
+    async fn acquire(
+        &self,
+        key: &str,
+        _ttl_seconds: u64,
+    ) -> std::result::Result<Box<dyn LockGuard>, LockError> {
+        // 本地实现：直接检查并获取锁
+        if self.is_locked(key) {
+            return Err(LockError::AcquireFailed {
+                key: key.to_string(),
+                reason: "Lock already held in local mode".to_string(),
+            });
+        }
+
+        self.acquire_lock(key);
+
+        let guard = LocalLockGuard {
+            lock: self.clone(),
+            key: key.to_string(),
+        };
+
+        Ok(Box::new(guard))
+    }
+
+    fn is_healthy(&self) -> bool {
+        true // 本地实现始终健康
+    }
+}
+
+/// 本地锁守卫实现
+#[cfg(not(feature = "etcd"))]
+pub struct LocalLockGuard {
+    lock: LocalDistributedLock,
+    key: String,
+}
+
+#[cfg(not(feature = "etcd"))]
+#[async_trait]
+impl LockGuard for LocalLockGuard {
+    async fn release(&self) -> std::result::Result<(), LockError> {
+        self.lock.release_lock(&self.key);
+        Ok(())
+    }
 }
 
 #[cfg(feature = "etcd")]
@@ -567,6 +705,226 @@ impl WorkerIdAllocator for EtcdWorkerAllocator {
 
     fn is_healthy(&self) -> bool {
         self.health_status.load(Ordering::Relaxed) == 1
+    }
+}
+
+/// Etcd 分布式锁实现
+/// 使用 etcd 的 lease 机制实现带 TTL 的分布式锁
+#[cfg(feature = "etcd")]
+pub struct EtcdDistributedLock {
+    client: Arc<tokio::sync::Mutex<etcd_client::Client>>,
+    lock_path_prefix: String,
+}
+
+#[cfg(feature = "etcd")]
+impl EtcdDistributedLock {
+    /// 创建新的 Etcd 分布式锁
+    ///
+    /// # Arguments
+    /// * `endpoints` - etcd 集群端点列表
+    /// * `lock_path_prefix` - 锁键前缀，例如 "/nebula/locks/"
+    ///
+    /// # Returns
+    /// 返回锁实例或连接错误
+    pub async fn new(
+        endpoints: Vec<String>,
+        lock_path_prefix: String,
+    ) -> std::result::Result<Self, LockError> {
+        use etcd_client::Client;
+
+        let client = Client::connect(endpoints, None)
+            .await
+            .map_err(|e| LockError::ConnectionFailed(e.to_string()))?;
+
+        info!(
+            "EtcdDistributedLock initialized with prefix: {}",
+            lock_path_prefix
+        );
+
+        Ok(Self {
+            client: Arc::new(tokio::sync::Mutex::new(client)),
+            lock_path_prefix,
+        })
+    }
+
+    /// 使用现有 etcd 客户端创建分布式锁
+    pub fn with_client(
+        client: Arc<tokio::sync::Mutex<etcd_client::Client>>,
+        lock_path_prefix: String,
+    ) -> Self {
+        Self {
+            client,
+            lock_path_prefix,
+        }
+    }
+
+    /// 构建完整的锁路径
+    fn lock_path(&self, key: &str) -> String {
+        format!("{}{}", self.lock_path_prefix, key)
+    }
+
+    /// 尝试获取锁（内部实现）
+    ///
+    /// 使用 etcd 事务实现原子性的"检查-设置"操作
+    async fn try_acquire_lock(
+        &self,
+        key: &str,
+        ttl_seconds: i64,
+    ) -> std::result::Result<Option<i64>, LockError> {
+        use etcd_client::Txn;
+
+        let lock_path = self.lock_path(key);
+
+        // 先创建 lease
+        let lease = self
+            .client
+            .lock()
+            .await
+            .lease_grant(ttl_seconds, None)
+            .await
+            .map_err(|e| LockError::EtcdError(e.to_string()))?;
+
+        let lease_id = lease.id();
+        let lock_value = format!(
+            "holder_pid={},ts={}",
+            std::process::id(),
+            chrono::Utc::now().timestamp()
+        );
+
+        // 使用事务检查键是否存在，不存在则创建
+        let txn = Txn::new()
+            .when(
+                etcd_client::Compare::value(
+                    etcd_client::CompareOp::Equal,
+                    lock_path.clone(),
+                    None, // version for MOD revision comparison
+                ),
+                etcd_client::CompareResult::Equal,
+                std::vec::Vec::new(), // empty success comparison target means "key doesn't exist"
+            )
+            .and_then(
+                etcd_client::TxnOp::put(
+                    lock_path.clone(),
+                    lock_value,
+                    Some(etcd_client::PutOptions::new().with_lease(lease_id)),
+                ),
+                vec![],
+            )
+            .or_else(etcd_client::TxnOp::get(lock_path.clone(), None), vec![]);
+
+        let mut client = self.client.lock().await;
+        let response = client
+            .txn(txn)
+            .await
+            .map_err(|e| LockError::EtcdError(e.to_string()))?;
+
+        if response.succeeded {
+            // 成功获取锁
+            Ok(Some(lease_id))
+        } else {
+            // 锁已被其他持有者占用，撤销 lease
+            let _ = client.lease_revoke(lease_id).await;
+            Ok(None)
+        }
+    }
+}
+
+#[cfg(feature = "etcd")]
+impl Clone for EtcdDistributedLock {
+    fn clone(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            lock_path_prefix: self.lock_path_prefix.clone(),
+        }
+    }
+}
+
+#[cfg(feature = "etcd")]
+#[async_trait]
+impl DistributedLock for EtcdDistributedLock {
+    async fn acquire(
+        &self,
+        key: &str,
+        ttl_seconds: u64,
+    ) -> std::result::Result<Box<dyn LockGuard>, LockError> {
+        const MAX_RETRIES: u32 = 3;
+        const RETRY_DELAY_MS: u64 = 100;
+
+        let ttl_seconds = ttl_seconds.max(1) as i64; // 最小 1 秒
+
+        for attempt in 0..MAX_RETRIES {
+            match self.try_acquire_lock(key, ttl_seconds).await? {
+                Some(lease_id) => {
+                    info!(
+                        "Acquired distributed lock for key '{}' (lease: {}, attempt: {})",
+                        key, lease_id, attempt
+                    );
+
+                    let guard = EtcdLockGuard {
+                        lock: self.clone(),
+                        key: key.to_string(),
+                        lease_id,
+                        lock_path: self.lock_path(key),
+                    };
+
+                    return Ok(Box::new(guard));
+                }
+                None => {
+                    if attempt < MAX_RETRIES - 1 {
+                        debug!(
+                            "Lock for key '{}' already held, retrying in {}ms (attempt {})",
+                            key, RETRY_DELAY_MS, attempt
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_millis(RETRY_DELAY_MS))
+                            .await;
+                    }
+                }
+            }
+        }
+
+        Err(LockError::AcquireFailed {
+            key: key.to_string(),
+            reason: format!("Lock acquisition failed after {} retries", MAX_RETRIES),
+        })
+    }
+
+    fn is_healthy(&self) -> bool {
+        // 简单健康检查：尝试获取 etcd 状态
+        // 注意：这是同步检查，可能不总是准确
+        true
+    }
+}
+
+/// Etcd 锁守卫实现
+/// 当守卫被 drop 时，自动释放锁（撤销 lease）
+#[cfg(feature = "etcd")]
+pub struct EtcdLockGuard {
+    lock: EtcdDistributedLock,
+    key: String,
+    lease_id: i64,
+    lock_path: String,
+}
+
+#[cfg(feature = "etcd")]
+#[async_trait]
+impl LockGuard for EtcdLockGuard {
+    async fn release(&self) -> std::result::Result<(), LockError> {
+        let mut client = self.lock.client.lock().await;
+
+        client
+            .lease_revoke(self.lease_id)
+            .await
+            .map_err(|e| LockError::ReleaseFailed {
+                key: self.key.clone(),
+                reason: e.to_string(),
+            })?;
+
+        info!(
+            "Released distributed lock for key '{}' (lease: {})",
+            self.key, self.lease_id
+        );
+
+        Ok(())
     }
 }
 

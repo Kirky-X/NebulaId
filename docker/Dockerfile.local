@@ -1,34 +1,7 @@
 # ============================================
-# Builder Stage
+# 使用本地已编译二进化的简化Dockerfile
 # ============================================
-FROM rust:1.92.0-bullseye AS builder
-
-# 安装构建依赖
-RUN apt-get update && apt-get install -y \
-    protobuf-compiler \
-    pkg-config \
-    libssl-dev \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-# 优化层缓存：先复制依赖配置文件
-COPY Cargo.toml Cargo.lock ./
-COPY crates/ ./crates/
-COPY protos/ ./protos/
-
-# 下载依赖（利用 Docker 缓存）
-RUN cargo fetch
-
-# 构建应用
-ARG BUILD_PROFILE=release
-RUN cargo build --${BUILD_PROFILE} --locked -p nebula-server --bin nebula-id
-
-# ============================================
-# Runtime Stage
-# ============================================
-FROM rust:1.92.0-bullseye
+FROM debian:bullseye-slim
 
 # 安装运行时依赖
 RUN apt-get update && apt-get install -y \
@@ -43,8 +16,8 @@ RUN groupadd --gid 1000 appgroup && \
 
 WORKDIR /app
 
-# 复制二进制文件
-COPY --from=builder /app/target/release/nebula-id /app/nebula-id
+# 复制二进制文件（直接使用本地已编译的）
+COPY target/release/nebula-id /app/nebula-id
 
 # 设置权限
 RUN chown -R appuser:appgroup /app && \

@@ -140,14 +140,12 @@ impl ApiHandlers {
             .store(new_avg, std::sync::atomic::Ordering::SeqCst);
 
         let algorithm_name = if let Some(ref alg) = req.algorithm {
-            alg.parse::<nebula_core::types::AlgorithmType>()
-                .map(|a| a.to_string())
-                .unwrap_or_else(|_| "segment".to_string())
+            <nebula_core::types::AlgorithmType>::clone(alg)
         } else {
             self.id_generator
                 .get_algorithm_name(&req.workspace, &req.group, &req.biz_tag)
                 .await
-                .unwrap_or_else(|_| "segment".to_string())
+                .unwrap_or_default()
         };
 
         Ok(GenerateResponse {
@@ -480,11 +478,14 @@ impl ApiHandlers {
             description: req.description,
             algorithm: req
                 .algorithm
-                .map(|a: String| a.parse().map_err(|_| CoreError::InvalidAlgorithmType(a)))
+                .map(|a: .map(|a| {str| {
+                    a.parse()
+                        .map_err(|_| CoreError::InvalidAlgorithmType(a.clone()))
+                })
                 .transpose()?,
             format: req
                 .format
-                .map(|f: String| f.parse().map_err(|_| CoreError::InvalidIdFormat(f)))
+                .map(|f: .map(|f| f.parse().map_err(|_| CoreError::InvalidIdFormat(f.clone())))str| f.parse().map_err(|_| CoreError::InvalidIdFormat(f.to_string())))
                 .transpose()?,
             prefix: req.prefix,
             base_step: req.base_step,
@@ -634,7 +635,7 @@ impl ApiHandlers {
     /// Create a new Workspace
     pub async fn create_workspace(&self, req: CreateWorkspaceRequest) -> Result<WorkspaceResponse> {
         // Create workspace
-        let workspace: WorkspaceResponse = self
+        let workspace = self
             .config_service
             .create_workspace(req.clone())
             .await
@@ -754,40 +755,36 @@ impl ApiHandlers {
 
     /// List all Workspaces
     pub async fn list_workspaces(&self) -> Result<WorkspaceListResponse> {
-        let result =
-            self.config_service.list_workspaces().await.map_err(
-                |e: nebula_core::types::CoreError| CoreError::DatabaseError(e.to_string()),
-            )?;
-        Ok(result)
+        self.config_service
+            .list_workspaces()
+            .await
+            .map_err(|e: nebula_core::types::CoreError| CoreError::DatabaseError(e.to_string()))
     }
 
     /// Get Workspace by name
     pub async fn get_workspace(&self, name: &str) -> Result<Option<WorkspaceResponse>> {
-        let result =
-            self.config_service.get_workspace(name).await.map_err(
-                |e: nebula_core::types::CoreError| CoreError::DatabaseError(e.to_string()),
-            )?;
-        Ok(result)
+        self.config_service
+            .get_workspace(name)
+            .await
+            .map_err(|e: nebula_core::types::CoreError| CoreError::DatabaseError(e.to_string()))
     }
 
     // ========== Group Management ==========
 
     /// Create a new Group
     pub async fn create_group(&self, req: CreateGroupRequest) -> Result<GroupResponse> {
-        let result =
-            self.config_service.create_group(req).await.map_err(
-                |e: nebula_core::types::CoreError| CoreError::DatabaseError(e.to_string()),
-            )?;
-        Ok(result)
+        self.config_service
+            .create_group(req)
+            .await
+            .map_err(|e: nebula_core::types::CoreError| CoreError::DatabaseError(e.to_string()))
     }
 
     /// List all Groups for a workspace
     pub async fn list_groups(&self, workspace: &str) -> Result<GroupListResponse> {
-        let result =
-            self.config_service.list_groups(workspace).await.map_err(
-                |e: nebula_core::types::CoreError| CoreError::DatabaseError(e.to_string()),
-            )?;
-        Ok(result)
+        self.config_service
+            .list_groups(workspace)
+            .await
+            .map_err(|e: nebula_core::types::CoreError| CoreError::DatabaseError(e.to_string()))
     }
 
     // ========== API Key Management ==========

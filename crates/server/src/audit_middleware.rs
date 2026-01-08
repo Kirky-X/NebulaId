@@ -227,6 +227,23 @@ mod tests {
             async fn count_api_keys(&self, _workspace_id: Uuid) -> Result<u64> {
                 Ok(0)
             }
+
+            async fn rotate_api_key(
+                &self,
+                _key_id: &str,
+                _grace_period_seconds: u64,
+            ) -> Result<ApiKeyWithSecret> {
+                Err(nebula_core::CoreError::InternalError(
+                    "rotate_api_key not implemented in mock".to_string(),
+                ))
+            }
+
+            async fn get_keys_older_than(
+                &self,
+                _age_threshold_days: i64,
+            ) -> Result<Vec<ApiKeyInfo>> {
+                Ok(vec![])
+            }
         }
 
         let audit_logger = Arc::new(AuditLogger::new(100));

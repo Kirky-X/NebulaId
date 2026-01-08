@@ -14,10 +14,11 @@
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use utoipa::ToSchema;
 use validator::Validate;
 
 /// Health status of the system
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub enum HealthStatus {
     /// System is operating normally
     Healthy,
@@ -54,7 +55,7 @@ impl From<String> for HealthStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct GenerateRequest {
     #[validate(length(min = 1, max = 64))]
     pub workspace: String,
@@ -69,14 +70,14 @@ pub struct GenerateRequest {
     pub algorithm: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct GenerateResponse {
     pub id: String,
     pub algorithm: String,
     pub timestamp: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct BatchGenerateRequest {
     #[validate(length(min = 1, max = 64))]
     pub workspace: String,
@@ -94,7 +95,7 @@ pub struct BatchGenerateRequest {
     pub algorithm: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BatchGenerateResponse {
     pub ids: Vec<String>,
     pub size: usize,
@@ -102,13 +103,13 @@ pub struct BatchGenerateResponse {
     pub timestamp: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct HealthResponse {
     pub status: HealthStatus,
     pub algorithm: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ReadyResponse {
     pub ready: bool,
     pub database: bool,
@@ -116,7 +117,7 @@ pub struct ReadyResponse {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiMetricsResponse {
     pub total_requests: u64,
     pub successful_generations: u64,
@@ -125,7 +126,7 @@ pub struct ApiMetricsResponse {
     pub avg_latency_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ErrorResponse {
     pub code: i32,
     pub message: String,
@@ -150,7 +151,91 @@ impl ErrorResponse {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ToSchema)]
+/// 结构化 API 错误码（用于增强的错误处理）
+pub enum ApiErrorCode {
+    // 认证错误 (1xxx)
+    Unauthorized = 1001,
+    Forbidden = 1002,
+    InvalidApiKey = 1003,
+    ApiKeyExpired = 1004,
+    ApiKeyDisabled = 1005,
+
+    // 资源错误 (2xxx)
+    WorkspaceNotFound = 2001,
+    GroupNotFound = 2002,
+    BizTagNotFound = 2003,
+    ResourceAlreadyExists = 2004,
+
+    // 验证错误 (3xxx)
+    InvalidInput = 3001,
+    ValidationError = 3002,
+    MissingRequiredField = 3003,
+    InvalidUuid = 3004,
+
+    // 限流错误 (4xxx)
+    RateLimitExceeded = 4001,
+
+    // 服务器错误 (5xxx)
+    InternalError = 5001,
+    DatabaseError = 5002,
+    CacheError = 5003,
+    ServiceUnavailable = 5004,
+}
+
+impl std::fmt::Display for ApiErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:04}", *self as i32)
+    }
+}
+
+/// 增强的 API 错误响应（包含结构化错误码）
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ApiErrorResponse {
+    pub code: String,            // 错误码，如 "1001"
+    pub message: String,         // 用户友好的错误消息
+    pub details: Option<String>, // 详细信息（可选，生产环境隐藏）
+    pub request_id: String,      // 请求追踪 ID
+    pub timestamp: i64,          // 错误发生时间
+}
+
+impl ApiErrorResponse {
+    pub fn new(code: ApiErrorCode, message: String) -> Self {
+        Self {
+            code: code.to_string(),
+            message,
+            details: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        }
+    }
+
+    pub fn with_details(mut self, details: String) -> Self {
+        self.details = Some(details);
+        self
+    }
+}
+
+/// 从旧的 ErrorResponse 转换为新的 ApiErrorResponse
+impl From<ErrorResponse> for ApiErrorResponse {
+    fn from(err: ErrorResponse) -> Self {
+        let code = match err.code {
+            401 => ApiErrorCode::Unauthorized,
+            403 => ApiErrorCode::Forbidden,
+            404 => ApiErrorCode::WorkspaceNotFound, // 默认资源错误
+            429 => ApiErrorCode::RateLimitExceeded,
+            500 => ApiErrorCode::InternalError,
+            _ => ApiErrorCode::InternalError,
+        };
+
+        Self::new(code, err.message).with_details(
+            err.details
+                .unwrap_or_else(|| "No additional details".to_string()),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiKeyInfo {
     pub key_id: String,
     pub workspace_id: String,
@@ -158,7 +243,7 @@ pub struct ApiKeyInfo {
     pub expires_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct MetricsResponse {
     pub total_requests: u64,
     pub successful_generations: u64,
@@ -171,21 +256,21 @@ pub struct MetricsResponse {
     pub algorithms: Vec<AlgorithmMetrics>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DatabaseMetrics {
     pub status: HealthStatus,
     pub connection_pool: ConnectionPoolMetrics,
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ConnectionPoolMetrics {
     pub active_connections: u32,
     pub idle_connections: u32,
     pub max_connections: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CacheMetrics {
     pub status: HealthStatus,
     pub hit_rate: f64,
@@ -193,7 +278,7 @@ pub struct CacheMetrics {
     pub key_count: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AlgorithmMetrics {
     pub algorithm: String,
     pub status: HealthStatus,
@@ -202,7 +287,7 @@ pub struct AlgorithmMetrics {
     pub cache_hit_rate: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct ParseRequest {
     pub id: String,
 
@@ -220,7 +305,7 @@ pub struct ParseRequest {
     pub algorithm: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ParseResponse {
     pub original_id: String,
     pub numeric_value: String,
@@ -229,7 +314,7 @@ pub struct ParseResponse {
     pub timestamp: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct IdMetadataResponse {
     pub timestamp: u64,
     pub datacenter_id: u8,
@@ -239,7 +324,7 @@ pub struct IdMetadataResponse {
     pub biz_tag: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ConfigResponse {
     pub app: AppConfigInfo,
     pub database: DatabaseConfigInfo,
@@ -251,7 +336,7 @@ pub struct ConfigResponse {
     pub tls: TlsConfigInfo,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AppConfigInfo {
     pub name: String,
     pub host: String,
@@ -261,7 +346,7 @@ pub struct AppConfigInfo {
     pub worker_id: u8,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DatabaseConfigInfo {
     pub engine: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -274,7 +359,7 @@ pub struct DatabaseConfigInfo {
     pub min_connections: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RedisConfigInfo {
     #[serde(skip_serializing)]
     pub url: Option<String>, // Never expose URL
@@ -283,7 +368,7 @@ pub struct RedisConfigInfo {
     pub ttl_seconds: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SecureConfigResponse {
     pub app: AppConfigInfo,
     pub algorithm: AlgorithmConfigInfo,
@@ -292,7 +377,7 @@ pub struct SecureConfigResponse {
     pub rate_limit: RateLimitConfigInfo,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AlgorithmConfigInfo {
     pub default: String,
     pub segment: SegmentConfigInfo,
@@ -300,7 +385,7 @@ pub struct AlgorithmConfigInfo {
     pub uuid_v7: UuidV7ConfigInfo,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SegmentConfigInfo {
     pub base_step: u64,
     pub min_step: u64,
@@ -308,7 +393,7 @@ pub struct SegmentConfigInfo {
     pub switch_threshold: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SnowflakeConfigInfo {
     pub datacenter_id_bits: u8,
     pub worker_id_bits: u8,
@@ -316,33 +401,33 @@ pub struct SnowflakeConfigInfo {
     pub clock_drift_threshold_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UuidV7ConfigInfo {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct MonitoringConfigInfo {
     pub metrics_enabled: bool,
     pub metrics_path: String,
     pub tracing_enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct LoggingConfigInfo {
     pub level: String,
     pub format: String,
     pub include_location: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RateLimitConfigInfo {
     pub enabled: bool,
     pub default_rps: u32,
     pub burst_size: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TlsConfigInfo {
     pub enabled: bool,
     pub http_enabled: bool,
@@ -350,7 +435,7 @@ pub struct TlsConfigInfo {
     pub has_cert: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct UpdateRateLimitRequest {
     #[validate(range(min = 1, max = 1000000))]
     pub default_rps: Option<u32>,
@@ -359,13 +444,13 @@ pub struct UpdateRateLimitRequest {
     pub burst_size: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct UpdateLoggingRequest {
     #[validate(length(min = 1, max = 20))]
     pub level: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct SetAlgorithmRequest {
     #[validate(length(min = 1, max = 64))]
     pub biz_tag: String,
@@ -374,7 +459,7 @@ pub struct SetAlgorithmRequest {
     pub algorithm: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SetAlgorithmResponse {
     pub success: bool,
     pub biz_tag: String,
@@ -382,14 +467,14 @@ pub struct SetAlgorithmResponse {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UpdateConfigResponse {
     pub success: bool,
     pub message: String,
     pub config: Option<ConfigResponse>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiInfoResponse {
     pub name: String,
     pub version: String,
@@ -400,7 +485,7 @@ pub struct ApiInfoResponse {
 // ========== BizTag Models ==========
 
 #[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct CreateBizTagRequest {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub workspace_id: uuid::Uuid,
@@ -431,7 +516,7 @@ pub struct CreateBizTagRequest {
     pub datacenter_ids: Option<Vec<i32>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct UpdateBizTagRequest {
     #[validate(length(min = 1, max = 64))]
     pub name: Option<String>,
@@ -456,7 +541,7 @@ pub struct UpdateBizTagRequest {
     pub datacenter_ids: Option<Vec<i32>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BizTagResponse {
     pub id: String,
     pub workspace_id: String,
@@ -473,7 +558,7 @@ pub struct BizTagResponse {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BizTagListResponse {
     pub biz_tags: Vec<BizTagResponse>,
     pub total: u64,
@@ -481,7 +566,7 @@ pub struct BizTagListResponse {
     pub page_size: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct PaginationParams {
     pub workspace_id: Option<String>, // Optional: filter by workspace
     #[serde(default = "default_page")]
@@ -501,7 +586,7 @@ fn default_page_size() -> u64 {
 }
 
 /// Query params for listing groups (requires workspace parameter)
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct GroupListParams {
     pub workspace: String,
     #[serde(default = "default_page")]
@@ -523,7 +608,7 @@ pub fn datetime_to_rfc3339(dt: chrono::DateTime<chrono::FixedOffset>) -> String 
 
 // ========== API Key Models ==========
 
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct CreateApiKeyRequest {
     pub workspace_id: Option<String>, // Optional: None for admin keys, required for user keys
     #[validate(length(min = 1, max = 64))]
@@ -540,7 +625,7 @@ pub struct CreateApiKeyRequest {
     pub expires_at: Option<String>, // RFC3339 format
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiKeyResponse {
     pub id: String,
     pub key_id: String,
@@ -554,19 +639,19 @@ pub struct ApiKeyResponse {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiKeyWithSecretResponse {
     pub key: ApiKeyResponse,
     pub key_secret: String, // Only returned on creation
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiKeyListResponse {
     pub api_keys: Vec<ApiKeyResponse>,
     pub total: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RevokeApiKeyResponse {
     pub success: bool,
     pub message: String,
@@ -574,7 +659,7 @@ pub struct RevokeApiKeyResponse {
 
 // ========== Workspace Models ==========
 
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct CreateWorkspaceRequest {
     #[validate(length(min = 1, max = 64))]
     pub name: String,
@@ -588,14 +673,14 @@ pub struct CreateWorkspaceRequest {
     pub max_biz_tags: Option<i32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UserApiKeyInfo {
     pub key_id: String,
     pub key_secret: String,
     pub key_prefix: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct WorkspaceResponse {
     pub id: String,
     pub name: String,
@@ -608,7 +693,7 @@ pub struct WorkspaceResponse {
     pub user_api_key: Option<UserApiKeyInfo>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct WorkspaceListResponse {
     pub workspaces: Vec<WorkspaceResponse>,
     pub total: u64,
@@ -616,7 +701,7 @@ pub struct WorkspaceListResponse {
 
 // ========== Group Models ==========
 
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct CreateGroupRequest {
     #[validate(length(min = 1, max = 64))]
     pub workspace: String, // workspace name
@@ -630,7 +715,7 @@ pub struct CreateGroupRequest {
     pub max_biz_tags: Option<i32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct GroupResponse {
     pub id: String,
     pub workspace_id: String,
@@ -642,7 +727,7 @@ pub struct GroupResponse {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct GroupListResponse {
     pub groups: Vec<GroupResponse>,
     pub total: u64,

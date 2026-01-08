@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::models::ErrorResponse;
+use crate::models::{ApiErrorCode, ApiErrorResponse, ErrorResponse};
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -49,6 +49,120 @@ pub fn handle_any_error<E: std::fmt::Display>(error: E) -> Response {
     tracing::error!("Unhandled error: {}", error);
     let response = ErrorResponse::new(500, format!("Internal server error: {}", error));
     (StatusCode::INTERNAL_SERVER_ERROR, Json(response)).into_response()
+}
+
+/// 将 CoreError 转换为增强的 API 错误响应（带结构化错误码）
+pub fn core_error_to_api_response(error: &CoreError) -> (StatusCode, Json<ApiErrorResponse>) {
+    use nebula_core::types::error::CoreError;
+
+    let (code, message, status) = match error {
+        CoreError::InvalidInput(msg) => (
+            ApiErrorCode::InvalidInput,
+            format!("Invalid input: {}", msg),
+            StatusCode::BAD_REQUEST,
+        ),
+        CoreError::InvalidIdFormat(msg)
+        | CoreError::InvalidIdString(msg)
+        | CoreError::InvalidAlgorithmType(msg) => (
+            ApiErrorCode::InvalidInput,
+            msg.clone(),
+            StatusCode::BAD_REQUEST,
+        ),
+        CoreError::NotFound(msg) => (
+            ApiErrorCode::WorkspaceNotFound, // 默认资源错误
+            msg.clone(),
+            StatusCode::NOT_FOUND,
+        ),
+        CoreError::BizTagNotFound(msg) => (
+            ApiErrorCode::BizTagNotFound,
+            msg.clone(),
+            StatusCode::NOT_FOUND,
+        ),
+        CoreError::AuthenticationError(msg) => (
+            ApiErrorCode::InvalidApiKey,
+            msg.clone(),
+            StatusCode::UNAUTHORIZED,
+        ),
+        CoreError::InvalidApiKeySignature => (
+            ApiErrorCode::InvalidApiKey,
+            "Invalid API key signature".to_string(),
+            StatusCode::UNAUTHORIZED,
+        ),
+        CoreError::ApiKeyDisabled => (
+            ApiErrorCode::ApiKeyDisabled,
+            "API key has been disabled".to_string(),
+            StatusCode::UNAUTHORIZED,
+        ),
+        CoreError::ApiKeyExpired => (
+            ApiErrorCode::ApiKeyExpired,
+            "API key has expired".to_string(),
+            StatusCode::UNAUTHORIZED,
+        ),
+        CoreError::WorkspaceDisabled(msg) => {
+            (ApiErrorCode::Forbidden, msg.clone(), StatusCode::FORBIDDEN)
+        }
+        CoreError::RateLimitExceeded => (
+            ApiErrorCode::RateLimitExceeded,
+            "Rate limit exceeded".to_string(),
+            StatusCode::TOO_MANY_REQUESTS,
+        ),
+        CoreError::DatabaseError(_msg) => (
+            ApiErrorCode::DatabaseError,
+            "Database operation failed".to_string(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+        CoreError::CacheError(_msg) => (
+            ApiErrorCode::CacheError,
+            "Cache service unavailable".to_string(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+        CoreError::EtcdError(msg) | CoreError::ParseError(msg) | CoreError::IoError(msg) => (
+            ApiErrorCode::InternalError,
+            format!("Operation failed: {}", msg),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+        CoreError::TimeoutError => (
+            ApiErrorCode::ServiceUnavailable,
+            "Request timeout".to_string(),
+            StatusCode::SERVICE_UNAVAILABLE,
+        ),
+        CoreError::ClockMovedBackward { .. }
+        | CoreError::SequenceOverflow { .. }
+        | CoreError::SegmentExhausted { .. } => (
+            ApiErrorCode::InternalError,
+            "ID generation algorithm error".to_string(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+        CoreError::InternalError(_msg) => (
+            ApiErrorCode::InternalError,
+            "Internal server error".to_string(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+        CoreError::ConfigurationError(msg) => (
+            ApiErrorCode::InternalError,
+            format!("Configuration error: {}", msg),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+        CoreError::Unknown => (
+            ApiErrorCode::InternalError,
+            "Unknown error occurred".to_string(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    };
+
+    let details = if cfg!(debug_assertions) {
+        Some(error.to_string())
+    } else {
+        None
+    };
+
+    (
+        status,
+        Json(
+            ApiErrorResponse::new(code, message)
+                .with_details(details.unwrap_or_else(|| "See request_id for support".to_string())),
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -107,5 +221,157 @@ mod tests {
 
         // Should return 500 Internal Server Error
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_core_error_to_api_response_invalid_input() {
+        let error = CoreError::InvalidInput("test error".to_string());
+        let (status, response) = core_error_to_api_response(&error);
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(response.code, "3001"); // InvalidInput code
+        assert!(response.message.contains("Invalid input"));
+    }
+
+    #[test]
+    fn test_core_error_to_api_response_not_found() {
+        let error = CoreError::NotFound("resource not found".to_string());
+        let (status, response) = core_error_to_api_response(&error);
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(response.code, "2001"); // WorkspaceNotFound code
+    }
+
+    #[test]
+    fn test_core_error_to_api_response_biz_tag_not_found() {
+        let error = CoreError::BizTagNotFound("biz_tag not found".to_string());
+        let (status, response) = core_error_to_api_response(&error);
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(response.code, "2003"); // BizTagNotFound code
+    }
+
+    #[test]
+    fn test_core_error_to_api_response_authentication() {
+        let error = CoreError::AuthenticationError("Invalid API key".to_string());
+        let (status, response) = core_error_to_api_response(&error);
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(response.code, "1003"); // InvalidApiKey code
+    }
+
+    #[test]
+    fn test_core_error_to_api_response_api_key_disabled() {
+        let error = CoreError::ApiKeyDisabled;
+        let (status, response) = core_error_to_api_response(&error);
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(response.code, "1005"); // ApiKeyDisabled code
+    }
+
+    #[test]
+    fn test_core_error_to_api_response_api_key_expired() {
+        let error = CoreError::ApiKeyExpired;
+        let (status, response) = core_error_to_api_response(&error);
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(response.code, "1004"); // ApiKeyExpired code
+    }
+
+    #[test]
+    fn test_core_error_to_api_response_workspace_disabled() {
+        let error = CoreError::WorkspaceDisabled("workspace disabled".to_string());
+        let (status, response) = core_error_to_api_response(&error);
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(response.code, "1002"); // Forbidden code
+    }
+
+    #[test]
+    fn test_core_error_to_api_response_rate_limit() {
+        let error = CoreError::RateLimitExceeded;
+        let (status, response) = core_error_to_api_response(&error);
+
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.code, "4001"); // RateLimitExceeded code
+    }
+
+    #[test]
+    fn test_core_error_to_api_response_database() {
+        let error = CoreError::DatabaseError("DB error".to_string());
+        let (status, response) = core_error_to_api_response(&error);
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.code, "5002"); // DatabaseError code
+    }
+
+    #[test]
+    fn test_core_error_to_api_response_cache() {
+        let error = CoreError::CacheError("cache error".to_string());
+        let (status, response) = core_error_to_api_response(&error);
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.code, "5003"); // CacheError code
+    }
+
+    #[test]
+    fn test_core_error_to_api_response_timeout() {
+        let error = CoreError::TimeoutError;
+        let (status, response) = core_error_to_api_response(&error);
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.code, "5004"); // ServiceUnavailable code
+    }
+
+    #[test]
+    fn test_core_error_to_api_response_internal() {
+        let error = CoreError::InternalError("internal error".to_string());
+        let (status, response) = core_error_to_api_response(&error);
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.code, "5001"); // InternalError code
+    }
+
+    #[test]
+    fn test_core_error_to_api_response_clock_backward() {
+        let error = CoreError::ClockMovedBackward {
+            last_timestamp: 1234567890,
+        };
+        let (status, response) = core_error_to_api_response(&error);
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.code, "5001"); // InternalError code
+        assert!(response.message.contains("algorithm error"));
+    }
+
+    #[test]
+    fn test_api_response_structure() {
+        let response =
+            ApiErrorResponse::new(ApiErrorCode::InvalidInput, "test message".to_string());
+
+        assert_eq!(response.code, "3001");
+        assert_eq!(response.message, "test message");
+        assert!(response.details.is_none());
+        assert!(!response.request_id.is_empty());
+        assert!(response.timestamp > 0);
+    }
+
+    #[test]
+    fn test_api_response_with_details() {
+        let response =
+            ApiErrorResponse::new(ApiErrorCode::InternalError, "error message".to_string())
+                .with_details("additional details".to_string());
+
+        assert_eq!(response.details, Some("additional details".to_string()));
+    }
+
+    #[test]
+    fn test_error_response_conversion() {
+        let old_response = ErrorResponse::new(404, "Not found".to_string());
+
+        let new_response = ApiErrorResponse::from(old_response);
+
+        assert_eq!(new_response.code, "2001"); // WorkspaceNotFound
+        assert_eq!(new_response.message, "Not found");
     }
 }

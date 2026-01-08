@@ -30,3 +30,6 @@ pub use audit_trait::{AuditEvent, AuditEventType, AuditLogger, AuditResult, DynA
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitBreakerState};
 
 pub use degradation_manager::DegradationManager;
+
+// Re-export CpuMonitor for CPU monitoring
+pub use segment::CpuMonitor;

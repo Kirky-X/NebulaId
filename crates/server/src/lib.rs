@@ -15,6 +15,8 @@
 //! Nebula ID Server
 
 // Public API modules
+pub mod api_version;
+pub mod cors_config;
 pub mod grpc;
 #[path = "proto/mod.rs"]
 pub mod proto;
@@ -31,12 +33,14 @@ pub mod error_handler;
 pub mod handlers;
 pub mod middleware;
 pub mod models;
+pub mod openapi;
 pub mod rate_limit;
 pub mod rate_limit_middleware;
 pub mod server_config;
 pub mod tls_server;
 
 // Public API re-exports
+pub use api_version::{api_version_middleware, ApiVersion, API_V1, API_V2, API_VERSION_HEADER};
 pub use audit::{AuditEvent, AuditEventType, AuditLogger};
 pub use grpc::GrpcServer;
 pub use router::create_router;

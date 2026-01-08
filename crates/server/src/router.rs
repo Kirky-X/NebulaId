@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::api_version::{api_version_middleware, API_V1};
 use crate::audit::AuditLogger;
 use crate::audit_middleware::AuditMiddleware;
 use crate::config_management::ConfigManagementService;
+use crate::cors_config;
 use crate::handlers::ApiHandlers;
 use crate::middleware::ApiKeyAuth;
 use crate::models::{
@@ -31,12 +33,12 @@ use crate::rate_limit::RateLimiter;
 use crate::rate_limit_middleware::RateLimitMiddleware;
 use axum::{
     extract::{Path, Query, State},
-    http::{header, HeaderValue, Method, StatusCode},
+    http::{header, HeaderValue, StatusCode},
     routing::{delete, get, post},
     Json, Router,
 };
 use std::sync::Arc;
-use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
+use tower_http::set_header::SetResponseHeaderLayer;
 use validator::Validate;
 
 use std::ops::Deref;
@@ -62,40 +64,11 @@ pub async fn create_router(
     rate_limiter: Arc<RateLimiter>,
     audit_logger: Arc<AuditLogger>,
 ) -> Router {
-    // Configure CORS with strict settings
+    // Configure CORS with environment-aware settings
     // In production, specify your actual frontend origins via ALLOWED_ORIGINS env var
     // Format: comma-separated list of allowed origins
     // Example: ALLOWED_ORIGINS="https://example.com,https://app.example.com"
-    let allowed_origins: Vec<HeaderValue> = std::env::var("ALLOWED_ORIGINS")
-        .ok()
-        .map(|origins| {
-            origins
-                .split(',')
-                .filter_map(|origin| origin.trim().parse().ok())
-                .collect()
-        })
-        .unwrap_or_else(|| {
-            // Check if running in production environment
-            let is_production = std::env::var("NEBULA_ENV")
-                .unwrap_or_else(|_| "development".to_string())
-                .to_lowercase()
-                == "production";
-
-            if is_production {
-                // Production: deny all origins if not explicitly configured
-                vec![]
-            } else {
-                // Development: allow localhost for testing
-                vec!["http://localhost:3000".parse().unwrap()]
-            }
-        });
-
-    // Use empty list to deny all origins in production without ALLOWED_ORIGINS
-    let cors = CorsLayer::new()
-        .allow_origin(tower_http::cors::AllowOrigin::list(allowed_origins))
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-        .allow_headers(tower_http::cors::Any)
-        .allow_credentials(false);
+    let cors = cors_config::create_env_aware_cors_layer();
 
     let rate_limit_middleware = RateLimitMiddleware::new(rate_limiter.clone());
     let audit_middleware = AuditMiddleware::new(audit_logger.clone(), auth.clone(), rate_limiter);
@@ -108,26 +81,21 @@ pub async fn create_router(
         config_service: config_service.clone(),
     };
 
-    // Public router (no authentication) - only health check
-    let public_routes = Router::new()
-        .route("/api/v1", get(handle_api_info))
-        .route("/health", get(handle_health))
-        .route("/ready", get(handle_ready));
-
-    // Admin-only router (requires admin API key)
-    let admin_only_routes = Router::new()
+    // ========== V1 API Routes ==========
+    // Admin-only endpoints (require admin API key)
+    let v1_admin_routes = Router::new()
         .route("/metrics", get(handle_metrics))
         // API Key management endpoints (admin only)
         .route(
-            "/api/v1/api-keys",
+            "/api-keys",
             post(handle_create_api_key).get(handle_list_api_keys),
         )
-        .route("/api/v1/api-keys/{id}", delete(handle_revoke_api_key))
+        .route("/api-keys/{id}", delete(handle_revoke_api_key))
         // Workspace creation (admin only)
-        .route("/api/v1/workspaces", post(handle_create_workspace))
+        .route("/workspaces", post(handle_create_workspace))
         // Workspace user key regeneration (admin only)
         .route(
-            "/api/v1/workspaces/{name}/regenerate-user-key",
+            "/workspaces/{name}/regenerate-user-key",
             post(handle_regenerate_user_key),
         )
         // Apply admin requirement middleware first, then auth middleware
@@ -140,32 +108,29 @@ pub async fn create_router(
             crate::middleware::auth_middleware_fn,
         ));
 
-    // Authenticated router (requires API key)
-    let authenticated_routes = Router::new()
-        .route("/api/v1/config", get(handle_get_config))
-        .route("/api/v1/config/rate-limit", post(handle_update_rate_limit))
-        .route("/api/v1/config/logging", post(handle_update_logging))
-        .route("/api/v1/config/reload", post(handle_reload_config))
-        .route("/api/v1/config/algorithm", post(handle_set_algorithm))
+    // Authenticated endpoints (require API key)
+    let v1_authenticated_routes = Router::new()
+        .route("/config", get(handle_get_config))
+        .route("/config/rate-limit", post(handle_update_rate_limit))
+        .route("/config/logging", post(handle_update_logging))
+        .route("/config/reload", post(handle_reload_config))
+        .route("/config/algorithm", post(handle_set_algorithm))
         // ID generation (user only)
-        .route("/api/v1/generate", post(handle_generate))
-        .route("/api/v1/generate/batch", post(handle_batch_generate))
-        .route("/api/v1/parse", post(handle_parse))
+        .route("/generate", post(handle_generate))
+        .route("/generate/batch", post(handle_batch_generate))
+        .route("/parse", post(handle_parse))
         // Workspace query endpoints
-        .route("/api/v1/workspaces", get(handle_list_workspaces))
-        .route("/api/v1/workspaces/{name}", get(handle_get_workspace))
+        .route("/workspaces", get(handle_list_workspaces))
+        .route("/workspaces/{name}", get(handle_get_workspace))
         // Group CRUD endpoints
-        .route(
-            "/api/v1/groups",
-            post(handle_create_group).get(handle_list_groups),
-        )
+        .route("/groups", post(handle_create_group).get(handle_list_groups))
         // BizTag CRUD endpoints
         .route(
-            "/api/v1/biz-tags",
+            "/biz-tags",
             post(handle_create_biz_tag).get(handle_list_biz_tags),
         )
         .route(
-            "/api/v1/biz-tags/{id}",
+            "/biz-tags/{id}",
             get(handle_get_biz_tag)
                 .put(handle_update_biz_tag)
                 .delete(handle_delete_biz_tag),
@@ -176,10 +141,26 @@ pub async fn create_router(
             crate::middleware::auth_middleware_fn,
         ));
 
-    // Merge routes with shared state
-    public_routes
-        .merge(authenticated_routes)
-        .merge(admin_only_routes)
+    // Public endpoints (no authentication)
+    let v1_public_routes = Router::new()
+        .route("/", get(handle_api_info))
+        .merge(v1_authenticated_routes)
+        .merge(v1_admin_routes);
+
+    // ========== API Versioning ==========
+    // Nest V1 routes under /api/v1/
+    let api_v1_routes = Router::new()
+        .nest(&format!("/api/{}", API_V1), v1_public_routes)
+        // Apply API version middleware to all API routes
+        .layer(axum::middleware::from_fn(api_version_middleware));
+
+    // ========== Root Routes ==========
+    // Public router (no authentication) - only health check
+    // Note: Swagger UI temporarily disabled
+    Router::new()
+        .route("/health", get(handle_health))
+        .route("/ready", get(handle_ready))
+        .merge(api_v1_routes)
         .with_state(app_state)
         // Security headers
         .layer(SetResponseHeaderLayer::overriding(
@@ -212,24 +193,26 @@ pub async fn create_router(
         .layer(axum::Extension(audit_logger))
 }
 
-async fn handle_generate(
-    State(state): State<AppState>,
-    extensions: axum::Extension<Option<uuid::Uuid>>,
-    extensions_role: axum::Extension<crate::middleware::ApiKeyRole>,
-    Json(req): Json<GenerateRequest>,
-) -> Result<Json<GenerateResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Only User API Key can generate IDs
-    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
+// ========== Helper Functions ==========
+
+/// Verify that the request is from a User API key (not Admin)
+fn verify_user_role(
+    role: crate::middleware::ApiKeyRole,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if role == crate::middleware::ApiKeyRole::Admin {
         return Err((
             StatusCode::FORBIDDEN,
             Json(ErrorResponse::new(
                 403,
-                "Admin API key cannot generate IDs".to_string(),
+                "Admin API key cannot perform this operation".to_string(),
             )),
         ));
     }
+    Ok(())
+}
 
-    // Validate request parameters
+/// Validate request and return error if invalid
+fn validate_request<T: Validate>(req: &T) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     if let Err(validation_errors) = req.validate() {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -239,90 +222,93 @@ async fn handle_generate(
             )),
         ));
     }
+    Ok(())
+}
 
-    // Only User API Key can create groups
-    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse::new(
-                403,
-                "Admin API key cannot create groups".to_string(),
-            )),
-        ));
-    }
-
-    // Only User API Key can create biz_tags
-    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse::new(
-                403,
-                "Admin API key cannot create biz_tags".to_string(),
-            )),
-        ));
-    }
-
-    // Verify workspace_id match for User API Key
-    // Verify workspace_id match for User API Key
-    // Only User API Key can create biz_tags
-    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse::new(
-                403,
-                "Admin API key cannot create biz_tags".to_string(),
-            )),
-        ));
-    }
-
-    // Verify workspace_id match for User API Key
-    // Verify workspace_id match for User API Key
-    if extensions_role.0 == crate::middleware::ApiKeyRole::User {
-        let workspace = state
-            .handlers
-            .get_workspace(&req.workspace)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse::new(500, e.to_string())),
-                )
-            })?;
-
-        let workspace = workspace.ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse::new(
-                    404,
-                    format!("Workspace '{}' not found", req.workspace),
-                )),
-            )
-        })?;
-
-        let workspace_uuid = uuid::Uuid::parse_str(&workspace.id).map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(500, "Invalid workspace ID".to_string())),
-            )
-        })?;
-
-        if Some(workspace_uuid) != extensions.0 {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(ErrorResponse::new(
-                    403,
-                    "Access denied: workspace mismatch".to_string(),
-                )),
-            ));
-        }
-    }
-
-    state.handlers.generate(req).await.map(Json).map_err(|e| {
+/// Verify workspace_id match for User API Key (by workspace name lookup)
+async fn verify_user_workspace(
+    workspace_name: &str,
+    key_workspace_id: &Option<uuid::Uuid>,
+    handlers: &Arc<ApiHandlers>,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let workspace_result = handlers.get_workspace(workspace_name).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse::new(500, e.to_string())),
         )
-    })
+    })?;
+
+    let workspace = workspace_result.ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse::new(
+                404,
+                format!("Workspace '{}' not found", workspace_name),
+            )),
+        )
+    })?;
+
+    let workspace_uuid = uuid::Uuid::parse_str(&workspace.id).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(500, "Invalid workspace ID".to_string())),
+        )
+    })?;
+
+    verify_workspace_id_match(workspace_uuid, key_workspace_id)
+}
+
+/// 提取通用的 workspace_id 比较逻辑
+fn verify_workspace_id_match(
+    workspace_uuid: uuid::Uuid,
+    key_workspace_id: &Option<uuid::Uuid>,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if Some(workspace_uuid) != *key_workspace_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse::new(
+                403,
+                "Access denied: workspace mismatch".to_string(),
+            )),
+        ));
+    }
+    Ok(())
+}
+
+/// Verify workspace_id match for User API Key (direct Uuid comparison)
+fn verify_workspace_id(
+    req_workspace_id: uuid::Uuid,
+    key_workspace_id: &Option<uuid::Uuid>,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    verify_workspace_id_match(req_workspace_id, key_workspace_id)
+}
+
+async fn handle_generate(
+    State(state): State<AppState>,
+    extensions: axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: axum::Extension<crate::middleware::ApiKeyRole>,
+    Json(req): Json<GenerateRequest>,
+) -> Result<Json<GenerateResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Only User API Key can generate IDs
+    verify_user_role(extensions_role.0)?;
+
+    // Validate request parameters
+    validate_request(&req)?;
+
+    // Verify workspace_id match for User API Key
+    verify_user_workspace(&req.workspace, &extensions.0, &state.handlers).await?;
+
+    state
+        .handlers
+        .generate(req)
+        .await
+        .map(Json)
+        .map_err(|e: nebula_core::types::CoreError| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(500, e.to_string())),
+            )
+        })
 }
 
 async fn handle_batch_generate(
@@ -332,15 +318,7 @@ async fn handle_batch_generate(
     Json(req): Json<BatchGenerateRequest>,
 ) -> Result<Json<BatchGenerateResponse>, (StatusCode, Json<ErrorResponse>)> {
     // Only User API Key can generate IDs
-    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse::new(
-                403,
-                "Admin API key cannot generate IDs".to_string(),
-            )),
-        ));
-    }
+    verify_user_role(extensions_role.0)?;
 
     tracing::debug!(
         "HTTP batch_generate request: workspace={}, group={}, size={:?}",
@@ -349,102 +327,14 @@ async fn handle_batch_generate(
         req.size
     );
 
-    // Validate the request using validator
-    use validator::Validate;
-    if let Err(errors) = req.validate() {
-        tracing::warn!("HTTP batch size validation failed: {}", errors);
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(
-                400,
-                format!("Validation error: {}", errors),
-            )),
-        ));
-    }
-
-    // Only User API Key can create groups
-    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse::new(
-                403,
-                "Admin API key cannot create groups".to_string(),
-            )),
-        ));
-    }
-
-    // Only User API Key can create biz_tags
-    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse::new(
-                403,
-                "Admin API key cannot create biz_tags".to_string(),
-            )),
-        ));
-    }
+    // Validate request parameters
+    validate_request(&req)?;
 
     // Verify workspace_id match for User API Key
-    // Verify workspace_id match for User API Key
-    // Only User API Key can create biz_tags
-    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse::new(
-                403,
-                "Admin API key cannot create biz_tags".to_string(),
-            )),
-        ));
-    }
+    verify_user_workspace(&req.workspace, &extensions.0, &state.handlers).await?;
 
-    // Verify workspace_id match for User API Key
-    // Verify workspace_id match for User API Key
-    if extensions_role.0 == crate::middleware::ApiKeyRole::User {
-        let workspace = state
-            .handlers
-            .get_workspace(&req.workspace)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse::new(500, e.to_string())),
-                )
-            })?;
-
-        let workspace = workspace.ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse::new(
-                    404,
-                    format!("Workspace '{}' not found", req.workspace),
-                )),
-            )
-        })?;
-
-        let workspace_uuid = uuid::Uuid::parse_str(&workspace.id).map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(500, "Invalid workspace ID".to_string())),
-            )
-        })?;
-
-        if Some(workspace_uuid) != extensions.0 {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(ErrorResponse::new(
-                    403,
-                    "Access denied: workspace mismatch".to_string(),
-                )),
-            ));
-        }
-    }
-
-    state
-        .handlers
-        .batch_generate(req)
-        .await
-        .map(Json)
-        .map_err(|e| {
+    state.handlers.batch_generate(req).await.map(Json).map_err(
+        |e: nebula_core::types::CoreError| {
             let status_code = match &e {
                 nebula_core::types::CoreError::InvalidInput(msg) => {
                     tracing::warn!("HTTP batch generation failed: {}", msg);
@@ -462,7 +352,8 @@ async fn handle_batch_generate(
                     e.to_string(),
                 )),
             )
-        })
+        },
+    )
 }
 
 async fn handle_health(State(state): State<AppState>) -> Json<HealthResponse> {
@@ -492,12 +383,17 @@ async fn handle_parse(
         ));
     }
 
-    state.handlers.parse(req).await.map(Json).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(400, e.to_string())),
-        )
-    })
+    state
+        .handlers
+        .parse(req)
+        .await
+        .map(Json)
+        .map_err(|e: nebula_core::types::CoreError| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::new(400, e.to_string())),
+            )
+        })
 }
 
 async fn handle_get_config(State(state): State<AppState>) -> Json<SecureConfigResponse> {
@@ -565,63 +461,14 @@ async fn handle_create_biz_tag(
     extensions_role: axum::Extension<crate::middleware::ApiKeyRole>,
     Json(req): Json<CreateBizTagRequest>,
 ) -> Result<Json<BizTagResponse>, (StatusCode, Json<ErrorResponse>)> {
-    if let Err(validation_errors) = req.validate() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(
-                400,
-                format!("Validation error: {}", validation_errors),
-            )),
-        ));
-    }
-
-    // Only User API Key can create groups
-    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse::new(
-                403,
-                "Admin API key cannot create groups".to_string(),
-            )),
-        ));
-    }
+    // Validate request parameters
+    validate_request(&req)?;
 
     // Only User API Key can create biz_tags
-    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse::new(
-                403,
-                "Admin API key cannot create biz_tags".to_string(),
-            )),
-        ));
-    }
+    verify_user_role(extensions_role.0)?;
 
     // Verify workspace_id match for User API Key
-    // Verify workspace_id match for User API Key
-    // Only User API Key can create biz_tags
-    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse::new(
-                403,
-                "Admin API key cannot create biz_tags".to_string(),
-            )),
-        ));
-    }
-
-    // Verify workspace_id match for User API Key
-    if extensions_role.0 == crate::middleware::ApiKeyRole::User
-        && Some(req.workspace_id) != extensions.0
-    {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse::new(
-                403,
-                "Access denied: workspace mismatch".to_string(),
-            )),
-        ));
-    }
+    verify_workspace_id(req.workspace_id, &extensions.0)?;
 
     state
         .handlers
@@ -811,92 +658,14 @@ async fn handle_create_group(
     extensions_role: axum::Extension<crate::middleware::ApiKeyRole>,
     Json(req): Json<CreateGroupRequest>,
 ) -> Result<Json<GroupResponse>, (StatusCode, Json<ErrorResponse>)> {
-    if let Err(validation_errors) = req.validate() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(
-                400,
-                format!("Validation error: {}", validation_errors),
-            )),
-        ));
-    }
+    // Validate request parameters
+    validate_request(&req)?;
 
     // Only User API Key can create groups
-    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse::new(
-                403,
-                "Admin API key cannot create groups".to_string(),
-            )),
-        ));
-    }
-
-    // Only User API Key can create biz_tags
-    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse::new(
-                403,
-                "Admin API key cannot create biz_tags".to_string(),
-            )),
-        ));
-    }
+    verify_user_role(extensions_role.0)?;
 
     // Verify workspace_id match for User API Key
-    // Verify workspace_id match for User API Key
-    // Only User API Key can create biz_tags
-    if extensions_role.0 == crate::middleware::ApiKeyRole::Admin {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse::new(
-                403,
-                "Admin API key cannot create biz_tags".to_string(),
-            )),
-        ));
-    }
-
-    // Verify workspace_id match for User API Key
-    // Verify workspace_id match for User API Key
-    if extensions_role.0 == crate::middleware::ApiKeyRole::User {
-        let workspace = state
-            .handlers
-            .get_workspace(&req.workspace)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse::new(500, e.to_string())),
-                )
-            })?;
-
-        let workspace = workspace.ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse::new(
-                    404,
-                    format!("Workspace '{}' not found", req.workspace),
-                )),
-            )
-        })?;
-
-        let workspace_uuid = uuid::Uuid::parse_str(&workspace.id).map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(500, "Invalid workspace ID".to_string())),
-            )
-        })?;
-
-        if Some(workspace_uuid) != extensions.0 {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(ErrorResponse::new(
-                    403,
-                    "Access denied: workspace mismatch".to_string(),
-                )),
-            ));
-        }
-    }
+    verify_user_workspace(&req.workspace, &extensions.0, &state.handlers).await?;
 
     state
         .handlers
@@ -970,15 +739,13 @@ async fn handle_create_api_key(
                 req.workspace_id
                     .as_ref()
                     .and_then(|s| uuid::Uuid::parse_str(s).ok())
-                    .ok_or_else(|| {
-                        (
-                            StatusCode::BAD_REQUEST,
-                            Json(ErrorResponse::new(
-                                400,
-                                "workspace_id is required for user keys".to_string(),
-                            )),
-                        )
-                    })?,
+                    .ok_or((
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse::new(
+                            400,
+                            "workspace_id is required for user keys".to_string(),
+                        )),
+                    ))?,
             )
         }
     } else {
@@ -987,15 +754,13 @@ async fn handle_create_api_key(
             req.workspace_id
                 .as_ref()
                 .and_then(|s| uuid::Uuid::parse_str(s).ok())
-                .ok_or_else(|| {
-                    (
-                        StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse::new(
-                            400,
-                            "workspace_id is required for user keys".to_string(),
-                        )),
-                    )
-                })?,
+                .ok_or((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse::new(
+                        400,
+                        "workspace_id is required for user keys".to_string(),
+                    )),
+                ))?,
         )
     };
 
@@ -1004,7 +769,7 @@ async fn handle_create_api_key(
         .create_api_key(workspace_id, req)
         .await
         .map(Json)
-        .map_err(|e| {
+        .map_err(|e: nebula_core::types::CoreError| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(500, e.to_string())),
@@ -1161,6 +926,23 @@ mod tests {
 
             async fn count_api_keys(&self, _workspace_id: Uuid) -> Result<u64> {
                 Ok(0)
+            }
+
+            async fn rotate_api_key(
+                &self,
+                _key_id: &str,
+                _grace_period_seconds: u64,
+            ) -> Result<ApiKeyWithSecret> {
+                Err(nebula_core::types::error::CoreError::InternalError(
+                    "rotate_api_key not implemented in mock".to_string(),
+                ))
+            }
+
+            async fn get_keys_older_than(
+                &self,
+                _age_threshold_days: i64,
+            ) -> Result<Vec<ApiKeyInfo>> {
+                Ok(vec![])
             }
         }
 

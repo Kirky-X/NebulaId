@@ -27,6 +27,10 @@ tower = { workspace = true }
 tower-http = { workspace = true }
 hyper = { workspace = true }
 
+# OpenAPI 文档
+utoipa = { workspace = true }
+utoipa-swagger-ui = { workspace = true }
+
 # 异步运行时
 tokio = { workspace = true }
 tokio-stream = "0.1"

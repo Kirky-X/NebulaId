@@ -20,7 +20,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
-use tonic::{Code, Request, Response, Status};
+use tonic::{Request, Response, Status};
 
 // Use pre-generated proto modules
 use crate::proto::nebula::id::v1;
@@ -73,7 +73,7 @@ impl NebulaIdService for GrpcServer {
                     algorithm: resp.algorithm,
                 }))
             }
-            Err(e) => Err(Status::new(Code::Internal, e.to_string())),
+            Err(e) => Err(Status::internal(format!("{}", e))),
         }
     }
 
@@ -132,7 +132,7 @@ impl NebulaIdService for GrpcServer {
 
                 Ok(Response::new(GrpcBatchGenerateResponse { ids }))
             }
-            Err(e) => Err(Status::new(Code::Internal, e.to_string())),
+            Err(e) => Err(Status::internal(format!("{}", e))),
         }
     }
 
@@ -253,7 +253,7 @@ impl NebulaIdService for GrpcServer {
                     metadata,
                 }))
             }
-            Err(e) => Err(Status::new(Code::InvalidArgument, e.to_string())),
+            Err(e) => Err(Status::invalid_argument(format!("{}", e))),
         }
     }
 

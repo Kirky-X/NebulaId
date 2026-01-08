@@ -32,6 +32,87 @@ use tracing::{info, warn};
 
 // Constants for algorithm configuration
 const DEFAULT_CPU_USAGE: f64 = 0.1;
+
+/// CPU 使用率监控器
+#[derive(Debug)]
+pub struct CpuMonitor {
+    current_usage: Arc<AtomicU64>,
+    last_check: Arc<parking_lot::Mutex<Instant>>,
+}
+
+impl Default for CpuMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CpuMonitor {
+    pub fn new() -> Self {
+        Self {
+            current_usage: Arc::new(AtomicU64::new(DEFAULT_CPU_USAGE.to_bits())),
+            last_check: Arc::new(parking_lot::Mutex::new(Instant::now())),
+        }
+    }
+
+    /// 获取当前 CPU 使用率（0.0 - 1.0）
+    pub fn get_usage(&self) -> f64 {
+        f64::from_bits(self.current_usage.load(Ordering::Relaxed))
+    }
+
+    /// 更新 CPU 使用率
+    pub fn update_usage(&self, usage: f64) {
+        let clamped = usage.clamp(0.0, 1.0);
+        self.current_usage
+            .store(clamped.to_bits(), Ordering::Relaxed);
+        *self.last_check.lock() = Instant::now();
+    }
+
+    /// 启动 CPU 监控（基于系统指标）
+    #[cfg(target_os = "linux")]
+    pub fn start_monitoring(&self) -> tokio::task::JoinHandle<()> {
+        let usage = self.current_usage.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+
+                // 读取 /proc/stat 计算 CPU 使用率
+                if let Some(cpu_usage) = Self::read_cpu_usage() {
+                    usage.store(cpu_usage.to_bits(), Ordering::Relaxed);
+                }
+            }
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read_cpu_usage() -> Option<f64> {
+        use std::fs;
+        let stat = fs::read_to_string("/proc/stat").ok()?;
+        let line = stat.lines().next()?;
+        let parts: Vec<u64> = line
+            .split_whitespace()
+            .skip(1)
+            .filter_map(|s| s.parse().ok())
+            .collect();
+
+        if parts.len() >= 4 {
+            let idle = parts[3];
+            let total: u64 = parts.iter().sum();
+            let usage = 1.0 - (idle as f64 / total as f64);
+            Some(usage)
+        } else {
+            None
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn start_monitoring(&self) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            debug!("CPU monitoring not supported on this platform, using default value");
+        })
+    }
+}
+
 const FAILURE_THRESHOLD_DEGRADED: u64 = 3;
 const FAILURE_THRESHOLD_FAILED: u64 = 5;
 const DEFAULT_QPS_BASELINE: u64 = 1000;
@@ -131,6 +212,8 @@ pub struct StepCalculator {
     velocity_factor: f64,
     /// 压力因子 (β)
     pressure_factor: f64,
+    /// CPU 使用率监控器 (可选)
+    cpu_monitor: Option<Arc<CpuMonitor>>,
 }
 
 impl Default for StepCalculator {
@@ -138,6 +221,7 @@ impl Default for StepCalculator {
         Self {
             velocity_factor: 0.5,
             pressure_factor: 0.3,
+            cpu_monitor: None,
         }
     }
 }
@@ -148,15 +232,23 @@ impl StepCalculator {
         Self {
             velocity_factor,
             pressure_factor,
+            cpu_monitor: None,
         }
     }
 
-    /// 获取 CPU 使用率 (模拟值，实际应从系统监控获取)
+    /// 设置 CPU 监控器
+    pub fn with_cpu_monitor(mut self, cpu_monitor: Arc<CpuMonitor>) -> Self {
+        self.cpu_monitor = Some(cpu_monitor);
+        self
+    }
+
+    /// 获取 CPU 使用率 (优先使用监控器，否则返回默认值)
     fn get_cpu_usage(&self) -> f64 {
-        // TODO(#NEBULA-XXX): Integrate with system monitoring (e.g., /proc/stat on Linux)
-        // to get actual CPU usage for dynamic step calculation.
-        // For now, returns a conservative default to avoid over-allocation.
-        DEFAULT_CPU_USAGE
+        if let Some(ref monitor) = self.cpu_monitor {
+            monitor.get_usage()
+        } else {
+            DEFAULT_CPU_USAGE
+        }
     }
 
     /// 计算动态步长
@@ -468,6 +560,10 @@ pub struct SegmentAlgorithm {
     etcd_cluster_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
     #[cfg(not(feature = "etcd"))]
     etcd_cluster_health_monitor: Option<()>,
+    /// CPU monitor for dynamic step calculation
+    cpu_monitor: Option<Arc<CpuMonitor>>,
+    /// CPU monitor task handle
+    cpu_monitor_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Shutdown channel for graceful termination of background tasks
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
     /// Handle to the health check task
@@ -526,6 +622,8 @@ impl SegmentAlgorithm {
             dc_failure_detector,
             local_dc_id,
             etcd_cluster_health_monitor: None,
+            cpu_monitor: None,
+            cpu_monitor_task: Arc::new(tokio::sync::Mutex::new(None)),
             shutdown_tx: Arc::new(shutdown_tx),
             health_check_task: Arc::new(tokio::sync::Mutex::new(None)),
         }
@@ -533,6 +631,11 @@ impl SegmentAlgorithm {
 
     pub fn with_loader(mut self, loader: Arc<dyn SegmentLoader + Send + Sync>) -> Self {
         self.segment_loader = loader;
+        self
+    }
+
+    pub fn with_cpu_monitor(mut self, cpu_monitor: Arc<CpuMonitor>) -> Self {
+        self.cpu_monitor = Some(cpu_monitor);
         self
     }
 
@@ -706,6 +809,13 @@ impl IdAlgorithm for SegmentAlgorithm {
     async fn initialize(&mut self, config: &Config) -> Result<()> {
         self.config = config.algorithm.segment.clone();
 
+        // Start CPU monitoring if available
+        if let Some(ref cpu_monitor) = self.cpu_monitor {
+            info!("Starting CPU monitoring task");
+            let monitor_task = cpu_monitor.start_monitoring();
+            *self.cpu_monitor_task.lock().await = Some(monitor_task);
+        }
+
         let detector = self.dc_failure_detector.clone();
         let shutdown_rx = self.shutdown_tx.subscribe();
         let task = tokio::spawn(async move {
@@ -789,6 +899,11 @@ impl DatabaseSegmentLoader {
             step_calculator: StepCalculator::default(),
             segment_config: config,
         }
+    }
+
+    pub fn with_cpu_monitor(mut self, cpu_monitor: Arc<CpuMonitor>) -> Self {
+        self.step_calculator = self.step_calculator.with_cpu_monitor(cpu_monitor);
+        self
     }
 
     #[cfg(feature = "etcd")]

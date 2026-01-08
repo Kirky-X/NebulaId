@@ -23,6 +23,7 @@ use nebula_server::config_hot_reload::HotReloadConfig;
 use nebula_server::config_management::ConfigManagementService;
 use nebula_server::grpc::GrpcServer;
 use nebula_server::handlers::ApiHandlers;
+use nebula_server::middleware::size_limit::create_size_limit_middleware;
 use nebula_server::middleware::ApiKeyAuth;
 use nebula_server::proto::nebula::id::v1::nebula_id_service_server::NebulaIdServiceServer;
 use nebula_server::rate_limit::RateLimiter;
@@ -32,8 +33,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tonic::transport::Server;
-use tower_http::limit::RequestBodyLimitLayer;
-use tower_http::timeout::TimeoutLayer;
 use tracing::warn;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -224,8 +223,12 @@ async fn create_id_generator(
 
     let audit_logger_for_core: nebula_core::algorithm::DynAuditLogger =
         audit_logger as Arc<dyn nebula_core::algorithm::AuditLogger>;
+
+    // Create CPU monitor
+    let cpu_monitor = Arc::new(nebula_core::algorithm::CpuMonitor::new());
     let router = AlgorithmRouter::new(config.clone(), Some(audit_logger_for_core));
 
+    let router = router.with_cpu_monitor(cpu_monitor);
     let router = if let Some(monitor) = etcd_health_monitor {
         Arc::new(router.with_etcd_health_monitor(monitor))
     } else {
@@ -248,8 +251,11 @@ async fn create_id_generator(
 
     let audit_logger_for_core: nebula_core::algorithm::DynAuditLogger =
         audit_logger as Arc<dyn nebula_core::algorithm::AuditLogger>;
-    let router = AlgorithmRouter::new(config.clone(), Some(audit_logger_for_core));
 
+    // Create CPU monitor
+    let cpu_monitor = Arc::new(nebula_core::algorithm::CpuMonitor::new());
+    let router = AlgorithmRouter::new(config.clone(), Some(audit_logger_for_core));
+    let router = router.with_cpu_monitor(cpu_monitor);
     let router = Arc::new(router);
 
     router.initialize().await?;
@@ -271,8 +277,7 @@ async fn start_http_server(
 
     let router = create_router(handlers, auth, rate_limiter, audit_logger)
         .await
-        .layer(TimeoutLayer::new(std::time::Duration::from_secs(30)))
-        .layer(RequestBodyLimitLayer::new(1024 * 1024));
+        .layer(create_size_limit_middleware());
 
     // 检查是否启用 HTTPS (暂时回退到普通 HTTP，TLS 功能待完善)
     if let Some(ref tls) = tls_manager {
@@ -765,6 +770,35 @@ mod tests {
             ) -> nebula_core::types::Result<u64> {
                 Ok(0)
             }
+
+            async fn rotate_api_key(
+                &self,
+                _key_id: &str,
+                _grace_period_seconds: u64,
+            ) -> nebula_core::types::Result<database::ApiKeyWithSecret> {
+                Ok(database::ApiKeyWithSecret {
+                    key: database::ApiKeyResponse {
+                        id: uuid::Uuid::new_v4(),
+                        key_id: "mock_rotated_key_id".to_string(),
+                        key_prefix: "nino_".to_string(),
+                        name: "Mock Rotated Key".to_string(),
+                        description: None,
+                        role: database::ApiKeyRole::User,
+                        rate_limit: 10000,
+                        enabled: true,
+                        expires_at: None,
+                        created_at: chrono::Utc::now().naive_utc(),
+                    },
+                    key_secret: "mock_rotated_secret".to_string(),
+                })
+            }
+
+            async fn get_keys_older_than(
+                &self,
+                _age_threshold_days: i64,
+            ) -> nebula_core::types::Result<Vec<database::ApiKeyInfo>> {
+                Ok(vec![])
+            }
         }
 
         let config = Config::default();
@@ -869,6 +903,35 @@ mod tests {
                 _workspace_id: uuid::Uuid,
             ) -> nebula_core::types::Result<u64> {
                 Ok(0)
+            }
+
+            async fn rotate_api_key(
+                &self,
+                _key_id: &str,
+                _grace_period_seconds: u64,
+            ) -> nebula_core::types::Result<database::ApiKeyWithSecret> {
+                Ok(database::ApiKeyWithSecret {
+                    key: database::ApiKeyResponse {
+                        id: uuid::Uuid::new_v4(),
+                        key_id: "mock_rotated_key_id".to_string(),
+                        key_prefix: "nino_".to_string(),
+                        name: "Mock Rotated Key".to_string(),
+                        description: None,
+                        role: database::ApiKeyRole::User,
+                        rate_limit: 10000,
+                        enabled: true,
+                        expires_at: None,
+                        created_at: chrono::Utc::now().naive_utc(),
+                    },
+                    key_secret: "mock_rotated_secret".to_string(),
+                })
+            }
+
+            async fn get_keys_older_than(
+                &self,
+                _age_threshold_days: i64,
+            ) -> nebula_core::types::Result<Vec<database::ApiKeyInfo>> {
+                Ok(vec![])
             }
         }
 

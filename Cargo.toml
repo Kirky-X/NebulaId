@@ -45,6 +45,10 @@ tower = { version = "0.4", features = ["full"] }
 tower-http = { version = "0.5", features = ["cors", "compression-gzip", "timeout", "limit", "trace", "set-header"] }
 hyper = { version = "1.8", features = ["full"] }
 
+# OpenAPI 文档
+utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "8", features = ["axum"] }
+
 # gRPC / Protobuf
 tonic = { version = "0.14", features = ["tls-webpki-roots"] }
 tonic-prost = "0.14"

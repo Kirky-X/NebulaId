@@ -27,7 +27,6 @@ pub(crate) mod monitoring;
 
 // Coordinator module is pub to allow EtcdClusterHealthMonitor re-export,
 // but NOT re-exported in public API (not in docs/crate root)
-#[cfg(feature = "etcd")]
 pub mod coordinator;
 
 #[cfg(test)]
@@ -51,4 +50,12 @@ pub use config::{Config, TlsConfig};
 
 // Re-export coordinator types that need to be accessed externally
 #[cfg(feature = "etcd")]
-pub use coordinator::EtcdClusterHealthMonitor;
+pub use coordinator::{
+    DistributedLock, EtcdClusterHealthMonitor, EtcdDistributedLock, EtcdLockGuard, LockError,
+    LockGuard,
+};
+
+#[cfg(not(feature = "etcd"))]
+pub use coordinator::{
+    DistributedLock, LocalDistributedLock, LocalLockGuard, LockError, LockGuard,
+};

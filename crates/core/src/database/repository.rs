@@ -27,6 +27,7 @@ use subtle::ConstantTimeEq;
 use tracing::{debug, info};
 use uuid::Uuid;
 
+use crate::coordinator::{LockError, LockGuard};
 use crate::database::api_key_entity::{
     ActiveModel as ApiKeyActiveModel, ApiKey as ApiKeyInfo, ApiKeyResponse, ApiKeyRole,
     ApiKeyWithSecret, Column as ApiKeyColumn, CreateApiKeyRequest, Entity as ApiKeyEntity,
@@ -176,6 +177,16 @@ pub trait ApiKeyRepository: Send + Sync {
     async fn update_last_used(&self, id: Uuid) -> Result<()>; // Changed from String to Uuid
     async fn get_admin_api_key(&self, workspace_id: Uuid) -> Result<Option<ApiKeyInfo>>;
     async fn count_api_keys(&self, workspace_id: Uuid) -> Result<u64>;
+
+    /// 轮换 API Key（生成新密钥，保持旧密钥在宽限期内有效）
+    async fn rotate_api_key(
+        &self,
+        key_id: &str,
+        grace_period_seconds: u64,
+    ) -> Result<ApiKeyWithSecret>;
+
+    /// 获取需要轮换的密钥列表（基于创建时间）
+    async fn get_keys_older_than(&self, age_threshold_days: i64) -> Result<Vec<ApiKeyInfo>>;
 }
 
 use crate::database::biz_tag_entity::{BizTag, CreateBizTagRequest, UpdateBizTagRequest};
@@ -184,11 +195,48 @@ use crate::database::workspace_entity::{CreateWorkspaceRequest, UpdateWorkspaceR
 
 pub struct SeaOrmRepository {
     db: sea_orm::DatabaseConnection,
+    /// 分布式锁（可选，用于 segment 分配）
+    #[cfg(feature = "etcd")]
+    distributed_lock: Option<std::sync::Arc<dyn crate::coordinator::DistributedLock + Send + Sync>>,
+    /// 本地分布式锁（无 etcd 时使用）
+    #[cfg(not(feature = "etcd"))]
+    distributed_lock: Option<std::sync::Arc<dyn crate::coordinator::DistributedLock + Send + Sync>>,
 }
 
 impl SeaOrmRepository {
     pub fn new(db: sea_orm::DatabaseConnection) -> Self {
-        Self { db }
+        Self {
+            db,
+            distributed_lock: None,
+        }
+    }
+
+    /// 设置分布式锁
+    #[cfg(feature = "etcd")]
+    pub fn with_lock(
+        mut self,
+        lock: std::sync::Arc<dyn crate::coordinator::DistributedLock + Send + Sync>,
+    ) -> Self {
+        self.distributed_lock = Some(lock);
+        self
+    }
+
+    /// 设置分布式锁
+    #[cfg(not(feature = "etcd"))]
+    pub fn with_lock(
+        mut self,
+        lock: std::sync::Arc<dyn crate::coordinator::DistributedLock + Send + Sync>,
+    ) -> Self {
+        self.distributed_lock = Some(lock);
+        self
+    }
+
+    /// 构建用于 segment 分配的分布式锁键
+    fn segment_lock_key(&self, workspace_id: &str, biz_tag: &str, dc_id: Option<i32>) -> String {
+        match dc_id {
+            Some(dc) => format!("segment:{}:{}:dc:{}", workspace_id, biz_tag, dc),
+            None => format!("segment:{}:{}", workspace_id, biz_tag),
+        }
     }
 }
 
@@ -1045,6 +1093,66 @@ impl ApiKeyRepository for SeaOrmRepository {
 
         Ok(count)
     }
+
+    async fn rotate_api_key(
+        &self,
+        key_id: &str,
+        _grace_period_seconds: u64,
+    ) -> Result<ApiKeyWithSecret> {
+        // 获取现有密钥
+        let key_data = self
+            .get_api_key_by_id(key_id)
+            .await?
+            .ok_or_else(|| crate::CoreError::NotFound(format!("API key not found: {}", key_id)))?;
+
+        // 生成新密钥
+        let new_secret = generate_secret();
+        let new_secret_hash = hash_secret(&new_secret);
+        let now = chrono::Utc::now().naive_utc();
+
+        // 更新数据库
+        let updated_key = ApiKeyActiveModel {
+            id: Set(key_data.id),
+            key_secret_hash: Set(new_secret_hash),
+            updated_at: Set(now),
+            ..Default::default()
+        };
+
+        let updated = updated_key
+            .update(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        // 返回新密钥
+        Ok(ApiKeyWithSecret {
+            key: ApiKeyResponse {
+                id: updated.id,
+                key_id: updated.key_id,
+                key_prefix: updated.key_prefix,
+                name: updated.name,
+                description: updated.description,
+                role: updated.role.into(),
+                rate_limit: updated.rate_limit,
+                enabled: updated.enabled,
+                expires_at: key_data.expires_at,
+                created_at: updated.created_at,
+            },
+            key_secret: new_secret,
+        })
+    }
+
+    async fn get_keys_older_than(&self, age_threshold_days: i64) -> Result<Vec<ApiKeyInfo>> {
+        let threshold = chrono::Utc::now().naive_utc() - chrono::Duration::days(age_threshold_days);
+
+        let keys = ApiKeyEntity::find()
+            .filter(ApiKeyColumn::CreatedAt.lt(threshold))
+            .filter(ApiKeyColumn::Enabled.eq(true))
+            .all(&self.db)
+            .await
+            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        Ok(keys.into_iter().map(|m| m.into()).collect())
+    }
 }
 
 #[async_trait]
@@ -1076,6 +1184,20 @@ impl SegmentRepository for SeaOrmRepository {
         biz_tag: &str,
         step: i32,
     ) -> Result<SegmentInfo> {
+        // 获取分布式锁以防止并发分配冲突
+        let lock_key = self.segment_lock_key(workspace_id, biz_tag, None);
+        let lock_guard = if let Some(ref lock) = self.distributed_lock {
+            lock.acquire(&lock_key, 30).await.map_err(|e| {
+                crate::CoreError::InternalError(format!(
+                    "Failed to acquire distributed lock for segment allocation: {}",
+                    e
+                ))
+            })?
+        } else {
+            // 如果没有配置分布式锁，使用空守卫
+            Box::new(NoopLockGuard)
+        };
+
         let txn = self
             .db
             .begin()
@@ -1169,6 +1291,9 @@ impl SegmentRepository for SeaOrmRepository {
             .await
             .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
 
+        // 释放分布式锁
+        let _ = lock_guard.release().await;
+
         Ok(segment)
     }
 
@@ -1179,6 +1304,20 @@ impl SegmentRepository for SeaOrmRepository {
         step: i32,
         dc_id: i32,
     ) -> Result<SegmentInfo> {
+        // 获取分布式锁以防止并发分配冲突
+        let lock_key = self.segment_lock_key(workspace_id, biz_tag, Some(dc_id));
+        let lock_guard = if let Some(ref lock) = self.distributed_lock {
+            lock.acquire(&lock_key, 30).await.map_err(|e| {
+                crate::CoreError::InternalError(format!(
+                    "Failed to acquire distributed lock for segment allocation: {}",
+                    e
+                ))
+            })?
+        } else {
+            // 如果没有配置分布式锁，使用空守卫
+            Box::new(NoopLockGuard)
+        };
+
         let txn = self
             .db
             .begin()
@@ -1273,6 +1412,9 @@ impl SegmentRepository for SeaOrmRepository {
         txn.commit()
             .await
             .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+        // 释放分布式锁
+        let _ = lock_guard.release().await;
 
         Ok(segment)
     }
@@ -1414,6 +1556,17 @@ fn hash_secret(secret: &str) -> String {
     let mut hasher = sha2::Sha256::default();
     hasher.update(secret);
     hex::encode(hasher.finalize())
+}
+
+/// No-op lock guard for when distributed lock is not configured
+/// Used as a fallback to maintain consistent API without requiring distributed locking
+struct NoopLockGuard;
+
+#[async_trait]
+impl LockGuard for NoopLockGuard {
+    async fn release(&self) -> std::result::Result<(), LockError> {
+        Ok(())
+    }
 }
 
 /// Test prefix logic without database (pure logic tests)

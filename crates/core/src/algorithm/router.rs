@@ -130,6 +130,7 @@ pub struct AlgorithmRouter {
     fallback_chain: Vec<AlgorithmType>,
     current_algorithm: DashMap<String, AlgorithmType>,
     degradation_manager: Arc<DegradationManager>,
+    cpu_monitor: Option<Arc<crate::algorithm::segment::CpuMonitor>>,
     #[cfg(feature = "etcd")]
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
     #[cfg(not(feature = "etcd"))]
@@ -165,8 +166,14 @@ impl AlgorithmRouter {
             fallback_chain,
             current_algorithm: DashMap::new(),
             degradation_manager,
+            cpu_monitor: None,
             etcd_health_monitor: None,
         }
+    }
+
+    pub fn with_cpu_monitor(mut self, monitor: Arc<crate::algorithm::segment::CpuMonitor>) -> Self {
+        self.cpu_monitor = Some(monitor);
+        self
     }
 
     #[cfg(feature = "etcd")]
@@ -195,6 +202,9 @@ impl AlgorithmRouter {
             #[cfg(feature = "etcd")]
             if let Some(ref monitor) = self.etcd_health_monitor {
                 builder = builder.with_etcd_health_monitor(monitor.clone());
+            }
+            if let Some(ref cpu_monitor) = self.cpu_monitor {
+                builder = builder.with_cpu_monitor(cpu_monitor.clone());
             }
 
             match builder.build(&self.config).await {

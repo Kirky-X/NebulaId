@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::algorithm::degradation_manager::DegradationManager;
-use crate::algorithm::segment::SegmentAlgorithm;
+use crate::algorithm::segment::{CpuMonitor, SegmentAlgorithm};
 use crate::algorithm::snowflake::SnowflakeAlgorithm;
 use crate::algorithm::uuid_v7::{UuidV4Impl, UuidV7Impl};
 use crate::config::Config;
@@ -22,6 +21,9 @@ use crate::coordinator::EtcdClusterHealthMonitor;
 use crate::types::{AlgorithmType, Id, IdBatch, Result};
 use async_trait::async_trait;
 use std::sync::Arc;
+
+// Forward declaration - actual import is in parent module
+pub use crate::algorithm::DegradationManager;
 
 #[async_trait]
 pub trait IdAlgorithm: Send + Sync {
@@ -136,6 +138,7 @@ impl AlgorithmMetricsSnapshot {
 
 pub struct AlgorithmBuilder {
     algorithm_type: AlgorithmType,
+    cpu_monitor: Option<Arc<CpuMonitor>>,
     #[cfg(feature = "etcd")]
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
     #[cfg(not(feature = "etcd"))]
@@ -146,8 +149,14 @@ impl AlgorithmBuilder {
     pub fn new(algorithm_type: AlgorithmType) -> Self {
         Self {
             algorithm_type,
+            cpu_monitor: None,
             etcd_health_monitor: None,
         }
+    }
+
+    pub fn with_cpu_monitor(mut self, monitor: Arc<CpuMonitor>) -> Self {
+        self.cpu_monitor = Some(monitor);
+        self
     }
 
     #[cfg(feature = "etcd")]
@@ -176,6 +185,9 @@ impl AlgorithmBuilder {
                 #[cfg(feature = "etcd")]
                 if let Some(ref monitor) = self.etcd_health_monitor {
                     algo = algo.with_etcd_cluster_health_monitor(monitor.clone());
+                }
+                if let Some(ref cpu_monitor) = self.cpu_monitor {
+                    algo = algo.with_cpu_monitor(cpu_monitor.clone());
                 }
                 algo.initialize(config).await?;
                 Ok(Box::new(algo))

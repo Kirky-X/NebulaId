@@ -1657,6 +1657,14 @@ mod tests {
     async fn setup_test_db(db: &sea_orm::DatabaseConnection) {
         let backend = db.get_database_backend();
 
+        // Set search_path to include nebula_id schema
+        db.execute(Statement::from_string(
+            backend,
+            r#"SET search_path TO public, nebula_id"#,
+        ))
+        .await
+        .unwrap();
+
         // Create schema if it doesn't exist
         db.execute(Statement::from_string(
             backend,
@@ -1665,11 +1673,11 @@ mod tests {
         .await
         .unwrap();
 
-        // Create enums
+        // Create enums in public schema for SeaORM compatibility
         db.execute(Statement::from_string(
             backend,
             r#"DO $$ BEGIN
-                CREATE TYPE "nebula_id"."algorithm_type" AS ENUM ('segment', 'snowflake', 'uuid_v7', 'uuid_v4');
+                CREATE TYPE public.algorithm_type AS ENUM ('segment', 'snowflake', 'uuid_v7', 'uuid_v4');
             EXCEPTION
                 WHEN duplicate_object THEN null;
             END $$"#,
@@ -1680,7 +1688,7 @@ mod tests {
         db.execute(Statement::from_string(
             backend,
             r#"DO $$ BEGIN
-                CREATE TYPE "nebula_id"."id_format" AS ENUM ('numeric', 'prefixed', 'uuid');
+                CREATE TYPE public.id_format AS ENUM ('numeric', 'prefixed', 'uuid');
             EXCEPTION
                 WHEN duplicate_object THEN null;
             END $$"#,
@@ -1691,7 +1699,7 @@ mod tests {
         db.execute(Statement::from_string(
             backend,
             r#"DO $$ BEGIN
-                CREATE TYPE "nebula_id"."workspace_status" AS ENUM ('active', 'inactive', 'suspended');
+                CREATE TYPE public.workspace_status AS ENUM ('active', 'inactive', 'suspended');
             EXCEPTION
                 WHEN duplicate_object THEN null;
             END $$"#,
@@ -1814,19 +1822,24 @@ mod tests {
 
         let repo = SeaOrmRepository::new(db);
 
+        // Use unique names to avoid conflicts
+        let unique_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+        let workspace_name = format!("test_workspace_{}", unique_id);
+        let biz_tag = format!("test_tag_{}", unique_id);
+
         let segment = repo
-            .allocate_segment("test_workspace", "test_tag", 100)
+            .allocate_segment(&workspace_name, &biz_tag, 100)
             .await
             .unwrap();
 
-        assert_eq!(segment.workspace_id, "test_workspace");
-        assert_eq!(segment.biz_tag, "test_tag");
+        assert_eq!(segment.workspace_id, workspace_name);
+        assert_eq!(segment.biz_tag, biz_tag);
         assert_eq!(segment.current_id, 1);
         assert_eq!(segment.max_id, 101);
         assert_eq!(segment.step, 100);
 
         let fetched = repo
-            .get_segment("test_workspace", "test_tag")
+            .get_segment(&workspace_name, &biz_tag)
             .await
             .unwrap()
             .unwrap();
@@ -1834,14 +1847,14 @@ mod tests {
         assert_eq!(fetched.id, segment.id);
 
         let segment2 = repo
-            .allocate_segment("test_workspace", "test_tag", 100)
+            .allocate_segment(&workspace_name, &biz_tag, 100)
             .await
             .unwrap();
 
         assert_eq!(segment2.current_id, 101);
         assert_eq!(segment2.max_id, 201);
 
-        let list = repo.list_segments("test_workspace").await.unwrap();
+        let list = repo.list_segments(&workspace_name).await.unwrap();
 
         assert_eq!(list.len(), 1);
     }
@@ -1855,9 +1868,13 @@ mod tests {
 
         let repo = SeaOrmRepository::new(db);
 
+        // Use unique names to avoid conflicts
+        let unique_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+        let workspace_name = format!("test_workspace_{}", unique_id);
+
         let workspace = repo
             .create_workspace(&CreateWorkspaceRequest {
-                name: "test_workspace".to_string(),
+                name: workspace_name.clone(),
                 description: Some("Test workspace".to_string()),
                 max_groups: Some(5),
                 max_biz_tags: Some(50),
@@ -1865,7 +1882,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(workspace.name, "test_workspace");
+        assert_eq!(workspace.name, workspace_name);
 
         let group1 = repo
             .create_group(&CreateGroupRequest {
@@ -2074,10 +2091,14 @@ mod tests {
 
         let repo = SeaOrmRepository::new(db);
 
+        // Use unique names to avoid conflicts
+        let unique_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+        let workspace_name = format!("Test_Workspace_{}", unique_id);
+
         // First create a workspace for the user key
         let workspace = repo
             .create_workspace(&CreateWorkspaceRequest {
-                name: "Test Workspace".to_string(),
+                name: workspace_name,
                 description: Some("Workspace for user key testing".to_string()),
                 max_groups: Some(5),
                 max_biz_tags: Some(50),

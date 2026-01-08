@@ -13,9 +13,38 @@
 // limitations under the License.
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::AtomicU16;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tracing::info;
+
+#[cfg(feature = "etcd")]
+use crate::config::EtcdConfig;
+#[cfg(feature = "etcd")]
+use dashmap::DashMap;
+#[cfg(feature = "etcd")]
+use std::path::Path;
+#[cfg(feature = "etcd")]
+use std::sync::atomic::Ordering;
+#[cfg(feature = "etcd")]
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8};
+#[cfg(feature = "etcd")]
+use std::time::Instant;
+#[cfg(feature = "etcd")]
+use tokio::fs;
+#[cfg(feature = "etcd")]
+use tokio::fs;
+#[cfg(feature = "etcd")]
+use tokio::time::sleep;
+#[cfg(feature = "etcd")]
+use tokio::time::sleep;
+#[cfg(feature = "etcd")]
+use tokio::time::Duration;
+#[cfg(feature = "etcd")]
+use tracing::{debug, error, warn};
+
+#[cfg(feature = "etcd")]
+use tracing::{debug, error, warn};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EtcdClusterStatus {
@@ -437,7 +466,9 @@ impl EtcdClusterHealthMonitor {
 
     #[cfg(feature = "etcd")]
     pub fn get_from_cache(&self, key: &str) -> Option<LocalCacheEntry> {
-        self.local_cache.get(key).map(|v| v.value().clone())
+        self.local_cache
+            .get(key)
+            .map(|v: &dashmap::mapref::one::Ref<'_, String, LocalCacheEntry>| v.value().clone())
     }
 
     #[cfg(feature = "etcd")]
@@ -793,24 +824,17 @@ impl EtcdDistributedLock {
 
         // 使用事务检查键是否存在，不存在则创建
         let txn = Txn::new()
-            .when(
-                etcd_client::Compare::value(
-                    etcd_client::CompareOp::Equal,
-                    lock_path.clone(),
-                    None, // version for MOD revision comparison
-                ),
-                etcd_client::CompareResult::Equal,
-                std::vec::Vec::new(), // empty success comparison target means "key doesn't exist"
-            )
-            .and_then(
-                etcd_client::TxnOp::put(
-                    lock_path.clone(),
-                    lock_value,
-                    Some(etcd_client::PutOptions::new().with_lease(lease_id)),
-                ),
-                vec![],
-            )
-            .or_else(etcd_client::TxnOp::get(lock_path.clone(), None), vec![]);
+            .when(etcd_client::Compare::create_revision(
+                lock_path.clone(),
+                etcd_client::CompareOp::Equal,
+                0,
+            ))
+            .and_then_ops(etcd_client::TxnOp::put(
+                lock_path.clone(),
+                lock_value,
+                Some(etcd_client::PutOptions::new().with_lease(lease_id)),
+            ))
+            .or_else_ops(etcd_client::TxnOp::get(lock_path.clone(), None));
 
         let mut client = self.client.lock().await;
         let response = client
@@ -818,7 +842,7 @@ impl EtcdDistributedLock {
             .await
             .map_err(|e| LockError::EtcdError(e.to_string()))?;
 
-        if response.succeeded {
+        if response.succeeded() {
             // 成功获取锁
             Ok(Some(lease_id))
         } else {

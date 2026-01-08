@@ -38,11 +38,12 @@ pub const DEFAULT_API_VERSION_HEADER: &str = "X-API-Version";
 pub static API_VERSION_HEADER: HeaderName = HeaderName::from_static("x-api-version");
 
 /// API 版本号
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ApiVersion {
-    /// 版本 1（当前稳定版本）
+    /// Version 1 (current stable)
+    #[default]
     V1,
-    /// 版本 2（未来版本，预留）
+    /// Version 2 (future version, reserved)
     V2,
 }
 
@@ -66,12 +67,6 @@ impl ApiVersion {
             ApiVersion::V1 => 1,
             ApiVersion::V2 => 2,
         }
-    }
-}
-
-impl Default for ApiVersion {
-    fn default() -> Self {
-        ApiVersion::V1
     }
 }
 

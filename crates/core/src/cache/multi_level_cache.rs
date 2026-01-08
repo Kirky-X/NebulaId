@@ -38,7 +38,7 @@ pub trait CacheBackend: Send + Sync {
 pub struct MultiLevelCache {
     l1_cache: Arc<DashMap<String, Arc<RingBuffer<u64>>>>,
     l1_access_time: Arc<DashMap<String, Instant>>, // 使用 DashMap 替代 RwLock<HashMap>，支持并发更新
-    l1_max_keys: usize,                           // L1 最大 key 数量限制
+    l1_max_keys: usize,                            // L1 最大 key 数量限制
     l2_buffer: DoubleBufferCache,
     l3_backend: Option<Arc<dyn CacheBackend>>,
     l1_capacity: usize,

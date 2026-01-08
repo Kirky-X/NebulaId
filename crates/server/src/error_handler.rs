@@ -52,7 +52,7 @@ pub fn handle_any_error<E: std::fmt::Display>(error: E) -> Response {
         request_id = %request_id,
         error = %error
     );
-    let response = ErrorResponse::new(500, format!("Internal server error"));
+    let response = ErrorResponse::new(500, "Internal server error".to_string());
     (StatusCode::INTERNAL_SERVER_ERROR, Json(response)).into_response()
 }
 

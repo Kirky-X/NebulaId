@@ -1815,8 +1815,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_repository_operations() {
-        let db_url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db_url =
+            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
@@ -1862,7 +1862,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_cascading_operations() {
-        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db_url =
+            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
@@ -2033,7 +2034,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_admin_api_key_prefix() {
-        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db_url =
+            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
@@ -2085,7 +2087,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_user_api_key_prefix() {
-        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db_url =
+            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
@@ -2152,7 +2155,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_api_key_with_custom_secret() {
-        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db_url =
+            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
@@ -2188,7 +2192,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_api_key_prefix_consistency() {
-        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db_url =
+            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
@@ -2225,7 +2230,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_api_key_secret_length_validation() {
-        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db_url =
+            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
@@ -2280,7 +2286,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_get_api_key_by_id_with_prefix() {
-        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db_url =
+            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 

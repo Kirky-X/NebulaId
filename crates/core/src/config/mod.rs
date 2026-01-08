@@ -156,14 +156,16 @@ impl Default for DatabaseConfig {
         }
 
         // SECURITY: Require environment variable for password in production
-        // In test mode, allow fallback to avoid breaking unit tests
+        // Test environments can use default password for integration tests
         let password = if cfg!(test) {
             std::env::var("NEBULA_DATABASE_PASSWORD")
-                .unwrap_or_else(|_| "test_password".to_string())
+                .unwrap_or_else(|_| {
+                    tracing::warn!("Using default test password for tests. Set NEBULA_DATABASE_PASSWORD in production.");
+                    "test_password".to_string()
+                })
         } else {
-            std::env::var("NEBULA_DATABASE_PASSWORD").expect(
-                "NEBULA_DATABASE_PASSWORD environment variable must be set for production use",
-            )
+            std::env::var("NEBULA_DATABASE_PASSWORD")
+                .expect("NEBULA_DATABASE_PASSWORD environment variable must be set")
         };
 
         Self {

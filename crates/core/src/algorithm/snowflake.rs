@@ -108,6 +108,14 @@ impl SnowflakeAlgorithm {
             self.clock_drift_ms.store(drift, Ordering::Relaxed);
             self.metrics.clock_backwards.fetch_add(1, Ordering::Relaxed);
 
+            tracing::warn!(
+                event = "snowflake_clock_backward",
+                current_timestamp = timestamp,
+                last_timestamp = last_ts,
+                drift_ms = drift,
+                threshold_ms = self.config.clock_drift_threshold_ms
+            );
+
             if drift > self.config.clock_drift_threshold_ms {
                 return Err(CoreError::ClockMovedBackward {
                     last_timestamp: last_ts,
@@ -150,6 +158,14 @@ impl SnowflakeAlgorithm {
             self.metrics
                 .sequence_overflows
                 .fetch_add(1, Ordering::Relaxed);
+
+            tracing::warn!(
+                event = "snowflake_sequence_overflow",
+                timestamp = timestamp,
+                sequence = seq,
+                mask = sequence_mask
+            );
+
             return Err(CoreError::SequenceOverflow { timestamp });
         }
 
@@ -204,7 +220,12 @@ impl IdAlgorithm for SnowflakeAlgorithm {
         while ids.len() < size && retries < MAX_RETRIES {
             match self.generate_id().await {
                 Ok(id) => ids.push(id),
-                Err(_) => {
+                Err(e) => {
+                    tracing::debug!(
+                        event = "snowflake_retry",
+                        retry = retries,
+                        error = %e
+                    );
                     tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
                     retries += 1;
                 }

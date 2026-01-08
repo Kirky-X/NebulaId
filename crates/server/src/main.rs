@@ -169,10 +169,26 @@ async fn load_api_keys(
                     match repo.create_api_key(&admin_request).await {
                         Ok(key) => {
                             info!(
-                                "Generated new admin API key: {} (workspace: None)",
+                                "Admin API key created: {} (workspace: None)",
                                 key.key.key_id
                             );
-                            info!("⚠️  ADMIN KEY SECRET (save this now): {}", key.key_secret);
+                            // WARN: Print secret to console only once - user must save it
+                            println!("\n╔════════════════════════════════════════════════════════════════════╗");
+                            println!("║           ⚠️  ADMIN API KEY GENERATED - SAVE NOW!              ║");
+                            println!("╠════════════════════════════════════════════════════════════════════╣");
+                            println!(
+                                "║  Key ID: {}                                                ║",
+                                key.key.key_id
+                            );
+                            println!(
+                                "║  Secret: {}                                    ║",
+                                key.key_secret
+                            );
+                            println!("║                                                                    ║");
+                            println!("║  ⚠️  THIS IS THE ONLY TIME THE SECRET WILL BE SHOWN!           ║");
+                            println!("║  Save it securely - you will need it for API authentication.    ║");
+                            println!("╚════════════════════════════════════════════════════════════════════╝\n");
+                            tracing::warn!("Admin API key secret printed to console - ensure it is saved securely");
                         }
                         Err(e) => {
                             error!("Failed to create admin API key: {}", e);

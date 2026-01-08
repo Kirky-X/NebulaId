@@ -79,8 +79,18 @@ impl AuthManager {
 
             // Generate a cryptographically secure random salt for development only
             let mut salt_bytes = [0u8; 32];
-            getrandom(&mut salt_bytes).expect("Failed to generate secure random salt");
-            hex::encode(salt_bytes)
+            if let Err(e) = getrandom(&mut salt_bytes) {
+                tracing::warn!(
+                    "Failed to generate secure random salt ({}). Using fallback salt. \
+                     This should not happen in production.",
+                    e
+                );
+                // Use a deterministic fallback for environments with limited entropy
+                // This is NOT cryptographically secure - only for development testing
+                "fallback_dev_salt_not_for_production".to_string()
+            } else {
+                hex::encode(salt_bytes)
+            }
         });
 
         // Cache configuration from environment variables
@@ -107,8 +117,15 @@ impl AuthManager {
     pub fn with_cache_settings(cache_ttl_seconds: i64, max_cache_size: usize) -> Self {
         let salt = std::env::var("NEBULA_API_KEY_SALT").unwrap_or_else(|_err| {
             let mut salt_bytes = [0u8; 32];
-            getrandom(&mut salt_bytes).expect("Failed to generate secure random salt");
-            hex::encode(salt_bytes)
+            if let Err(e) = getrandom(&mut salt_bytes) {
+                tracing::warn!(
+                    "Failed to generate secure random salt ({}). Using fallback.",
+                    e
+                );
+                "fallback_dev_salt_not_for_production".to_string()
+            } else {
+                hex::encode(salt_bytes)
+            }
         });
 
         Self {

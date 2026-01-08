@@ -581,6 +581,12 @@ impl ApiHandlers {
         limit: usize,
         offset: usize,
     ) -> Result<BizTagListResponse> {
+        if limit == 0 {
+            return Err(CoreError::InvalidInput(
+                "Pagination limit cannot be zero".to_string(),
+            ));
+        }
+
         let workspace_id = workspace_id.unwrap_or_else(uuid::Uuid::nil);
 
         let biz_tags: Vec<nebula_core::database::BizTag> = self
@@ -987,6 +993,129 @@ impl ApiHandlers {
             success: true,
             message: format!("API key {} revoked successfully", id),
         })
+    }
+
+    /// Rotate an API Key (generate new secret, keep old key active during grace period)
+    pub async fn rotate_api_key(&self, key_id: &str) -> Result<ApiKeyWithSecretResponse> {
+        use crate::models::ApiKeyResponse;
+
+        // Validate key_id parameter
+        if key_id.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "key_id cannot be empty".to_string(),
+            ));
+        }
+
+        let repo = self
+            .api_key_repo
+            .as_ref()
+            .ok_or_else(|| CoreError::NotFound("API key repository not configured".to_string()))?;
+
+        // Grace period: 7 days for old key to remain valid
+        const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60;
+
+        let key_with_secret = repo
+            .rotate_api_key(key_id, GRACE_PERIOD_SECONDS)
+            .await
+            .map_err(map_db_error)?;
+
+        tracing::info!(event = "api_key_rotated", key_id = key_id);
+
+        Ok(ApiKeyWithSecretResponse {
+            key: ApiKeyResponse {
+                id: key_with_secret.key.id.to_string(),
+                key_id: key_with_secret.key.key_id,
+                key_prefix: key_with_secret.key.key_prefix,
+                name: key_with_secret.key.name,
+                description: key_with_secret.key.description,
+                role: key_with_secret.key.role.to_string(),
+                rate_limit: key_with_secret.key.rate_limit,
+                enabled: key_with_secret.key.enabled,
+                expires_at: key_with_secret.key.expires_at.map(naive_to_rfc3339),
+                created_at: naive_to_rfc3339(key_with_secret.key.created_at),
+            },
+            key_secret: key_with_secret.key_secret,
+        })
+    }
+
+    /// Start background key rotation task
+    /// Returns a handle that can be used to stop the task
+    pub fn start_key_rotation_task(
+        &self,
+        check_interval: std::time::Duration,
+        max_key_age_days: i64,
+    ) -> Option<KeyRotationHandle> {
+        let repo = match self.api_key_repo.as_ref() {
+            Some(r) => r.clone(),
+            None => {
+                tracing::warn!("Cannot start key rotation task: API key repository not configured");
+                return None;
+            }
+        };
+
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let _handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(check_interval);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        tracing::debug!("Running key rotation check...");
+
+                        match repo.get_keys_older_than(max_key_age_days).await {
+                            Ok(old_keys) => {
+                                for key in old_keys {
+                                    tracing::info!(
+                                        event = "auto_rotating_key",
+                                        key_id = key.key_id,
+                                        age_days = max_key_age_days
+                                    );
+
+                                    const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60;
+                                    if let Err(e) =
+                                        repo.rotate_api_key(&key.key_id, GRACE_PERIOD_SECONDS).await
+                                    {
+                                        tracing::error!(
+                                            event = "key_rotation_failed",
+                                            key_id = key.key_id,
+                                            error = %e
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!(event = "key_rotation_check_failed", error = %e);
+                            }
+                        }
+                    }
+                    _ = shutdown_rx.changed() => {
+                        tracing::info!("Key rotation task shutting down...");
+                        break;
+                    }
+                }
+            }
+        });
+
+        tracing::info!(
+            event = "key_rotation_task_started",
+            check_interval_secs = check_interval.as_secs(),
+            max_age_days = max_key_age_days
+        );
+
+        Some(KeyRotationHandle { shutdown_tx })
+    }
+}
+
+/// Handle for managing the key rotation background task
+#[derive(Clone, Debug)]
+pub struct KeyRotationHandle {
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+}
+
+impl KeyRotationHandle {
+    /// Signal the key rotation task to stop
+    pub fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
     }
 }
 

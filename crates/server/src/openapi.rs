@@ -80,7 +80,6 @@ use crate::models::{
         )
     ),
     paths(
-        crate::openapi::swagger_ui_handler,
         crate::openapi::openapi_json_handler,
     ),
     components(
@@ -130,43 +129,27 @@ use crate::models::{
         (name = "groups", description = "Group management"),
         (name = "biz_tags", description = "Business tag management"),
         (name = "api_keys", description = "API key management"),
+        (name = "docs", description = "API documentation"),
     )
 )]
 pub struct ApiDoc;
 
-/// 创建 Swagger UI 路由
+/// 创建 Swagger UI 路由（预留）
 pub fn create_swagger_router() -> Router {
-    // 临时禁用 Swagger UI 以解决编译问题
-    // TODO: 修复 utoipa-swagger-ui 集成
     Router::new()
 }
 
-/// Swagger UI 处理器（用于 OpenAPI 文档生成）
+/// OpenAPI JSON 处理器
 #[utoipa::path(
     get,
-    path = "/api/docs/swagger-ui",
-    context_path = "/api/docs",
-    responses(
-        (status = 200, description = "Swagger UI page", body = String),
-    ),
-    tag = "health"
-)]
-pub async fn swagger_ui_handler() -> String {
-    String::from("Swagger UI")
-}
-
-/// OpenAPI JSON 处理器（用于 OpenAPI 规范生成）
-#[utoipa::path(
-    get,
-    path = "/api/docs/openapi.json",
-    context_path = "/api/docs",
+    path = "/api-docs/openapi.json",
     responses(
         (status = 200, description = "OpenAPI specification", content_type = "application/json"),
     ),
-    tag = "health"
+    tag = "docs"
 )]
-pub async fn openapi_json_handler() -> String {
-    String::from("OpenAPI JSON")
+pub async fn openapi_json_handler() -> impl axum::response::IntoResponse {
+    axum::Json(ApiDoc::openapi())
 }
 
 #[cfg(test)]

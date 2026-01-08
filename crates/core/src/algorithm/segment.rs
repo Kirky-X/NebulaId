@@ -718,7 +718,10 @@ impl IdAlgorithm for SegmentAlgorithm {
         }
 
         self.metrics.total_failed.fetch_add(1, Ordering::Relaxed);
-        Err(CoreError::SegmentExhausted { max_id: 0 })
+        let current = buffer.get_current();
+        let segment = current.inner.lock();
+        let max_id = segment.max_id.load(Ordering::Relaxed);
+        Err(CoreError::SegmentExhausted { max_id })
     }
 
     async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result<IdBatch> {
@@ -857,7 +860,9 @@ impl SegmentLoader for DefaultSegmentLoader {
         // Generate timestamp-based segment for uniqueness
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| crate::CoreError::InternalError(format!("Failed to get system time: {}", e)))?
+            .map_err(|e| {
+                crate::CoreError::InternalError(format!("Failed to get system time: {}", e))
+            })?
             .as_secs();
         let base_id = timestamp * 10000; // Use timestamp as base for uniqueness
 

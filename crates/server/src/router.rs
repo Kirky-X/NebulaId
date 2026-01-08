@@ -155,11 +155,14 @@ pub async fn create_router(
         .layer(axum::middleware::from_fn(api_version_middleware));
 
     // ========== Root Routes ==========
-    // Public router (no authentication) - only health check
-    // Note: Swagger UI temporarily disabled
+    // Public router (no authentication) - includes health check and API docs
     Router::new()
         .route("/health", get(handle_health))
         .route("/ready", get(handle_ready))
+        .route(
+            "/api-docs/openapi.json",
+            get(crate::openapi::openapi_json_handler),
+        )
         .merge(api_v1_routes)
         .with_state(app_state)
         // Security headers

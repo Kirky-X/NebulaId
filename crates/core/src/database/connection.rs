@@ -39,7 +39,7 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
         }
         if config.username.is_empty() {
             return Err(CoreError::ConfigurationError(
-                "Database username not configured".to_string()
+                "Database username not configured".to_string(),
             ));
         }
     }

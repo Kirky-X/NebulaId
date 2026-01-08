@@ -46,8 +46,13 @@ pub fn handle_core_error(error: CoreError) -> Response {
 
 /// Convert any error to HTTP response
 pub fn handle_any_error<E: std::fmt::Display>(error: E) -> Response {
-    tracing::error!("Unhandled error: {}", error);
-    let response = ErrorResponse::new(500, format!("Internal server error: {}", error));
+    let request_id = uuid::Uuid::new_v4().to_string();
+    tracing::error!(
+        event = "unhandled_error",
+        request_id = %request_id,
+        error = %error
+    );
+    let response = ErrorResponse::new(500, format!("Internal server error"));
     (StatusCode::INTERNAL_SERVER_ERROR, Json(response)).into_response()
 }
 

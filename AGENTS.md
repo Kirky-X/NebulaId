@@ -40,10 +40,10 @@ cargo clippy --all -- -D warnings -A clippy::derivable-clones -A clippy::redunda
 
 ```bash
 # Run all tests with 4 threads
-cargo test --all -- --test-threads=4
+cargo test -- --test-threads=4
 
 # Run all tests including slow tests
-cargo test --all
+cargo test
 
 # Run specific test by name
 cargo test test_name
@@ -60,14 +60,54 @@ cargo test -- degradation_
 cargo test --test integration
 
 # Skip slow tests
-cargo test --all -- --skip slow
+cargo test -- --skip slow
 
 # Run with output capture disabled
-cargo test --all -- --nocapture
+cargo test -- --nocapture
 
 # Test coverage
 cargo tarpaulin --out Html
 ```
+
+## CI/CD Workflows
+
+GitHub Actions workflows are located in `.github/workflows/`:
+
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `ci.yml` | Push/PR | Main CI: lint, build, test, security audit |
+| `code-review.yml` | Push/PR | AI-powered code review |
+| `release.yml` | Tag `v*` | Multi-platform release builds |
+
+### CI Pipeline (ci.yml)
+
+```bash
+# Jobs run in sequence: quick-check → build → test → security-audit
+```
+
+**Quick Check Job:**
+- Format validation: `cargo fmt --all -- --check`
+- Clippy lint (lib + bins only): `cargo clippy --lib --bins`
+
+**Build Job:**
+- Compile all workspace crates: `cargo build --workspace`
+
+**Test Job:**
+- Run all tests: `cargo test --workspace`
+- Generate coverage for PRs (codecov)
+
+**Security Audit Job:**
+- Vulnerability scanning: `cargo deny check security`
+
+### Pre-commit Check Script
+
+Use the local CI script before committing:
+
+```bash
+./scripts/pre-commit-check.sh
+```
+
+This runs the same checks as the CI pipeline locally.
 
 ## Code Style Guidelines
 

@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".gitignore"
+      - "LICENSE*"
+  pull_request:
+    branches: [main, develop]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".gitignore"
+      - "LICENSE*"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_LOG: info
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick-check:
+    name: Quick Check (fmt + lint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "nebula-ci"
+          cache-targets: false
+
+      - name: Format Check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy Lint (lib + bins only)
+        run: cargo clippy --lib --bins -- -D warnings -A clippy::derivable-clones -A clippy::redundant-pub-crate
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: quick-check
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "nebula-ci"
+          cache-targets: false
+
+      - name: Build Project
+        run: cargo build --workspace
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "nebula-ci"
+          cache-targets: false
+
+      - name: Run Tests
+        run: cargo test --workspace
+
+      - name: Generate Code Coverage
+        if: github.event_name == 'pull_request'
+        uses: actions-rs/grcov@v0
+        with:
+          output_type: codecov
+          output_file: cobertura.xml
+        continue-on-error: true
+
+      - name: Upload Coverage Report
+        if: github.event_name == 'pull_request' && success()
+        uses: codecov/codecov-action@v5
+        with:
+          files: cobertura.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+          verbose: true
+        continue-on-error: true
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v1
+        with:
+          command: check security
+          log-level: warn

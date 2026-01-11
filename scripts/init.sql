@@ -157,14 +157,18 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
 
 -- ID generation logs (sampled)
 CREATE TABLE IF NOT EXISTS id_generation_logs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID DEFAULT gen_random_uuid(),
     workspace_id UUID NOT NULL,
     group_id UUID NOT NULL,
     biz_tag_id UUID NOT NULL,
     algorithm VARCHAR(50) NOT NULL,
     id_value VARCHAR(255) NOT NULL,
     latency_ms DECIMAL(10, 3),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
+
+-- Create default partition
+CREATE TABLE IF NOT EXISTS id_generation_logs_default PARTITION OF id_generation_logs DEFAULT;
 
 CREATE INDEX IF NOT EXISTS idx_id_gen_logs_lookup ON id_generation_logs(workspace_id, group_id, biz_tag_id);

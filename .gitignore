@@ -92,6 +92,7 @@ pytest.ini
 tox.ini
 test_results_*.txt
 test-results/
+server.pid
 
 # -----------------------------------------------------------------------------
 # Documentation Build Output

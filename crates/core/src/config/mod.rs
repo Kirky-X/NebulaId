@@ -33,6 +33,7 @@ pub type ConfigResult<T> = std::result::Result<T, ConfigError>;
 
 /// Database engine types supported by Nebula ID
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum DatabaseEngine {
     /// PostgreSQL database
     Postgresql,
@@ -123,12 +124,13 @@ impl AppConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DatabaseConfig {
     pub engine: DatabaseEngine,
-    pub url: String,
     pub host: String,
     pub port: u16,
     pub username: String,
     pub password: String,
     pub database: String,
+    #[serde(default)]
+    pub url: String,
     pub max_connections: u32,
     pub min_connections: u32,
     pub acquire_timeout_seconds: u64,
@@ -369,6 +371,7 @@ impl Default for MonitoringConfig {
 
 /// Log level for the application
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     /// Trace level - most verbose
     Trace,
@@ -415,6 +418,7 @@ impl From<String> for LogLevel {
 
 /// Log format for the application
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum LogFormat {
     /// JSON format - structured logging
     Json,
@@ -511,8 +515,10 @@ pub struct TlsConfig {
     pub http_enabled: bool,
     pub grpc_enabled: bool,
     /// 最低 TLS 版本 (默认: TLS 1.3)
+    #[serde(default)]
     pub min_tls_version: TlsVersion,
     /// ALPN 协议列表，用于 HTTP/2 支持
+    #[serde(default)]
     pub alpn_protocols: Vec<String>,
 }
 

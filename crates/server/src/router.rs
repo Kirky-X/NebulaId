@@ -84,7 +84,6 @@ pub async fn create_router(
     // ========== V1 API Routes ==========
     // Admin-only endpoints (require admin API key)
     let v1_admin_routes = Router::new()
-        .route("/metrics", get(handle_metrics))
         // API Key management endpoints (admin only)
         .route(
             "/api-keys",
@@ -155,10 +154,11 @@ pub async fn create_router(
         .layer(axum::middleware::from_fn(api_version_middleware));
 
     // ========== Root Routes ==========
-    // Public router (no authentication) - includes health check and API docs
+    // Public router (no authentication) - includes health check and metrics
     Router::new()
         .route("/health", get(handle_health))
         .route("/ready", get(handle_ready))
+        .route("/metrics", get(handle_metrics))
         .route(
             "/api-docs/openapi.json",
             get(crate::openapi::openapi_json_handler),

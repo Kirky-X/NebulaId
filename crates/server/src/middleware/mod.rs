@@ -91,8 +91,13 @@ impl ApiKeyAuth {
             return false;
         }
 
-        failures.push(now);
         true
+    }
+
+    fn record_auth_failure(&self, client_ip: &str) {
+        let now = Instant::now();
+        let mut failures = self.auth_failures.entry(client_ip.to_string()).or_default();
+        failures.push(now);
     }
 
     fn too_many_requests_response(&self) -> Response {
@@ -182,7 +187,7 @@ impl ApiKeyAuth {
                                     reason = "invalid_basic_format",
                                     "Invalid Basic auth format: no colon separator"
                                 );
-                                return self.unauthorized_response();
+                                return self.unauthorized_response(&client_ip);
                             }
                         } else {
                             tracing::warn!(
@@ -190,7 +195,7 @@ impl ApiKeyAuth {
                                 reason = "invalid_encoding",
                                 "Invalid Base64 encoding in auth header"
                             );
-                            return self.unauthorized_response();
+                            return self.unauthorized_response(&client_ip);
                         }
                     } else {
                         tracing::warn!(
@@ -198,7 +203,7 @@ impl ApiKeyAuth {
                             reason = "base64_decode_failed",
                             "Failed to decode Base64 auth header"
                         );
-                        return self.unauthorized_response();
+                        return self.unauthorized_response(&client_ip);
                     }
                 } else if let Some(api_key) = value.strip_prefix("ApiKey ") {
                     let parts: Vec<&str> = api_key.splitn(2, ':').collect();
@@ -210,7 +215,7 @@ impl ApiKeyAuth {
                             reason = "invalid_apikey_format",
                             "Invalid ApiKey format: no colon separator"
                         );
-                        return self.unauthorized_response();
+                        return self.unauthorized_response(&client_ip);
                     }
                 } else {
                     tracing::warn!(
@@ -218,7 +223,7 @@ impl ApiKeyAuth {
                         reason = "unsupported_format",
                         "Unsupported auth format"
                     );
-                    return self.unauthorized_response();
+                    return self.unauthorized_response(&client_ip);
                 };
 
                 // Validate input lengths to prevent empty credentials
@@ -228,7 +233,7 @@ impl ApiKeyAuth {
                         reason = "empty_credentials",
                         "Empty key_id or key_secret"
                     );
-                    return self.unauthorized_response();
+                    return self.unauthorized_response(&client_ip);
                 }
 
                 if let Some((workspace_id, role)) = self.validate_key(&key_id, &key_secret).await {
@@ -245,10 +250,11 @@ impl ApiKeyAuth {
 
         // Return 401 for both unknown routes and missing auth to avoid information disclosure
         // This prevents attackers from discovering which API endpoints exist
-        self.unauthorized_response()
+        self.unauthorized_response(&client_ip)
     }
 
-    fn unauthorized_response(&self) -> Response {
+    fn unauthorized_response(&self, client_ip: &str) -> Response {
+        self.record_auth_failure(client_ip);
         let response = axum::Json(serde_json::json!({
             "code": 401,
             "message": "Invalid or missing API key"

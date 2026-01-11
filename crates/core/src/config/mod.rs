@@ -235,7 +235,14 @@ pub struct ApiKeyEntry {
 pub struct AuthConfig {
     pub enabled: bool,
     pub cache_ttl_seconds: u64,
+    #[serde(default)]
     pub api_keys: Vec<ApiKeyEntry>,
+    #[serde(default = "default_api_key_salt")]
+    pub api_key_salt: String,
+}
+
+fn default_api_key_salt() -> String {
+    std::env::var("NEBULA_API_KEY_SALT").unwrap_or_else(|_| "nebula_default_salt".to_string())
 }
 
 impl Default for AuthConfig {
@@ -244,6 +251,7 @@ impl Default for AuthConfig {
             enabled: true,
             cache_ttl_seconds: 300,
             api_keys: vec![], // Configure via config.toml or environment variables
+            api_key_salt: default_api_key_salt(),
         }
     }
 }

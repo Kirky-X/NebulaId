@@ -15,6 +15,7 @@
 #![allow(dead_code)]
 
 use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use rand::Rng;
 use sea_orm::{
@@ -22,7 +23,7 @@ use sea_orm::{
     TransactionTrait,
 };
 use serde_json::to_string;
-use sha2::Digest;
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tracing::{debug, info};
 use uuid::Uuid;
@@ -195,6 +196,8 @@ use crate::database::workspace_entity::{CreateWorkspaceRequest, UpdateWorkspaceR
 
 pub struct SeaOrmRepository {
     db: sea_orm::DatabaseConnection,
+    /// Salt for API key hashing
+    salt: String,
     /// 分布式锁（可选，用于 segment 分配）
     #[cfg(feature = "etcd")]
     distributed_lock: Option<std::sync::Arc<dyn crate::coordinator::DistributedLock + Send + Sync>>,
@@ -204,11 +207,21 @@ pub struct SeaOrmRepository {
 }
 
 impl SeaOrmRepository {
-    pub fn new(db: sea_orm::DatabaseConnection) -> Self {
+    pub fn new(db: sea_orm::DatabaseConnection, salt: String) -> Self {
         Self {
             db,
+            salt,
             distributed_lock: None,
         }
+    }
+
+    /// Hash API key using salt
+    fn hash_key(&self, key_id: &str, key_secret: &str) -> String {
+        let input = format!("{}:{}:{}", self.salt, key_id, key_secret);
+        let mut hasher = Sha256::new();
+        hasher.update(input.as_bytes());
+        let result = hasher.finalize();
+        STANDARD.encode(result)
     }
 
     /// 设置分布式锁
@@ -877,7 +890,7 @@ impl ApiKeyRepository for SeaOrmRepository {
         let key_id = uuid.to_string();
         // Use provided secret or generate a new one
         let key_secret = request.key_secret.clone().unwrap_or_else(generate_secret);
-        let key_secret_hash = hash_secret(&key_secret);
+
         let prefix = match request.role {
             ApiKeyRole::Admin => "niad_",
             ApiKeyRole::User => "nino_",
@@ -885,6 +898,8 @@ impl ApiKeyRepository for SeaOrmRepository {
 
         // Store full key_id with prefix for consistency
         let full_key_id = format!("{}{}", prefix, key_id);
+
+        let key_secret_hash = self.hash_key(&full_key_id, &key_secret);
 
         // Calculate expiration: use provided or default to 30 days from now
         let now = chrono::Utc::now();
@@ -966,7 +981,7 @@ impl ApiKeyRepository for SeaOrmRepository {
                 }
             }
 
-            let expected_hash = hash_secret(key_secret);
+            let expected_hash = self.hash_key(key_id, key_secret);
             if expected_hash
                 .as_bytes()
                 .ct_eq(model.key_secret_hash.as_bytes())
@@ -1107,7 +1122,7 @@ impl ApiKeyRepository for SeaOrmRepository {
 
         // 生成新密钥
         let new_secret = generate_secret();
-        let new_secret_hash = hash_secret(&new_secret);
+        let new_secret_hash = self.hash_key(&key_data.key_id, &new_secret);
         let now = chrono::Utc::now().naive_utc();
 
         // 更新数据库
@@ -1551,13 +1566,6 @@ fn generate_secret() -> String {
     secret
 }
 
-/// Hash a secret using SHA-256
-fn hash_secret(secret: &str) -> String {
-    let mut hasher = sha2::Sha256::default();
-    hasher.update(secret);
-    hex::encode(hasher.finalize())
-}
-
 /// No-op lock guard for when distributed lock is not configured
 /// Used as a fallback to maintain consistent API without requiring distributed locking
 struct NoopLockGuard;
@@ -1620,32 +1628,6 @@ mod prefix_tests {
     fn test_generate_secret_length() {
         let secret = generate_secret();
         assert_eq!(secret.len(), 32, "Generated secret should be 32 characters");
-    }
-
-    #[test]
-    fn test_hash_secret_consistency() {
-        let secret = "test_secret";
-        let hash1 = hash_secret(secret);
-        let hash2 = hash_secret(secret);
-
-        assert_eq!(
-            hash1, hash2,
-            "Hashing same secret should produce same result"
-        );
-        assert_eq!(hash1.len(), 64, "SHA-256 hash should be 64 hex characters");
-    }
-
-    #[test]
-    fn test_hash_secret_uniqueness() {
-        let secret1 = "secret_one";
-        let secret2 = "secret_two";
-        let hash1 = hash_secret(secret1);
-        let hash2 = hash_secret(secret2);
-
-        assert_ne!(
-            hash1, hash2,
-            "Different secrets should produce different hashes"
-        );
     }
 }
 

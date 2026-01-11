@@ -440,7 +440,10 @@ async fn main() -> Result<()> {
     };
 
     let repository: Option<Arc<database::SeaOrmRepository>> = db_connection.map(|conn| {
-        let repo = Arc::new(database::SeaOrmRepository::new(conn));
+        let repo = Arc::new(database::SeaOrmRepository::new(
+            conn,
+            config.auth.api_key_salt.clone(),
+        ));
         info!("Database repository initialized");
         repo
     });

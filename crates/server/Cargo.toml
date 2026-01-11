@@ -98,6 +98,7 @@ rustls-pemfile = { workspace = true }
 
 # 基础组件
 bytes = { workspace = true }
+arc-swap.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }

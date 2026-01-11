@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use arc_swap::ArcSwap;
 use nebula_core::config::Config;
 use nebula_core::types::id::AlgorithmType;
 use nebula_core::types::Result;
@@ -23,7 +24,7 @@ use tracing::{error, info, warn};
 
 #[derive(Clone)]
 pub struct HotReloadConfig {
-    config: Arc<RwLock<Config>>,
+    config: Arc<ArcSwap<Config>>,
     config_path: String,
     #[allow(clippy::type_complexity)]
     reload_callbacks: Arc<RwLock<Vec<Arc<dyn Fn(Config) + Send + Sync>>>>,
@@ -34,7 +35,7 @@ pub struct HotReloadConfig {
 impl HotReloadConfig {
     pub fn new(config: Config, config_path: String) -> Self {
         Self {
-            config: Arc::new(RwLock::new(config)),
+            config: Arc::new(ArcSwap::from_pointee(config)),
             config_path,
             reload_callbacks: Arc::new(RwLock::new(Vec::new())),
             audit_logger: None,
@@ -48,7 +49,7 @@ impl HotReloadConfig {
     }
 
     pub fn get_config(&self) -> Config {
-        self.config.read().unwrap().clone()
+        self.config.load().as_ref().clone()
     }
 
     pub fn add_reload_callback<F>(&self, callback: F)
@@ -79,12 +80,8 @@ impl HotReloadConfig {
             }
         };
 
-        let old_config = {
-            let mut config = self.config.write().unwrap();
-            let old = config.clone();
-            *config = new_config.clone();
-            old
-        };
+        let old_config = self.config.load().as_ref().clone();
+        self.config.store(Arc::new(new_config.clone()));
 
         let callbacks: Vec<_> = {
             let callbacks = self.reload_callbacks.read().unwrap();
@@ -180,10 +177,8 @@ impl HotReloadConfig {
     }
 
     pub fn update_config(&self, new_config: Config) {
-        let mut config = self.config.write().unwrap();
-        let old_config = config.clone();
-        *config = new_config.clone();
-        drop(config);
+        let old_config = self.config.load().as_ref().clone();
+        self.config.store(Arc::new(new_config.clone()));
 
         let callbacks = self.reload_callbacks.read().unwrap();
         for callback in callbacks.iter() {

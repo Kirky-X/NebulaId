@@ -30,8 +30,14 @@ impl From<DbErr> for CoreError {
 }
 
 pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnection, CoreError> {
-    // Validate database password
-    if config.engine != crate::config::DatabaseEngine::Sqlite {
+    // Check if we are using a complete connection string URL
+    let use_full_url = config.url.starts_with("postgresql://")
+        || config.url.starts_with("mysql://")
+        || config.url.starts_with("sqlite://")
+        || config.url.starts_with("postgres://");
+
+    // Validate database password only if not using full URL and not Sqlite
+    if !use_full_url && config.engine != crate::config::DatabaseEngine::Sqlite {
         if config.password.is_empty() || config.password.contains("${") {
             return Err(CoreError::ConfigurationError(
                 "Database password not configured. Set NEBULA_DATABASE_PASSWORD environment variable".to_string()
@@ -45,11 +51,7 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
     }
 
     // Use URL if it's a complete connection string, otherwise construct from parts
-    let final_url = if config.url.starts_with("postgresql://")
-        || config.url.starts_with("mysql://")
-        || config.url.starts_with("sqlite://")
-        || config.url.starts_with("postgres://")
-    {
+    let final_url = if use_full_url {
         config.url.clone()
     } else {
         match config.engine {

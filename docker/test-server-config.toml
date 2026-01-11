@@ -1,0 +1,50 @@
+[app]
+name = "nebula-id"
+host = "0.0.0.0"
+http_port = 8080
+grpc_port = 50051
+dc_id = 0
+worker_id = 0
+
+[logging]
+level = "info"
+format = "json"
+
+[database]
+engine = "postgresql"
+host = "localhost"
+port = 5432
+database = "idgen"
+username = "idgen"
+password = "idgen123"
+max_connections = 50
+min_connections = 5
+
+[redis]
+url = "redis://localhost:6379"
+pool_size = 16
+
+[algorithm]
+default = "snowflake"
+
+[algorithm.snowflake]
+datacenter_id_bits = 3
+worker_id_bits = 8
+sequence_bits = 10
+
+[monitoring]
+metrics_enabled = true
+metrics_path = "/metrics"
+
+[rate_limit]
+enabled = false
+
+[tls]
+enabled = false
+
+[auth]
+enabled = false
+api_key_salt = "test"
+
+[etcd]
+endpoints = ["http://localhost:2379"]

@@ -55,9 +55,9 @@ tracing_enabled = false
 otlp_endpoint = ""
 
 [rate_limit]
-enabled = false
-default_rps = 10000
-burst_size = 5000
+enabled = true
+default_rps = 1000
+burst_size = 1000
 
 [tls]
 enabled = false
@@ -70,12 +70,10 @@ key_path = ""
 max_batch_size = 100
 
 [auth]
-enabled = true
+enabled = false
 cache_ttl_seconds = 300
 api_key_salt = "test"
-api_keys = [
-    { key_id = "admin001", key_secret = "admin123", workspace = "default", role = "admin", rate_limit = 10000, name = "Test Admin" }
-]
+api_keys = []
 
 [etcd]
 endpoints = ["http://localhost:2379"]

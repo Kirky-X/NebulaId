@@ -37,34 +37,24 @@ pub struct ApiKeyData {
     pub cached_at: DateTime<Utc>,
 }
 
-#[derive(Debug)]
-pub struct AuthManager {
-    /// LRU cache for API keys with size limit
-    keys: Arc<Mutex<LruCache<String, ApiKeyData>>>,
-    /// Salt for key hashing - prevents rainbow table attacks
-    salt: String,
-    /// Cache TTL in seconds (default: 5 minutes)
-    cache_ttl_seconds: i64,
-    /// Maximum cache size (default: 10000)
-    max_cache_size: NonZeroUsize,
+#[derive(Debug, Clone)]
+pub struct AuthConfig {
+    pub salt: String,
+    pub cache_ttl_seconds: i64,
+    pub max_cache_size: NonZeroUsize,
 }
 
-impl Default for AuthManager {
+impl Default for AuthConfig {
     fn default() -> Self {
-        Self::new()
+        Self::from_env()
     }
 }
 
-impl AuthManager {
-    pub fn new() -> Self {
+impl AuthConfig {
+    pub fn from_env() -> Self {
         // Generate or load a secure salt for key hashing
         let salt = std::env::var("NEBULA_API_KEY_SALT").unwrap_or_else(|_err| {
-            let is_production = std::env::var("NEBULA_ENV")
-                .unwrap_or_else(|_| "development".to_string())
-                .to_lowercase()
-                == "production";
-
-            if is_production {
+            if crate::config::is_production() {
                 tracing::error!("NEBULA_API_KEY_SALT environment variable not set. This is a critical security issue.");
                 panic!(
                     "NEBULA_API_KEY_SALT must be set to a fixed value for production use. \
@@ -106,36 +96,38 @@ impl AuthManager {
             .unwrap_or(NonZeroUsize::new(10000).unwrap()); // Default: 10000 entries
 
         Self {
-            keys: Arc::new(Mutex::new(LruCache::new(max_cache_size))),
             salt,
             cache_ttl_seconds,
             max_cache_size,
         }
     }
+}
 
-    /// Create AuthManager with custom cache settings
-    pub fn with_cache_settings(cache_ttl_seconds: i64, max_cache_size: usize) -> Self {
-        let salt = std::env::var("NEBULA_API_KEY_SALT").unwrap_or_else(|_err| {
-            let mut salt_bytes = [0u8; 32];
-            if let Err(e) = getrandom(&mut salt_bytes) {
-                tracing::warn!(
-                    "Failed to generate secure random salt ({}). Using fallback.",
-                    e
-                );
-                "fallback_dev_salt_not_for_production".to_string()
-            } else {
-                hex::encode(salt_bytes)
-            }
-        });
+#[derive(Debug)]
+pub struct AuthManager {
+    /// LRU cache for API keys with size limit
+    keys: Arc<Mutex<LruCache<String, ApiKeyData>>>,
+    /// Salt for key hashing - prevents rainbow table attacks
+    salt: String,
+    /// Cache TTL in seconds (default: 5 minutes)
+    cache_ttl_seconds: i64,
+    /// Maximum cache size (default: 10000)
+    max_cache_size: NonZeroUsize,
+}
 
+impl Default for AuthManager {
+    fn default() -> Self {
+        Self::new(AuthConfig::from_env())
+    }
+}
+
+impl AuthManager {
+    pub fn new(config: AuthConfig) -> Self {
         Self {
-            keys: Arc::new(Mutex::new(LruCache::new(
-                NonZeroUsize::new(max_cache_size).unwrap_or(NonZeroUsize::new(10000).unwrap()),
-            ))),
-            salt,
-            cache_ttl_seconds,
-            max_cache_size: NonZeroUsize::new(max_cache_size)
-                .unwrap_or(NonZeroUsize::new(10000).unwrap()),
+            keys: Arc::new(Mutex::new(LruCache::new(config.max_cache_size))),
+            salt: config.salt,
+            cache_ttl_seconds: config.cache_ttl_seconds,
+            max_cache_size: config.max_cache_size,
         }
     }
 
@@ -317,7 +309,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_api_key_creation_and_validation() {
-        let manager = AuthManager::new();
+        let manager = AuthManager::default();
 
         let key_id = manager
             .add_key(
@@ -340,7 +332,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_key_revocation() {
-        let manager = AuthManager::new();
+        let manager = AuthManager::default();
 
         let key_id = manager
             .add_key(
@@ -362,7 +354,12 @@ mod tests {
     #[tokio::test]
     async fn test_cache_ttl() {
         // Create manager with very short TTL (1 second)
-        let manager = AuthManager::with_cache_settings(1, 100);
+        let config = AuthConfig {
+            salt: "test_salt".to_string(),
+            cache_ttl_seconds: 1,
+            max_cache_size: NonZeroUsize::new(100).unwrap(),
+        };
+        let manager = AuthManager::new(config);
 
         let key_id = manager
             .add_key(
@@ -387,7 +384,12 @@ mod tests {
     #[tokio::test]
     async fn test_cache_size_limit() {
         // Create manager with small cache size (3)
-        let manager = AuthManager::with_cache_settings(300, 3);
+        let config = AuthConfig {
+            salt: "test_salt".to_string(),
+            cache_ttl_seconds: 300,
+            max_cache_size: NonZeroUsize::new(3).unwrap(),
+        };
+        let manager = AuthManager::new(config);
 
         // Add 5 keys
         let mut key_ids = Vec::new();
@@ -416,7 +418,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_cleanup_expired_keys() {
-        let manager = AuthManager::with_cache_settings(1, 100);
+        let config = AuthConfig {
+            salt: "test_salt".to_string(),
+            cache_ttl_seconds: 1,
+            max_cache_size: NonZeroUsize::new(100).unwrap(),
+        };
+        let manager = AuthManager::new(config);
 
         // Add a key
         let key_id = manager
@@ -442,7 +449,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_stats() {
-        let manager = AuthManager::new();
+        let manager = AuthManager::default();
 
         // Add some keys
         for i in 0..5 {
@@ -465,7 +472,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_clear_cache() {
-        let manager = AuthManager::new();
+        let manager = AuthManager::default();
 
         // Add some keys
         for i in 0..5 {

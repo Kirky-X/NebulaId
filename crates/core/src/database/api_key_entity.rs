@@ -122,6 +122,7 @@ pub struct CreateApiKeyRequest {
     pub rate_limit: Option<i32>,
     pub expires_at: Option<DateTime>,
     pub key_secret: Option<String>, // Optional: use provided secret instead of generating
+    pub key_id: Option<String>,     // Optional: use provided key_id instead of generating
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

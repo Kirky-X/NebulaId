@@ -879,25 +879,31 @@ impl ApiKeyRepository for SeaOrmRepository {
     async fn create_api_key(&self, request: &CreateApiKeyRequest) -> Result<ApiKeyWithSecret> {
         // Validate key_secret length if provided (prevent DoS attacks)
         if let Some(ref secret) = request.key_secret {
-            if secret.len() < 16 || secret.len() > 128 {
+            if secret.len() < 8 || secret.len() > 128 {
                 return Err(crate::CoreError::InvalidInput(
-                    "key_secret must be between 16 and 128 characters".to_string(),
+                    "key_secret must be between 8 and 128 characters".to_string(),
                 ));
             }
         }
-
-        let uuid = Uuid::new_v4();
-        let key_id = uuid.to_string();
-        // Use provided secret or generate a new one
-        let key_secret = request.key_secret.clone().unwrap_or_else(generate_secret);
 
         let prefix = match request.role {
             ApiKeyRole::Admin => "niad_",
             ApiKeyRole::User => "nino_",
         };
 
-        // Store full key_id with prefix for consistency
-        let full_key_id = format!("{}{}", prefix, key_id);
+        let full_key_id = if let Some(ref kid) = request.key_id {
+            if kid.starts_with(prefix) {
+                kid.clone()
+            } else {
+                format!("{}{}", prefix, kid)
+            }
+        } else {
+            let uuid = Uuid::new_v4();
+            format!("{}{}", prefix, uuid)
+        };
+
+        // Use provided secret or generate a new one
+        let key_secret = request.key_secret.clone().unwrap_or_else(generate_secret);
 
         let key_secret_hash = self.hash_key(&full_key_id, &key_secret);
 
@@ -1802,7 +1808,7 @@ mod tests {
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
-        let repo = SeaOrmRepository::new(db);
+        let repo = SeaOrmRepository::new(db, "test_salt".to_string());
 
         // Use unique names to avoid conflicts
         let unique_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
@@ -1849,7 +1855,7 @@ mod tests {
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
-        let repo = SeaOrmRepository::new(db);
+        let repo = SeaOrmRepository::new(db, "test_salt".to_string());
 
         // Use unique names to avoid conflicts
         let unique_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
@@ -2021,7 +2027,7 @@ mod tests {
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
-        let repo = SeaOrmRepository::new(db);
+        let repo = SeaOrmRepository::new(db, "test_salt".to_string());
 
         let admin_key = repo
             .create_api_key(&CreateApiKeyRequest {
@@ -2032,6 +2038,7 @@ mod tests {
                 rate_limit: Some(10000),
                 expires_at: None,
                 key_secret: None,
+                key_id: None,
             })
             .await
             .unwrap();
@@ -2074,7 +2081,7 @@ mod tests {
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
-        let repo = SeaOrmRepository::new(db);
+        let repo = SeaOrmRepository::new(db, "test_salt".to_string());
 
         // Use unique names to avoid conflicts
         let unique_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
@@ -2100,6 +2107,7 @@ mod tests {
                 rate_limit: Some(5000),
                 expires_at: None,
                 key_secret: None,
+                key_id: None,
             })
             .await
             .unwrap();
@@ -2142,7 +2150,7 @@ mod tests {
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
-        let repo = SeaOrmRepository::new(db);
+        let repo = SeaOrmRepository::new(db, "test_salt".to_string());
 
         let custom_secret = "my_custom_secret_for_testing_12345".to_string();
 
@@ -2155,6 +2163,7 @@ mod tests {
                 rate_limit: Some(8000),
                 expires_at: None,
                 key_secret: Some(custom_secret.clone()),
+                key_id: None,
             })
             .await
             .unwrap();
@@ -2179,7 +2188,7 @@ mod tests {
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
-        let repo = SeaOrmRepository::new(db);
+        let repo = SeaOrmRepository::new(db, "test_salt".to_string());
 
         // Create multiple keys and verify all are consistent
         for i in 0..3 {
@@ -2192,6 +2201,7 @@ mod tests {
                     rate_limit: None,
                     expires_at: None,
                     key_secret: None,
+                    key_id: None,
                 })
                 .await
                 .unwrap();
@@ -2217,7 +2227,7 @@ mod tests {
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
-        let repo = SeaOrmRepository::new(db);
+        let repo = SeaOrmRepository::new(db, "test_salt".to_string());
 
         // Test too short secret
         let result = repo
@@ -2229,6 +2239,7 @@ mod tests {
                 rate_limit: None,
                 expires_at: None,
                 key_secret: Some("short".to_string()),
+                key_id: None,
             })
             .await;
 
@@ -2255,6 +2266,7 @@ mod tests {
                 rate_limit: None,
                 expires_at: None,
                 key_secret: Some(too_long),
+                key_id: None,
             })
             .await;
 
@@ -2273,7 +2285,7 @@ mod tests {
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
-        let repo = SeaOrmRepository::new(db);
+        let repo = SeaOrmRepository::new(db, "test_salt".to_string());
 
         let admin_key = repo
             .create_api_key(&CreateApiKeyRequest {
@@ -2284,6 +2296,7 @@ mod tests {
                 rate_limit: None,
                 expires_at: None,
                 key_secret: None,
+                key_id: None,
             })
             .await
             .unwrap();

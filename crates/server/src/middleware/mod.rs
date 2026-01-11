@@ -63,13 +63,15 @@ impl From<ApiKeyRole> for nebula_core::database::ApiKeyRole {
 #[derive(Clone)]
 pub struct ApiKeyAuth {
     pub(crate) repo: Arc<dyn ApiKeyRepository>,
+    pub(crate) enabled: bool,
     auth_failures: Arc<DashMap<String, Vec<Instant>>>, // IP -> failure timestamps
 }
 
 impl ApiKeyAuth {
-    pub fn new(repo: Arc<dyn ApiKeyRepository>) -> Self {
+    pub fn new(repo: Arc<dyn ApiKeyRepository>, enabled: bool) -> Self {
         Self {
             repo,
+            enabled,
             auth_failures: Arc::new(DashMap::new()),
         }
     }
@@ -155,6 +157,14 @@ impl ApiKeyAuth {
     }
 
     pub async fn auth_middleware(&self, mut req: Request<Body>, next: Next) -> Response {
+        // 如果认证禁用，直接跳过认证，设置默认扩展值
+        if !self.enabled {
+            // 设置默认的 workspace_id 和 role 扩展
+            req.extensions_mut().insert(None::<uuid::Uuid>);
+            req.extensions_mut().insert(ApiKeyRole::User);
+            return next.run(req).await;
+        }
+
         let path = req.uri().path().to_string();
         tracing::debug!(event = "auth_middleware", path = %path, "Auth middleware called");
 
@@ -422,7 +432,7 @@ mod tests {
         );
 
         let repo = MockApiKeyRepo { keys: mock_keys };
-        let auth = ApiKeyAuth::new(Arc::new(repo));
+        let auth = ApiKeyAuth::new(Arc::new(repo), true);
 
         // Test valid user key
         let result = auth.validate_key("test-key-id", "test-secret").await;

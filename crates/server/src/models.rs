@@ -300,7 +300,7 @@ pub struct ParseRequest {
     #[validate(length(min = 1, max = 64))]
     pub biz_tag: String,
 
-    #[validate(length(min = 1, max = 32))]
+    #[validate(length(min = 0, max = 32))]
     #[serde(default)]
     pub algorithm: String,
 }

@@ -662,6 +662,7 @@ impl ApiHandlers {
             rate_limit: Some(10000),
             expires_at: None,
             key_secret: None,
+            key_id: None,
         };
 
         let user_key = repo
@@ -731,6 +732,7 @@ impl ApiHandlers {
             rate_limit: Some(10000),
             expires_at: None,
             key_secret: None,
+            key_id: None,
         };
 
         let user_key = repo
@@ -884,6 +886,7 @@ impl ApiHandlers {
             rate_limit: req.rate_limit,
             expires_at,
             key_secret: None,
+            key_id: None,
         };
 
         let key_with_secret = repo.create_api_key(&core_req).await.map_err(map_db_error)?;

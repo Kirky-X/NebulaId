@@ -29,6 +29,7 @@ use nebula_server::proto::nebula::id::v1::nebula_id_service_server::NebulaIdServ
 use nebula_server::rate_limit::RateLimiter;
 use nebula_server::router::create_router;
 use nebula_server::tls_server::TlsManager;
+use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -37,6 +38,7 @@ use tracing::warn;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
+const DEFAULT_CONFIG_PATH: &str = "config/config.toml";
 const DEFAULT_SERVER_PORT: u16 = 8080;
 const DEFAULT_GRPC_PORT: u16 = 50051;
 
@@ -76,6 +78,7 @@ async fn load_api_keys(
         // First, create API key from environment variable if configured
         // Format: NEBULA_ADMIN_API_KEY_SECRET=your-secret-key
         let admin_key_secret_from_env = std::env::var("NEBULA_ADMIN_API_KEY_SECRET").ok();
+        let admin_key_id_from_env = std::env::var("NEBULA_ADMIN_API_KEY_ID").ok();
 
         // Second, create API keys from config if configured
         // Config format: api_keys = [{ key_secret = "xxx", workspace = "global", role = "admin", rate_limit = 100000, name = "Admin" }]
@@ -97,6 +100,7 @@ async fn load_api_keys(
                 rate_limit: Some(100000),
                 expires_at: None,
                 key_secret: Some(secret.to_string()),
+                key_id: admin_key_id_from_env,
             };
 
             match repo.create_api_key(&request).await {
@@ -129,7 +133,8 @@ async fn load_api_keys(
                     role,
                     rate_limit: Some(first_key.rate_limit as i32),
                     expires_at: None,
-                    key_secret: None,
+                    key_secret: Some(first_key.key_secret.clone()),
+                    key_id: Some(first_key.key_id.clone()),
                 };
 
                 match repo.create_api_key(&request).await {
@@ -165,6 +170,7 @@ async fn load_api_keys(
                         rate_limit: Some(100000),
                         expires_at: None,
                         key_secret: None,
+                        key_id: None,
                     };
                     match repo.create_api_key(&admin_request).await {
                         Ok(key) => {
@@ -172,23 +178,30 @@ async fn load_api_keys(
                                 "Admin API key created: {} (workspace: None)",
                                 key.key.key_id
                             );
-                            // WARN: Print secret to console only once - user must save it
-                            println!("\n╔════════════════════════════════════════════════════════════════════╗");
-                            println!("║           ⚠️  ADMIN API KEY GENERATED - SAVE NOW!              ║");
-                            println!("╠════════════════════════════════════════════════════════════════════╣");
-                            println!(
-                                "║  Key ID: {}                                                ║",
-                                key.key.key_id
-                            );
-                            println!(
-                                "║  Secret: {}                                    ║",
-                                key.key_secret
-                            );
-                            println!("║                                                                    ║");
-                            println!("║  ⚠️  THIS IS THE ONLY TIME THE SECRET WILL BE SHOWN!           ║");
-                            println!("║  Save it securely - you will need it for API authentication.    ║");
-                            println!("╚════════════════════════════════════════════════════════════════════╝\n");
-                            tracing::warn!("Admin API key secret printed to console - ensure it is saved securely");
+
+                            let is_production = nebula_core::config::is_production();
+
+                            if !is_production {
+                                // WARN: Print secret to console only once - user must save it
+                                println!("\n╔════════════════════════════════════════════════════════════════════╗");
+                                println!("║           ⚠️  ADMIN API KEY GENERATED - SAVE NOW!              ║");
+                                println!("╠════════════════════════════════════════════════════════════════════╣");
+                                println!(
+                                    "║  Key ID: {}                                                ║",
+                                    key.key.key_id
+                                );
+                                println!(
+                                    "║  Secret: {}                                    ║",
+                                    key.key_secret
+                                );
+                                println!("║                                                                    ║");
+                                println!("║  ⚠️  THIS IS THE ONLY TIME THE SECRET WILL BE SHOWN!           ║");
+                                println!("║  Save it securely - you will need it for API authentication.    ║");
+                                println!("╚════════════════════════════════════════════════════════════════════╝\n");
+                                tracing::warn!("Admin API key secret printed to console - ensure it is saved securely");
+                            } else {
+                                tracing::warn!("Admin API key generated. Secret NOT printed in production environment.");
+                            }
                         }
                         Err(e) => {
                             error!("Failed to create admin API key: {}", e);
@@ -212,6 +225,7 @@ async fn load_api_keys(
                 rate_limit: Some(10000),
                 expires_at: None,
                 key_secret: None,
+                key_id: None,
             };
             match repo.create_api_key(&test_request).await {
                 Ok(key) => {
@@ -392,8 +406,18 @@ async fn main() -> Result<()> {
     info!("Starting Nebula ID Generation Service");
     info!("Version: {}", env!("CARGO_PKG_VERSION"));
 
+    // Parse command line arguments
+    let args: Vec<String> = env::args().collect();
+    let config_path = if args.len() > 2 && args[1] == "--config" {
+        args[2].clone()
+    } else {
+        DEFAULT_CONFIG_PATH.to_string()
+    };
+
+    info!("Loading config from: {}", config_path);
+
     // Load config from file first, then merge with environment variables
-    let mut config = match Config::load_from_file("config/config.toml") {
+    let mut config = match Config::load_from_file(&config_path) {
         Ok(c) => c,
         Err(e) => {
             error!("Failed to load config file: {}", e);
@@ -453,9 +477,11 @@ async fn main() -> Result<()> {
         repo
     });
 
+    info!("Auth enabled: {}", config.auth.enabled);
+
     // Create API key auth with repository for database-backed storage
     let auth: Arc<ApiKeyAuth> = if let Some(ref repo) = repository {
-        Arc::new(ApiKeyAuth::new(repo.clone()))
+        Arc::new(ApiKeyAuth::new(repo.clone(), config.auth.enabled))
     } else {
         error!(
             "FATAL: API key authentication requires database connection.

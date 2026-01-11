@@ -266,6 +266,10 @@ fn verify_workspace_id_match(
     workspace_uuid: uuid::Uuid,
     key_workspace_id: &Option<uuid::Uuid>,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    // 当认证禁用时，key_workspace_id 为 None，允许访问任何 workspace
+    if key_workspace_id.is_none() {
+        return Ok(());
+    }
     if Some(workspace_uuid) != *key_workspace_id {
         return Err((
             StatusCode::FORBIDDEN,

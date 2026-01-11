@@ -31,6 +31,14 @@ pub enum ConfigError {
 
 pub type ConfigResult<T> = std::result::Result<T, ConfigError>;
 
+/// Check if the application is running in production environment
+pub fn is_production() -> bool {
+    std::env::var("NEBULA_ENV")
+        .unwrap_or_else(|_| "development".to_string())
+        .to_lowercase()
+        == "production"
+}
+
 /// Database engine types supported by Nebula ID
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -575,8 +583,26 @@ impl Config {
         // Expand environment variables in config content
         let expanded = Self::expand_env_vars(&content);
 
+        // Debug: Print expanded content (masked)
+        tracing::debug!(
+            event = "config_expanded",
+            content_len = content.len(),
+            "Configuration expanded"
+        );
+        // Log auth section (masked)
+        if let Some(auth_start) = expanded.find("[auth]") {
+            let auth_section = &expanded[auth_start..(auth_start + 100).min(expanded.len())];
+            tracing::debug!(event = "auth_section", auth_section = %auth_section);
+        }
+
         let config: Config =
             toml::from_str(&expanded).map_err(|e| ConfigError::InvalidValue(e.to_string()))?;
+
+        // Debug: Print raw TOML value
+        tracing::debug!(event = "toml_parsed", raw_auth_enabled = %format!("{:?}", config.auth.enabled), "Raw parsed auth enabled");
+
+        // Debug log auth config
+        tracing::debug!(event = "config_loaded", auth_enabled = %config.auth.enabled, "Auth configuration loaded");
 
         // Validate configuration
         config.validate()?;

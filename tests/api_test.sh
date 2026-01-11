@@ -131,12 +131,6 @@ has_salt_configured() {
     [ -n "$NEBULA_API_KEY_SALT" ]
 }
 
-log_header() {
-    echo -e "\n${BLUE}========================================${NC}"
-    echo -e "${BLUE}$1${NC}"
-    echo -e "${BLUE}========================================${NC}"
-}
-
 log_test() {
     echo -e "${YELLOW}测试 $1: $2${NC}"
 }

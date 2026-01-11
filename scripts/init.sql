@@ -35,8 +35,8 @@ CREATE TABLE IF NOT EXISTS workspaces (
     status workspace_status DEFAULT 'active',
     max_groups INT DEFAULT 100,
     max_biz_tags INT DEFAULT 1000,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Groups table
@@ -46,8 +46,8 @@ CREATE TABLE IF NOT EXISTS groups (
     name VARCHAR(255) NOT NULL,
     description TEXT,
     max_biz_tags INT DEFAULT 100,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(workspace_id, name)
 );
 
@@ -64,36 +64,36 @@ CREATE TABLE IF NOT EXISTS biz_tags (
     base_step INT DEFAULT 1000,
     max_step INT DEFAULT 100000,
     datacenter_ids INT[] DEFAULT ARRAY[0],
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(workspace_id, group_id, name)
 );
 
--- API Keys table
 DO $$ BEGIN
     CREATE TYPE api_key_role AS ENUM ('admin', 'user');
 EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
 
--- Drop existing table if upgrading (uncomment if needed for migration)
--- DROP TABLE IF EXISTS api_keys CASCADE;
+-- Drop the enum type and use TEXT instead for better SeaORM compatibility
+DROP TYPE IF EXISTS nebula_id.api_key_role CASCADE;
 
+-- API Keys table
 CREATE TABLE IF NOT EXISTS api_keys (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,  -- Optional: NULL for global admin keys
     key_id VARCHAR(36) NOT NULL UNIQUE,  -- Public key identifier (UUID format)
     key_secret_hash VARCHAR(64) NOT NULL,  -- SHA-256 hash of key_secret
     key_prefix VARCHAR(8) NOT NULL,  -- niad_ for admin, nino_ for user
-    role api_key_role DEFAULT 'user',
+    role VARCHAR(20) NOT NULL DEFAULT 'user',
     name VARCHAR(255) NOT NULL,
     description TEXT,
     rate_limit INT DEFAULT 10000,
     enabled BOOLEAN DEFAULT true,
-    expires_at TIMESTAMP WITH TIME ZONE DEFAULT (CURRENT_TIMESTAMP + INTERVAL '30 days'),
-    last_used_at TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    expires_at TIMESTAMP WITHOUT TIME ZONE DEFAULT (CURRENT_TIMESTAMP + INTERVAL '30 days'),
+    last_used_at TIMESTAMP WITHOUT TIME ZONE,
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_api_keys_workspace ON api_keys(workspace_id);
@@ -115,8 +115,8 @@ CREATE TABLE IF NOT EXISTS segments (
     step INT NOT NULL DEFAULT 1000,
     version INT NOT NULL DEFAULT 0,
     status VARCHAR(20) DEFAULT 'active',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(biz_tag_id, datacenter_id, worker_id)
 );
 
@@ -132,9 +132,9 @@ CREATE TABLE IF NOT EXISTS worker_nodes (
     worker_id INT NOT NULL,
     status VARCHAR(20) DEFAULT 'active',
     hostname VARCHAR(255),
-    last_heartbeat TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    last_heartbeat TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(datacenter_id, worker_id)
 );
 
@@ -149,7 +149,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     details JSONB,
     ip_address INET,
     user_agent TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_logs_workspace ON audit_logs(workspace_id);
@@ -164,7 +164,7 @@ CREATE TABLE IF NOT EXISTS id_generation_logs (
     algorithm VARCHAR(50) NOT NULL,
     id_value VARCHAR(255) NOT NULL,
     latency_ms DECIMAL(10, 3),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
 

@@ -271,7 +271,7 @@ dc_id = 1
 worker_id = 1
 
 [database]
-engine = "Postgresql"
+engine = "postgresql"
 # Use environment variable NEBULA_DATABASE_PASSWORD for credentials
 # For tests, set NEBULA_DATABASE_PASSWORD environment variable
 # WARNING: Never use default passwords in production
@@ -327,8 +327,8 @@ tracing_enabled = true
 otlp_endpoint = ""
 
 [logging]
-level = "Info"
-format = "Json"
+level = "info"
+format = "json"
 include_location = true
 
 [rate_limit]
@@ -374,7 +374,7 @@ dc_id = 1
 worker_id = 1
 
 [database]
-engine = "Postgresql"
+engine = "postgresql"
 # Use environment variable NEBULA_DATABASE_PASSWORD for credentials
 # For tests, set NEBULA_DATABASE_PASSWORD environment variable
 # WARNING: Never use default passwords in production
@@ -430,8 +430,8 @@ tracing_enabled = true
 otlp_endpoint = ""
 
 [logging]
-level = "Info"
-format = "Json"
+level = "info"
+format = "json"
 include_location = true
 
 [rate_limit]

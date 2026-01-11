@@ -1,8 +1,12 @@
 -- Nebula ID Generator Database Schema
 -- PostgreSQL initialization script
 
+-- Create schema
+CREATE SCHEMA IF NOT EXISTS nebula_id;
+SET search_path TO nebula_id, public;
+
 -- Create extensions
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp" SCHEMA public;
 
 -- Create enums
 DO $$ BEGIN

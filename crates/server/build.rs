@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let generated_mod = proto_src_dir.join("mod.rs");
 
     if generated_mod.exists() {
-        println!("cargo:warning=Using pre-generated proto files");
+        println!("Using pre-generated proto files");
         println!("cargo:rerun-if-changed=src/proto/");
         return Ok(());
     }

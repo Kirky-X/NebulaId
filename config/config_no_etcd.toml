@@ -7,7 +7,7 @@ worker_id = 0
 
 [logging]
 # Log level for production: info (debug), warn (production), error (minimal)
-level = "warn"
+level = "debug"
 format = "json"
 include_location = false
 backtrace = false
@@ -15,7 +15,7 @@ backtrace = false
 [database]
 engine = "postgresql"
 host = "localhost"
-port = 5435
+port = 5432
 database = "idgen"
 username = "idgen"
 password = "idgen123"
@@ -27,7 +27,7 @@ acquire_timeout_seconds = 30
 idle_timeout_seconds = 300
 
 [redis]
-url = "redis://localhost:6379"
+url = "redis://localhost:6381"
 # Connection pool tuning for production
 # Adjust based on actual load: 32-64 for high throughput, 16-32 for normal use
 pool_size = 32

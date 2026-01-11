@@ -393,8 +393,13 @@ async fn main() -> Result<()> {
     info!("Version: {}", env!("CARGO_PKG_VERSION"));
 
     // Load config from file first, then merge with environment variables
-    let mut config =
-        Config::load_from_file("config/config.toml").unwrap_or_else(|_| Config::default());
+    let mut config = match Config::load_from_file("config/config.toml") {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to load config file: {}", e);
+            Config::default()
+        }
+    };
 
     // Apply environment variable overrides
     config.merge(Config::load_from_env().unwrap_or_default());
@@ -410,7 +415,7 @@ async fn main() -> Result<()> {
     };
 
     info!(
-        "Server configuration: HTTP port={}, gRPC port={}",
+        "Starting Nebula ID Server on ports: HTTP={}, gRPC={}",
         server_config.http_port, server_config.grpc_port
     );
 

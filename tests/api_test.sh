@@ -414,10 +414,11 @@ else
     record_test "FAIL" "API Info" "HTTP $HTTP_CODE"
 fi
 
-echo "Test 1.3: GET /metrics (port 8080)"
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/metrics")
+echo "Test 1.3: GET /api/v1/metrics (port 8080)"
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/v1/metrics" \
+    -H "$ADMIN_API_AUTH_HEADER")
 if [ "$HTTP_CODE" = "200" ]; then
-    METRICS_DATA=$(curl -s "$BASE_URL/metrics" | head -10)
+    METRICS_DATA=$(curl -s "$BASE_URL/api/v1/metrics" -H "$ADMIN_API_AUTH_HEADER" | head -10)
     echo "  [PASS] Metrics endpoint responding on port 8080"
     echo "         Sample: $(echo "$METRICS_DATA" | head -1)"
     log_result "Metrics (8080)" "PASS" "Metrics endpoint responding"
@@ -812,7 +813,8 @@ else
 fi
 
 echo "Test 7.2: GET /api/v1/generate (405)"
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/v1/generate")
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/v1/generate" \
+    -H "$API_AUTH_HEADER")
 if [ "$HTTP_CODE" = "405" ]; then
     echo "  [PASS] Correctly returned 405 Method Not Allowed"
     log_result "405 Handling" "PASS" "HTTP 405"
@@ -826,6 +828,7 @@ fi
 echo "Test 7.3: POST with wrong content type (415)"
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$BASE_URL/api/v1/generate" \
     -H "Content-Type: text/plain" \
+    -H "$API_AUTH_HEADER" \
     -d "{\"workspace\":\"$TEST_WORKSPACE\",\"group\":\"$TEST_GROUP\",\"biz_tag\":\"test\"}")
 HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
 if [ "$HTTP_CODE" = "415" ] || [ "$HTTP_CODE" = "400" ]; then

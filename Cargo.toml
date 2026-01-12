@@ -11,16 +11,50 @@ resolver = "1"
 version = "0.1.1"
 description = "Enterprise-grade distributed ID generation system"
 authors = ["Kirky.X"]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Kirky-X/NebulaId"
+homepage = "https://github.com/Kirky-X/NebulaId"
+keywords = ["distributed", "id-generator", "snowflake", "uuid"]
+categories = ["development-tools", "database"]
 
 [profile.release]
 opt-level = 3
-lto = true
-codegen-units = 1
+lto = "thin"
+codegen-units = 4
 strip = true
+panic = "abort"
 
 [profile.dev]
 debug = true
 split-debuginfo = "unpacked"
+
+[profile.test]
+opt-level = 0
+
+[profile.bench]
+opt-level = 3
+lto = true
+
+# 增量编译优化
+[build]
+rustflags = ["-C", "target-cpu=skylake"]
+
+[workspace.metadata]
+# 构建配置
+[workspace.metadata.build]
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+features = ["full"]
+
+# Docker 配置
+[workspace.metadata.docker]
+image = "nebula-id"
+maintainer = "Kirky.X"
+
+# 发布配置
+[workspace.metadata.release]
+allow-branch = ["main", "release/*"]
+tag-prefix = "v"
 
 [workspace.dependencies]
 # 基础工具

@@ -1,9 +1,20 @@
 # ============================================
-# Builder Stage
+# Nebula ID Docker Build
 # ============================================
+# Multi-stage build for minimal image size
+# Build arguments:
+#   BUILD_PROFILE=release|dev
+#   RUST_VERSION=1.92.0
+# ============================================
+
+# ---------- Builder Stage ----------
 FROM rust:1.92.0-bullseye AS builder
 
-# 安装构建依赖
+# Build arguments
+ARG BUILD_PROFILE=release
+ARG RUSTFLAGS="-C target-cpu=skylake"
+
+# Install build dependencies
 RUN apt-get update && apt-get install -y \
     protobuf-compiler \
     pkg-config \
@@ -11,52 +22,59 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Set build environment
+ENV CARGO_NET_GIT_FETCH_WITH_CLI=false \
+    CARGO_INCREMENTAL=1 \
+    RUSTFLAGS="${RUSTFLAGS}"
+
 WORKDIR /app
 
-# 优化层缓存：先复制依赖配置文件
+# Pre-build: Copy dependency files first (Docker layer caching optimization)
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 COPY protos/ ./protos/
 
-# 下载依赖（利用 Docker 缓存）
-RUN cargo fetch
+# Download and cache dependencies
+RUN cargo fetch && \
+    mkdir -p target && \
+    echo '{}' > target/.cargo-lock
 
-# 构建应用
-ARG BUILD_PROFILE=release
-RUN cargo build --${BUILD_PROFILE} --locked -p nebula-server --bin nebula-id
+# Copy source code
+COPY . .
 
-# ============================================
-# Runtime Stage
-# ============================================
-FROM rust:1.92.0-bullseye
+# Build the application
+RUN cargo build --${BUILD_PROFILE} --locked \
+    -p nebula-server --bin nebula-id \
+    --jobs $(nproc)
 
-# 安装运行时依赖
+# ---------- Runtime Stage ----------
+FROM debian:bullseye-slim AS runtime
+
+# Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     libssl1.1 \
     ca-certificates \
     curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# 创建非 root 用户
-RUN groupadd --gid 1000 appgroup && \
-    useradd --uid 1000 --gid appgroup --shell /bin/bash --create-home appuser
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 1000 appgroup \
+    && useradd --uid 1000 --gid appgroup --shell /bin/bash --create-home appuser
 
 WORKDIR /app
 
-# 复制二进制文件
-COPY --from=builder /app/target/release/nebula-id /app/nebula-id
+# Copy binary from builder
+COPY --from=builder /app/target/${BUILD_PROFILE}/nebula-id /app/nebula-id
 
-# 设置权限
+# Set permissions
 RUN chown -R appuser:appgroup /app && \
     chmod +x /app/nebula-id
 
-# 切换到非 root 用户
+# Switch to non-root user
 USER appuser
 
-# 暴露端口
+# Expose ports
 EXPOSE 8080 50051 9091
 
-# 环境变量
+# Environment variables
 ENV RUST_LOG=info \
     RUST_BACKTRACE=0 \
     SERVER_HTTP_HOST=0.0.0.0 \
@@ -65,9 +83,9 @@ ENV RUST_LOG=info \
     METRICS_HOST=0.0.0.0 \
     METRICS_PORT=9091
 
-# 健康检查
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
-# 入口点
+# Entrypoint
 ENTRYPOINT ["./nebula-id"]

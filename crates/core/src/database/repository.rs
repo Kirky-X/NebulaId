@@ -304,14 +304,10 @@ impl WorkspaceRepository for SeaOrmRepository {
             .await
             .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
 
-        if existing.is_none() {
-            return Err(crate::CoreError::NotFound(format!(
-                "Workspace not found: {}",
-                id
-            )));
-        }
+        // 使用ok_or_else替代is_none+unwrap模式，避免冗余和潜在panic风险
+        let existing = existing
+            .ok_or_else(|| crate::CoreError::NotFound(format!("Workspace not found: {}", id)))?;
 
-        let existing = existing.unwrap();
         let updated = WorkspaceActiveModel {
             id: Set(existing.id),
             name: Set(workspace.name.clone().unwrap_or(existing.name)),
@@ -375,26 +371,27 @@ impl WorkspaceRepository for SeaOrmRepository {
     }
 
     async fn get_workspace_with_groups(&self, id: Uuid) -> Result<Option<(Workspace, Vec<Group>)>> {
-        let workspace = WorkspaceEntity::find_by_id(id)
+        let workspace_entity = WorkspaceEntity::find_by_id(id)
             .one(&self.db)
             .await
             .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
 
-        if workspace.is_none() {
-            return Ok(None);
+        // 使用if let Some模式，避免冗余unwrap
+        if let Some(ws) = workspace_entity {
+            let workspace: Workspace = ws.into();
+
+            let groups = GroupEntity::find()
+                .filter(GroupColumn::WorkspaceId.eq(id))
+                .all(&self.db)
+                .await
+                .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+            let groups: Vec<Group> = groups.into_iter().map(|g| g.into()).collect();
+
+            Ok(Some((workspace, groups)))
+        } else {
+            Ok(None)
         }
-
-        let workspace: Workspace = workspace.unwrap().into();
-
-        let groups = GroupEntity::find()
-            .filter(GroupColumn::WorkspaceId.eq(id))
-            .all(&self.db)
-            .await
-            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
-
-        let groups: Vec<Group> = groups.into_iter().map(|g| g.into()).collect();
-
-        Ok(Some((workspace, groups)))
     }
 
     async fn get_workspace_with_groups_and_biz_tags(
@@ -520,14 +517,10 @@ impl GroupRepository for SeaOrmRepository {
             .await
             .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
 
-        if existing.is_none() {
-            return Err(crate::CoreError::NotFound(format!(
-                "Group not found: {}",
-                id
-            )));
-        }
+        // 使用ok_or_else替代is_none+unwrap模式
+        let existing = existing
+            .ok_or_else(|| crate::CoreError::NotFound(format!("Group not found: {}", id)))?;
 
-        let existing = existing.unwrap();
         let updated = GroupActiveModel {
             id: Set(existing.id),
             name: Set(group.name.clone().unwrap_or(existing.name)),
@@ -586,26 +579,27 @@ impl GroupRepository for SeaOrmRepository {
     }
 
     async fn get_group_with_biz_tags(&self, id: Uuid) -> Result<Option<(Group, Vec<BizTag>)>> {
-        let group = GroupEntity::find_by_id(id)
+        let group_entity = GroupEntity::find_by_id(id)
             .one(&self.db)
             .await
             .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
 
-        if group.is_none() {
-            return Ok(None);
+        // 使用if let Some模式，避免冗余unwrap
+        if let Some(g) = group_entity {
+            let group: Group = g.into();
+
+            let biz_tags = BizTagEntity::find()
+                .filter(BizTagColumn::GroupId.eq(id))
+                .all(&self.db)
+                .await
+                .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
+
+            let biz_tags: Vec<BizTag> = biz_tags.into_iter().map(|b| b.into()).collect();
+
+            Ok(Some((group, biz_tags)))
+        } else {
+            Ok(None)
         }
-
-        let group: Group = group.unwrap().into();
-
-        let biz_tags = BizTagEntity::find()
-            .filter(BizTagColumn::GroupId.eq(id))
-            .all(&self.db)
-            .await
-            .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
-
-        let biz_tags: Vec<BizTag> = biz_tags.into_iter().map(|b| b.into()).collect();
-
-        Ok(Some((group, biz_tags)))
     }
 
     async fn delete_group_with_biz_tags(&self, id: Uuid) -> Result<()> {
@@ -738,14 +732,9 @@ impl BizTagRepository for SeaOrmRepository {
             .await
             .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
 
-        if existing.is_none() {
-            return Err(crate::CoreError::NotFound(format!(
-                "BizTag not found: {}",
-                id
-            )));
-        }
-
-        let existing = existing.unwrap();
+        // 使用ok_or_else替代is_none+unwrap模式
+        let existing = existing
+            .ok_or_else(|| crate::CoreError::NotFound(format!("BizTag not found: {}", id)))?;
 
         let datacenter_ids = if let Some(ids) = &biz_tag.datacenter_ids {
             to_string(ids).unwrap_or_else(|_| existing.datacenter_ids.clone())
@@ -1047,15 +1036,17 @@ impl ApiKeyRepository for SeaOrmRepository {
             .await
             .map_err(|e| crate::CoreError::DatabaseError(e.to_string()))?;
 
-        if existing.is_none() {
+        let key_id = if let Some(model) = existing {
+            model.id
+        } else {
             return Err(crate::CoreError::NotFound(format!(
                 "API key not found: {}",
                 id
             )));
-        }
+        };
 
         let updated = ApiKeyActiveModel {
-            id: Set(existing.unwrap().id),
+            id: Set(key_id),
             enabled: Set(false),
             updated_at: Set(chrono::Utc::now().naive_utc()),
             ..Default::default()

@@ -56,6 +56,11 @@ impl HotReloadConfig {
     where
         F: Fn(Config) + Send + Sync + 'static,
     {
+        // 使用map_err处理可能的锁中毒情况，避免panic
+        if let Err(e) = self.reload_callbacks.write() {
+            tracing::error!("Failed to acquire write lock for reload callbacks: {}", e);
+            return;
+        }
         self.reload_callbacks
             .write()
             .unwrap()
@@ -83,9 +88,15 @@ impl HotReloadConfig {
         let old_config = self.config.load().as_ref().clone();
         self.config.store(Arc::new(new_config.clone()));
 
+        // 使用map_err处理可能的锁中毒情况
         let callbacks: Vec<_> = {
-            let callbacks = self.reload_callbacks.read().unwrap();
-            callbacks.iter().cloned().collect()
+            match self.reload_callbacks.read() {
+                Ok(guard) => guard.iter().cloned().collect(),
+                Err(e) => {
+                    tracing::error!("Failed to acquire read lock for reload callbacks: {}", e);
+                    Vec::new()
+                }
+            }
         };
         for callback in callbacks {
             callback(new_config.clone());
@@ -180,7 +191,14 @@ impl HotReloadConfig {
         let old_config = self.config.load().as_ref().clone();
         self.config.store(Arc::new(new_config.clone()));
 
-        let callbacks = self.reload_callbacks.read().unwrap();
+        // 使用map_err处理可能的锁中毒情况
+        let callbacks = match self.reload_callbacks.read() {
+            Ok(guard) => guard,
+            Err(e) => {
+                tracing::error!("Failed to acquire read lock for reload callbacks: {}", e);
+                return;
+            }
+        };
         for callback in callbacks.iter() {
             callback(new_config.clone());
         }
@@ -214,13 +232,27 @@ impl HotReloadConfig {
     }
 
     pub fn set_algorithm(&self, biz_tag: &str, algorithm: AlgorithmType) {
-        let mut map = self.biz_algorithm_map.write().unwrap();
+        // 使用map_err处理可能的锁中毒情况，避免panic
+        let mut map = match self.biz_algorithm_map.write() {
+            Ok(map) => map,
+            Err(e) => {
+                tracing::error!("Failed to acquire write lock for algorithm map: {}", e);
+                return;
+            }
+        };
         map.insert(biz_tag.to_string(), algorithm);
         info!("Set algorithm for biz_tag '{}' to {:?}", biz_tag, algorithm);
     }
 
     pub fn get_algorithm(&self, biz_tag: &str) -> Option<AlgorithmType> {
-        let map = self.biz_algorithm_map.read().unwrap();
+        // 使用map_err处理可能的锁中毒情况，避免panic
+        let map = match self.biz_algorithm_map.read() {
+            Ok(map) => map,
+            Err(e) => {
+                tracing::error!("Failed to acquire read lock for algorithm map: {}", e);
+                return None;
+            }
+        };
         map.get(biz_tag).cloned()
     }
 }

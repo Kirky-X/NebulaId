@@ -351,7 +351,7 @@ impl AlertEvaluator for DefaultEvaluator {
                     let max_latency = snapshots
                         .iter()
                         .map(|s| s.p99_latency_ms)
-                        .max_by(|a, b| a.partial_cmp(b).unwrap())
+                        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                         .unwrap_or(0.0);
                     let firing = max_latency > threshold;
                     (firing, Some(format!("p99_latency_ms: {:.2}", max_latency)))
@@ -366,7 +366,7 @@ impl AlertEvaluator for DefaultEvaluator {
                     let min_hit_rate = snapshots
                         .iter()
                         .map(|s| s.cache_hit_rate)
-                        .min_by(|a, b| a.partial_cmp(b).unwrap())
+                        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                         .unwrap_or(100.0);
                     let firing = min_hit_rate < threshold;
                     (firing, Some(format!("hit_rate: {:.2}%", min_hit_rate)))

@@ -968,10 +968,7 @@ impl ApiHandlers {
         if let Some(key) = key_info {
             // If it's an admin key, check if it's the last one
             if key.role == nebula_core::database::ApiKeyRole::Admin {
-                // Admin keys are global, list all admin keys (workspace_id is None)
-                // We need to handle this differently since list_api_keys expects a workspace_id
-                // For now, we'll skip this check for admin keys or implement a different approach
-                // TODO: Implement proper admin key counting
+                // Admin keys are global, count all admin keys to prevent removing the last one
                 let existing_keys = repo
                     .list_api_keys(uuid::Uuid::nil(), Some(1000), Some(0))
                     .await

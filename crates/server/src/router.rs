@@ -953,7 +953,7 @@ mod tests {
             }
         }
 
-        Arc::new(ApiKeyAuth::new(Arc::new(MockApiKeyRepo)))
+        Arc::new(ApiKeyAuth::new(Arc::new(MockApiKeyRepo), true))
     }
 
     fn create_test_rate_limiter() -> Arc<RateLimiter> {

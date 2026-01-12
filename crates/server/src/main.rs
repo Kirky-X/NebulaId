@@ -42,11 +42,16 @@ const DEFAULT_CONFIG_PATH: &str = "config/config.toml";
 const DEFAULT_SERVER_PORT: u16 = 8080;
 const DEFAULT_GRPC_PORT: u16 = 50051;
 
+/// 服务器配置
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
+    /// HTTP 服务端口
     pub http_port: u16,
+    /// gRPC 服务端口
     pub grpc_port: u16,
+    /// 工作线程数
     pub workers: usize,
+    /// 关闭超时时间（秒）
     pub shutdown_timeout_secs: u64,
 }
 
@@ -866,7 +871,7 @@ mod tests {
             config_service,
             Arc::new(MockApiKeyRepo),
         ));
-        let auth = Arc::new(ApiKeyAuth::new(Arc::new(MockApiKeyRepo)));
+        let auth = Arc::new(ApiKeyAuth::new(Arc::new(MockApiKeyRepo), true));
         let rate_limiter = Arc::new(RateLimiter::new(10000, 100));
         let audit_logger = Arc::new(AuditLogger::new(10000));
 
@@ -1000,7 +1005,7 @@ mod tests {
             config_service.clone(),
             Arc::new(MockApiKeyRepo),
         ));
-        let auth = Arc::new(ApiKeyAuth::new(Arc::new(MockApiKeyRepo)));
+        let auth = Arc::new(ApiKeyAuth::new(Arc::new(MockApiKeyRepo), true));
         let rate_limiter = Arc::new(RateLimiter::new(10000, 100));
         let audit_logger = Arc::new(AuditLogger::new(10000));
 

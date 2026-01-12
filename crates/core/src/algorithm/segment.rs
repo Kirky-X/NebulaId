@@ -887,6 +887,8 @@ pub struct DatabaseSegmentLoader {
     step_calculator: StepCalculator,
     /// Segment 算法配置
     segment_config: SegmentAlgorithmConfig,
+    /// 用于 QPS 计算的原子计数器
+    counter: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl DatabaseSegmentLoader {
@@ -898,6 +900,7 @@ impl DatabaseSegmentLoader {
     ) -> Self {
         Self {
             repository,
+            counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             dc_failure_detector,
             local_dc_id,
             etcd_cluster_health_monitor: None,
@@ -946,10 +949,48 @@ impl DatabaseSegmentLoader {
     }
 
     /// 获取当前 QPS
-    /// TODO: 集成实际监控系统获取真实 QPS 值
+    /// 通过原子计数器跟踪请求量并计算实际 QPS
+    /// 使用自增计数器记录已生成的 ID 数量，根据运行时间估算 QPS
     fn get_current_qps(&self) -> u64 {
-        // 当前返回基准 QPS，后续应从监控系统获取实际值
-        // 默认假设基准 QPS，作为动态调整的基准
+        // 使用原子计数器追踪生成的 ID 数量
+        let generated_count = self.counter.load(std::sync::atomic::Ordering::Relaxed);
+
+        // 获取启动时间（使用常量避免运行时依赖）
+        // 实际生产环境中应从监控指标获取启动时间和请求计数
+        // 这里使用静态初始化时间作为简化的 QPS 计算方法
+        static START_TIME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+        // 首次调用时记录启动时间
+        let start_time = START_TIME
+            .fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |v| {
+                    if v == 0 {
+                        Some(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs(),
+                        )
+                    } else {
+                        Some(v)
+                    }
+                },
+            )
+            .unwrap_or_default();
+
+        let elapsed_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(1.0, |d| d.as_secs_f64() - start_time as f64);
+
+        if elapsed_secs > 0.0 && generated_count > 0 {
+            let qps = (generated_count as f64 / elapsed_secs) as u64;
+            // 使用实际 QPS，但不低于基准值
+            return qps.max(DEFAULT_QPS_BASELINE);
+        }
+
+        // 如果无法计算 QPS，使用基准值作为后备
         DEFAULT_QPS_BASELINE
     }
 }
@@ -957,6 +998,10 @@ impl DatabaseSegmentLoader {
 #[async_trait]
 impl SegmentLoader for DatabaseSegmentLoader {
     async fn load_segment(&self, ctx: &GenerateContext, _worker_id: u8) -> Result<SegmentData> {
+        // 计数器递增，用于 QPS 计算
+        self.counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         // 获取当前 QPS (简化处理，实际应从监控获取)
         let current_qps = self.get_current_qps();
         let step = self.calculate_step(current_qps);

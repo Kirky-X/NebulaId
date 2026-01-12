@@ -80,13 +80,20 @@ impl From<String> for DatabaseEngine {
     }
 }
 
+/// Application configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
+    /// Application name
     pub name: String,
+    /// Server listen address
     pub host: String,
+    /// HTTP server port
     pub http_port: u16,
+    /// gRPC server port
     pub grpc_port: u16,
+    /// Datacenter ID (0-31)
     pub dc_id: u8,
+    /// Worker ID (0-255)
     pub worker_id: u8,
 }
 
@@ -129,19 +136,31 @@ impl AppConfig {
     }
 }
 
+/// Database configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DatabaseConfig {
+    /// Database engine type
     pub engine: DatabaseEngine,
+    /// Database host address
     pub host: String,
+    /// Database port
     pub port: u16,
+    /// Database username
     pub username: String,
+    /// Database password
     pub password: String,
+    /// Database name
     pub database: String,
+    /// Full database URL (alternative to individual settings)
     #[serde(default)]
     pub url: String,
+    /// Maximum number of connections in pool
     pub max_connections: u32,
+    /// Minimum number of connections in pool
     pub min_connections: u32,
+    /// Connection acquisition timeout (seconds)
     pub acquire_timeout_seconds: u64,
+    /// Idle connection timeout (seconds)
     pub idle_timeout_seconds: u64,
 }
 
@@ -195,11 +214,16 @@ impl Default for DatabaseConfig {
     }
 }
 
+/// Redis configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RedisConfig {
+    /// Redis connection URL
     pub url: String,
+    /// Connection pool size
     pub pool_size: u32,
+    /// Key prefix for namespace isolation
     pub key_prefix: String,
+    /// Key TTL (seconds)
     pub ttl_seconds: u64,
 }
 
@@ -214,10 +238,14 @@ impl Default for RedisConfig {
     }
 }
 
+/// etcd configuration for distributed coordination
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EtcdConfig {
+    /// List of etcd endpoints
     pub endpoints: Vec<String>,
+    /// Connection timeout (milliseconds)
     pub connect_timeout_ms: u64,
+    /// Watch timeout (milliseconds)
     pub watch_timeout_ms: u64,
 }
 
@@ -231,22 +259,34 @@ impl Default for EtcdConfig {
     }
 }
 
+/// API key entry for configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ApiKeyEntry {
+    /// Unique key identifier
     pub key_id: String,
+    /// Key secret for authentication
     pub key_secret: String,
+    /// Associated workspace
     pub workspace: String,
+    /// Key role (admin/user)
     pub role: String,
+    /// Rate limit (requests per second)
     pub rate_limit: u32,
+    /// Key name for identification
     pub name: String,
 }
 
+/// Authentication configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AuthConfig {
+    /// Enable/disable authentication
     pub enabled: bool,
+    /// Cache TTL (seconds)
     pub cache_ttl_seconds: u64,
+    /// List of API keys
     #[serde(default)]
     pub api_keys: Vec<ApiKeyEntry>,
+    /// Salt for API key hashing
     #[serde(default = "default_api_key_salt")]
     pub api_key_salt: String,
 }
@@ -266,11 +306,16 @@ impl Default for AuthConfig {
     }
 }
 
+/// Segment algorithm configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SegmentAlgorithmConfig {
+    /// Base step size for ID allocation
     pub base_step: u64,
+    /// Minimum step size
     pub min_step: u64,
+    /// Maximum step size
     pub max_step: u64,
+    /// Threshold for dynamic step adjustment
     pub switch_threshold: f64,
 }
 
@@ -285,11 +330,16 @@ impl Default for SegmentAlgorithmConfig {
     }
 }
 
+/// Snowflake algorithm configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SnowflakeAlgorithmConfig {
+    /// Number of bits for datacenter ID
     pub datacenter_id_bits: u8,
+    /// Number of bits for worker ID
     pub worker_id_bits: u8,
+    /// Number of bits for sequence number
     pub sequence_bits: u8,
+    /// Clock drift threshold (milliseconds)
     pub clock_drift_threshold_ms: u64,
 }
 
@@ -322,8 +372,10 @@ impl Default for SnowflakeAlgorithmConfig {
     }
 }
 
+/// UUID v7 configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UuidV7Config {
+    /// Enable/disable UUID v7 generation
     pub enabled: bool,
 }
 
@@ -333,11 +385,16 @@ impl Default for UuidV7Config {
     }
 }
 
+/// Algorithm configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AlgorithmConfig {
+    /// Default algorithm type
     pub default: String,
+    /// Segment algorithm settings
     pub segment: SegmentAlgorithmConfig,
+    /// Snowflake algorithm settings
     pub snowflake: SnowflakeAlgorithmConfig,
+    /// UUID v7 settings
     pub uuid_v7: UuidV7Config,
 }
 
@@ -358,11 +415,16 @@ impl AlgorithmConfig {
     }
 }
 
+/// Monitoring configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MonitoringConfig {
+    /// Enable Prometheus metrics
     pub metrics_enabled: bool,
+    /// Metrics endpoint path
     pub metrics_path: String,
+    /// Enable OpenTelemetry tracing
     pub tracing_enabled: bool,
+    /// OpenTelemetry collector endpoint
     pub otlp_endpoint: String,
 }
 
@@ -459,10 +521,14 @@ impl From<String> for LogFormat {
     }
 }
 
+/// Logging configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LoggingConfig {
+    /// Log level
     pub level: LogLevel,
+    /// Log format (json/pretty)
     pub format: LogFormat,
+    /// Include source location in logs
     pub include_location: bool,
 }
 
@@ -476,10 +542,14 @@ impl Default for LoggingConfig {
     }
 }
 
+/// Rate limiting configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RateLimitConfig {
+    /// Enable/disable rate limiting
     pub enabled: bool,
+    /// Default rate limit (requests per second)
     pub default_rps: u32,
+    /// Burst size for rate limiting
     pub burst_size: u32,
 }
 
@@ -514,18 +584,25 @@ impl std::fmt::Display for TlsVersion {
     }
 }
 
+/// TLS configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TlsConfig {
+    /// Enable/disable TLS
     pub enabled: bool,
+    /// Path to TLS certificate file
     pub cert_path: String,
+    /// Path to TLS private key file
     pub key_path: String,
+    /// Path to CA certificate file (optional)
     pub ca_path: Option<String>,
+    /// Enable TLS for HTTP
     pub http_enabled: bool,
+    /// Enable TLS for gRPC
     pub grpc_enabled: bool,
-    /// 最低 TLS 版本 (默认: TLS 1.3)
+    /// Minimum TLS version (default: TLS 1.3)
     #[serde(default)]
     pub min_tls_version: TlsVersion,
-    /// ALPN 协议列表，用于 HTTP/2 支持
+    /// ALPN protocols for HTTP/2 support
     #[serde(default)]
     pub alpn_protocols: Vec<String>,
 }
@@ -545,24 +622,38 @@ impl Default for TlsConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct Config {
-    pub app: AppConfig,
-    pub database: DatabaseConfig,
-    pub redis: RedisConfig,
-    pub etcd: EtcdConfig,
-    pub auth: AuthConfig,
-    pub algorithm: AlgorithmConfig,
-    pub monitoring: MonitoringConfig,
-    pub logging: LoggingConfig,
-    pub rate_limit: RateLimitConfig,
-    pub tls: TlsConfig,
-    pub batch_generate: BatchGenerateConfig,
-}
-
+/// Batch generation configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BatchGenerateConfig {
+    /// Maximum batch size for bulk ID generation
     pub max_batch_size: u32,
+}
+
+/// Complete application configuration
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct Config {
+    /// Application settings
+    pub app: AppConfig,
+    /// Database settings
+    pub database: DatabaseConfig,
+    /// Redis settings
+    pub redis: RedisConfig,
+    /// etcd settings
+    pub etcd: EtcdConfig,
+    /// Authentication settings
+    pub auth: AuthConfig,
+    /// Algorithm settings
+    pub algorithm: AlgorithmConfig,
+    /// Monitoring settings
+    pub monitoring: MonitoringConfig,
+    /// Logging settings
+    pub logging: LoggingConfig,
+    /// Rate limiting settings
+    pub rate_limit: RateLimitConfig,
+    /// TLS settings
+    pub tls: TlsConfig,
+    /// Batch generation settings
+    pub batch_generate: BatchGenerateConfig,
 }
 
 impl Default for BatchGenerateConfig {

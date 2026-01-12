@@ -247,7 +247,7 @@ mod tests {
         }
 
         let audit_logger = Arc::new(AuditLogger::new(100));
-        let auth = Arc::new(ApiKeyAuth::new(Arc::new(MockApiKeyRepo)));
+        let auth = Arc::new(ApiKeyAuth::new(Arc::new(MockApiKeyRepo), true));
         let rate_limiter = Arc::new(RateLimiter::new(10000, 100));
 
         let middleware = AuditMiddleware::new(audit_logger, auth, rate_limiter);

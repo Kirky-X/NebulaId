@@ -1,81 +1,58 @@
-[app]
-name = "nebula-id"
-host = "0.0.0.0"
-http_port = 8080
-grpc_port = 50051
-dc_id = 0
-worker_id = 0
+# ============================================
+# Nebula ID 测试配置文件
+# ============================================
+#
+# 说明:
+#   - 此文件为测试脚本提供默认配置
+#   - 环境变量会覆盖此文件的配置
+#   - 优先级: 环境变量 > 配置文件 > 默认值
+#
+# 使用方法:
+#   1. 复制此文件并重命名为 test_config.toml
+#   2. 修改配置值
+#   3. 运行测试脚本
+#
+# 环境变量覆盖示例:
+#   export NEBULA_API_BASE="http://your-server:8080"
+#   export TEST_AUTH_HEADER="Authorization: Basic ..."
+#
+# ============================================
 
-[logging]
-level = "info"
-format = "json"
-include_location = false
-backtrace = false
+# API 服务器配置
+[api]
+# API 基础地址
+# 环境变量: NEBULA_API_BASE
+api_base = "http://localhost:8080"
 
-[database]
-engine = "postgresql"
-host = "localhost"
-port = 5432
-database = "idgen"
-username = "idgen"
-password = "idgen123"
-max_connections = 50
-min_connections = 5
-acquire_timeout_seconds = 30
-idle_timeout_seconds = 300
-
-[redis]
-url = "redis://localhost:6379"
-pool_size = 16
-key_prefix = "nebula:id:"
-ttl_seconds = 600
-
-[algorithm]
-default = "snowflake"
-
-[algorithm.segment]
-base_step = 1000
-min_step = 500
-max_step = 100000
-switch_threshold = 0.1
-
-[algorithm.snowflake]
-datacenter_id_bits = 3
-worker_id_bits = 8
-sequence_bits = 10
-clock_drift_threshold_ms = 1000
-
-[algorithm.uuid_v7]
-enabled = true
-
-[monitoring]
-metrics_enabled = true
-metrics_path = "/metrics"
-tracing_enabled = false
-otlp_endpoint = ""
-
-[rate_limit]
-enabled = true
-default_rps = 1000
-burst_size = 1000
-
-[tls]
-enabled = false
-http_enabled = false
-grpc_enabled = false
-cert_path = ""
-key_path = ""
-
-[batch_generate]
-max_batch_size = 100
-
+# 认证配置
 [auth]
-enabled = false
-cache_ttl_seconds = 300
-api_key_salt = "test"
-api_keys = []
+# 认证头格式
+# 环境变量: TEST_AUTH_HEADER
+# 示例格式: "Authorization: Basic dGVzdC1rZXktaWQ6dGVzdC1zZWNyZXQ="
+auth_header = ""
 
-[etcd]
-endpoints = ["http://localhost:2379"]
-connect_timeout_ms = 5000
-watch_timeout_ms = 5000
+# 测试工作空间配置
+[workspace]
+# 默认测试工作空间
+# 环境变量: TEST_WORKSPACE
+default_workspace = "test-workspace"
+
+# 测试参数配置
+[test]
+# 是否在测试后清理数据
+# 环境变量: CLEANUP_ENABLED (true/false)
+cleanup_enabled = true
+
+# 并发测试配置
+[concurrency]
+# 默认并发数
+worker_count = 10
+# 每个 worker 的请求数
+requests_per_worker = 10
+
+# 性能测试配置
+[performance]
+# 默认请求次数
+request_count = 100
+# 批量请求大小
+batch_size = 10

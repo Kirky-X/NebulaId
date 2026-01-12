@@ -13,7 +13,7 @@
 #   2. Salt value (for authentication):
 #      export NEBULA_API_KEY_SALT="your-server-salt"
 #
-#   OR pre-configured user API key:
+# OR pre-configured user API key:
 #      export USER_API_KEY_ID="your-user-key-id"
 #      export USER_API_KEY_SECRET="your-user-key-secret"
 #
@@ -22,7 +22,71 @@
 #   For local development:
 #     export BASE_URL="http://localhost:8080"
 
-set -e
+# 禁用 set -e，改用细粒度错误处理
+set +e
+
+# 错误处理函数
+handle_error() {
+    local exit_code=$?
+    local line_number=
+    local command="${BASH_COMMAND}"
+
+    echo "[ERROR] 命令执行失败在第 $line_number 行" >&2
+    echo "[ERROR] 命令: $command" >&2
+    echo "[ERROR] 退出码: $exit_code" >&2
+
+    cleanup_on_exit
+    exit $exit_code
+}
+
+trap 'handle_error $LINENO' ERR
+
+# 安全的 curl 调用
+safe_curl() {
+    local method=""
+    local url="$2"
+    local headers="${3:-}"
+    local data="${4:-}"
+
+    if [ -n "$data" ]; then
+        curl -s -w "\n%{http_code}" -X "$method" "$url" \
+            -H "Content-Type: application/json" \
+            -H "$headers" \
+            -d "$data"
+    else
+        curl -s -w "\n%{http_code}" -X "$method" "$url" \
+            -H "$headers"
+    fi
+}
+
+# 检查 curl 结果
+check_curl_result() {
+    local result=""
+    local operation="$2"
+
+    if [ $? -ne 0 ]; then
+        echo "[ERROR] $operation 失败" >&2
+        return 1
+    fi
+
+    local http_code=$(echo "$result" | tail -n1)
+    local body=$(echo "$result" | sed '$d')
+
+    if [ "$http_code" != "200" ] && [ "$http_code" != "201" ]; then
+        echo "[ERROR] $operation 返回 HTTP $http_code" >&2
+        echo "[ERROR] 响应: $body" >&2
+        return 1
+    fi
+
+    return 0
+}
+
+# 清理函数
+cleanup_on_exit() {
+    echo "[INFO] 执行清理..."
+    # 可以在此处添加清理逻辑
+    echo "[INFO] 清理完成"
+}
 
 # ============================================
 # API Configuration

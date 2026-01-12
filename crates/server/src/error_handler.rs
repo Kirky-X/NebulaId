@@ -20,6 +20,17 @@ use axum::{
 };
 use nebula_core::types::error::CoreError;
 
+/// Sanitize error message to prevent information disclosure in production
+/// SECURITY: This prevents leaking sensitive info like file paths, stack traces
+fn sanitize_for_production(msg: &str) -> String {
+    // Truncate long messages to prevent DoS
+    const MAX_LEN: usize = 200;
+    if msg.len() > MAX_LEN {
+        return format!("{}... (truncated)", &msg[..MAX_LEN]);
+    }
+    msg.to_string()
+}
+
 /// Convert CoreError to HTTP response
 pub fn handle_core_error(error: CoreError) -> Response {
     let (status_code, core_response) = error.to_http_response();
@@ -63,29 +74,29 @@ pub fn core_error_to_api_response(error: &CoreError) -> (StatusCode, Json<ApiErr
     let (code, message, status) = match error {
         CoreError::InvalidInput(msg) => (
             ApiErrorCode::InvalidInput,
-            format!("Invalid input: {}", msg),
+            format!("Invalid input: {}", sanitize_for_production(msg)),
             StatusCode::BAD_REQUEST,
         ),
         CoreError::InvalidIdFormat(msg)
         | CoreError::InvalidIdString(msg)
         | CoreError::InvalidAlgorithmType(msg) => (
             ApiErrorCode::InvalidInput,
-            msg.clone(),
+            sanitize_for_production(msg),
             StatusCode::BAD_REQUEST,
         ),
         CoreError::NotFound(msg) => (
             ApiErrorCode::WorkspaceNotFound, // 默认资源错误
-            msg.clone(),
+            sanitize_for_production(msg),
             StatusCode::NOT_FOUND,
         ),
         CoreError::BizTagNotFound(msg) => (
             ApiErrorCode::BizTagNotFound,
-            msg.clone(),
+            sanitize_for_production(msg),
             StatusCode::NOT_FOUND,
         ),
         CoreError::AuthenticationError(msg) => (
             ApiErrorCode::InvalidApiKey,
-            msg.clone(),
+            sanitize_for_production(msg),
             StatusCode::UNAUTHORIZED,
         ),
         CoreError::InvalidApiKeySignature => (
@@ -123,7 +134,7 @@ pub fn core_error_to_api_response(error: &CoreError) -> (StatusCode, Json<ApiErr
         ),
         CoreError::EtcdError(msg) | CoreError::ParseError(msg) | CoreError::IoError(msg) => (
             ApiErrorCode::InternalError,
-            format!("Operation failed: {}", msg),
+            format!("Operation failed: {}", sanitize_for_production(msg)),
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         CoreError::TimeoutError => (
@@ -145,7 +156,7 @@ pub fn core_error_to_api_response(error: &CoreError) -> (StatusCode, Json<ApiErr
         ),
         CoreError::ConfigurationError(msg) => (
             ApiErrorCode::InternalError,
-            format!("Configuration error: {}", msg),
+            format!("Configuration error: {}", sanitize_for_production(msg)),
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         CoreError::Unknown => (

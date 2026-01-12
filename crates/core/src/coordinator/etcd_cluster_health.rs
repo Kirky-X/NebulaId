@@ -20,6 +20,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tempfile::NamedTempFile;
 use tokio::fs;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
@@ -263,7 +264,8 @@ mod tests {
     #[tokio::test]
     async fn test_etcd_cluster_health_monitor() {
         let config = EtcdConfig::default();
-        let cache_path = "/tmp/test_etcd_cache.json".to_string();
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
         let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
 
         assert_eq!(monitor.get_status(), EtcdClusterStatus::Healthy);
@@ -289,7 +291,8 @@ mod tests {
     #[tokio::test]
     async fn test_local_cache_operations() {
         let config = EtcdConfig::default();
-        let cache_path = "/tmp/test_etcd_cache_ops.json".to_string();
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
         let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
 
         monitor.put_to_cache("test_key".to_string(), "test_value".to_string(), 1);
@@ -305,7 +308,8 @@ mod tests {
     #[tokio::test]
     async fn test_cache_persistence() {
         let config = EtcdConfig::default();
-        let cache_path = "/tmp/test_etcd_cache_persist.json".to_string();
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
         let monitor = EtcdClusterHealthMonitor::new(config.clone(), cache_path.clone());
 
         monitor.put_to_cache("key1".to_string(), "value1".to_string(), 1);
@@ -323,7 +327,5 @@ mod tests {
         assert!(entry2.is_some());
         assert_eq!(entry1.unwrap().value, "value1");
         assert_eq!(entry2.unwrap().value, "value2");
-
-        let _ = fs::remove_file("/tmp/test_etcd_cache_persist.json").await;
     }
 }

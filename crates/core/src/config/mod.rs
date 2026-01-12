@@ -184,18 +184,28 @@ impl Default for DatabaseConfig {
             };
         }
 
+        // For tests, allow fallback to in-memory database
+        // SECURITY: This fallback is ONLY for testing, not production
+        if cfg!(test) || std::env::var("NEBULA_TEST_MODE").is_ok() {
+            return Self {
+                engine: DatabaseEngine::Sqlite,
+                url: "sqlite::memory:".to_string(),
+                host: String::new(),
+                port: 0,
+                username: String::new(),
+                password: String::new(),
+                database: String::new(),
+                max_connections: 10,
+                min_connections: 1,
+                acquire_timeout_seconds: 30,
+                idle_timeout_seconds: 300,
+            };
+        }
+
         // SECURITY: Require environment variable for password in production
-        // Test environments can use default password for integration tests
-        let password = if cfg!(test) {
-            std::env::var("NEBULA_DATABASE_PASSWORD")
-                .unwrap_or_else(|_| {
-                    tracing::warn!("Using default test password for tests. Set NEBULA_DATABASE_PASSWORD in production.");
-                    "test_password".to_string()
-                })
-        } else {
-            std::env::var("NEBULA_DATABASE_PASSWORD")
-                .expect("NEBULA_DATABASE_PASSWORD environment variable must be set")
-        };
+        // This prevents accidental use of weak passwords
+        let password = std::env::var("NEBULA_DATABASE_PASSWORD")
+            .expect("NEBULA_DATABASE_PASSWORD environment variable must be set");
 
         Self {
             engine: DatabaseEngine::Postgresql,
@@ -846,9 +856,12 @@ impl Config {
     /// Expand environment variables in config content
     /// Pattern: ${VAR_NAME} -> value of VAR_NAME
     fn expand_env_vars(content: &str) -> String {
-        // Safe unwrap: regex pattern is hardcoded and valid
-        let re = regex::Regex::new(r"\$\{([^}]+)\}")
-            .expect("Failed to compile environment variable regex");
+        // Compile regex once - pattern is hardcoded and validated
+        static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let re = RE.get_or_init(|| {
+            regex::Regex::new(r"\$\{([^}]+)\}")
+                .expect("BUG: Hardcoded regex pattern should never fail")
+        });
         re.replace_all(content, |caps: &regex::Captures| {
             let var_name = &caps[1];
             std::env::var(var_name).unwrap_or_else(|_| {

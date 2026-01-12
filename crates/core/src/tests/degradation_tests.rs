@@ -25,6 +25,7 @@ use async_trait::async_trait;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tempfile::NamedTempFile;
 use tokio::time::sleep;
 
 struct MockIdAlgorithm {
@@ -124,7 +125,8 @@ impl IdAlgorithm for MockIdAlgorithm {
 #[cfg(feature = "etcd")]
 async fn test_etcd_cluster_status_transitions() {
     let config = crate::config::EtcdConfig::default();
-    let cache_path = "/tmp/test_etcd_status_transitions.json".to_string();
+    let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+    let cache_path = cache_file.path().to_string_lossy().to_string();
     let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
 
     assert_eq!(monitor.get_status(), EtcdClusterStatus::Healthy);
@@ -151,7 +153,8 @@ async fn test_etcd_cluster_status_transitions() {
 #[cfg(feature = "etcd")]
 async fn test_etcd_cluster_failure_recovery() {
     let config = crate::config::EtcdConfig::default();
-    let cache_path = "/tmp/test_etcd_recovery.json".to_string();
+    let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+    let cache_path = cache_file.path().to_string_lossy().to_string();
     let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
 
     for _ in 0..5 {
@@ -169,7 +172,8 @@ async fn test_etcd_cluster_failure_recovery() {
 #[cfg(feature = "etcd")]
 async fn test_etcd_cluster_cache_fallback() {
     let config = crate::config::EtcdConfig::default();
-    let cache_path = "/tmp/test_etcd_cache_fallback.json".to_string();
+    let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+    let cache_path = cache_file.path().to_string_lossy().to_string();
     let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
 
     monitor.put_to_cache("test_key".to_string(), "test_value".to_string(), 1);
@@ -531,7 +535,8 @@ async fn test_multiple_algorithm_degradation() {
 #[tokio::test]
 async fn test_etcd_cache_persistence_across_instances() {
     let config = crate::config::EtcdConfig::default();
-    let cache_path = "/tmp/test_etcd_cache_persistence.json".to_string();
+    let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+    let cache_path = cache_file.path().to_string_lossy().to_string();
 
     let monitor1 = EtcdClusterHealthMonitor::new(config.clone(), cache_path.clone());
 
@@ -550,8 +555,6 @@ async fn test_etcd_cache_persistence_across_instances() {
     assert!(entry2.is_some());
     assert_eq!(entry1.unwrap().value, "value1");
     assert_eq!(entry2.unwrap().value, "value2");
-
-    let _ = tokio::fs::remove_file("/tmp/test_etcd_cache_persistence.json").await;
 }
 
 #[tokio::test]

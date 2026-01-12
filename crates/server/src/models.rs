@@ -496,6 +496,7 @@ pub struct CreateBizTagRequest {
     #[validate(length(min = 1, max = 64))]
     pub name: String,
 
+    #[validate(length(max = 512))]
     pub description: Option<String>,
 
     #[validate(length(min = 1, max = 20))]
@@ -521,6 +522,7 @@ pub struct UpdateBizTagRequest {
     #[validate(length(min = 1, max = 64))]
     pub name: Option<String>,
 
+    #[validate(length(max = 512))]
     pub description: Option<String>,
 
     #[validate(length(min = 1, max = 20))]

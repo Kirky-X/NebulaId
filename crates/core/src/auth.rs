@@ -55,10 +55,14 @@ impl AuthConfig {
         // Generate or load a secure salt for key hashing
         let salt = std::env::var("NEBULA_API_KEY_SALT").unwrap_or_else(|_err| {
             if crate::config::is_production() {
-                tracing::error!("NEBULA_API_KEY_SALT environment variable not set. This is a critical security issue.");
+                tracing::error!(
+                    "NEBULA_API_KEY_SALT environment variable not set. This is a critical security issue."
+                );
                 panic!(
-                    "NEBULA_API_KEY_SALT must be set to a fixed value for production use. \
-                     Generate with: openssl rand -hex 32"
+                    "CRITICAL SECURITY ERROR: NEBULA_API_KEY_SALT environment variable must be set in production. \
+                     This prevents API key authentication from working.\n\
+                     Please set the environment variable or generate one with:\n\
+                     \n  export NEBULA_API_KEY_SALT=$(openssl rand -hex 32)\n"
                 );
             }
 

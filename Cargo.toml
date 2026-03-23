@@ -36,10 +36,6 @@ opt-level = 0
 opt-level = 3
 lto = true
 
-# 增量编译优化
-[build]
-rustflags = ["-C", "target-cpu=skylake"]
-
 [workspace.metadata]
 # 构建配置
 [workspace.metadata.build]

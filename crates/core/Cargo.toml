@@ -10,6 +10,11 @@ sqlite = ["sea-orm/sqlx-sqlite", "sqlx/sqlite"]
 etcd = ["dep:etcd-client"]
 
 [dependencies]
+# 外部组件（基础设施层）
+confers = { workspace = true }
+oxcache = { workspace = true }
+dbnexus = { workspace = true }
+
 # 工具
 async-trait = { workspace = true }
 derive_more = { workspace = true }

@@ -53,6 +53,11 @@ allow-branch = ["main", "release/*"]
 tag-prefix = "v"
 
 [workspace.dependencies]
+# 外部组件（基础设施层）
+confers = { path = "../confers" }
+oxcache = { path = "../oxcache" }
+dbnexus = { path = "../dbnexus" }
+
 # 基础工具
 derive_more = { version = "1.0", features = ["display", "error", "from"] }
 criterion = { version = "0.5", features = ["async_tokio"] }

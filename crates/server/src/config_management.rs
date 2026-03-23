@@ -653,8 +653,18 @@ impl ConfigManagementService {
 mod tests {
     use super::*;
     use nebula_core::config::Config;
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    fn ensure_test_mode() {
+        INIT.call_once(|| {
+            std::env::set_var("NEBULA_TEST_MODE", "1");
+        });
+    }
 
     fn create_test_algorithm_router() -> Arc<nebula_core::algorithm::AlgorithmRouter> {
+        ensure_test_mode();
         let config = Config::default();
         Arc::new(nebula_core::algorithm::AlgorithmRouter::new(
             config.clone(),
@@ -664,7 +674,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_config_to_response() {
-        let config = Config::default();
+        let config = test_config();
         let response = ConfigManagementService::config_to_response(&config);
 
         // Engine depends on environment - SQLite for tests, PostgreSQL for production
@@ -674,10 +684,15 @@ mod tests {
         assert_eq!(response.rate_limit.default_rps, 10000);
     }
 
+    fn test_config() -> Config {
+        ensure_test_mode();
+        Config::default()
+    }
+
     #[tokio::test]
     async fn test_update_rate_limit_request_validation() {
         let hot_config = Arc::new(HotReloadConfig::new(
-            Config::default(),
+            test_config(),
             "config/config.toml".to_string(),
         ));
         let algorithm_router = create_test_algorithm_router();
@@ -699,7 +714,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_logging_request_validation() {
         let hot_config = Arc::new(HotReloadConfig::new(
-            Config::default(),
+            test_config(),
             "config/config.toml".to_string(),
         ));
         let algorithm_router = create_test_algorithm_router();
@@ -722,7 +737,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_algorithm() {
         let hot_config = Arc::new(HotReloadConfig::new(
-            Config::default(),
+            test_config(),
             "config/config.toml".to_string(),
         ));
         let algorithm_router = create_test_algorithm_router();
@@ -742,7 +757,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_algorithm_invalid() {
         let hot_config = Arc::new(HotReloadConfig::new(
-            Config::default(),
+            test_config(),
             "config/config.toml".to_string(),
         ));
         let algorithm_router = create_test_algorithm_router();

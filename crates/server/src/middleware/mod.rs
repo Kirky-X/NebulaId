@@ -27,38 +27,8 @@ use std::time::{Duration, Instant};
 pub mod size_limit;
 pub(crate) mod utils;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ApiKeyRole {
-    Admin,
-    User,
-}
-
-impl From<&str> for ApiKeyRole {
-    fn from(s: &str) -> Self {
-        match s {
-            "admin" => ApiKeyRole::Admin,
-            _ => ApiKeyRole::User,
-        }
-    }
-}
-
-impl From<ApiKeyRole> for &str {
-    fn from(role: ApiKeyRole) -> Self {
-        match role {
-            ApiKeyRole::Admin => "admin",
-            ApiKeyRole::User => "user",
-        }
-    }
-}
-
-impl From<ApiKeyRole> for nebula_core::database::ApiKeyRole {
-    fn from(role: ApiKeyRole) -> Self {
-        match role {
-            ApiKeyRole::Admin => nebula_core::database::ApiKeyRole::Admin,
-            ApiKeyRole::User => nebula_core::database::ApiKeyRole::User,
-        }
-    }
-}
+// Re-export ApiKeyRole for use in router.rs (unified with core::database::ApiKeyRole)
+pub use nebula_core::database::ApiKeyRole;
 
 #[derive(Clone)]
 pub struct ApiKeyAuth {
@@ -144,16 +114,11 @@ impl ApiKeyAuth {
         key_id: &str,
         key_secret: &str,
     ) -> Option<(Option<uuid::Uuid>, ApiKeyRole)> {
-        match self.repo.validate_api_key(key_id, key_secret).await {
-            Ok(Some((workspace_id, role))) => {
-                let role: ApiKeyRole = match role {
-                    nebula_core::database::ApiKeyRole::Admin => ApiKeyRole::Admin,
-                    nebula_core::database::ApiKeyRole::User => ApiKeyRole::User,
-                };
-                Some((workspace_id, role))
-            }
-            _ => None,
-        }
+        self.repo
+            .validate_api_key(key_id, key_secret)
+            .await
+            .ok()
+            .flatten()
     }
 
     pub async fn auth_middleware(&self, mut req: Request<Body>, next: Next) -> Response {
@@ -302,8 +267,8 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use nebula_core::database::{
-        ApiKeyInfo, ApiKeyRepository, ApiKeyResponse, ApiKeyRole as CoreApiKeyRole,
-        ApiKeyWithSecret, CreateApiKeyRequest,
+        ApiKeyInfo, ApiKeyRepository, ApiKeyResponse, ApiKeyRole, ApiKeyWithSecret,
+        CreateApiKeyRequest,
     };
     use nebula_core::types::Result;
     use sha2::Digest;
@@ -332,7 +297,7 @@ mod tests {
                     key_prefix: "nino_".to_string(),
                     name: "Mock Key".to_string(),
                     description: None,
-                    role: CoreApiKeyRole::User,
+                    role: ApiKeyRole::User,
                     rate_limit: 10000,
                     enabled: true,
                     expires_at: None,
@@ -350,7 +315,7 @@ mod tests {
             &self,
             key_id: &str,
             key_secret: &str,
-        ) -> Result<Option<(Option<uuid::Uuid>, nebula_core::database::ApiKeyRole)>> {
+        ) -> Result<Option<(Option<uuid::Uuid>, ApiKeyRole)>> {
             use subtle::ConstantTimeEq;
             if let Some((expected_secret, role)) = self.keys.get(key_id) {
                 let incoming_hash = MockApiKeyRepo::hash_secret(key_secret);
@@ -365,7 +330,7 @@ mod tests {
                     } else {
                         Some(uuid::Uuid::nil())
                     };
-                    return Ok(Some((workspace_id, role.clone().into())));
+                    return Ok(Some((workspace_id, role.clone())));
                 }
             }
             Ok(None)

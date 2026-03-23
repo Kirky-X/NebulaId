@@ -12,17 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod multi_level_cache;
-pub(crate) mod redis_cache;
-pub(crate) mod ring_buffer;
+//! Cache module for Nebula ID.
+//!
+//! This module re-exports the cache types from the `oxcache` crate.
+//! For actual cache operations, use the `CacheAdapter` from the
+//! `infrastructure` module.
 
-#[cfg(test)]
-mod redis_integration_test;
-
-// Public API - expose MultiLevelCache and cache backend trait to external consumers
-pub use multi_level_cache::MultiLevelCache;
-pub use multi_level_cache::{CacheBackend, CacheMetrics};
-pub use redis_cache::RedisCacheBackend;
-
-// Internal re-exports (pub(crate) so they're available within the crate but not externally)
-pub(crate) use ring_buffer::RingBuffer;
+// Re-export oxcache backend trait for convenience
+pub use oxcache::backend::CacheBackend;

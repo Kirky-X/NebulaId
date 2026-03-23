@@ -97,7 +97,10 @@ impl AuthConfig {
             .ok()
             .and_then(|s| s.parse().ok())
             .and_then(NonZeroUsize::new)
-            .unwrap_or(NonZeroUsize::new(10000).unwrap()); // Default: 10000 entries
+            .unwrap_or_else(|| {
+                // SAFETY: 10000 is a non-zero constant, this will never panic
+                NonZeroUsize::new(10000).expect("10000 is always a valid NonZeroUsize")
+            }); // Default: 10000 entries
 
         Self {
             salt,

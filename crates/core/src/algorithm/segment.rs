@@ -1051,6 +1051,222 @@ impl SegmentLoader for DatabaseSegmentLoader {
     }
 }
 
+// ============================================================================
+// DI Support - Builder Pattern and with_dependencies
+// ============================================================================
+
+use confers::traits::{ConfigProvider, ConfigProviderExt};
+use oxcache::backend::CacheBackend;
+
+impl SegmentAlgorithm {
+    /// Create a new SegmentAlgorithm with all dependencies injected.
+    ///
+    /// This is the primary construction mode for full DI support.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Configuration provider from confers
+    /// * `cache` - Cache backend from oxcache (optional, can use internal)
+    /// * `repository` - Segment repository for database operations
+    /// * `local_dc_id` - Local datacenter ID
+    pub fn with_dependencies(
+        config: Arc<dyn ConfigProvider>,
+        _cache: Option<Arc<dyn CacheBackend>>,
+        repository: Arc<dyn SegmentRepository>,
+        local_dc_id: u8,
+    ) -> Self {
+        let dc_failure_detector = Arc::new(DcFailureDetector::new(5, Duration::from_secs(300)));
+        dc_failure_detector.add_dc(local_dc_id);
+
+        let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+
+        // Extract segment config from provider
+        let segment_config = SegmentAlgorithmConfig {
+            base_step: config
+                .get_int("algorithm.segment.base_step")
+                .unwrap_or(1000) as u64,
+            min_step: config.get_int("algorithm.segment.min_step").unwrap_or(500) as u64,
+            max_step: config
+                .get_int("algorithm.segment.max_step")
+                .unwrap_or(100000) as u64,
+            switch_threshold: config
+                .get_float("algorithm.segment.switch_threshold")
+                .unwrap_or(0.1),
+        };
+
+        // Use RepositoryBackedLoader which wraps the repository
+        let segment_loader = Arc::new(RepositoryBackedLoader::new(
+            repository,
+            segment_config.clone(),
+        ));
+
+        Self {
+            config: segment_config,
+            buffers: DashMap::new(),
+            metrics: Arc::new(AlgorithmMetricsInner::default()),
+            segment_loader,
+            dc_failure_detector,
+            local_dc_id,
+            etcd_cluster_health_monitor: None,
+            cpu_monitor: None,
+            cpu_monitor_task: Arc::new(tokio::sync::Mutex::new(None)),
+            shutdown_tx: Arc::new(shutdown_tx),
+            health_check_task: Arc::new(tokio::sync::Mutex::new(None)),
+        }
+    }
+
+    /// Create a new builder for SegmentAlgorithm.
+    ///
+    /// Use the builder pattern for partial dependency injection.
+    pub fn builder() -> SegmentAlgorithmBuilder {
+        SegmentAlgorithmBuilder::new()
+    }
+}
+
+/// SegmentLoader that wraps a SegmentRepository.
+pub struct RepositoryBackedLoader {
+    repository: Arc<dyn SegmentRepository>,
+    config: SegmentAlgorithmConfig,
+}
+
+impl RepositoryBackedLoader {
+    /// Create a new RepositoryBackedLoader.
+    pub fn new(repository: Arc<dyn SegmentRepository>, config: SegmentAlgorithmConfig) -> Self {
+        Self { repository, config }
+    }
+}
+
+#[async_trait]
+impl SegmentLoader for RepositoryBackedLoader {
+    async fn load_segment(&self, ctx: &GenerateContext, _worker_id: u8) -> Result<SegmentData> {
+        let segment = self
+            .repository
+            .allocate_segment(
+                &ctx.workspace_id,
+                &ctx.biz_tag,
+                self.config.base_step as i32,
+            )
+            .await
+            .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
+
+        Ok(SegmentData {
+            start_id: segment.current_id as u64,
+            max_id: segment.max_id as u64,
+            step: segment.step as u64,
+            version: 0,
+        })
+    }
+}
+
+/// Builder for SegmentAlgorithm.
+///
+/// This builder allows partial dependency injection,
+/// with missing dependencies using default values.
+#[derive(Default)]
+pub struct SegmentAlgorithmBuilder {
+    config: Option<Arc<dyn ConfigProvider>>,
+    cache: Option<Arc<dyn CacheBackend>>,
+    repository: Option<Arc<dyn SegmentRepository>>,
+    local_dc_id: Option<u8>,
+    segment_loader: Option<Arc<dyn SegmentLoader + Send + Sync>>,
+    cpu_monitor: Option<Arc<CpuMonitor>>,
+    dc_failure_detector: Option<Arc<DcFailureDetector>>,
+}
+
+impl SegmentAlgorithmBuilder {
+    /// Create a new builder.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the configuration provider.
+    pub fn config(mut self, config: Arc<dyn ConfigProvider>) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// Set the cache backend.
+    pub fn cache(mut self, cache: Arc<dyn CacheBackend>) -> Self {
+        self.cache = Some(cache);
+        self
+    }
+
+    /// Set the segment repository.
+    pub fn repository(mut self, repository: Arc<dyn SegmentRepository>) -> Self {
+        self.repository = Some(repository);
+        self
+    }
+
+    /// Set the local datacenter ID.
+    pub fn local_dc_id(mut self, dc_id: u8) -> Self {
+        self.local_dc_id = Some(dc_id);
+        self
+    }
+
+    /// Set the segment loader.
+    pub fn segment_loader(mut self, loader: Arc<dyn SegmentLoader + Send + Sync>) -> Self {
+        self.segment_loader = Some(loader);
+        self
+    }
+
+    /// Set the CPU monitor.
+    pub fn cpu_monitor(mut self, monitor: Arc<CpuMonitor>) -> Self {
+        self.cpu_monitor = Some(monitor);
+        self
+    }
+
+    /// Set the DC failure detector.
+    pub fn dc_failure_detector(mut self, detector: Arc<DcFailureDetector>) -> Self {
+        self.dc_failure_detector = Some(detector);
+        self
+    }
+
+    /// Build the SegmentAlgorithm.
+    ///
+    /// Uses default values for missing dependencies.
+    pub fn build(self) -> SegmentAlgorithm {
+        let local_dc_id = self.local_dc_id.unwrap_or(0);
+        let dc_failure_detector = self.dc_failure_detector.unwrap_or_else(|| {
+            let detector = Arc::new(DcFailureDetector::new(5, Duration::from_secs(300)));
+            detector.add_dc(local_dc_id);
+            detector
+        });
+
+        let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+
+        let config = self
+            .config
+            .as_ref()
+            .map(|c| SegmentAlgorithmConfig {
+                base_step: c.get_int("algorithm.segment.base_step").unwrap_or(1000) as u64,
+                min_step: c.get_int("algorithm.segment.min_step").unwrap_or(500) as u64,
+                max_step: c.get_int("algorithm.segment.max_step").unwrap_or(100000) as u64,
+                switch_threshold: c
+                    .get_float("algorithm.segment.switch_threshold")
+                    .unwrap_or(0.1),
+            })
+            .unwrap_or_default();
+
+        let segment_loader = self
+            .segment_loader
+            .unwrap_or_else(|| Arc::new(DefaultSegmentLoader::default()));
+
+        SegmentAlgorithm {
+            config,
+            buffers: DashMap::new(),
+            metrics: Arc::new(AlgorithmMetricsInner::default()),
+            segment_loader,
+            dc_failure_detector,
+            local_dc_id,
+            etcd_cluster_health_monitor: None,
+            cpu_monitor: self.cpu_monitor,
+            cpu_monitor_task: Arc::new(tokio::sync::Mutex::new(None)),
+            shutdown_tx: Arc::new(shutdown_tx),
+            health_check_task: Arc::new(tokio::sync::Mutex::new(None)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

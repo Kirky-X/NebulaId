@@ -182,6 +182,90 @@ impl IdAlgorithm for UuidV4Impl {
     }
 }
 
+// ============================================================================
+// DI Support - Builder Pattern and with_dependencies
+// ============================================================================
+
+use confers::traits::ConfigProvider;
+
+impl UuidV7Impl {
+    /// Create a new UuidV7Impl with dependencies injected.
+    ///
+    /// Note: UuidV7Impl doesn't require external dependencies,
+    /// but this method is provided for API consistency.
+    pub fn with_dependencies(_config: &Arc<dyn ConfigProvider>) -> Self {
+        Self::new()
+    }
+
+    /// Create a builder for UuidV7Impl.
+    pub fn builder() -> UuidV7Builder {
+        UuidV7Builder::new()
+    }
+}
+
+/// Builder for UuidV7Impl.
+#[derive(Default)]
+pub struct UuidV7Builder {
+    config: Option<Arc<dyn ConfigProvider>>,
+}
+
+impl UuidV7Builder {
+    /// Create a new builder.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the configuration provider (optional for UuidV7).
+    pub fn config(mut self, config: Arc<dyn ConfigProvider>) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// Build the UuidV7Impl.
+    pub fn build(self) -> UuidV7Impl {
+        UuidV7Impl::new()
+    }
+}
+
+impl UuidV4Impl {
+    /// Create a new UuidV4Impl with dependencies injected.
+    ///
+    /// Note: UuidV4Impl doesn't require external dependencies,
+    /// but this method is provided for API consistency.
+    pub fn with_dependencies(_config: &Arc<dyn ConfigProvider>) -> Self {
+        Self::new()
+    }
+
+    /// Create a builder for UuidV4Impl.
+    pub fn builder() -> UuidV4Builder {
+        UuidV4Builder::new()
+    }
+}
+
+/// Builder for UuidV4Impl.
+#[derive(Default)]
+pub struct UuidV4Builder {
+    config: Option<Arc<dyn ConfigProvider>>,
+}
+
+impl UuidV4Builder {
+    /// Create a new builder.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the configuration provider (optional for UuidV4).
+    pub fn config(mut self, config: Arc<dyn ConfigProvider>) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// Build the UuidV4Impl.
+    pub fn build(self) -> UuidV4Impl {
+        UuidV4Impl::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

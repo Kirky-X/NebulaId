@@ -443,6 +443,105 @@ impl IdAlgorithm for UuidV4Algorithm {
     }
 }
 
+// ============================================================================
+// DI Support - Builder Pattern and with_dependencies
+// ============================================================================
+
+use confers::traits::{ConfigProvider, ConfigProviderExt};
+
+impl SnowflakeAlgorithm {
+    /// Create a new SnowflakeAlgorithm with all dependencies injected.
+    ///
+    /// This is the primary construction mode for full DI support.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Configuration provider from confers
+    /// * `datacenter_id` - Datacenter ID (0-7)
+    /// * `worker_id` - Worker ID (0-255)
+    pub fn with_dependencies(
+        config: &Arc<dyn ConfigProvider>,
+        datacenter_id: u8,
+        worker_id: u8,
+    ) -> Self {
+        let snowflake_config = SnowflakeAlgorithmConfig {
+            datacenter_id_bits: config
+                .get_int("algorithm.snowflake.datacenter_id_bits")
+                .unwrap_or(3) as u8,
+            worker_id_bits: config
+                .get_int("algorithm.snowflake.worker_id_bits")
+                .unwrap_or(8) as u8,
+            sequence_bits: config
+                .get_int("algorithm.snowflake.sequence_bits")
+                .unwrap_or(10) as u8,
+            clock_drift_threshold_ms: config
+                .get_int("algorithm.snowflake.clock_drift_threshold_ms")
+                .unwrap_or(1000) as u64,
+        };
+
+        Self {
+            config: snowflake_config,
+            datacenter_id,
+            worker_id,
+            sequence: AtomicU64::new(0),
+            last_timestamp: AtomicU64::new(0),
+            rotation_count: AtomicU8::new(0),
+            metrics: Arc::new(SnowflakeMetrics::new()),
+            clock_drift_ms: AtomicU64::new(0),
+        }
+    }
+
+    /// Create a new builder for SnowflakeAlgorithm.
+    pub fn builder() -> SnowflakeAlgorithmBuilder {
+        SnowflakeAlgorithmBuilder::new()
+    }
+}
+
+/// Builder for SnowflakeAlgorithm.
+#[derive(Default)]
+pub struct SnowflakeAlgorithmBuilder {
+    config: Option<Arc<dyn ConfigProvider>>,
+    datacenter_id: Option<u8>,
+    worker_id: Option<u8>,
+}
+
+impl SnowflakeAlgorithmBuilder {
+    /// Create a new builder.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the configuration provider.
+    pub fn config(mut self, config: Arc<dyn ConfigProvider>) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// Set the datacenter ID.
+    pub fn datacenter_id(mut self, id: u8) -> Self {
+        self.datacenter_id = Some(id);
+        self
+    }
+
+    /// Set the worker ID.
+    pub fn worker_id(mut self, id: u8) -> Self {
+        self.worker_id = Some(id);
+        self
+    }
+
+    /// Build the SnowflakeAlgorithm.
+    pub fn build(self) -> SnowflakeAlgorithm {
+        let datacenter_id = self.datacenter_id.unwrap_or(0);
+        let worker_id = self.worker_id.unwrap_or(0);
+
+        if let Some(config) = self.config {
+            SnowflakeAlgorithm::with_dependencies(&config, datacenter_id, worker_id)
+        } else {
+            SnowflakeAlgorithm::new(datacenter_id, worker_id)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

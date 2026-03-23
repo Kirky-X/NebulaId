@@ -17,12 +17,14 @@ pub mod algorithm;
 pub mod auth;
 pub mod cache;
 pub mod config;
+pub mod container;
+pub mod database;
 pub mod types;
 
 // Internal implementation modules
 pub(crate) mod config_management;
-pub mod database;
 pub(crate) mod dynamic_config;
+pub(crate) mod infrastructure;
 pub(crate) mod monitoring;
 
 // Coordinator module is pub to allow EtcdClusterHealthMonitor re-export,
@@ -44,7 +46,10 @@ pub use types::{Id, IdBatch};
 
 pub use auth::{AuthManager, Authenticator};
 
-pub use cache::MultiLevelCache;
+// Note: MultiLevelCache is deprecated, use oxcache::backend::CacheBackend instead
+// The internal cache module is kept for backward compatibility during migration
+
+pub use container::AppContainer;
 
 pub use config::{Config, TlsConfig};
 

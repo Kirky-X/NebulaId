@@ -17,12 +17,13 @@
 use crate::types::GlobalMetrics;
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, RwLock,
+        Arc,
     },
     time::{Duration, Instant},
 };
@@ -717,7 +718,7 @@ impl AlertManager {
     }
 
     fn store_alert_to_history(&self, alert: &Alert) {
-        let mut history = self.alert_history.write().unwrap();
+        let mut history = self.alert_history.write();
         if history.len() >= self.max_history_size {
             history.remove(0);
         }
@@ -741,12 +742,12 @@ impl AlertManager {
     }
 
     pub fn get_alerts(&self) -> Vec<Alert> {
-        let history = self.alert_history.read().unwrap();
+        let history = self.alert_history.read();
         history.clone()
     }
 
     pub fn get_alerts_by_severity(&self, severity: AlertSeverity) -> Vec<Alert> {
-        let history = self.alert_history.read().unwrap();
+        let history = self.alert_history.read();
         history
             .iter()
             .filter(|a| a.severity == severity)
@@ -755,7 +756,7 @@ impl AlertManager {
     }
 
     pub fn get_alerts_by_status(&self, status: AlertStatus) -> Vec<Alert> {
-        let history = self.alert_history.read().unwrap();
+        let history = self.alert_history.read();
         history
             .iter()
             .filter(|a| a.status == status)
@@ -768,17 +769,17 @@ impl AlertManager {
     }
 
     pub fn get_recent_alerts(&self, limit: usize) -> Vec<Alert> {
-        let history = self.alert_history.read().unwrap();
+        let history = self.alert_history.read();
         history.iter().rev().take(limit).cloned().collect()
     }
 
     pub fn get_alert_count(&self) -> usize {
-        let history = self.alert_history.read().unwrap();
+        let history = self.alert_history.read();
         history.len()
     }
 
     pub fn clear_alert_history(&self) {
-        let mut history = self.alert_history.write().unwrap();
+        let mut history = self.alert_history.write();
         history.clear();
     }
 

@@ -58,6 +58,7 @@ impl ConfigProviderImpl {
     ///
     /// This loads a TOML configuration file and flattens it into
     /// dot-notation keys (e.g., "database.host").
+    #[allow(dead_code)]
     pub fn from_file(path: &str) -> confers::ConfigResult<Self> {
         let builder: ConfigBuilder<AnnotatedValue> = ConfigBuilder::new();
         let annotated = builder.file(path).build_annotated()?;
@@ -161,6 +162,7 @@ impl ConfigProviderBuilder {
     }
 
     /// Enable environment variable source with a prefix.
+    #[allow(dead_code)]
     pub fn env_with_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.env_enabled = true;
         self.env_prefix = Some(prefix.into());
@@ -168,6 +170,7 @@ impl ConfigProviderBuilder {
     }
 
     /// Add a default value.
+    #[allow(dead_code)]
     pub fn default(mut self, key: impl Into<String>, value: confers::value::ConfigValue) -> Self {
         self.defaults.insert(key.into(), value);
         self

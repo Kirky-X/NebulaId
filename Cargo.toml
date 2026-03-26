@@ -100,7 +100,7 @@ lru = "0.16"
 parking_lot = "0.12"
 
 # 数据库
-sea-orm = { version = "1.1", features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
+sea-orm = { version = "1.1", features = ["runtime-tokio-rustls", "with-chrono", "with-uuid", "postgres-array"] }
 sea-orm-migration = "1.1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "uuid", "chrono"] }
 

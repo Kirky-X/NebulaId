@@ -43,7 +43,7 @@ lru = { workspace = true }
 parking_lot = { workspace = true }
 
 # 数据库
-sea-orm = { workspace = true, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
+sea-orm = { workspace = true, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid", "postgres-array"] }
 sea-orm-migration = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true, default-features = false }
 

@@ -1,0 +1,203 @@
+// Copyright © 2026 Kirky.X
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use derive_more::Display;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+#[derive(Debug, Error, Display, Serialize, Deserialize, Clone)]
+pub enum CoreError {
+    #[display("Invalid ID format: {}", _0)]
+    InvalidIdFormat(String),
+
+    #[display("Invalid ID string: {}", _0)]
+    InvalidIdString(String),
+
+    #[display("Invalid algorithm type: {}", _0)]
+    InvalidAlgorithmType(String),
+
+    #[display("Clock moved backward, last timestamp: {}", last_timestamp)]
+    ClockMovedBackward { last_timestamp: u64 },
+
+    #[display("Sequence overflow, timestamp: {}", timestamp)]
+    SequenceOverflow { timestamp: u64 },
+
+    #[display("Segment exhausted, max_id: {}", max_id)]
+    SegmentExhausted { max_id: u64 },
+
+    #[display("Database error: {}", _0)]
+    DatabaseError(String),
+
+    #[display("Cache error: {}", _0)]
+    CacheError(String),
+
+    #[display("Configuration error: {}", _0)]
+    ConfigurationError(String),
+
+    #[display("Authentication error: {}", _0)]
+    AuthenticationError(String),
+
+    #[display("Rate limit exceeded")]
+    RateLimitExceeded,
+
+    #[display("Resource not found: {}", _0)]
+    NotFound(String),
+
+    #[display("Workspace disabled: {}", _0)]
+    WorkspaceDisabled(String),
+
+    #[display("Biz tag not found: {}", _0)]
+    BizTagNotFound(String),
+
+    #[display("API key disabled")]
+    ApiKeyDisabled,
+
+    #[display("API key expired")]
+    ApiKeyExpired,
+
+    #[display("Invalid API key signature")]
+    InvalidApiKeySignature,
+
+    #[display("Etcd error: {}", _0)]
+    EtcdError(String),
+
+    #[display("Parse error: {}", _0)]
+    ParseError(String),
+
+    #[display("I/O error: {}", _0)]
+    IoError(String),
+
+    #[display("Timeout error")]
+    TimeoutError,
+
+    #[display("Internal error: {}", _0)]
+    InternalError(String),
+
+    #[display("Invalid input: {}", _0)]
+    InvalidInput(String),
+
+    #[display("Unknown error")]
+    #[from(ignore)]
+    Unknown,
+}
+
+impl From<std::num::ParseIntError> for CoreError {
+    fn from(e: std::num::ParseIntError) -> Self {
+        CoreError::ParseError(e.to_string())
+    }
+}
+
+impl From<std::io::Error> for CoreError {
+    fn from(e: std::io::Error) -> Self {
+        CoreError::IoError(e.to_string())
+    }
+}
+
+impl From<uuid::Error> for CoreError {
+    fn from(e: uuid::Error) -> Self {
+        CoreError::ParseError(e.to_string())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ErrorResponse {
+    pub code: i32,
+    pub message: String,
+    pub details: Option<serde_json::Value>,
+}
+
+impl ErrorResponse {
+    pub fn new(code: i32, message: String) -> Self {
+        Self {
+            code,
+            message,
+            details: None,
+        }
+    }
+
+    pub fn with_details(code: i32, message: String, details: serde_json::Value) -> Self {
+        Self {
+            code,
+            message,
+            details: Some(details),
+        }
+    }
+}
+
+pub type Result<T> = std::result::Result<T, CoreError>;
+
+pub const ERROR_CODE_INVALID_REQUEST: i32 = 400;
+pub const ERROR_CODE_UNAUTHORIZED: i32 = 401;
+pub const ERROR_CODE_FORBIDDEN: i32 = 403;
+pub const ERROR_CODE_NOT_FOUND: i32 = 404;
+pub const ERROR_CODE_RATE_LIMIT: i32 = 429;
+pub const ERROR_CODE_INTERNAL_ERROR: i32 = 500;
+pub const ERROR_CODE_SERVICE_UNAVAILABLE: i32 = 503;
+
+impl CoreError {
+    /// Convert CoreError to HTTP status code and error response
+    pub fn to_http_response(&self) -> (i32, ErrorResponse) {
+        let (status_code, error_code) = match self {
+            CoreError::InvalidIdFormat(_)
+            | CoreError::InvalidIdString(_)
+            | CoreError::InvalidAlgorithmType(_)
+            | CoreError::InvalidInput(_)
+            | CoreError::ParseError(_) => (ERROR_CODE_INVALID_REQUEST, ERROR_CODE_INVALID_REQUEST),
+
+            CoreError::AuthenticationError(_)
+            | CoreError::InvalidApiKeySignature
+            | CoreError::ApiKeyDisabled
+            | CoreError::ApiKeyExpired => (ERROR_CODE_UNAUTHORIZED, ERROR_CODE_UNAUTHORIZED),
+
+            CoreError::WorkspaceDisabled(_) => (ERROR_CODE_FORBIDDEN, ERROR_CODE_FORBIDDEN),
+
+            CoreError::NotFound(_) | CoreError::BizTagNotFound(_) => {
+                (ERROR_CODE_NOT_FOUND, ERROR_CODE_NOT_FOUND)
+            }
+
+            CoreError::RateLimitExceeded => (ERROR_CODE_RATE_LIMIT, ERROR_CODE_RATE_LIMIT),
+
+            CoreError::TimeoutError => (
+                ERROR_CODE_SERVICE_UNAVAILABLE,
+                ERROR_CODE_SERVICE_UNAVAILABLE,
+            ),
+
+            CoreError::ClockMovedBackward { .. }
+            | CoreError::SequenceOverflow { .. }
+            | CoreError::SegmentExhausted { .. }
+            | CoreError::DatabaseError(_)
+            | CoreError::CacheError(_)
+            | CoreError::ConfigurationError(_)
+            | CoreError::EtcdError(_)
+            | CoreError::IoError(_)
+            | CoreError::InternalError(_)
+            | CoreError::Unknown => (ERROR_CODE_INTERNAL_ERROR, ERROR_CODE_INTERNAL_ERROR),
+        };
+
+        (
+            status_code,
+            ErrorResponse::new(error_code, self.to_string()),
+        )
+    }
+
+    /// Get HTTP status code for this error
+    pub fn http_status_code(&self) -> i32 {
+        self.to_http_response().0
+    }
+
+    /// Get error code for this error
+    pub fn error_code(&self) -> i32 {
+        self.to_http_response().1.code
+    }
+}

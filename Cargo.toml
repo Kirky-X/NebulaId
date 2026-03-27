@@ -1,13 +1,5 @@
-[workspace]
-members = [
-    "crates/core",
-    "crates/server",
-]
-
-resolver = "1"
-
-# 统一的包元数据
-[workspace.package]
+[package]
+name = "nebulaid"
 version = "0.1.1"
 description = "Enterprise-grade distributed ID generation system"
 authors = ["Kirky.X"]
@@ -18,60 +10,42 @@ homepage = "https://github.com/Kirky-X/NebulaId"
 keywords = ["distributed", "id-generator", "snowflake", "uuid"]
 categories = ["development-tools", "database"]
 
-[profile.release]
-opt-level = 3
-lto = "thin"
-codegen-units = 4
-strip = true
-panic = "abort"
+[lib]
+name = "nebulaid"
+path = "src/lib.rs"
 
-[profile.dev]
-debug = true
-split-debuginfo = "unpacked"
+[[bin]]
+name = "nebula-id"
+path = "src/main.rs"
 
-[profile.test]
-opt-level = 0
+[build-dependencies]
+protoc-bin-vendored = "3.2.0"
+tonic-prost-build = "0.14"
 
-[profile.bench]
-opt-level = 3
-lto = true
+[features]
+default = ["postgresql"]
+postgresql = ["sea-orm/sqlx-postgres", "sqlx/postgres"]
+sqlite = ["sea-orm/sqlx-sqlite", "sqlx/sqlite"]
+etcd = ["dep:etcd-client"]
 
-[workspace.metadata]
-# 构建配置
-[workspace.metadata.build]
-targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
-features = ["full"]
-
-# Docker 配置
-[workspace.metadata.docker]
-image = "nebula-id"
-maintainer = "Kirky.X"
-
-# 发布配置
-[workspace.metadata.release]
-allow-branch = ["main", "release/*"]
-tag-prefix = "v"
-
-[workspace.dependencies]
+[dependencies]
 # 外部组件（基础设施层）
 confers = { path = "../confers" }
 oxcache = { path = "../oxcache" }
 dbnexus = { path = "../dbnexus" }
 
-# 基础工具
-derive_more = { version = "1.0", features = ["display", "error", "from"] }
-criterion = { version = "0.5", features = ["async_tokio"] }
-thiserror = "1"
-anyhow = "1"
+# 工具
 async-trait = "0.1"
+derive_more = { version = "1.0", features = ["display", "error", "from"] }
+thiserror = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # 异步运行时
 tokio = { version = "1.49", features = ["full"] }
+tokio-stream = "0.1"
 futures = "0.3"
 futures-util = "0.3"
-async-stream = "0.3"
 
 # Web 框架
 axum = { version = "0.8.8", features = ["json", "macros"] }
@@ -91,7 +65,7 @@ prost = "0.14.1"
 prost-types = "0.14.1"
 
 # 分布式协调
-etcd-client = "0.17"
+etcd-client = { version = "0.17", optional = true }
 
 # 缓存与存储
 redis = { version = "0.26", features = ["tokio-comp", "aio"] }
@@ -101,8 +75,8 @@ parking_lot = "0.12"
 
 # 数据库
 sea-orm = { version = "1.1", features = ["runtime-tokio-rustls", "with-chrono", "with-uuid", "postgres-array"] }
-sea-orm-migration = "1.1"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "uuid", "chrono"] }
+sea-orm-migration = { version = "1.1", optional = true }
+sqlx = { version = "0.8", default-features = false, optional = true, features = ["runtime-tokio", "tls-rustls", "uuid", "chrono"] }
 
 # 监控与指标
 prometheus-client = { version = "0.24", default-features = false }
@@ -126,35 +100,60 @@ subtle = "2.5"
 regex = "1"
 toml = "0.8"
 reqwest = { version = "0.13", features = ["json"] }
-clap = { version = "4", features = ["derive"] }
-humantime = "2"
-config = "0.14"
-serde_with = "3"
 validator = { version = "0.20", features = ["derive"] }
 winnow = "0.5"
+serde_with = "3"
+config = "0.14"
+humantime = "2"
 
-# 加密认证
+# 命令行
+clap = { version = "4", features = ["derive"] }
+
+# 错误处理
+anyhow = "1"
+
+# 认证
+authrs = { version = "0.1.2", features = ["api-key"] }
+
+# 加密
 rustls = "0.22"
 tokio-rustls = "0.25"
 rustls-pemfile = "2"
 
-# 构建依赖
-protoc-bin-vendored = "3.2.0"
-tonic-prost-build = "0.14"
+# 基础组件
 arc-swap = "1.6"
 crossbeam = "0.8"
 bytes = "1"
 crc32fast = "1"
 either = "1"
 pin-project = "1.1"
-authrs = { version = "0.1.2", features = ["api-key"] }
 
-# 测试依赖
+# 速率限制和流量控制 - 使用 limiteron 库
+limiteron = { path = "../limiteron", default-features = false, features = ["postgres", "quota-control", "ban-manager"] }
+
+[dev-dependencies]
 mockall = "0.13"
 proptest = "1.4"
 quickcheck = "1"
+sea-orm = { version = "1.1", features = ["mock"] }
 tempfile = "3"
 tokio-test = "0.4"
+reqwest = { version = "0.13", features = ["json"] }
 
-[workspace.metadata.docs]
-targets = ["x86_64-unknown-linux-gnu"]
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+panic = "abort"
+
+[profile.dev]
+debug = true
+split-debuginfo = "unpacked"
+
+[profile.test]
+opt-level = 0
+
+[profile.bench]
+opt-level = 3
+lto = true

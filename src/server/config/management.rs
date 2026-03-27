@@ -1,0 +1,775 @@
+// Copyright © 2026 Kirky.X
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use super::hot_reload::HotReloadConfig;
+use crate::core::config::Config;
+use crate::core::database::{
+    CreateGroupRequest as CoreCreateGroupRequest,
+    CreateWorkspaceRequest as CoreCreateWorkspaceRequest,
+};
+use crate::core::types::id::AlgorithmType;
+use crate::server::models::{
+    AlgorithmConfigInfo, AppConfigInfo, CacheMetrics, ConfigResponse, ConnectionPoolMetrics,
+    CreateGroupRequest, CreateWorkspaceRequest, DatabaseConfigInfo, DatabaseMetrics,
+    GroupListResponse, GroupResponse, LoggingConfigInfo, MonitoringConfigInfo, RateLimitConfigInfo,
+    RedisConfigInfo, SecureConfigResponse, SegmentConfigInfo, SetAlgorithmRequest,
+    SetAlgorithmResponse, SnowflakeConfigInfo, TlsConfigInfo, UpdateConfigResponse,
+    UpdateLoggingRequest, UpdateRateLimitRequest, UuidV7ConfigInfo, WorkspaceListResponse,
+    WorkspaceResponse,
+};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use uuid::Uuid;
+use validator::Validate;
+
+pub struct ConfigManagementService {
+    hot_config: Arc<HotReloadConfig>,
+    rate_limiter: Arc<RwLock<Option<(u32, u32)>>>,
+    algorithm_router: Arc<crate::core::algorithm::AlgorithmRouter>,
+    repository: Option<Arc<dyn crate::core::database::BizTagRepository + Send + Sync>>,
+    workspace_repository: Option<Arc<dyn crate::core::database::WorkspaceRepository + Send + Sync>>,
+    group_repository: Option<Arc<dyn crate::core::database::GroupRepository + Send + Sync>>,
+}
+
+impl ConfigManagementService {
+    pub fn new(
+        hot_config: Arc<HotReloadConfig>,
+        algorithm_router: Arc<crate::core::algorithm::AlgorithmRouter>,
+    ) -> Self {
+        Self {
+            hot_config,
+            rate_limiter: Arc::new(RwLock::new(None)),
+            algorithm_router,
+            repository: None,
+            workspace_repository: None,
+            group_repository: None,
+        }
+    }
+
+    pub fn with_repository(
+        hot_config: Arc<HotReloadConfig>,
+        algorithm_router: Arc<crate::core::algorithm::AlgorithmRouter>,
+        repository: Arc<dyn crate::core::database::BizTagRepository + Send + Sync>,
+        workspace_repository: Arc<dyn crate::core::database::WorkspaceRepository + Send + Sync>,
+        group_repository: Arc<dyn crate::core::database::GroupRepository + Send + Sync>,
+    ) -> Self {
+        Self {
+            hot_config,
+            rate_limiter: Arc::new(RwLock::new(None)),
+            algorithm_router,
+            repository: Some(repository),
+            workspace_repository: Some(workspace_repository),
+            group_repository: Some(group_repository),
+        }
+    }
+
+    pub fn get_config(&self) -> ConfigResponse {
+        let config = self.hot_config.get_config();
+        Self::config_to_response(&config)
+    }
+
+    pub fn get_secure_config(&self) -> SecureConfigResponse {
+        let config = self.hot_config.get_config();
+        Self::secure_config_to_response(&config)
+    }
+
+    fn config_to_response(config: &Config) -> ConfigResponse {
+        ConfigResponse {
+            app: AppConfigInfo {
+                name: config.app.name.clone(),
+                host: config.app.host.clone(),
+                http_port: config.app.http_port,
+                grpc_port: config.app.grpc_port,
+                dc_id: config.app.dc_id,
+                worker_id: config.app.worker_id,
+            },
+            database: DatabaseConfigInfo {
+                engine: config.database.engine.to_string(),
+                host: Some(config.database.host.clone()),
+                port: Some(config.database.port),
+                database: Some(config.database.database.clone()),
+                max_connections: config.database.max_connections,
+                min_connections: config.database.min_connections,
+            },
+            redis: RedisConfigInfo {
+                url: Some(config.redis.url.clone()),
+                pool_size: config.redis.pool_size,
+                key_prefix: config.redis.key_prefix.clone(),
+                ttl_seconds: config.redis.ttl_seconds,
+            },
+            algorithm: AlgorithmConfigInfo {
+                default: config.algorithm.default.clone(),
+                segment: SegmentConfigInfo {
+                    base_step: config.algorithm.segment.base_step,
+                    min_step: config.algorithm.segment.min_step,
+                    max_step: config.algorithm.segment.max_step,
+                    switch_threshold: config.algorithm.segment.switch_threshold,
+                },
+                snowflake: SnowflakeConfigInfo {
+                    datacenter_id_bits: config.algorithm.snowflake.datacenter_id_bits,
+                    worker_id_bits: config.algorithm.snowflake.worker_id_bits,
+                    sequence_bits: config.algorithm.snowflake.sequence_bits,
+                    clock_drift_threshold_ms: config.algorithm.snowflake.clock_drift_threshold_ms,
+                },
+                uuid_v7: UuidV7ConfigInfo {
+                    enabled: config.algorithm.uuid_v7.enabled,
+                },
+            },
+            monitoring: MonitoringConfigInfo {
+                metrics_enabled: config.monitoring.metrics_enabled,
+                metrics_path: config.monitoring.metrics_path.clone(),
+                tracing_enabled: config.monitoring.tracing_enabled,
+            },
+            logging: LoggingConfigInfo {
+                level: config.logging.level.to_string(),
+                format: config.logging.format.to_string(),
+                include_location: config.logging.include_location,
+            },
+            rate_limit: RateLimitConfigInfo {
+                enabled: config.rate_limit.enabled,
+                default_rps: config.rate_limit.default_rps,
+                burst_size: config.rate_limit.burst_size,
+            },
+            tls: TlsConfigInfo {
+                enabled: config.tls.enabled,
+                http_enabled: config.tls.http_enabled,
+                grpc_enabled: config.tls.grpc_enabled,
+                has_cert: !config.tls.cert_path.is_empty(),
+            },
+        }
+    }
+
+    fn secure_config_to_response(config: &Config) -> SecureConfigResponse {
+        SecureConfigResponse {
+            app: AppConfigInfo {
+                name: config.app.name.clone(),
+                host: config.app.host.clone(),
+                http_port: config.app.http_port,
+                grpc_port: config.app.grpc_port,
+                dc_id: config.app.dc_id,
+                worker_id: config.app.worker_id,
+            },
+            algorithm: AlgorithmConfigInfo {
+                default: config.algorithm.default.clone(),
+                segment: SegmentConfigInfo {
+                    base_step: config.algorithm.segment.base_step,
+                    min_step: config.algorithm.segment.min_step,
+                    max_step: config.algorithm.segment.max_step,
+                    switch_threshold: config.algorithm.segment.switch_threshold,
+                },
+                snowflake: SnowflakeConfigInfo {
+                    datacenter_id_bits: config.algorithm.snowflake.datacenter_id_bits,
+                    worker_id_bits: config.algorithm.snowflake.worker_id_bits,
+                    sequence_bits: config.algorithm.snowflake.sequence_bits,
+                    clock_drift_threshold_ms: config.algorithm.snowflake.clock_drift_threshold_ms,
+                },
+                uuid_v7: UuidV7ConfigInfo {
+                    enabled: config.algorithm.uuid_v7.enabled,
+                },
+            },
+            monitoring: MonitoringConfigInfo {
+                metrics_enabled: config.monitoring.metrics_enabled,
+                metrics_path: config.monitoring.metrics_path.clone(),
+                tracing_enabled: config.monitoring.tracing_enabled,
+            },
+            logging: LoggingConfigInfo {
+                level: config.logging.level.to_string(),
+                format: config.logging.format.to_string(),
+                include_location: config.logging.include_location,
+            },
+            rate_limit: RateLimitConfigInfo {
+                enabled: config.rate_limit.enabled,
+                default_rps: config.rate_limit.default_rps,
+                burst_size: config.rate_limit.burst_size,
+            },
+        }
+    }
+
+    pub async fn update_rate_limit(&self, req: UpdateRateLimitRequest) -> UpdateConfigResponse {
+        if let Err(e) = req.validate() {
+            return UpdateConfigResponse {
+                success: false,
+                message: format!("Validation error: {}", e),
+                config: None,
+            };
+        }
+
+        let mut config = self.hot_config.get_config();
+
+        if let Some(rps) = req.default_rps {
+            config.rate_limit.default_rps = rps;
+        }
+        if let Some(burst) = req.burst_size {
+            config.rate_limit.burst_size = burst;
+        }
+
+        {
+            let mut rate_limiter_guard = self.rate_limiter.write().await;
+            *rate_limiter_guard =
+                Some((config.rate_limit.default_rps, config.rate_limit.burst_size));
+        }
+
+        self.hot_config.update_config(config.clone());
+
+        UpdateConfigResponse {
+            success: true,
+            message: "Rate limit configuration updated successfully".to_string(),
+            config: Some(Self::config_to_response(&config)),
+        }
+    }
+
+    pub async fn update_logging(&self, req: UpdateLoggingRequest) -> UpdateConfigResponse {
+        if let Err(e) = req.validate() {
+            return UpdateConfigResponse {
+                success: false,
+                message: format!("Validation error: {}", e),
+                config: None,
+            };
+        }
+
+        let mut config = self.hot_config.get_config();
+
+        if let Some(level) = req.level {
+            config.logging.level = crate::core::config::LogLevel::from(level);
+        }
+
+        self.hot_config.update_config(config.clone());
+
+        UpdateConfigResponse {
+            success: true,
+            message: "Logging configuration updated successfully".to_string(),
+            config: Some(Self::config_to_response(&config)),
+        }
+    }
+
+    pub async fn reload_config(&self) -> UpdateConfigResponse {
+        match self.hot_config.reload_from_file().await {
+            Ok(_) => UpdateConfigResponse {
+                success: true,
+                message: "Configuration reloaded from file successfully".to_string(),
+                config: Some(Self::config_to_response(&self.hot_config.get_config())),
+            },
+            Err(e) => UpdateConfigResponse {
+                success: false,
+                message: format!("Failed to reload configuration: {}", e),
+                config: None,
+            },
+        }
+    }
+
+    pub async fn get_rate_limit_override(&self) -> Option<(u32, u32)> {
+        let guard = self.rate_limiter.read().await;
+        *guard
+    }
+
+    pub async fn set_algorithm(&self, req: SetAlgorithmRequest) -> SetAlgorithmResponse {
+        if let Err(e) = req.validate() {
+            return SetAlgorithmResponse {
+                success: false,
+                biz_tag: req.biz_tag.clone(),
+                algorithm: req.algorithm.clone(),
+                message: format!("Validation error: {}", e),
+            };
+        }
+
+        let algorithm_type = match req.algorithm.to_lowercase().as_str() {
+            "segment" => AlgorithmType::Segment,
+            "snowflake" => AlgorithmType::Snowflake,
+            "uuid_v7" => AlgorithmType::UuidV7,
+            _ => {
+                return SetAlgorithmResponse {
+                    success: false,
+                    biz_tag: req.biz_tag.clone(),
+                    algorithm: req.algorithm.clone(),
+                    message: format!(
+                        "Invalid algorithm '{}'. Valid options: segment, snowflake, uuid_v7",
+                        req.algorithm
+                    ),
+                };
+            }
+        };
+
+        let biz_tag = req.biz_tag.clone();
+        let algorithm = req.algorithm.clone();
+        self.algorithm_router
+            .set_algorithm(biz_tag.clone(), algorithm_type);
+
+        let message = format!(
+            "Algorithm for biz_tag '{}' set to '{}' successfully",
+            biz_tag, algorithm
+        );
+
+        SetAlgorithmResponse {
+            success: true,
+            biz_tag,
+            algorithm,
+            message,
+        }
+    }
+
+    // ========== BizTag CRUD Methods ==========
+
+    pub async fn create_biz_tag(
+        &self,
+        request: &crate::core::database::CreateBizTagRequest,
+    ) -> crate::core::Result<crate::core::database::BizTag> {
+        if let Some(ref repo) = self.repository {
+            repo.create_biz_tag(request).await
+        } else {
+            Err(crate::core::CoreError::InternalError(
+                "Database repository not configured".to_string(),
+            ))
+        }
+    }
+
+    pub async fn get_biz_tag(
+        &self,
+        id: Uuid,
+    ) -> crate::core::Result<Option<crate::core::database::BizTag>> {
+        if let Some(ref repo) = self.repository {
+            repo.get_biz_tag(id).await
+        } else {
+            Err(crate::core::CoreError::InternalError(
+                "Database repository not configured".to_string(),
+            ))
+        }
+    }
+
+    pub async fn update_biz_tag(
+        &self,
+        id: Uuid,
+        request: &crate::core::database::UpdateBizTagRequest,
+    ) -> crate::core::Result<crate::core::database::BizTag> {
+        if let Some(ref repo) = self.repository {
+            repo.update_biz_tag(id, request).await
+        } else {
+            Err(crate::core::CoreError::InternalError(
+                "Database repository not configured".to_string(),
+            ))
+        }
+    }
+
+    pub async fn delete_biz_tag(&self, id: Uuid) -> crate::core::Result<()> {
+        if let Some(ref repo) = self.repository {
+            repo.delete_biz_tag(id).await
+        } else {
+            Err(crate::core::CoreError::InternalError(
+                "Database repository not configured".to_string(),
+            ))
+        }
+    }
+
+    pub async fn count_biz_tags(
+        &self,
+        workspace_id: Uuid,
+        group_id: Option<Uuid>,
+    ) -> crate::core::Result<u64> {
+        if let Some(ref repo) = self.repository {
+            repo.count_biz_tags(workspace_id, group_id).await
+        } else {
+            Err(crate::core::CoreError::InternalError(
+                "Database repository not configured".to_string(),
+            ))
+        }
+    }
+
+    pub async fn list_biz_tags(
+        &self,
+        workspace_id: Uuid,
+        group_id: Option<Uuid>,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> crate::core::Result<Vec<crate::core::database::BizTag>> {
+        if let Some(ref repo) = self.repository {
+            repo.list_biz_tags(workspace_id, group_id, limit, offset)
+                .await
+        } else {
+            Err(crate::core::CoreError::InternalError(
+                "Database repository not configured".to_string(),
+            ))
+        }
+    }
+
+    // ========== Workspace CRUD Methods ==========
+
+    pub async fn create_workspace(
+        &self,
+        req: CreateWorkspaceRequest,
+    ) -> crate::core::Result<WorkspaceResponse> {
+        if let Some(ref repo) = self.workspace_repository {
+            let request = CoreCreateWorkspaceRequest {
+                name: req.name.clone(),
+                description: req.description.clone(),
+                max_groups: req.max_groups,
+                max_biz_tags: req.max_biz_tags,
+            };
+            let workspace = repo.create_workspace(&request).await?;
+            Ok(WorkspaceResponse {
+                id: workspace.id.to_string(),
+                name: workspace.name,
+                description: workspace.description,
+                status: workspace.status.to_string(),
+                max_groups: workspace.max_groups,
+                max_biz_tags: workspace.max_biz_tags,
+                created_at: workspace.created_at.and_utc().to_rfc3339(),
+                updated_at: workspace.updated_at.and_utc().to_rfc3339(),
+                user_api_key: None,
+            })
+        } else {
+            Err(crate::core::CoreError::InternalError(
+                "Workspace repository not configured".to_string(),
+            ))
+        }
+    }
+
+    pub async fn list_workspaces(&self) -> crate::core::Result<WorkspaceListResponse> {
+        if let Some(ref repo) = self.workspace_repository {
+            let workspaces = repo.list_workspaces(None, None).await?;
+            let total = workspaces.len() as u64;
+            let workspace_responses: Vec<WorkspaceResponse> = workspaces
+                .into_iter()
+                .map(|w| WorkspaceResponse {
+                    id: w.id.to_string(),
+                    name: w.name,
+                    description: w.description,
+                    status: w.status.to_string(),
+                    max_groups: w.max_groups,
+                    max_biz_tags: w.max_biz_tags,
+                    created_at: w.created_at.and_utc().to_rfc3339(),
+                    updated_at: w.updated_at.and_utc().to_rfc3339(),
+                    user_api_key: None,
+                })
+                .collect();
+            Ok(WorkspaceListResponse {
+                workspaces: workspace_responses,
+                total,
+            })
+        } else {
+            Err(crate::core::CoreError::InternalError(
+                "Workspace repository not configured".to_string(),
+            ))
+        }
+    }
+
+    pub async fn get_workspace(
+        &self,
+        name: &str,
+    ) -> crate::core::Result<Option<WorkspaceResponse>> {
+        if let Some(ref repo) = self.workspace_repository {
+            let workspace = repo.get_workspace_by_name(name).await?;
+            Ok(workspace.map(|w| WorkspaceResponse {
+                id: w.id.to_string(),
+                name: w.name,
+                description: w.description,
+                status: w.status.to_string(),
+                max_groups: w.max_groups,
+                max_biz_tags: w.max_biz_tags,
+                created_at: w.created_at.and_utc().to_rfc3339(),
+                updated_at: w.updated_at.and_utc().to_rfc3339(),
+                user_api_key: None,
+            }))
+        } else {
+            Err(crate::core::CoreError::InternalError(
+                "Workspace repository not configured".to_string(),
+            ))
+        }
+    }
+
+    // ========== Group CRUD Methods ==========
+
+    pub async fn create_group(
+        &self,
+        req: CreateGroupRequest,
+    ) -> crate::core::Result<GroupResponse> {
+        if let Some(ref workspace_repo) = self.workspace_repository {
+            if let Some(ref group_repo) = self.group_repository {
+                // First get the workspace by name
+                let workspace = workspace_repo.get_workspace_by_name(&req.workspace).await?;
+                match workspace {
+                    Some(ws) => {
+                        let request = CoreCreateGroupRequest {
+                            workspace_id: ws.id,
+                            name: req.name.clone(),
+                            description: req.description.clone(),
+                            max_biz_tags: req.max_biz_tags,
+                        };
+                        let group = group_repo.create_group(&request).await?;
+                        Ok(GroupResponse {
+                            id: group.id.to_string(),
+                            workspace_id: ws.id.to_string(),
+                            workspace_name: ws.name,
+                            name: group.name,
+                            description: group.description,
+                            max_biz_tags: group.max_biz_tags,
+                            created_at: group.created_at.and_utc().to_rfc3339(),
+                            updated_at: group.updated_at.and_utc().to_rfc3339(),
+                        })
+                    }
+                    None => Err(crate::core::CoreError::InternalError(format!(
+                        "Workspace '{}' not found",
+                        req.workspace
+                    ))),
+                }
+            } else {
+                Err(crate::core::CoreError::InternalError(
+                    "Group repository not configured".to_string(),
+                ))
+            }
+        } else {
+            Err(crate::core::CoreError::InternalError(
+                "Workspace repository not configured".to_string(),
+            ))
+        }
+    }
+
+    pub async fn list_groups(&self, workspace: &str) -> crate::core::Result<GroupListResponse> {
+        if let Some(ref workspace_repo) = self.workspace_repository {
+            if let Some(ref group_repo) = self.group_repository {
+                let workspace = workspace_repo.get_workspace_by_name(workspace).await?;
+                match workspace {
+                    Some(ws) => {
+                        let groups = group_repo.list_groups(ws.id, None, None).await?;
+                        let total = groups.len() as u64;
+                        let group_responses: Vec<GroupResponse> = groups
+                            .into_iter()
+                            .map(|g| GroupResponse {
+                                id: g.id.to_string(),
+                                workspace_id: ws.id.to_string(),
+                                workspace_name: ws.name.clone(),
+                                name: g.name,
+                                description: g.description,
+                                max_biz_tags: g.max_biz_tags,
+                                created_at: g.created_at.and_utc().to_rfc3339(),
+                                updated_at: g.updated_at.and_utc().to_rfc3339(),
+                            })
+                            .collect();
+                        Ok(GroupListResponse {
+                            groups: group_responses,
+                            total,
+                        })
+                    }
+                    None => Ok(GroupListResponse {
+                        groups: vec![],
+                        total: 0,
+                    }),
+                }
+            } else {
+                Err(crate::core::CoreError::InternalError(
+                    "Group repository not configured".to_string(),
+                ))
+            }
+        } else {
+            Err(crate::core::CoreError::InternalError(
+                "Workspace repository not configured".to_string(),
+            ))
+        }
+    }
+
+    pub async fn get_database_metrics(&self) -> DatabaseMetrics {
+        if let Some(ref repo) = self.repository {
+            // Try to get database health status
+            match repo.health_check().await {
+                Ok(()) => DatabaseMetrics {
+                    status: crate::server::models::HealthStatus::Healthy,
+                    connection_pool: ConnectionPoolMetrics {
+                        active_connections: 0,
+                        idle_connections: 0,
+                        max_connections: 0,
+                    },
+                    last_error: None,
+                },
+                Err(e) => DatabaseMetrics {
+                    status: crate::server::models::HealthStatus::Unhealthy,
+                    connection_pool: ConnectionPoolMetrics {
+                        active_connections: 0,
+                        idle_connections: 0,
+                        max_connections: 0,
+                    },
+                    last_error: Some(e.to_string()),
+                },
+            }
+        } else {
+            DatabaseMetrics {
+                status: crate::server::models::HealthStatus::Unhealthy,
+                connection_pool: ConnectionPoolMetrics {
+                    active_connections: 0,
+                    idle_connections: 0,
+                    max_connections: 0,
+                },
+                last_error: Some("Database not configured".to_string()),
+            }
+        }
+    }
+
+    pub async fn get_cache_metrics(&self) -> CacheMetrics {
+        // Get algorithm metrics for cache hit rate
+        let algorithm_metrics = self.algorithm_router.metrics();
+        let cache_hit_rate = if !algorithm_metrics.is_empty() {
+            let total_hit_rate: f64 = algorithm_metrics
+                .iter()
+                .map(|(_, m)| m.cache_hit_rate)
+                .sum::<f64>()
+                / algorithm_metrics.len() as f64;
+            total_hit_rate
+        } else {
+            0.0
+        };
+
+        CacheMetrics {
+            status: crate::server::models::HealthStatus::Healthy,
+            hit_rate: cache_hit_rate,
+            memory_usage_mb: None,
+            key_count: None,
+        }
+    }
+
+    pub fn get_algorithm_metrics(
+        &self,
+    ) -> Vec<(
+        crate::core::types::AlgorithmType,
+        crate::core::algorithm::AlgorithmMetricsSnapshot,
+    )> {
+        self.algorithm_router.metrics()
+    }
+
+    pub fn get_batch_max_size(&self) -> u32 {
+        let config = self.hot_config.get_config();
+        config.batch_generate.max_batch_size
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::config::Config;
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    fn ensure_test_mode() {
+        INIT.call_once(|| {
+            std::env::set_var("NEBULA_TEST_MODE", "1");
+        });
+    }
+
+    fn create_test_algorithm_router() -> Arc<crate::core::algorithm::AlgorithmRouter> {
+        ensure_test_mode();
+        let config = Config::default();
+        Arc::new(crate::core::algorithm::AlgorithmRouter::new(
+            config.clone(),
+            None,
+        ))
+    }
+
+    #[tokio::test]
+    async fn test_config_to_response() {
+        let config = test_config();
+        let response = ConfigManagementService::config_to_response(&config);
+
+        // Engine depends on environment - SQLite for tests, PostgreSQL for production
+        assert!(response.database.engine == "postgresql" || response.database.engine == "sqlite");
+        assert_eq!(response.app.name, "nebula-id");
+        assert_eq!(response.algorithm.default, "segment");
+        assert_eq!(response.rate_limit.default_rps, 10000);
+    }
+
+    fn test_config() -> Config {
+        ensure_test_mode();
+        Config::default()
+    }
+
+    #[tokio::test]
+    async fn test_update_rate_limit_request_validation() {
+        let hot_config = Arc::new(HotReloadConfig::new(
+            test_config(),
+            "config/config.toml".to_string(),
+        ));
+        let algorithm_router = create_test_algorithm_router();
+        let _service = ConfigManagementService::new(hot_config, algorithm_router);
+
+        let valid_req = UpdateRateLimitRequest {
+            default_rps: Some(5000),
+            burst_size: Some(50),
+        };
+        assert!(valid_req.validate().is_ok());
+
+        let invalid_req = UpdateRateLimitRequest {
+            default_rps: Some(0),
+            burst_size: Some(0),
+        };
+        assert!(invalid_req.validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_update_logging_request_validation() {
+        let hot_config = Arc::new(HotReloadConfig::new(
+            test_config(),
+            "config/config.toml".to_string(),
+        ));
+        let algorithm_router = create_test_algorithm_router();
+        let _service = ConfigManagementService::new(hot_config, algorithm_router);
+
+        let valid_req = UpdateLoggingRequest {
+            level: Some("debug".to_string()),
+        };
+        assert!(valid_req.validate().is_ok());
+
+        let empty_req = UpdateLoggingRequest { level: None };
+        assert!(empty_req.validate().is_ok());
+
+        let invalid_req = UpdateLoggingRequest {
+            level: Some("invalid_level_that_is_too_long".to_string()),
+        };
+        assert!(invalid_req.validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_set_algorithm() {
+        let hot_config = Arc::new(HotReloadConfig::new(
+            test_config(),
+            "config/config.toml".to_string(),
+        ));
+        let algorithm_router = create_test_algorithm_router();
+        let service = ConfigManagementService::new(hot_config, algorithm_router.clone());
+
+        let req = SetAlgorithmRequest {
+            biz_tag: "test-biz".to_string(),
+            algorithm: "snowflake".to_string(),
+        };
+
+        let response = service.set_algorithm(req).await;
+        assert!(response.success);
+        assert_eq!(response.biz_tag, "test-biz");
+        assert_eq!(response.algorithm, "snowflake");
+    }
+
+    #[tokio::test]
+    async fn test_set_algorithm_invalid() {
+        let hot_config = Arc::new(HotReloadConfig::new(
+            test_config(),
+            "config/config.toml".to_string(),
+        ));
+        let algorithm_router = create_test_algorithm_router();
+        let service = ConfigManagementService::new(hot_config, algorithm_router);
+
+        let req = SetAlgorithmRequest {
+            biz_tag: "test-biz".to_string(),
+            algorithm: "invalid_algorithm".to_string(),
+        };
+
+        let response = service.set_algorithm(req).await;
+        assert!(!response.success);
+        assert!(response.message.contains("Invalid algorithm"));
+    }
+}

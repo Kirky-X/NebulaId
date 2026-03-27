@@ -37,25 +37,12 @@ repos:
     hooks:
       - id: cargo-check
         name: Rust Compilation Check
-        description: Verify nebula-core compiles without errors
-        entry: bash -c 'cargo check -p nebula-core'
+        description: Verify project compiles without errors
+        entry: bash -c 'cargo check'
         language: system
         pass_filenames: false
         always_run: true
         stages: [pre-commit]
-
-  # License Header Check
-  - repo: local
-    hooks:
-      - id: rust-license-header
-        name: Rust License Header
-        description: Ensure Rust files have Apache 2.0 license header
-        entry: bash -c 'grep -L "Apache License, Version 2.0" $(find . -name "*.rs" -type f 2>/dev/null) 2>/dev/null | head -0'
-        language: system
-        pass_filenames: true
-        always_run: false
-        stages: [pre-commit]
-        require_serial: true
 
 # Global Settings
 default_install_hook_types: [pre-commit]

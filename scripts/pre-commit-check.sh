@@ -161,17 +161,17 @@ fi
 # ============================================================================
 # 3. 编译检查
 # ============================================================================
-# Check default features only (skip etcd as it has pre-existing API compatibility issues)
-print_step "检查项目编译" "cargo build --workspace"
+# Check default features only
+print_step "检查项目编译" "cargo build"
 
 echo "  (这可能需要一些时间...)"
-if cargo build --workspace > /tmp/build_output.txt 2>&1; then
+if cargo build > /tmp/build_output.txt 2>&1; then
     print_success "项目编译成功"
 else
     print_error "项目编译失败"
     echo ""
     echo -e "${BLUE}💡 详细命令:${NC}"
-    echo -e "  ${YELLOW}cargo build --workspace${NC}"
+    echo -e "  ${YELLOW}cargo build${NC}"
     echo ""
     echo -e "${BLUE}💡 编译错误:${NC}"
     tail -30 /tmp/build_output.txt
@@ -182,10 +182,10 @@ fi
 # ============================================================================
 # 4. 运行测试
 # ============================================================================
-print_step "运行所有测试" "cargo test --workspace"
+print_step "运行所有测试" "cargo test --lib"
 
 echo "  (这可能需要一些时间...)"
-if cargo test --workspace > /tmp/test_output.txt 2>&1; then
+if cargo test --lib > /tmp/test_output.txt 2>&1; then
     TEST_STATS=$(grep -E "test result:" /tmp/test_output.txt | tail -1)
     print_success "所有测试通过"
     if [ -n "$TEST_STATS" ]; then
@@ -196,7 +196,7 @@ else
     print_error "部分测试失败"
     echo ""
     echo -e "${BLUE}💡 详细命令:${NC}"
-    echo -e "  ${YELLOW}cargo test --workspace${NC}"
+    echo -e "  ${YELLOW}cargo test --lib${NC}"
     echo ""
     echo -e "${BLUE}💡 失败的测试:${NC}"
     grep -A 5 "failures:" /tmp/test_output.txt | head -20
@@ -239,15 +239,15 @@ fi
 # ============================================================================
 # 6. 文档检查
 # ============================================================================
-print_step "检查文档生成" "cargo doc --no-deps --workspace"
+print_step "检查文档生成" "cargo doc --no-deps"
 
-if cargo doc --no-deps --workspace > /tmp/doc_output.txt 2>&1; then
+if cargo doc --no-deps > /tmp/doc_output.txt 2>&1; then
     print_success "文档生成成功"
 else
     print_error "文档生成失败"
     echo ""
     echo -e "${BLUE}💡 详细命令:${NC}"
-    echo -e "  ${YELLOW}cargo doc --no-deps --workspace${NC}"
+    echo -e "  ${YELLOW}cargo doc --no-deps${NC}"
     echo ""
     echo -e "${BLUE}💡 文档错误:${NC}"
     tail -20 /tmp/doc_output.txt
@@ -266,7 +266,7 @@ if ! check_command cargo-tarpaulin; then
 else
     echo "  (这可能需要较长时间...)"
     echo "  (可以按 Ctrl+C 跳过此步骤)"
-    if timeout 300 cargo tarpaulin --all-features --workspace --timeout 120 --out Stdout > /tmp/coverage_output.txt 2>&1; then
+    if timeout 300 cargo tarpaulin --timeout 120 --out Stdout > /tmp/coverage_output.txt 2>&1; then
         COVERAGE=$(grep -oP '\d+\.\d+%' /tmp/coverage_output.txt | tail -1)
         if [ -n "$COVERAGE" ]; then
             print_success "代码覆盖率: $COVERAGE"

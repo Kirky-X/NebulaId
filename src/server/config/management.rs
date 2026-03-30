@@ -571,18 +571,25 @@ impl ConfigManagementService {
     }
 
     pub async fn get_database_metrics(&self) -> DatabaseMetrics {
-        if let Some(ref repo) = self.repository {
-            // Try to get database health status
+        // Get database adapter from container if available
+        let metrics = if let Some(ref repo) = self.repository {
+            // Check database health
             match repo.health_check().await {
-                Ok(()) => DatabaseMetrics {
-                    status: crate::server::models::HealthStatus::Healthy,
-                    connection_pool: ConnectionPoolMetrics {
-                        active_connections: 0,
-                        idle_connections: 0,
-                        max_connections: 0,
-                    },
-                    last_error: None,
-                },
+                Ok(()) => {
+                    // Get pool statistics from the database adapter
+                    // Note: SeaORM repository doesn't expose pool stats directly
+                    // We return healthy status with zeroed metrics for now
+                    // Future: Consider using dbnexus adapter which has PoolStatus
+                    DatabaseMetrics {
+                        status: crate::server::models::HealthStatus::Healthy,
+                        connection_pool: ConnectionPoolMetrics {
+                            active_connections: 0,
+                            idle_connections: 0,
+                            max_connections: 0,
+                        },
+                        last_error: None,
+                    }
+                }
                 Err(e) => DatabaseMetrics {
                     status: crate::server::models::HealthStatus::Unhealthy,
                     connection_pool: ConnectionPoolMetrics {
@@ -603,7 +610,9 @@ impl ConfigManagementService {
                 },
                 last_error: Some("Database not configured".to_string()),
             }
-        }
+        };
+
+        metrics
     }
 
     pub async fn get_cache_metrics(&self) -> CacheMetrics {

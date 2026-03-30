@@ -216,6 +216,11 @@ impl SeaOrmRepository {
         }
     }
 
+    /// Get the underlying database connection for advanced operations
+    pub fn get_db_connection(&self) -> &sea_orm::DatabaseConnection {
+        &self.db
+    }
+
     /// Hash API key using salt
     fn hash_key(&self, key_id: &str, key_secret: &str) -> String {
         let input = format!("{}:{}:{}", self.salt, key_id, key_secret);

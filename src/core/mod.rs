@@ -14,7 +14,7 @@
 
 //! Core module - 核心业务逻辑
 
-// Public API modules
+// Public API modules (re-exported in lib.rs)
 pub mod algorithm;
 pub mod auth;
 pub mod config;
@@ -29,7 +29,7 @@ pub mod coordinator;
 #[cfg(test)]
 mod tests;
 
-// Algorithm router (internal use)
+// Internal implementation modules (crate-only visibility)
 pub(crate) mod algorithm_router;
 
 // Public API re-exports

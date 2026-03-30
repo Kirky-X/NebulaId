@@ -14,18 +14,14 @@
 
 //! Server module - HTTP/gRPC 服务实现
 
-// Public API modules
+// Public API modules (re-exported in lib.rs)
 pub mod api_version;
 pub mod grpc;
-
-#[path = "proto/mod.rs"]
-pub mod proto;
-
 pub mod router;
 
 // Internal implementation modules
-// Note: These are pub (not pub(crate)) so they're accessible from the binary target
-// but NOT re-exported in the public API
+// These are pub for binary target access but NOT part of the public library API
+// Users should only use types re-exported in lib.rs
 pub mod audit;
 pub mod config;
 pub mod error_handler;
@@ -34,6 +30,9 @@ pub mod middleware;
 pub mod models;
 pub mod openapi;
 pub mod rate_limit;
+
+// Proto module (internal use only, but needed by binary target)
+pub mod proto;
 
 // Public API re-exports
 pub use api_version::{api_version_middleware, ApiVersion, API_V1, API_V2, API_VERSION_HEADER};

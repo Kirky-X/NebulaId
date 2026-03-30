@@ -134,69 +134,121 @@ impl AlgorithmMetrics {
     }
 }
 
-/// QPS 滑动窗口计算器
+/// QPS 滑动窗口计算器（双缓冲无锁优化版）
 #[derive(Debug, Clone)]
 pub struct QpsWindow {
     /// 滑动窗口大小（秒）
     window_secs: u64,
-    /// 原子计数器（减少锁竞争）
-    request_count: Arc<std::sync::atomic::AtomicU64>,
-    /// 请求时间戳队列（仅用于窗口计算）
-    timestamps: Arc<parking_lot::Mutex<Vec<std::time::Instant>>>,
+    /// 当前秒的请求计数（原子操作）
+    current_second_count: Arc<std::sync::atomic::AtomicU64>,
+    /// 上一秒的请求计数（用于平滑过渡）
+    last_second_count: Arc<std::sync::atomic::AtomicU64>,
+    /// 当前秒的时间戳（原子操作）
+    current_second: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl QpsWindow {
     pub fn new(window_secs: u64) -> Self {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
         Self {
             window_secs,
-            request_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            timestamps: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            current_second_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            last_second_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            current_second: Arc::new(std::sync::atomic::AtomicU64::new(now_secs)),
         }
     }
 
-    /// 记录一次请求（无锁，仅原子操作）
+    /// 记录一次请求（完全无锁，仅原子操作）
     pub fn record(&self) {
-        self.request_count
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let stored_sec = self
+            .current_second
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        // 如果进入了新的秒，尝试更新秒计数（允许少量竞争失败）
+        if now_secs != stored_sec {
+            self.current_second
+                .compare_exchange_weak(
+                    stored_sec,
+                    now_secs,
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                )
+                .ok();
+
+            // 交换计数器（允许小误差）
+            if now_secs > stored_sec {
+                let current = self
+                    .current_second_count
+                    .swap(0, std::sync::atomic::Ordering::Relaxed);
+                self.last_second_count
+                    .store(current, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+
+        self.current_second_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// 批量记录请求
+    /// 批量记录请求（完全无锁）
     pub fn record_batch(&self, count: usize) {
-        self.request_count
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let stored_sec = self
+            .current_second
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        if now_secs != stored_sec {
+            self.current_second
+                .compare_exchange_weak(
+                    stored_sec,
+                    now_secs,
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                )
+                .ok();
+
+            if now_secs > stored_sec {
+                let current = self
+                    .current_second_count
+                    .swap(0, std::sync::atomic::Ordering::Relaxed);
+                self.last_second_count
+                    .store(current, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+
+        self.current_second_count
             .fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// 获取当前窗口内的 QPS（需要锁）
+    /// 获取当前窗口内的 QPS（完全无锁，使用指数加权平均）
     pub fn get_qps(&self) -> u64 {
-        let mut timestamps = self.timestamps.lock();
-        let now = std::time::Instant::now();
-        let window_start = now - std::time::Duration::from_secs(self.window_secs);
-
-        // 移除过期的时间戳
-        timestamps.retain(|&ts| ts > window_start);
-
-        // 估算窗口内的平均 QPS
-        let count = timestamps.len();
-        let total = self
-            .request_count
+        let current = self
+            .current_second_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let last = self
+            .last_second_count
             .load(std::sync::atomic::Ordering::Relaxed);
 
-        if count > 0 && total > 0 {
-            // 返回窗口内的请求数作为 QPS 估计
-            count as u64
-        } else {
-            0
-        }
+        // 使用最近两秒的加权平均作为 QPS 估计
+        // 当前秒权重 70%，上一秒权重 30%
+        (current * 7 + last * 3) / 10
     }
 
-    /// 清理过期数据
+    /// 清理过期数据（无需显式清理，自动通过秒切换完成）
     pub fn cleanup(&self) {
-        let mut timestamps = self.timestamps.lock();
-        let window_start =
-            std::time::Instant::now() - std::time::Duration::from_secs(self.window_secs);
-        timestamps.retain(|&ts| ts > window_start);
-        self.request_count
-            .store(0, std::sync::atomic::Ordering::Relaxed);
+        // 无锁设计不需要显式清理
     }
 
     /// 获取窗口大小

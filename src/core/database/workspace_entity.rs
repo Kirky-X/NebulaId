@@ -23,7 +23,7 @@ pub struct Model {
     pub id: Uuid,
     pub name: String,
     pub description: Option<String>,
-    #[sea_orm(rs_type = "String", db_type = "String(StringLen::N(20))")]
+    #[sea_orm(column_type = "String(StringLen::N(20))")]
     pub status: String,
     pub max_groups: i32,
     pub max_biz_tags: i32,

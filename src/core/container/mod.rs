@@ -24,12 +24,11 @@
 //!     │
 //!     ├── Infrastructure Layer (singleton)
 //!     │   ├── config: Arc<dyn ConfigProvider>
-//!     │   ├── cache: Arc<dyn CacheBackend>
+//!     │   ├── cache: Arc<Cache<String, Vec<u8>>>  (oxcache)
 //!     │   └── database: Arc<dyn ConnectionPool>
 //!     │
 //!     └── Feature Layer (lazy-loaded)
 //!         ├── config_adapter: OnceCell<ConfigAdapter>
-//!         ├── cache_adapter: OnceCell<CacheAdapter>
 //!         └── database_adapter: OnceCell<DatabaseAdapter>
 //! ```
 //!

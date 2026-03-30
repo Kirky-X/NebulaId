@@ -13,14 +13,15 @@ include_location = false
 backtrace = false
 
 [database]
-engine = "postgresql"
-host = "localhost"
-port = 5432
-database = "idgen"
-username = "idgen"
-password = "${NEBULA_DATABASE_PASSWORD}"
-max_connections = 50
-min_connections = 5
+engine = "sqlite"
+host = ""
+port = 0
+username = ""
+password = ""
+database = "sqlite::memory:"
+url = "sqlite::memory:"
+max_connections = 10
+min_connections = 1
 acquire_timeout_seconds = 30
 idle_timeout_seconds = 300
 
@@ -29,7 +30,6 @@ url = "redis://localhost:6379"
 pool_size = 16
 key_prefix = "nebula:id:"
 ttl_seconds = 600
-
 
 [algorithm]
 default = "snowflake"
@@ -71,10 +71,9 @@ key_path = ""
 max_batch_size = 100
 
 [auth]
-enabled = true
+enabled = false
 cache_ttl_seconds = 300
 api_key_salt = "test"
-api_keys = []
 
 [etcd]
 endpoints = ["http://localhost:2379"]

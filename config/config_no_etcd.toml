@@ -18,7 +18,7 @@ host = "localhost"
 port = 5432
 database = "idgen"
 username = "idgen"
-password = "idgen123"
+password = "${NEBULA_DATABASE_PASSWORD}"
 # Connection pool tuning for production
 # Adjust based on actual load: 200-500 for high throughput, 50-100 for normal use
 max_connections = 200

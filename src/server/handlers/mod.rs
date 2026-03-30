@@ -271,7 +271,7 @@ impl ApiHandlers {
 
     pub async fn metrics(&self) -> MetricsResponse {
         // Get algorithm metrics from config service
-        let algorithm_metrics = self.config_service.get_algorithm_metrics();
+        let algorithm_metrics = self.config_service.get_algorithm_metrics().await;
         let algorithms = algorithm_metrics
             .into_iter()
             .map(

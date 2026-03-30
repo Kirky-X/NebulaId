@@ -16,9 +16,9 @@
 
 use crate::core::algorithm::{audit_trait::DynAuditLogger, HealthStatus, IdAlgorithm};
 use crate::core::AlgorithmType;
-use dashmap::DashMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -278,8 +278,8 @@ pub struct AlgorithmMetrics {
 
 pub struct DegradationManager {
     config: DegradationConfig,
-    algorithms: DashMap<AlgorithmType, Arc<dyn IdAlgorithm>>,
-    health_states: DashMap<AlgorithmType, Arc<AlgorithmHealthState>>,
+    algorithms: Arc<RwLock<HashMap<AlgorithmType, Arc<dyn IdAlgorithm>>>>,
+    health_states: Arc<RwLock<HashMap<AlgorithmType, Arc<AlgorithmHealthState>>>>,
     current_state: RwLock<DegradationState>,
     primary_algorithm: RwLock<AlgorithmType>,
     fallback_chain: RwLock<Vec<AlgorithmType>>,
@@ -292,8 +292,8 @@ impl DegradationManager {
     pub fn new(config: Option<DegradationConfig>, audit_logger: Option<DynAuditLogger>) -> Self {
         Self {
             config: config.unwrap_or_default(),
-            algorithms: DashMap::new(),
-            health_states: DashMap::new(),
+            algorithms: Arc::new(RwLock::new(HashMap::new())),
+            health_states: Arc::new(RwLock::new(HashMap::new())),
             current_state: RwLock::new(DegradationState::Normal),
             primary_algorithm: RwLock::new(AlgorithmType::Segment),
             fallback_chain: RwLock::new(vec![]),
@@ -304,8 +304,9 @@ impl DegradationManager {
     }
 
     pub fn register_algorithm(&self, alg_type: AlgorithmType, algorithm: Arc<dyn IdAlgorithm>) {
-        self.algorithms.insert(alg_type, algorithm);
+        self.algorithms.write().insert(alg_type, algorithm);
         self.health_states
+            .write()
             .insert(alg_type, Arc::new(AlgorithmHealthState::new(alg_type)));
         debug!("Registered algorithm {:?} for health monitoring", alg_type);
     }
@@ -321,21 +322,25 @@ impl DegradationManager {
     }
 
     pub async fn record_generation_result(&self, alg_type: AlgorithmType, success: bool) {
-        if let Some(state) = self.health_states.get(&alg_type) {
-            let health_state = state.value();
+        let state_opt = {
+            let states = self.health_states.read();
+            states.get(&alg_type).cloned()
+        };
+
+        if let Some(state) = state_opt {
             if success {
-                health_state.record_success();
-                if health_state.is_degraded.load(Ordering::SeqCst)
-                    && health_state.should_recover(self.config.recovery_threshold)
+                state.record_success();
+                if state.is_degraded.load(Ordering::SeqCst)
+                    && state.should_recover(self.config.recovery_threshold)
                 {
-                    self.attempt_recovery(alg_type, health_state).await;
+                    self.attempt_recovery(alg_type, &state).await;
                 }
             } else {
-                health_state.record_failure();
-                if !health_state.is_degraded.load(Ordering::SeqCst)
-                    && health_state.should_degrade(self.config.failure_threshold)
+                state.record_failure();
+                if !state.is_degraded.load(Ordering::SeqCst)
+                    && state.should_degrade(self.config.failure_threshold)
                 {
-                    self.trigger_degradation(alg_type, health_state).await;
+                    self.trigger_degradation(alg_type, &state).await;
                 }
             }
         }
@@ -414,10 +419,10 @@ impl DegradationManager {
     pub async fn check_all_health(&self) {
         let mut state_changed = false;
 
-        for entry in self.health_states.iter() {
-            let alg_type = *entry.key();
-            let health_state = entry.value();
+        let health_states = self.health_states.read().clone();
+        let algorithms = self.algorithms.read().clone();
 
+        for (alg_type, health_state) in health_states.iter() {
             if self.config.enable_circuit_breaker {
                 let circuit_state = health_state.get_circuit_breaker_state();
                 match circuit_state {
@@ -433,7 +438,7 @@ impl DegradationManager {
                         }
                     }
                     CircuitBreakerState::HalfOpen => {
-                        let health = if let Some(alg) = self.algorithms.get(&alg_type) {
+                        let health = if let Some(alg) = algorithms.get(alg_type) {
                             alg.health_check()
                         } else {
                             HealthStatus::Unhealthy(format!("Algorithm {:?} not found", alg_type))
@@ -475,7 +480,7 @@ impl DegradationManager {
             }
 
             if !health_state.is_degraded.load(Ordering::SeqCst) {
-                let health = if let Some(alg) = self.algorithms.get(&alg_type) {
+                let health = if let Some(alg) = algorithms.get(alg_type) {
                     alg.health_check()
                 } else {
                     HealthStatus::Unhealthy(format!("Algorithm {:?} not found", alg_type))
@@ -488,10 +493,10 @@ impl DegradationManager {
                             && health_state.should_degrade(self.config.failure_threshold)
                         {
                             health_state.open_circuit_breaker();
-                            self.trigger_degradation(alg_type, health_state).await;
+                            self.trigger_degradation(*alg_type, health_state).await;
                             state_changed = true;
                         } else if health_state.should_degrade(self.config.failure_threshold) {
-                            self.trigger_degradation(alg_type, health_state).await;
+                            self.trigger_degradation(*alg_type, health_state).await;
                             state_changed = true;
                         }
                     }
@@ -517,15 +522,17 @@ impl DegradationManager {
         let primary = *self.primary_algorithm.read();
         let chain = self.fallback_chain.read().clone();
 
-        if let Some(state) = self.health_states.get(&primary) {
-            if !state.value().is_degraded.load(Ordering::SeqCst) {
+        let health_states = self.health_states.read().clone();
+
+        if let Some(state) = health_states.get(&primary) {
+            if !state.is_degraded.load(Ordering::SeqCst) {
                 return DegradationState::Normal;
             }
         }
 
         for fallback in chain {
-            if let Some(state) = self.health_states.get(&fallback) {
-                if !state.value().is_degraded.load(Ordering::SeqCst) {
+            if let Some(state) = health_states.get(&fallback) {
+                if !state.is_degraded.load(Ordering::SeqCst) {
                     return DegradationState::Degraded(fallback);
                 }
             }
@@ -541,8 +548,8 @@ impl DegradationManager {
             DegradationState::Degraded(alg) => *alg,
             DegradationState::Critical => {
                 for alg in self.fallback_chain.read().clone() {
-                    if let Some(state) = self.health_states.get(&alg) {
-                        if state.value().current_state.load(Ordering::SeqCst) {
+                    if let Some(state) = self.health_states.read().get(&alg) {
+                        if state.current_state.load(Ordering::SeqCst) {
                             return alg;
                         }
                     }
@@ -553,30 +560,28 @@ impl DegradationManager {
     }
 
     pub fn get_algorithm_state(&self, alg_type: AlgorithmType) -> Option<AlgorithmHealthStateInfo> {
-        self.health_states.get(&alg_type).map(|state| {
-            let state = state.value();
-            AlgorithmHealthStateInfo {
+        self.health_states
+            .read()
+            .get(&alg_type)
+            .map(|state| AlgorithmHealthStateInfo {
                 alg_type: state.alg_type,
                 consecutive_failures: state.consecutive_failures.load(Ordering::SeqCst),
                 consecutive_successes: state.consecutive_successes.load(Ordering::SeqCst),
                 is_degraded: state.is_degraded.load(Ordering::SeqCst),
                 is_healthy: state.current_state.load(Ordering::SeqCst),
-            }
-        })
+            })
     }
 
     pub fn get_all_states(&self) -> Vec<AlgorithmHealthStateInfo> {
         self.health_states
-            .iter()
-            .map(|e| {
-                let state = e.value();
-                AlgorithmHealthStateInfo {
-                    alg_type: state.alg_type,
-                    consecutive_failures: state.consecutive_failures.load(Ordering::SeqCst),
-                    consecutive_successes: state.consecutive_successes.load(Ordering::SeqCst),
-                    is_degraded: state.is_degraded.load(Ordering::SeqCst),
-                    is_healthy: state.current_state.load(Ordering::SeqCst),
-                }
+            .read()
+            .values()
+            .map(|state| AlgorithmHealthStateInfo {
+                alg_type: state.alg_type,
+                consecutive_failures: state.consecutive_failures.load(Ordering::SeqCst),
+                consecutive_successes: state.consecutive_successes.load(Ordering::SeqCst),
+                is_degraded: state.is_degraded.load(Ordering::SeqCst),
+                is_healthy: state.current_state.load(Ordering::SeqCst),
             })
             .collect()
     }
@@ -586,17 +591,17 @@ impl DegradationManager {
     }
 
     pub fn manual_degrade(&self, alg_type: AlgorithmType) {
-        let state = self
-            .health_states
+        let mut health_states = self.health_states.write();
+        let state = health_states
             .entry(alg_type)
             .or_insert_with(|| Arc::new(AlgorithmHealthState::new(alg_type)));
-        state.value().mark_degraded();
+        state.mark_degraded();
         info!("Manual degradation triggered for {:?}", alg_type);
     }
 
     pub fn manual_recover(&self, alg_type: AlgorithmType) {
-        if let Some(state) = self.health_states.get(&alg_type) {
-            state.value().reset();
+        if let Some(state) = self.health_states.read().get(&alg_type) {
+            state.reset();
             info!("Manual recovery triggered for {:?}", alg_type);
         }
     }

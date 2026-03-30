@@ -277,9 +277,14 @@ impl Default for DatabaseConfig {
         }
 
         // SECURITY: Require environment variable for password in production
-        // This prevents accidental use of weak passwords
+        // This prevents accidental use of weak passwords or hardcoded credentials
         let password = std::env::var("NEBULA_DATABASE_PASSWORD")
-            .expect("NEBULA_DATABASE_PASSWORD environment variable must be set");
+            .expect("NEBULA_DATABASE_PASSWORD environment variable must be set in production. For development, set this variable or use DATABASE_URL.");
+
+        // Security check: Warn if password appears to be a weak default
+        if password == "idgen123" || password.is_empty() {
+            tracing::warn!("Weak or empty database password detected. Please set a strong password using NEBULA_DATABASE_PASSWORD environment variable.");
+        }
 
         Self {
             engine: DatabaseEngine::Postgresql,
@@ -294,30 +299,6 @@ impl Default for DatabaseConfig {
             min_connections: 10,
             acquire_timeout_seconds: 30,
             idle_timeout_seconds: 300,
-        }
-    }
-}
-
-/// Redis configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct RedisConfig {
-    /// Redis connection URL
-    pub url: String,
-    /// Connection pool size
-    pub pool_size: u32,
-    /// Key prefix for namespace isolation
-    pub key_prefix: String,
-    /// Key TTL (seconds)
-    pub ttl_seconds: u64,
-}
-
-impl Default for RedisConfig {
-    fn default() -> Self {
-        Self {
-            url: "redis://localhost:6379".to_string(),
-            pool_size: 50,
-            key_prefix: "nebula:id:".to_string(),
-            ttl_seconds: 600,
         }
     }
 }
@@ -706,6 +687,46 @@ impl Default for TlsConfig {
     }
 }
 
+/// Redis configuration for caching
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RedisConfig {
+    /// Redis connection URL
+    pub url: String,
+    /// Connection pool size
+    #[serde(default = "default_redis_pool_size")]
+    pub pool_size: u32,
+    /// Key prefix for cache entries
+    #[serde(default = "default_redis_key_prefix")]
+    pub key_prefix: String,
+    /// Default TTL in seconds
+    #[serde(default = "default_redis_ttl_seconds")]
+    pub ttl_seconds: u64,
+}
+
+fn default_redis_pool_size() -> u32 {
+    16
+}
+
+fn default_redis_key_prefix() -> String {
+    "nebula:id:".to_string()
+}
+
+fn default_redis_ttl_seconds() -> u64 {
+    600
+}
+
+impl Default for RedisConfig {
+    fn default() -> Self {
+        Self {
+            url: std::env::var("REDIS_URL")
+                .unwrap_or_else(|_| "redis://localhost:6379".to_string()),
+            pool_size: default_redis_pool_size(),
+            key_prefix: default_redis_key_prefix(),
+            ttl_seconds: default_redis_ttl_seconds(),
+        }
+    }
+}
+
 /// Batch generation configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BatchGenerateConfig {
@@ -720,7 +741,8 @@ pub struct Config {
     pub app: AppConfig,
     /// Database settings
     pub database: DatabaseConfig,
-    /// Redis settings
+    /// Redis cache settings
+    #[serde(default)]
     pub redis: RedisConfig,
     /// etcd settings
     pub etcd: EtcdConfig,
@@ -824,19 +846,6 @@ impl Config {
         if self.database.acquire_timeout_seconds == 0 {
             return Err(ConfigError::InvalidValue(
                 "Database acquire_timeout_seconds must be greater than 0".to_string(),
-            ));
-        }
-
-        // Validate Redis configuration
-        if self.redis.pool_size == 0 {
-            return Err(ConfigError::InvalidValue(
-                "Redis pool_size must be greater than 0".to_string(),
-            ));
-        }
-
-        if self.redis.ttl_seconds == 0 {
-            return Err(ConfigError::InvalidValue(
-                "Redis ttl_seconds must be greater than 0".to_string(),
             ));
         }
 
@@ -977,10 +986,6 @@ impl Config {
             config.database.url = url;
         }
 
-        if let Ok(url) = std::env::var("REDIS_URL") {
-            config.redis.url = url;
-        }
-
         if let Ok(endpoints) = std::env::var("ETCD_ENDPOINTS") {
             config.etcd.endpoints = endpoints.split(',').map(String::from).collect();
         }
@@ -1014,13 +1019,6 @@ impl Config {
         }
         if other.database.max_connections != 100 {
             self.database.max_connections = other.database.max_connections;
-        }
-
-        if !other.redis.url.is_empty() && other.redis.url != self.redis.url {
-            self.redis.url = other.redis.url;
-        }
-        if other.redis.pool_size != 50 {
-            self.redis.pool_size = other.redis.pool_size;
         }
 
         if !other.etcd.endpoints.is_empty() {

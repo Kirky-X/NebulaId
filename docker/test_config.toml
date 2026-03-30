@@ -9,7 +9,7 @@ dc_id = 0
 type = "segment"
 
 [database]
-url = "postgresql://idgen:idgen123@weaver-postgres:5432/idgen"
+url = "${DATABASE_URL}"
 max_connections = 10
 
 [redis]

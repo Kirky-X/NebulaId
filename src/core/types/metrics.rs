@@ -13,8 +13,9 @@
 // limitations under the License.
 
 use crate::core::types::AlgorithmType;
-use dashmap::DashMap;
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -233,7 +234,7 @@ impl From<&AlgorithmMetrics> for MetricsSnapshot {
 
 #[derive(Debug)]
 pub struct GlobalMetrics {
-    pub algorithms: DashMap<AlgorithmType, AlgorithmMetrics>,
+    pub algorithms: Arc<RwLock<HashMap<AlgorithmType, Arc<AlgorithmMetrics>>>>,
     pub active_connections: AtomicU32,
     pub total_requests: AtomicU64,
     pub total_errors: AtomicU64,
@@ -243,7 +244,7 @@ pub struct GlobalMetrics {
 impl Default for GlobalMetrics {
     fn default() -> Self {
         Self {
-            algorithms: DashMap::new(),
+            algorithms: Arc::new(RwLock::new(HashMap::new())),
             active_connections: AtomicU32::new(0),
             total_requests: AtomicU64::new(0),
             total_errors: AtomicU64::new(0),
@@ -255,7 +256,7 @@ impl Default for GlobalMetrics {
 impl GlobalMetrics {
     pub fn new() -> Self {
         Self {
-            algorithms: DashMap::new(),
+            algorithms: Arc::new(RwLock::new(HashMap::new())),
             active_connections: AtomicU32::new(0),
             total_requests: AtomicU64::new(0),
             total_errors: AtomicU64::new(0),
@@ -263,13 +264,12 @@ impl GlobalMetrics {
         }
     }
 
-    pub fn get_or_create_metrics(
-        &self,
-        algorithm: AlgorithmType,
-    ) -> impl std::ops::Deref<Target = AlgorithmMetrics> + '_ {
-        self.algorithms
+    pub fn get_or_create_metrics(&self, algorithm: AlgorithmType) -> Arc<AlgorithmMetrics> {
+        let mut algorithms = self.algorithms.write();
+        algorithms
             .entry(algorithm)
-            .or_insert_with(|| AlgorithmMetrics::new(algorithm))
+            .or_insert_with(|| Arc::new(AlgorithmMetrics::new(algorithm)))
+            .clone()
     }
 
     pub fn increment_requests(&self) {
@@ -294,8 +294,9 @@ impl GlobalMetrics {
 
     pub fn get_all_snapshots(&self) -> Vec<MetricsSnapshot> {
         self.algorithms
-            .iter()
-            .map(|entry| MetricsSnapshot::from(entry.value()))
+            .read()
+            .values()
+            .map(|metrics| MetricsSnapshot::from(metrics.as_ref()))
             .collect()
     }
 }

@@ -19,8 +19,8 @@
 
 use crate::core::config::{
     AlgorithmConfig, AppConfig, AuthConfig, BatchGenerateConfig, DatabaseConfig, EtcdConfig,
-    LogLevel, LoggingConfig, MonitoringConfig, RateLimitConfig, RedisConfig,
-    SegmentAlgorithmConfig, SnowflakeAlgorithmConfig, TlsConfig, UuidV7Config,
+    LogLevel, LoggingConfig, MonitoringConfig, RateLimitConfig, SegmentAlgorithmConfig,
+    SnowflakeAlgorithmConfig, TlsConfig, UuidV7Config,
 };
 use confers::traits::{ConfigProvider, ConfigProviderExt};
 use std::sync::Arc;
@@ -239,28 +239,6 @@ impl ConfigAdapter {
         }
     }
 
-    /// Get the Redis configuration.
-    ///
-    /// Keys:
-    /// - `redis.url` - Redis connection URL
-    /// - `redis.pool_size` - Connection pool size
-    /// - `redis.key_prefix` - Key namespace prefix
-    /// - `redis.ttl_seconds` - Default TTL
-    pub fn get_redis_config(&self) -> RedisConfig {
-        RedisConfig {
-            url: self
-                .provider
-                .get_string("redis.url")
-                .unwrap_or_else(|| "redis://localhost:6379".to_string()),
-            pool_size: self.provider.get_int("redis.pool_size").unwrap_or(50) as u32,
-            key_prefix: self
-                .provider
-                .get_string("redis.key_prefix")
-                .unwrap_or_else(|| "nebula:id:".to_string()),
-            ttl_seconds: self.provider.get_int("redis.ttl_seconds").unwrap_or(600) as u64,
-        }
-    }
-
     /// Get the etcd configuration.
     ///
     /// Keys:
@@ -397,6 +375,27 @@ impl ConfigAdapter {
                 .provider
                 .get_int("batch_generate.max_batch_size")
                 .unwrap_or(100) as u32,
+        }
+    }
+
+    /// Get Redis configuration.
+    ///
+    /// Keys:
+    /// - `redis.url` - Redis connection URL
+    /// - `redis.pool_size` - Connection pool size
+    /// - `redis.key_prefix` - Key prefix for cache entries
+    /// - `redis.ttl_seconds` - Default TTL in seconds
+    pub fn get_redis_config(&self) -> crate::core::config::RedisConfig {
+        crate::core::config::RedisConfig {
+            url: self.provider.get_string("redis.url").unwrap_or_else(|| {
+                std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string())
+            }),
+            pool_size: self.provider.get_int("redis.pool_size").unwrap_or(16) as u32,
+            key_prefix: self
+                .provider
+                .get_string("redis.key_prefix")
+                .unwrap_or_else(|| "nebula:id:".to_string()),
+            ttl_seconds: self.provider.get_int("redis.ttl_seconds").unwrap_or(600) as u64,
         }
     }
 

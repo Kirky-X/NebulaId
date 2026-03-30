@@ -321,12 +321,6 @@ min_connections = 1
 acquire_timeout_seconds = 5
 idle_timeout_seconds = 300
 
-[redis]
-url = "redis://localhost:6379"
-pool_size = 10
-key_prefix = "nebula:id:"
-ttl_seconds = 600
-
 [etcd]
 endpoints = ["http://localhost:2379"]
 connect_timeout_ms = 5000
@@ -423,12 +417,6 @@ max_connections = 10
 min_connections = 1
 acquire_timeout_seconds = 5
 idle_timeout_seconds = 300
-
-[redis]
-url = "redis://localhost:6379"
-pool_size = 10
-key_prefix = "nebula:id:"
-ttl_seconds = 600
 
 [etcd]
 endpoints = ["http://localhost:2379"]

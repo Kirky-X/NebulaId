@@ -17,7 +17,6 @@
 // Public API modules
 pub mod algorithm;
 pub mod auth;
-pub mod cache;
 pub mod config;
 pub mod container;
 pub mod database;
@@ -45,12 +44,12 @@ pub use types::{Id, IdBatch};
 
 pub use auth::{AuthManager, Authenticator};
 
-// Note: MultiLevelCache is deprecated, use oxcache::backend::CacheBackend instead
-// The internal cache module is kept for backward compatibility during migration
-
 pub use container::AppContainer;
 
 pub use config::{Config, TlsConfig};
+
+// Re-export oxcache types for convenience
+pub use oxcache::Cache;
 
 // Re-export coordinator types that need to be accessed externally
 #[cfg(feature = "etcd")]

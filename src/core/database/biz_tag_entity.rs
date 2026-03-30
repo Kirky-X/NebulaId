@@ -38,7 +38,7 @@ pub struct Model {
     pub prefix: String,
     pub base_step: i32,
     pub max_step: i32,
-    #[sea_orm(column_type = "Json")]
+    #[sea_orm(column_type = "JsonBinary")]
     pub datacenter_ids: Json,
     pub created_at: DateTime,
     pub updated_at: DateTime,

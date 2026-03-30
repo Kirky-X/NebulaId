@@ -34,9 +34,12 @@ use limiteron::limiters::{
     ConcurrencyLimiter as LimiteronConcurrencyLimiter, Limiter as LimiteronLimiter,
     TokenBucketLimiter,
 };
+use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::RwLock;
+use std::time::{Duration, Instant};
+use tokio::time::interval;
+use tracing::debug;
 
 /// Rate limit result containing the decision and metadata
 #[derive(Debug, Clone)]
@@ -68,6 +71,7 @@ struct InternalRateLimiter {
     limiter: Arc<TokenBucketLimiter>,
     rate: u32,
     capacity: u32,
+    last_accessed: Arc<RwLock<Instant>>,
 }
 
 impl InternalRateLimiter {
@@ -81,11 +85,25 @@ impl InternalRateLimiter {
             limiter: Arc::new(TokenBucketLimiter::new(capacity as u64, rate as u64)),
             rate,
             capacity,
+            last_accessed: Arc::new(RwLock::new(Instant::now())),
         }
+    }
+
+    /// Update the last accessed time
+    fn touch(&self) {
+        *self.last_accessed.write() = Instant::now();
+    }
+
+    /// Get the last accessed time
+    fn last_accessed(&self) -> Instant {
+        *self.last_accessed.read()
     }
 
     /// Check if a request is allowed and consume a token
     async fn check(&self) -> Result<RateLimitResult, FlowGuardError> {
+        // Update last accessed time
+        self.touch();
+
         let allowed = self.limiter.allow(1).await?;
 
         // Get remaining tokens for response header
@@ -106,8 +124,9 @@ impl InternalRateLimiter {
 /// with per-key tracking.
 #[derive(Clone)]
 pub struct RateLimiter {
-    limiters: Arc<dashmap::DashMap<String, InternalRateLimiter>>,
+    limiters: Arc<RwLock<HashMap<String, InternalRateLimiter>>>,
     defaults: Arc<RwLock<(u32, u32)>>,
+    cleanup_interval: Arc<RwLock<Duration>>,
 }
 
 impl RateLimiter {
@@ -118,14 +137,74 @@ impl RateLimiter {
     /// * `default_burst` - Burst capacity (bucket size)
     ///
     /// # Example
-    /// ```
+    /// ```ignore
+    /// use nebulaid::server::rate_limit::RateLimiter;
     /// let limiter = RateLimiter::new(1000, 100);
     /// ```
     pub fn new(default_rps: u32, default_burst: u32) -> Self {
         Self {
-            limiters: Arc::new(dashmap::DashMap::new()),
+            limiters: Arc::new(RwLock::new(HashMap::new())),
             defaults: Arc::new(RwLock::new((default_rps, default_burst))),
+            cleanup_interval: Arc::new(RwLock::new(Duration::from_secs(300))), // 5 minutes default
         }
+    }
+
+    /// Start background cleanup task to remove expired rate limit entries.
+    ///
+    /// This task runs periodically and removes limiters that haven't been used
+    /// for longer than the specified idle duration.
+    ///
+    /// # Arguments
+    /// * `max_idle` - Maximum idle duration before a limiter is removed
+    /// * `cleanup_interval` - How often to run cleanup
+    ///
+    /// # Returns
+    /// A join handle that can be used to await the cleanup task
+    pub fn start_cleanup(
+        &self,
+        max_idle: Duration,
+        cleanup_interval: Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        // Update cleanup interval
+        *self.cleanup_interval.write() = cleanup_interval;
+
+        let limiters = self.limiters.clone();
+
+        tokio::spawn(async move {
+            let mut interval_timer = interval(cleanup_interval);
+            loop {
+                interval_timer.tick().await;
+
+                let now = Instant::now();
+                let mut removed_count = 0;
+
+                // Find and remove expired limiters
+                {
+                    let mut limiters_guard = limiters.write();
+                    let keys_to_remove: Vec<String> = limiters_guard
+                        .iter()
+                        .filter(|(_, limiter)| {
+                            now.duration_since(limiter.last_accessed()) > max_idle
+                        })
+                        .map(|(key, _)| key.clone())
+                        .collect();
+
+                    for key in keys_to_remove {
+                        limiters_guard.remove(&key);
+                        removed_count += 1;
+                    }
+                }
+
+                if removed_count > 0 {
+                    debug!(
+                        event = "rate_limiter_cleanup",
+                        removed_count = removed_count,
+                        "Cleaned up {} expired rate limiters",
+                        removed_count
+                    );
+                }
+            }
+        })
     }
 
     /// Check rate limit for a specific key.
@@ -143,7 +222,7 @@ impl RateLimiter {
         custom_rate: Option<u32>,
         custom_burst: Option<u32>,
     ) -> RateLimitResult {
-        let (default_rps, default_burst) = *self.defaults.read().await;
+        let (default_rps, default_burst) = *self.defaults.read();
 
         // Determine the rate and capacity to use
         let (rate, capacity) = if custom_rate.is_some() || custom_burst.is_some() {
@@ -156,10 +235,13 @@ impl RateLimiter {
         };
 
         // Get or create the limiter for this key
-        let limiter = self
-            .limiters
-            .entry(key.to_string())
-            .or_insert_with(|| InternalRateLimiter::new(rate, capacity));
+        let limiter = {
+            let mut limiters = self.limiters.write();
+            limiters
+                .entry(key.to_string())
+                .or_insert_with(|| InternalRateLimiter::new(rate, capacity))
+                .clone()
+        };
 
         match limiter.check().await {
             Ok(result) => result,
@@ -178,7 +260,8 @@ impl RateLimiter {
 
     /// Get the current rate limit status for a key.
     pub fn get_usage(&self, key: &str) -> Option<RateLimitStatus> {
-        self.limiters.get(key).map(|entry| RateLimitStatus {
+        let limiters = self.limiters.read();
+        limiters.get(key).map(|entry| RateLimitStatus {
             remaining: entry.limiter.tokens(),
             limit: entry.capacity,
             rate: entry.rate,
@@ -187,22 +270,64 @@ impl RateLimiter {
 
     /// Get the current number of rate limit buckets.
     pub fn bucket_count(&self) -> usize {
-        self.limiters.len()
+        self.limiters.read().len()
     }
 
     /// Cleanup expired rate limit entries.
     ///
-    /// Note: TokenBucketLimiter manages its own memory.
-    /// This method returns 0 as token buckets don't use explicit expiration.
-    pub fn cleanup(&self, _max_idle: std::time::Duration) -> usize {
-        // TokenBucketLimiter manages memory internally
-        // No explicit cleanup needed
-        0
+    /// This method removes limiters that haven't been accessed for longer than
+    /// the specified max_idle duration.
+    ///
+    /// # Arguments
+    /// * `max_idle` - Maximum idle duration before a limiter is removed
+    ///
+    /// # Returns
+    /// Number of limiters removed
+    pub fn cleanup(&self, max_idle: Duration) -> usize {
+        let now = Instant::now();
+        let mut limiters = self.limiters.write();
+
+        let keys_to_remove: Vec<String> = limiters
+            .iter()
+            .filter(|(_, limiter)| now.duration_since(limiter.last_accessed()) > max_idle)
+            .map(|(key, _)| key.clone())
+            .collect();
+
+        let removed_count = keys_to_remove.len();
+        for key in keys_to_remove {
+            limiters.remove(&key);
+        }
+
+        if removed_count > 0 {
+            debug!(
+                event = "rate_limiter_cleanup",
+                removed_count = removed_count,
+                "Manually cleaned up {} expired rate limiters",
+                removed_count
+            );
+        }
+
+        removed_count
+    }
+
+    /// Get the current number of active rate limiters.
+    pub fn active_limiters_count(&self) -> usize {
+        self.limiters.read().len()
+    }
+
+    /// Get memory usage statistics for monitoring.
+    pub fn memory_stats(&self) -> RateLimiterMemoryStats {
+        let limiters = self.limiters.read();
+        RateLimiterMemoryStats {
+            active_limiters: limiters.len(),
+            default_rps: self.defaults.read().0,
+            default_burst: self.defaults.read().1,
+        }
     }
 
     /// Update the default rate limit settings.
-    pub async fn update_defaults(&self, default_rps: u32, default_burst: u32) {
-        let mut defaults = self.defaults.write().await;
+    pub fn update_defaults(&self, default_rps: u32, default_burst: u32) {
+        let mut defaults = self.defaults.write();
         *defaults = (default_rps, default_burst);
     }
 
@@ -210,6 +335,17 @@ impl RateLimiter {
     pub fn get_concurrency_limiter(max_concurrent: u64) -> ConcurrencyLimiter {
         ConcurrencyLimiter::new(max_concurrent)
     }
+}
+
+/// Memory usage statistics for rate limiter monitoring
+#[derive(Debug, Clone)]
+pub struct RateLimiterMemoryStats {
+    /// Number of active rate limit buckets
+    pub active_limiters: usize,
+    /// Default requests per second
+    pub default_rps: u32,
+    /// Default burst capacity
+    pub default_burst: u32,
 }
 
 /// Concurrency limiter wrapper using limiteron's ConcurrencyLimiter.
@@ -383,12 +519,29 @@ mod tests {
 
         assert_eq!(limiter.bucket_count(), 2);
 
-        // Cleanup should return 0 (no explicit expiration)
-        let removed = limiter.cleanup(std::time::Duration::from_millis(100));
-        assert_eq!(removed, 0);
+        // Wait for a short time
+        tokio::time::sleep(Duration::from_millis(10)).await;
 
-        // Buckets still exist
-        assert_eq!(limiter.bucket_count(), 2);
+        // Cleanup with very short max_idle should remove entries
+        let removed = limiter.cleanup(Duration::from_millis(5));
+        assert_eq!(removed, 2);
+
+        // Buckets should be removed
+        assert_eq!(limiter.bucket_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_memory_stats() {
+        let limiter = RateLimiter::new(10, 5);
+
+        // Add some buckets
+        limiter.check_rate_limit("key1", None, None).await;
+        limiter.check_rate_limit("key2", None, None).await;
+
+        let stats = limiter.memory_stats();
+        assert_eq!(stats.active_limiters, 2);
+        assert_eq!(stats.default_rps, 10);
+        assert_eq!(stats.default_burst, 5);
     }
 
     #[tokio::test]
@@ -439,7 +592,7 @@ mod tests {
     async fn test_update_defaults() {
         let limiter = RateLimiter::new(10, 5);
 
-        limiter.update_defaults(20, 10).await;
+        limiter.update_defaults(20, 10);
 
         // New keys will use new defaults
         let result = limiter.check_rate_limit("new-key", None, None).await;

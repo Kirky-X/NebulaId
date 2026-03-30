@@ -14,9 +14,10 @@
 
 //! Application container implementation.
 
-use crate::infrastructure::{CacheAdapter, ConfigAdapter, ConfigProviderImpl, DatabaseAdapter};
+use crate::core::types::CoreError;
+use crate::infrastructure::{ConfigAdapter, ConfigProviderImpl, DatabaseAdapter};
 use confers::traits::ConfigProvider;
-use oxcache::backend::CacheBackend;
+use oxcache::Cache;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -40,29 +41,27 @@ use std::sync::OnceLock;
 /// // With full DI (recommended)
 /// let container = AppContainer::with_dependencies(
 ///     config_provider,
-///     cache_backend,
+///     cache,
 ///     connection_pool,
 /// );
 ///
 /// // With builder
 /// let container = AppContainer::builder()
 ///     .config(config_provider)
-///     .cache(cache_backend)
+///     .cache(cache)
 ///     .database(connection_pool)
 ///     .build();
 /// ```
 pub struct AppContainer {
     /// Infrastructure layer: Configuration provider
     config: Arc<dyn ConfigProvider>,
-    /// Infrastructure layer: Cache backend
-    cache: Arc<dyn CacheBackend>,
+    /// Infrastructure layer: Cache backend (直接使用 oxcache Cache)
+    cache: Arc<Cache<String, Vec<u8>>>,
     /// Infrastructure layer: Database connection pool
     database: Arc<dyn dbnexus::ConnectionPool>,
 
     /// Feature layer: Configuration adapter (lazy-loaded)
     config_adapter: OnceLock<ConfigAdapter>,
-    /// Feature layer: Cache adapter (lazy-loaded)
-    cache_adapter: OnceLock<CacheAdapter>,
     /// Feature layer: Database adapter (lazy-loaded)
     database_adapter: OnceLock<DatabaseAdapter>,
 }
@@ -75,11 +74,11 @@ impl AppContainer {
     /// # Arguments
     ///
     /// * `config` - Configuration provider from confers
-    /// * `cache` - Cache backend from oxcache
+    /// * `cache` - Cache backend from oxcache (Cache<String, Vec<u8>>)
     /// * `database` - Connection pool from dbnexus
     pub fn with_dependencies(
         config: Arc<dyn ConfigProvider>,
-        cache: Arc<dyn CacheBackend>,
+        cache: Arc<Cache<String, Vec<u8>>>,
         database: Arc<dyn dbnexus::ConnectionPool>,
     ) -> Self {
         Self {
@@ -87,7 +86,6 @@ impl AppContainer {
             cache,
             database,
             config_adapter: OnceLock::new(),
-            cache_adapter: OnceLock::new(),
             database_adapter: OnceLock::new(),
         }
     }
@@ -114,13 +112,13 @@ impl AppContainer {
     /// let container = AppContainer::from_config_file("config/config.toml").await?;
     /// let segment_config = container.config_adapter().get_segment_config();
     /// ```
-    pub async fn from_config_file(config_path: &str) -> crate::core::types::Result<Self> {
+    pub async fn from_config_file(config_path: &str) -> Result<Self, CoreError> {
         // Load configuration
         let config_provider_impl = ConfigProviderImpl::builder()
             .file(config_path)
             .env()
             .build()
-            .map_err(|e| crate::core::types::CoreError::ConfigurationError(e.to_string()))?;
+            .map_err(|e| CoreError::ConfigurationError(e.to_string()))?;
 
         // Convert to trait object
         let config_provider: Arc<dyn ConfigProvider> = Arc::new(config_provider_impl);
@@ -129,19 +127,24 @@ impl AppContainer {
         // Get database configuration
         let db_config = config_adapter.get_database_config();
 
-        // Initialize cache backend (using oxcache MokaMemoryBackend as default)
-        let cache: Arc<dyn CacheBackend> = Arc::new(
-            oxcache::backend::client::moka::moka_memory_with_capacity(10000),
-        );
+        // Get Redis configuration for tiered cache
+        let redis_config = config_adapter.get_redis_config();
+
+        // Initialize tiered cache backend (L1 memory + L2 Redis) using oxcache
+        let cache: Cache<String, Vec<u8>> = Cache::builder()
+            .tiered(10000, &redis_config.url)
+            .build()
+            .await
+            .map_err(|e| CoreError::CacheError(e.to_string()))?;
 
         // Initialize database pool (using dbnexus)
         let database = dbnexus::DbPool::new(&db_config.url)
             .await
-            .map_err(|e| crate::core::types::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
 
         Ok(Self::with_dependencies(
             config_provider,
-            cache,
+            Arc::new(cache),
             Arc::new(database),
         ))
     }
@@ -154,12 +157,11 @@ impl AppContainer {
             .get_or_init(|| ConfigAdapter::new(Arc::clone(&self.config)))
     }
 
-    /// Get the cache adapter.
+    /// Get the cache backend directly.
     ///
-    /// The adapter is lazily initialized on first access.
-    pub fn cache_adapter(&self) -> &CacheAdapter {
-        self.cache_adapter
-            .get_or_init(|| CacheAdapter::new(Arc::clone(&self.cache)))
+    /// Returns the underlying oxcache Cache instance.
+    pub fn cache_adapter(&self) -> &Cache<String, Vec<u8>> {
+        &self.cache
     }
 
     /// Get the database adapter.
@@ -176,7 +178,7 @@ impl AppContainer {
     }
 
     /// Get the underlying cache backend.
-    pub fn cache(&self) -> &Arc<dyn CacheBackend> {
+    pub fn cache(&self) -> &Arc<Cache<String, Vec<u8>>> {
         &self.cache
     }
 
@@ -193,9 +195,13 @@ impl AppContainer {
     }
 
     /// Check if all components are healthy.
-    pub async fn health_check(&self) -> crate::core::types::Result<bool> {
-        // Check cache health
-        let cache_healthy = self.cache_adapter().health_check().await?;
+    pub async fn health_check(&self) -> Result<bool, CoreError> {
+        // Check cache health using the direct Cache API
+        let cache_healthy = self
+            .cache_adapter()
+            .health_check()
+            .await
+            .map_err(CoreError::from)?;
 
         // Check database health
         let db_healthy = self.database_adapter().health_check().await?;
@@ -208,8 +214,8 @@ impl std::fmt::Debug for AppContainer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppContainer")
             .field("config", &"Arc<dyn ConfigProvider>")
-            .field("cache", &"Arc<dyn CacheBackend>")
-            .field("database", &"Arc<dyn ConnectionPool>")
+            .field("cache", &"Arc<Cache<String, Vec<u8>>>")
+            .field("database", &"Arc<ConnectionPool>")
             .finish()
     }
 }
@@ -221,7 +227,7 @@ impl std::fmt::Debug for AppContainer {
 #[derive(Default)]
 pub struct AppContainerBuilder {
     config: Option<Arc<dyn ConfigProvider>>,
-    cache: Option<Arc<dyn CacheBackend>>,
+    cache: Option<Arc<Cache<String, Vec<u8>>>>,
     database: Option<Arc<dyn dbnexus::ConnectionPool>>,
 }
 
@@ -238,7 +244,7 @@ impl AppContainerBuilder {
     }
 
     /// Set the cache backend.
-    pub fn cache(mut self, cache: Arc<dyn CacheBackend>) -> Self {
+    pub fn cache(mut self, cache: Arc<Cache<String, Vec<u8>>>) -> Self {
         self.cache = Some(cache);
         self
     }
@@ -265,21 +271,15 @@ impl AppContainerBuilder {
     /// Try to build the AppContainer.
     ///
     /// Returns an error if any required dependency is missing.
-    pub fn try_build(self) -> crate::core::types::Result<AppContainer> {
+    pub fn try_build(self) -> Result<AppContainer, CoreError> {
         let config = self.config.ok_or_else(|| {
-            crate::core::types::CoreError::ConfigurationError(
-                "config provider is required".to_string(),
-            )
+            CoreError::ConfigurationError("config provider is required".to_string())
         })?;
         let cache = self.cache.ok_or_else(|| {
-            crate::core::types::CoreError::ConfigurationError(
-                "cache backend is required".to_string(),
-            )
+            CoreError::ConfigurationError("cache backend is required".to_string())
         })?;
         let database = self.database.ok_or_else(|| {
-            crate::core::types::CoreError::ConfigurationError(
-                "database connection pool is required".to_string(),
-            )
+            CoreError::ConfigurationError("database connection pool is required".to_string())
         })?;
 
         Ok(AppContainer::with_dependencies(config, cache, database))

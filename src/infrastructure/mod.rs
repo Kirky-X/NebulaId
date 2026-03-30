@@ -15,7 +15,7 @@
 //! Infrastructure adapters for external components.
 //!
 //! This module provides adapters that wrap external infrastructure components
-//! (confers, oxcache, dbnexus) and provide domain-specific interfaces for
+//! (confers, dbnexus) and provide domain-specific interfaces for
 //! the Nebula ID feature layer.
 //!
 //! # Architecture
@@ -28,18 +28,17 @@
 //!     │                              │
 //!     │   infrastructure/            │
 //!     │   ├── ConfigAdapter ─────────┼──► confers (ConfigProvider)
-//!     │   ├── CacheAdapter ──────────┼──► oxcache (CacheBackend)
 //!     │   └── DatabaseAdapter ───────┼──► dbnexus (ConnectionPool)
 //!     │                              │
-//! Infrastructure Layer              │
+//! Infrastructure Layer                │
+//!     │
+//!     └── oxcache (直接使用 Cache API)
 //! ```
 
-pub mod cache_adapter;
 pub mod config_adapter;
 pub mod config_provider;
 pub mod database_adapter;
 
-pub use cache_adapter::CacheAdapter;
 pub use config_adapter::ConfigAdapter;
 pub use config_provider::ConfigProviderImpl;
 pub use database_adapter::DatabaseAdapter;

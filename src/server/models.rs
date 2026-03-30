@@ -328,7 +328,6 @@ pub struct IdMetadataResponse {
 pub struct ConfigResponse {
     pub app: AppConfigInfo,
     pub database: DatabaseConfigInfo,
-    pub redis: RedisConfigInfo,
     pub algorithm: AlgorithmConfigInfo,
     pub monitoring: MonitoringConfigInfo,
     pub logging: LoggingConfigInfo,
@@ -357,15 +356,6 @@ pub struct DatabaseConfigInfo {
     pub database: Option<String>,
     pub max_connections: u32,
     pub min_connections: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct RedisConfigInfo {
-    #[serde(skip_serializing)]
-    pub url: Option<String>, // Never expose URL
-    pub pool_size: u32,
-    pub key_prefix: String,
-    pub ttl_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

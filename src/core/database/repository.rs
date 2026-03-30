@@ -17,7 +17,7 @@
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
-use rand::Rng;
+use rand::{Rng, RngExt};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QuerySelect, Set,
     TransactionTrait,
@@ -982,7 +982,15 @@ impl ApiKeyRepository for SeaOrmRepository {
                 .into()
             {
                 let _ = self.update_last_used(model.id).await;
-                return Ok(Some((model.workspace_id, model.role.into())));
+                let role: ApiKeyRole = model.role.clone().into();
+                tracing::debug!(
+                    event = "validate_api_key",
+                    key_id = %key_id,
+                    db_role = %model.role,
+                    converted_role = ?role,
+                    "API key role conversion"
+                );
+                return Ok(Some((model.workspace_id, role)));
             }
         }
 
@@ -1550,10 +1558,10 @@ fn generate_secret() -> String {
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
     const SECRET_LENGTH: usize = 32;
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let secret: String = (0..SECRET_LENGTH)
         .map(|_| {
-            let idx = rand::Rng::gen_range(&mut rng, 0..CHARSET.len());
+            let idx = rng.random_range(0..CHARSET.len());
             CHARSET[idx] as char
         })
         .collect();

@@ -20,7 +20,8 @@ use axum::middleware::Next;
 use axum::response::IntoResponse;
 use axum::response::Response;
 use base64::Engine;
-use dashmap::DashMap;
+use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -34,7 +35,7 @@ pub use crate::core::database::ApiKeyRole;
 pub struct ApiKeyAuth {
     pub(crate) repo: Arc<dyn ApiKeyRepository>,
     pub(crate) enabled: bool,
-    auth_failures: Arc<DashMap<String, Vec<Instant>>>, // IP -> failure timestamps
+    auth_failures: Arc<RwLock<HashMap<String, Vec<Instant>>>>,
 }
 
 impl ApiKeyAuth {
@@ -42,13 +43,14 @@ impl ApiKeyAuth {
         Self {
             repo,
             enabled,
-            auth_failures: Arc::new(DashMap::new()),
+            auth_failures: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     fn check_auth_failure_rate(&self, client_ip: &str) -> bool {
         let now = Instant::now();
-        let mut failures = self.auth_failures.entry(client_ip.to_string()).or_default();
+        let mut failures_map = self.auth_failures.write();
+        let failures = failures_map.entry(client_ip.to_string()).or_default();
 
         // 移除 5 分钟前的记录
         failures.retain(|t| now.duration_since(*t) < Duration::from_secs(300));
@@ -68,7 +70,8 @@ impl ApiKeyAuth {
 
     fn record_auth_failure(&self, client_ip: &str) {
         let now = Instant::now();
-        let mut failures = self.auth_failures.entry(client_ip.to_string()).or_default();
+        let mut failures_map = self.auth_failures.write();
+        let failures = failures_map.entry(client_ip.to_string()).or_default();
         failures.push(now);
     }
 
@@ -122,21 +125,51 @@ impl ApiKeyAuth {
     }
 
     pub async fn auth_middleware(&self, mut req: Request<Body>, next: Next) -> Response {
-        // 如果认证禁用，直接跳过认证，设置默认扩展值
-        if !self.enabled {
-            // 设置默认的 workspace_id 和 role 扩展
-            req.extensions_mut().insert(None::<uuid::Uuid>);
-            req.extensions_mut().insert(ApiKeyRole::User);
-            return next.run(req).await;
-        }
-
+        let start_time = Instant::now();
         let path = req.uri().path().to_string();
-        tracing::debug!(event = "auth_middleware", path = %path, "Auth middleware called");
 
-        // 获取客户端 IP
+        // 获取客户端 IP 和 User-Agent
         let client_ip = self
             .get_client_ip(&req)
             .unwrap_or_else(|| "unknown".to_string());
+        let user_agent = req
+            .headers()
+            .get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("unknown")
+            .to_string();
+
+        tracing::debug!(event = "auth_middleware", path = %path, client_ip = %client_ip, "Auth middleware called");
+
+        // 如果认证禁用，记录警告日志并设置默认扩展值
+        // SECURITY: Even when disabled, we must log the request for audit trail
+        if !self.enabled {
+            tracing::warn!(
+                event = "auth_disabled_request",
+                path = %path,
+                client_ip = %client_ip,
+                user_agent = %user_agent,
+                "Authentication disabled - allowing request without validation (AUDIT LOGGED)"
+            );
+
+            // 设置默认的 workspace_id 和 role 扩展
+            req.extensions_mut().insert(None::<uuid::Uuid>);
+            req.extensions_mut().insert(ApiKeyRole::User);
+
+            // 记录审计日志（异步，不阻塞请求）
+            tokio::spawn(async move {
+                // 注意：这里无法访问审计日志器，需要通过 State 传递
+                // 实际实现中应该在 router 层添加审计中间件
+                tracing::info!(
+                    event = "audit_auth_disabled",
+                    path = %path,
+                    client_ip = %client_ip,
+                    "Request processed without authentication"
+                );
+            });
+
+            return next.run(req).await;
+        }
 
         // 检查认证失败速率
         if !self.check_auth_failure_rate(&client_ip) {
@@ -160,6 +193,7 @@ impl ApiKeyAuth {
                                 tracing::warn!(
                                     event = "auth_failure",
                                     reason = "invalid_basic_format",
+                                    client_ip = %client_ip,
                                     "Invalid Basic auth format: no colon separator"
                                 );
                                 return self.unauthorized_response(&client_ip);
@@ -168,6 +202,7 @@ impl ApiKeyAuth {
                             tracing::warn!(
                                 event = "auth_failure",
                                 reason = "invalid_encoding",
+                                client_ip = %client_ip,
                                 "Invalid Base64 encoding in auth header"
                             );
                             return self.unauthorized_response(&client_ip);
@@ -176,6 +211,7 @@ impl ApiKeyAuth {
                         tracing::warn!(
                             event = "auth_failure",
                             reason = "base64_decode_failed",
+                            client_ip = %client_ip,
                             "Failed to decode Base64 auth header"
                         );
                         return self.unauthorized_response(&client_ip);
@@ -188,6 +224,7 @@ impl ApiKeyAuth {
                         tracing::warn!(
                             event = "auth_failure",
                             reason = "invalid_apikey_format",
+                            client_ip = %client_ip,
                             "Invalid ApiKey format: no colon separator"
                         );
                         return self.unauthorized_response(&client_ip);
@@ -196,6 +233,7 @@ impl ApiKeyAuth {
                     tracing::warn!(
                         event = "auth_failure",
                         reason = "unsupported_format",
+                        client_ip = %client_ip,
                         "Unsupported auth format"
                     );
                     return self.unauthorized_response(&client_ip);
@@ -206,6 +244,7 @@ impl ApiKeyAuth {
                     tracing::warn!(
                         event = "auth_failure",
                         reason = "empty_credentials",
+                        client_ip = %client_ip,
                         "Empty key_id or key_secret"
                     );
                     return self.unauthorized_response(&client_ip);
@@ -213,14 +252,41 @@ impl ApiKeyAuth {
 
                 if let Some((workspace_id, role)) = self.validate_key(&key_id, &key_secret).await {
                     req.extensions_mut().insert(workspace_id);
-                    req.extensions_mut().insert(role);
+                    req.extensions_mut().insert(role.clone());
+
+                    // Log successful authentication
+                    let duration = start_time.elapsed().as_millis() as u64;
+                    let key_id_prefix = key_id.chars().take(8).collect::<String>();
+                    tracing::info!(
+                        event = "auth_success",
+                        key_id_prefix = %key_id_prefix,
+                        role = ?role,
+                        client_ip = %client_ip,
+                        duration_ms = duration,
+                        "Authentication successful"
+                    );
+
                     return next.run(req).await;
                 } else {
                     // Log auth failure with key_id prefix (masked for security)
                     let key_id_prefix = key_id.chars().take(8).collect::<String>();
-                    tracing::warn!(event = "auth_failure", reason = "invalid_credentials", key_id_prefix = %key_id_prefix, "Invalid API key credentials");
+                    tracing::warn!(
+                        event = "auth_failure",
+                        reason = "invalid_credentials",
+                        key_id_prefix = %key_id_prefix,
+                        client_ip = %client_ip,
+                        "Invalid API key credentials"
+                    );
                 }
             }
+        } else {
+            // Log missing auth header
+            tracing::warn!(
+                event = "auth_failure",
+                reason = "missing_auth_header",
+                client_ip = %client_ip,
+                "Missing authorization header"
+            );
         }
 
         // Return 401 for both unknown routes and missing auth to avoid information disclosure
@@ -241,9 +307,15 @@ impl ApiKeyAuth {
 
 pub async fn admin_required_middleware(req: Request<Body>, next: Next) -> Response {
     if let Some(role) = req.extensions().get::<ApiKeyRole>() {
+        tracing::debug!(event = "admin_check", role = ?role, "Checking admin role");
         if *role == ApiKeyRole::Admin {
             return next.run(req).await;
         }
+    } else {
+        tracing::warn!(
+            event = "admin_check",
+            "No ApiKeyRole extension found in request"
+        );
     }
 
     let response = axum::Json(serde_json::json!({

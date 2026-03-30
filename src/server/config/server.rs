@@ -19,9 +19,9 @@ use crate::core::config::Config;
 use crate::core::types::Result;
 use crate::server::models::{
     AlgorithmConfigInfo, AppConfigInfo, ConfigResponse, DatabaseConfigInfo, LoggingConfigInfo,
-    MonitoringConfigInfo, RateLimitConfigInfo, RedisConfigInfo, SegmentConfigInfo,
-    SnowflakeConfigInfo, TlsConfigInfo, UpdateConfigResponse, UpdateLoggingRequest,
-    UpdateRateLimitRequest, UuidV7ConfigInfo,
+    MonitoringConfigInfo, RateLimitConfigInfo, SegmentConfigInfo, SnowflakeConfigInfo,
+    TlsConfigInfo, UpdateConfigResponse, UpdateLoggingRequest, UpdateRateLimitRequest,
+    UuidV7ConfigInfo,
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -115,12 +115,6 @@ impl AdminConfigService {
                 database: Some(config.database.database.clone()),
                 max_connections: config.database.max_connections,
                 min_connections: config.database.min_connections,
-            },
-            redis: RedisConfigInfo {
-                url: Some(config.redis.url.clone()),
-                pool_size: config.redis.pool_size,
-                key_prefix: config.redis.key_prefix.clone(),
-                ttl_seconds: config.redis.ttl_seconds,
             },
             algorithm: AlgorithmConfigInfo {
                 default: config.algorithm.default.clone(),

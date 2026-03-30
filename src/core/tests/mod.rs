@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(test)]
+pub mod cache_tests;
 pub mod degradation_tests;
 #[cfg(test)]
 pub mod dynamic_step_tests;

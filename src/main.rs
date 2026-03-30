@@ -514,10 +514,8 @@ async fn main() -> Result<()> {
     {
         info!("Initializing etcd cluster health monitor...");
         let etcd_cache_path = format!("./data/etcd_cache_{}.json", config.app.dc_id);
-        let etcd_health_monitor = Arc::new(EtcdClusterHealthMonitor::new(
-            config.etcd.clone(),
-            etcd_cache_path,
-        ));
+        let etcd_health_monitor =
+            Arc::new(EtcdClusterHealthMonitor::new(config.etcd.clone(), etcd_cache_path).await);
 
         if let Err(e) = etcd_health_monitor.load_local_cache().await {
             warn!("Failed to load etcd local cache: {}", e);

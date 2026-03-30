@@ -23,8 +23,9 @@ use crate::core::coordinator::EtcdClusterHealthMonitor;
 use crate::core::database::SegmentRepository;
 use crate::core::types::{AlgorithmType, CoreError, Id, IdBatch, Result};
 use async_trait::async_trait;
-use dashmap::DashMap;
 use parking_lot::Mutex;
+use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -317,7 +318,7 @@ impl StepCalculator {
 }
 
 pub struct DcFailureDetector {
-    dc_states: DashMap<u8, Arc<DcHealthState>>,
+    dc_states: Arc<RwLock<HashMap<u8, Arc<DcHealthState>>>>,
     failure_threshold: u64,
     recovery_timeout: Duration,
 }
@@ -325,27 +326,29 @@ pub struct DcFailureDetector {
 impl DcFailureDetector {
     pub fn new(failure_threshold: u64, recovery_timeout: Duration) -> Self {
         Self {
-            dc_states: DashMap::new(),
+            dc_states: Arc::new(RwLock::new(HashMap::new())),
             failure_threshold,
             recovery_timeout,
         }
     }
 
     pub fn add_dc(&self, dc_id: u8) {
-        self.dc_states
+        let mut states = self.dc_states.write();
+        states
             .entry(dc_id)
             .or_insert_with(|| Arc::new(DcHealthState::new(dc_id)));
     }
 
     pub fn get_dc_state(&self, dc_id: u8) -> Option<Arc<DcHealthState>> {
-        self.dc_states.get(&dc_id).map(|v| Arc::clone(v.value()))
+        self.dc_states.read().get(&dc_id).cloned()
     }
 
     pub fn get_healthy_dcs(&self) -> Vec<u8> {
-        self.dc_states
+        let states = self.dc_states.read();
+        states
             .iter()
-            .filter(|entry| entry.value().should_use_dc())
-            .map(|entry| *entry.key())
+            .filter(|(_, state)| state.should_use_dc())
+            .map(|(&dc_id, _)| dc_id)
             .collect()
     }
 
@@ -389,8 +392,8 @@ impl DcFailureDetector {
 
     async fn check_recovery(&self) {
         let now = Instant::now();
-        for entry in self.dc_states.iter() {
-            let state = entry.value();
+        let states = self.dc_states.read().clone();
+        for (_, state) in states.iter() {
             if state.get_status() == DcStatus::Failed {
                 let last_success = *state.last_success.lock();
                 if now.duration_since(last_success) > self.recovery_timeout {
@@ -552,7 +555,7 @@ impl DoubleBuffer {
 
 pub struct SegmentAlgorithm {
     config: SegmentAlgorithmConfig,
-    buffers: DashMap<String, Arc<DoubleBuffer>>,
+    buffers: Arc<RwLock<HashMap<String, Arc<DoubleBuffer>>>>,
     metrics: Arc<AlgorithmMetricsInner>,
     segment_loader: Arc<dyn SegmentLoader + Send + Sync>,
     dc_failure_detector: Arc<DcFailureDetector>,
@@ -618,7 +621,7 @@ impl SegmentAlgorithm {
 
         Self {
             config: SegmentAlgorithmConfig::default(),
-            buffers: DashMap::new(),
+            buffers: Arc::new(RwLock::new(HashMap::new())),
             metrics: Arc::new(AlgorithmMetricsInner::default()),
             segment_loader: Arc::new(DefaultSegmentLoader::default()),
             dc_failure_detector,
@@ -676,13 +679,13 @@ impl SegmentAlgorithm {
     }
 
     fn get_or_create_buffer(&self, key: &str) -> Arc<DoubleBuffer> {
-        self.buffers
+        let mut buffers = self.buffers.write();
+        buffers
             .entry(key.to_string())
             .or_insert_with(|| {
                 let (db, _) = DoubleBuffer::new(self.config.switch_threshold);
                 Arc::new(db)
             })
-            .value()
             .clone()
     }
 }
@@ -781,7 +784,7 @@ impl IdAlgorithm for SegmentAlgorithm {
     }
 
     fn health_check(&self) -> HealthStatus {
-        if self.buffers.is_empty() {
+        if self.buffers.read().is_empty() {
             return HealthStatus::Degraded("No active buffers".to_string());
         }
         HealthStatus::Healthy
@@ -951,49 +954,79 @@ impl DatabaseSegmentLoader {
     }
 
     /// 获取当前 QPS
-    /// 通过原子计数器跟踪请求量并计算实际 QPS
-    /// 使用自增计数器记录已生成的 ID 数量，根据运行时间估算 QPS
+    /// 使用滑动窗口计数器精确计算最近 60 秒的平均 QPS
+    ///
+    /// # 优化说明
+    /// - 旧实现：每次调用都计算系统时间，O(1) 但有系统调用开销
+    /// - 新实现：滑动窗口计数器，每秒更新一次，减少时间计算
     fn get_current_qps(&self) -> u64 {
-        // 使用原子计数器追踪生成的 ID 数量
-        let generated_count = self.counter.load(std::sync::atomic::Ordering::Relaxed);
+        use std::sync::atomic::{AtomicU64, Ordering};
 
-        // 获取启动时间（使用常量避免运行时依赖）
-        // 实际生产环境中应从监控指标获取启动时间和请求计数
-        // 这里使用静态初始化时间作为简化的 QPS 计算方法
-        static START_TIME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        // 使用滑动窗口计数器优化 QPS 计算
+        const WINDOW_SIZE: usize = 60; // 60 秒窗口
 
-        // 首次调用时记录启动时间
-        let start_time = START_TIME
-            .fetch_update(
-                std::sync::atomic::Ordering::SeqCst,
-                std::sync::atomic::Ordering::SeqCst,
-                |v| {
-                    if v == 0 {
-                        Some(
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs(),
-                        )
-                    } else {
-                        Some(v)
-                    }
-                },
-            )
-            .unwrap_or_default();
-
-        let elapsed_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(1.0, |d| d.as_secs_f64() - start_time as f64);
-
-        if elapsed_secs > 0.0 && generated_count > 0 {
-            let qps = (generated_count as f64 / elapsed_secs) as u64;
-            // 使用实际 QPS，但不低于基准值
-            return qps.max(DEFAULT_QPS_BASELINE);
+        // 每个槽位记录该秒的请求数
+        struct WindowCounter {
+            counters: Vec<AtomicU64>,
+            start_second: AtomicU64,
         }
 
-        // 如果无法计算 QPS，使用基准值作为后备
-        DEFAULT_QPS_BASELINE
+        static WINDOW: std::sync::OnceLock<WindowCounter> = std::sync::OnceLock::new();
+
+        let window = WINDOW.get_or_init(|| {
+            let counters = (0..WINDOW_SIZE).map(|_| AtomicU64::new(0)).collect();
+            WindowCounter {
+                counters,
+                start_second: AtomicU64::new(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                ),
+            }
+        });
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let start_second = window.start_second.load(Ordering::Relaxed);
+        let elapsed = now.saturating_sub(start_second) as usize;
+
+        // 更新当前秒的计数器
+        let current_slot = elapsed % WINDOW_SIZE;
+        window.counters[current_slot].fetch_add(1, Ordering::Relaxed);
+
+        // 如果超过 60 秒，重置所有计数器
+        if elapsed >= WINDOW_SIZE {
+            for counter in &window.counters {
+                counter.store(0, Ordering::Relaxed);
+            }
+            window.start_second.store(now, Ordering::Relaxed);
+            return DEFAULT_QPS_BASELINE;
+        }
+
+        // 计算总请求数和总时间
+        let mut total_count = 0u64;
+        let mut active_slots = 0usize;
+
+        for (i, counter) in window.counters.iter().enumerate() {
+            let count = counter.load(Ordering::Relaxed);
+            total_count += count;
+
+            // 只统计有数据的槽位
+            if count > 0 {
+                active_slots = active_slots.max(i + 1);
+            }
+        }
+
+        // 计算平均 QPS（至少 1 秒）
+        let avg_secs = active_slots.max(1) as u64;
+        let qps = total_count / avg_secs;
+
+        // 使用实际 QPS，但不低于基准值
+        qps.max(DEFAULT_QPS_BASELINE)
     }
 }
 
@@ -1058,7 +1091,7 @@ impl SegmentLoader for DatabaseSegmentLoader {
 // ============================================================================
 
 use confers::traits::{ConfigProvider, ConfigProviderExt};
-use oxcache::backend::CacheBackend;
+use oxcache::Cache;
 
 impl SegmentAlgorithm {
     /// Create a new SegmentAlgorithm with all dependencies injected.
@@ -1073,7 +1106,7 @@ impl SegmentAlgorithm {
     /// * `local_dc_id` - Local datacenter ID
     pub fn with_dependencies(
         config: Arc<dyn ConfigProvider>,
-        _cache: Option<Arc<dyn CacheBackend>>,
+        _cache: Option<Arc<Cache<String, Vec<u8>>>>,
         repository: Arc<dyn SegmentRepository>,
         local_dc_id: u8,
     ) -> Self {
@@ -1104,7 +1137,7 @@ impl SegmentAlgorithm {
 
         Self {
             config: segment_config,
-            buffers: DashMap::new(),
+            buffers: Arc::new(RwLock::new(HashMap::new())),
             metrics: Arc::new(AlgorithmMetricsInner::default()),
             segment_loader,
             dc_failure_detector,
@@ -1167,7 +1200,7 @@ impl SegmentLoader for RepositoryBackedLoader {
 #[derive(Default)]
 pub struct SegmentAlgorithmBuilder {
     config: Option<Arc<dyn ConfigProvider>>,
-    cache: Option<Arc<dyn CacheBackend>>,
+    cache: Option<Arc<Cache<String, Vec<u8>>>>,
     repository: Option<Arc<dyn SegmentRepository>>,
     local_dc_id: Option<u8>,
     segment_loader: Option<Arc<dyn SegmentLoader + Send + Sync>>,
@@ -1188,7 +1221,7 @@ impl SegmentAlgorithmBuilder {
     }
 
     /// Set the cache backend.
-    pub fn cache(mut self, cache: Arc<dyn CacheBackend>) -> Self {
+    pub fn cache(mut self, cache: Arc<Cache<String, Vec<u8>>>) -> Self {
         self.cache = Some(cache);
         self
     }
@@ -1255,7 +1288,7 @@ impl SegmentAlgorithmBuilder {
 
         SegmentAlgorithm {
             config,
-            buffers: DashMap::new(),
+            buffers: Arc::new(RwLock::new(HashMap::new())),
             metrics: Arc::new(AlgorithmMetricsInner::default()),
             segment_loader,
             dc_failure_detector,

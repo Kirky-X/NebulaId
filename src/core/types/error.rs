@@ -110,6 +110,12 @@ impl From<uuid::Error> for CoreError {
     }
 }
 
+impl From<oxcache::CacheError> for CoreError {
+    fn from(e: oxcache::CacheError) -> Self {
+        CoreError::CacheError(e.to_string())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub code: i32,

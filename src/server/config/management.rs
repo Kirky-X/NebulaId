@@ -23,10 +23,9 @@ use crate::server::models::{
     AlgorithmConfigInfo, AppConfigInfo, CacheMetrics, ConfigResponse, ConnectionPoolMetrics,
     CreateGroupRequest, CreateWorkspaceRequest, DatabaseConfigInfo, DatabaseMetrics,
     GroupListResponse, GroupResponse, LoggingConfigInfo, MonitoringConfigInfo, RateLimitConfigInfo,
-    RedisConfigInfo, SecureConfigResponse, SegmentConfigInfo, SetAlgorithmRequest,
-    SetAlgorithmResponse, SnowflakeConfigInfo, TlsConfigInfo, UpdateConfigResponse,
-    UpdateLoggingRequest, UpdateRateLimitRequest, UuidV7ConfigInfo, WorkspaceListResponse,
-    WorkspaceResponse,
+    SecureConfigResponse, SegmentConfigInfo, SetAlgorithmRequest, SetAlgorithmResponse,
+    SnowflakeConfigInfo, TlsConfigInfo, UpdateConfigResponse, UpdateLoggingRequest,
+    UpdateRateLimitRequest, UuidV7ConfigInfo, WorkspaceListResponse, WorkspaceResponse,
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -101,12 +100,6 @@ impl ConfigManagementService {
                 database: Some(config.database.database.clone()),
                 max_connections: config.database.max_connections,
                 min_connections: config.database.min_connections,
-            },
-            redis: RedisConfigInfo {
-                url: Some(config.redis.url.clone()),
-                pool_size: config.redis.pool_size,
-                key_prefix: config.redis.key_prefix.clone(),
-                ttl_seconds: config.redis.ttl_seconds,
             },
             algorithm: AlgorithmConfigInfo {
                 default: config.algorithm.default.clone(),
@@ -303,7 +296,8 @@ impl ConfigManagementService {
         let biz_tag = req.biz_tag.clone();
         let algorithm = req.algorithm.clone();
         self.algorithm_router
-            .set_algorithm(biz_tag.clone(), algorithm_type);
+            .set_algorithm(biz_tag.clone(), algorithm_type)
+            .await;
 
         let message = format!(
             "Algorithm for biz_tag '{}' set to '{}' successfully",
@@ -614,7 +608,7 @@ impl ConfigManagementService {
 
     pub async fn get_cache_metrics(&self) -> CacheMetrics {
         // Get algorithm metrics for cache hit rate
-        let algorithm_metrics = self.algorithm_router.metrics();
+        let algorithm_metrics = self.algorithm_router.metrics().await;
         let cache_hit_rate = if !algorithm_metrics.is_empty() {
             let total_hit_rate: f64 = algorithm_metrics
                 .iter()
@@ -634,13 +628,13 @@ impl ConfigManagementService {
         }
     }
 
-    pub fn get_algorithm_metrics(
+    pub async fn get_algorithm_metrics(
         &self,
     ) -> Vec<(
         crate::core::types::AlgorithmType,
         crate::core::algorithm::AlgorithmMetricsSnapshot,
     )> {
-        self.algorithm_router.metrics()
+        self.algorithm_router.metrics().await
     }
 
     pub fn get_batch_max_size(&self) -> u32 {

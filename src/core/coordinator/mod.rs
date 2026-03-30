@@ -21,7 +21,9 @@ use tracing::info;
 #[cfg(feature = "etcd")]
 use crate::core::config::EtcdConfig;
 #[cfg(feature = "etcd")]
-use dashmap::DashMap;
+use parking_lot::RwLock;
+#[cfg(feature = "etcd")]
+use std::collections::HashMap;
 #[cfg(feature = "etcd")]
 use std::path::Path;
 #[cfg(feature = "etcd")]
@@ -344,7 +346,7 @@ pub struct EtcdClusterHealthMonitor {
     last_success: Arc<tokio::sync::Mutex<Instant>>,
     failure_count: AtomicU64,
     consecutive_failures: AtomicU64,
-    local_cache: DashMap<String, LocalCacheEntry>,
+    local_cache: Arc<RwLock<HashMap<String, LocalCacheEntry>>>,
     cache_file_path: String,
     is_using_cache: AtomicBool,
 }
@@ -358,7 +360,7 @@ impl EtcdClusterHealthMonitor {
             last_success: Arc::new(tokio::sync::Mutex::new(Instant::now())),
             failure_count: AtomicU64::new(0),
             consecutive_failures: AtomicU64::new(0),
-            local_cache: DashMap::new(),
+            local_cache: Arc::new(RwLock::new(HashMap::new())),
             cache_file_path,
             is_using_cache: AtomicBool::new(false),
         }
@@ -436,7 +438,7 @@ impl EtcdClusterHealthMonitor {
         let entry_count = entries.len();
 
         for entry in entries {
-            self.local_cache.insert(entry.key.clone(), entry);
+            self.local_cache.write().insert(entry.key.clone(), entry);
         }
 
         info!("Loaded {} entries from local cache", entry_count);
@@ -444,11 +446,7 @@ impl EtcdClusterHealthMonitor {
     }
 
     pub async fn save_local_cache(&self) -> Result<()> {
-        let entries: Vec<LocalCacheEntry> = self
-            .local_cache
-            .iter()
-            .map(|entry| entry.value().clone())
-            .collect();
+        let entries: Vec<LocalCacheEntry> = self.local_cache.read().values().cloned().collect();
 
         let content = serde_json::to_string_pretty(&entries).map_err(|e| {
             crate::core::CoreError::InternalError(format!("Failed to serialize cache: {}", e))
@@ -466,9 +464,7 @@ impl EtcdClusterHealthMonitor {
 
     #[cfg(feature = "etcd")]
     pub fn get_from_cache(&self, key: &str) -> Option<LocalCacheEntry> {
-        self.local_cache
-            .get(key)
-            .map(|v: &dashmap::mapref::one::Ref<'_, String, LocalCacheEntry>| v.value().clone())
+        self.local_cache.read().get(key).cloned()
     }
 
     #[cfg(feature = "etcd")]
@@ -481,12 +477,12 @@ impl EtcdClusterHealthMonitor {
             created_at: now,
             updated_at: now,
         };
-        self.local_cache.insert(key, entry);
+        self.local_cache.write().insert(key, entry);
     }
 
     #[cfg(feature = "etcd")]
     pub fn delete_from_cache(&self, key: &str) {
-        self.local_cache.remove(key);
+        self.local_cache.write().remove(key);
     }
 
     #[cfg(feature = "etcd")]

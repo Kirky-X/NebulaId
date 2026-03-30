@@ -126,7 +126,7 @@ async fn test_etcd_cluster_status_transitions() {
     let config = crate::core::config::EtcdConfig::default();
     let cache_file = NamedTempFile::new().expect("Failed to create temp file");
     let cache_path = cache_file.path().to_string_lossy().to_string();
-    let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
+    let monitor = EtcdClusterHealthMonitor::new(config, cache_path).await;
 
     assert_eq!(monitor.get_status(), EtcdClusterStatus::Healthy);
     assert!(!monitor.is_using_cache());
@@ -154,7 +154,7 @@ async fn test_etcd_cluster_failure_recovery() {
     let config = crate::core::config::EtcdConfig::default();
     let cache_file = NamedTempFile::new().expect("Failed to create temp file");
     let cache_path = cache_file.path().to_string_lossy().to_string();
-    let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
+    let monitor = EtcdClusterHealthMonitor::new(config, cache_path).await;
 
     for _ in 0..5 {
         monitor.record_failure();
@@ -173,10 +173,14 @@ async fn test_etcd_cluster_cache_fallback() {
     let config = crate::core::config::EtcdConfig::default();
     let cache_file = NamedTempFile::new().expect("Failed to create temp file");
     let cache_path = cache_file.path().to_string_lossy().to_string();
-    let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
+    let monitor = EtcdClusterHealthMonitor::new(config, cache_path).await;
 
-    monitor.put_to_cache("test_key".to_string(), "test_value".to_string(), 1);
-    monitor.put_to_cache("test_key2".to_string(), "test_value2".to_string(), 2);
+    monitor
+        .put_to_cache("test_key".to_string(), "test_value".to_string(), 1)
+        .await;
+    monitor
+        .put_to_cache("test_key2".to_string(), "test_value2".to_string(), 2)
+        .await;
 
     for _ in 0..5 {
         monitor.record_failure();
@@ -184,11 +188,11 @@ async fn test_etcd_cluster_cache_fallback() {
 
     assert!(monitor.is_using_cache());
 
-    let entry = monitor.get_from_cache("test_key");
+    let entry = monitor.get_from_cache("test_key").await;
     assert!(entry.is_some());
     assert_eq!(entry.unwrap().value, "test_value");
 
-    let entry2 = monitor.get_from_cache("test_key2");
+    let entry2 = monitor.get_from_cache("test_key2").await;
     assert!(entry2.is_some());
     assert_eq!(entry2.unwrap().value, "test_value2");
 }
@@ -537,18 +541,22 @@ async fn test_etcd_cache_persistence_across_instances() {
     let cache_file = NamedTempFile::new().expect("Failed to create temp file");
     let cache_path = cache_file.path().to_string_lossy().to_string();
 
-    let monitor1 = EtcdClusterHealthMonitor::new(config.clone(), cache_path.clone());
+    let monitor1 = EtcdClusterHealthMonitor::new(config.clone(), cache_path.clone()).await;
 
-    monitor1.put_to_cache("key1".to_string(), "value1".to_string(), 1);
-    monitor1.put_to_cache("key2".to_string(), "value2".to_string(), 2);
+    monitor1
+        .put_to_cache("key1".to_string(), "value1".to_string(), 1)
+        .await;
+    monitor1
+        .put_to_cache("key2".to_string(), "value2".to_string(), 2)
+        .await;
 
     monitor1.save_local_cache().await.unwrap();
 
-    let monitor2 = EtcdClusterHealthMonitor::new(config, cache_path);
+    let monitor2 = EtcdClusterHealthMonitor::new(config, cache_path).await;
     monitor2.load_local_cache().await.unwrap();
 
-    let entry1 = monitor2.get_from_cache("key1");
-    let entry2 = monitor2.get_from_cache("key2");
+    let entry1 = monitor2.get_from_cache("key1").await;
+    let entry2 = monitor2.get_from_cache("key2").await;
 
     assert!(entry1.is_some());
     assert!(entry2.is_some());

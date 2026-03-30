@@ -14,7 +14,7 @@
 
 use crate::core::config::EtcdConfig;
 use crate::core::types::Result;
-use dashmap::DashMap;
+use oxcache::Cache;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
@@ -47,20 +47,25 @@ pub struct EtcdClusterHealthMonitor {
     last_success: Arc<tokio::sync::Mutex<Instant>>,
     failure_count: AtomicU64,
     consecutive_failures: AtomicU64,
-    local_cache: DashMap<String, LocalCacheEntry>,
+    local_cache: Arc<Cache<String, LocalCacheEntry>>,
     cache_file_path: String,
     is_using_cache: AtomicBool,
 }
 
 impl EtcdClusterHealthMonitor {
-    pub fn new(config: EtcdConfig, cache_file_path: String) -> Self {
+    pub async fn new(config: EtcdConfig, cache_file_path: String) -> Self {
+        let cache = Cache::builder()
+            .build()
+            .await
+            .expect("Failed to create local cache");
+
         Self {
             config,
             status: AtomicU8::new(EtcdClusterStatus::Healthy as u8),
             last_success: Arc::new(tokio::sync::Mutex::new(Instant::now())),
             failure_count: AtomicU64::new(0),
             consecutive_failures: AtomicU64::new(0),
-            local_cache: DashMap::new(),
+            local_cache: Arc::new(cache),
             cache_file_path,
             is_using_cache: AtomicBool::new(false),
         }
@@ -138,7 +143,9 @@ impl EtcdClusterHealthMonitor {
         let entry_count = entries.len();
 
         for entry in entries {
-            self.local_cache.insert(entry.key.clone(), entry);
+            self.local_cache.set(&entry.key.clone(), &entry).await.map_err(|e| {
+                crate::core::CoreError::InternalError(format!("Failed to set cache entry: {}", e))
+            })?;
         }
 
         info!("Loaded {} entries from local cache", entry_count);
@@ -149,7 +156,12 @@ impl EtcdClusterHealthMonitor {
         let entries: Vec<LocalCacheEntry> = self
             .local_cache
             .iter()
-            .map(|entry| entry.value().clone())
+            .await
+            .map_err(|e| {
+                crate::core::CoreError::InternalError(format!("Failed to iterate cache: {}", e))
+            })?
+            .into_iter()
+            .map(|(_, entry)| entry)
             .collect();
 
         let content = serde_json::to_string_pretty(&entries).map_err(|e| {
@@ -166,11 +178,11 @@ impl EtcdClusterHealthMonitor {
         Ok(())
     }
 
-    pub fn get_from_cache(&self, key: &str) -> Option<LocalCacheEntry> {
-        self.local_cache.get(key).map(|v| v.value().clone())
+    pub async fn get_from_cache(&self, key: &str) -> Option<LocalCacheEntry> {
+        self.local_cache.get(&key.to_string()).await.ok().flatten()
     }
 
-    pub fn put_to_cache(&self, key: String, value: String, version: i64) {
+    pub async fn put_to_cache(&self, key: String, value: String, version: i64) {
         let now = chrono::Utc::now().timestamp();
         let entry = LocalCacheEntry {
             key: key.clone(),
@@ -179,11 +191,11 @@ impl EtcdClusterHealthMonitor {
             created_at: now,
             updated_at: now,
         };
-        self.local_cache.insert(key, entry);
+        let _ = self.local_cache.set(&key, &entry).await;
     }
 
-    pub fn delete_from_cache(&self, key: &str) {
-        self.local_cache.remove(key);
+    pub async fn delete_from_cache(&self, key: &str) {
+        let _ = self.local_cache.delete(&key.to_string()).await;
     }
 
     pub async fn start_health_check(&self, check_interval: Duration) {
@@ -266,7 +278,7 @@ mod tests {
         let config = EtcdConfig::default();
         let cache_file = NamedTempFile::new().expect("Failed to create temp file");
         let cache_path = cache_file.path().to_string_lossy().to_string();
-        let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
+        let monitor = EtcdClusterHealthMonitor::new(config, cache_path).await;
 
         assert_eq!(monitor.get_status(), EtcdClusterStatus::Healthy);
         assert!(!monitor.is_using_cache());
@@ -293,15 +305,15 @@ mod tests {
         let config = EtcdConfig::default();
         let cache_file = NamedTempFile::new().expect("Failed to create temp file");
         let cache_path = cache_file.path().to_string_lossy().to_string();
-        let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
+        let monitor = EtcdClusterHealthMonitor::new(config, cache_path).await;
 
-        monitor.put_to_cache("test_key".to_string(), "test_value".to_string(), 1);
-        let entry = monitor.get_from_cache("test_key");
+        monitor.put_to_cache("test_key".to_string(), "test_value".to_string(), 1).await;
+        let entry = monitor.get_from_cache("test_key").await;
         assert!(entry.is_some());
         assert_eq!(entry.unwrap().value, "test_value");
 
-        monitor.delete_from_cache("test_key");
-        let entry = monitor.get_from_cache("test_key");
+        monitor.delete_from_cache("test_key").await;
+        let entry = monitor.get_from_cache("test_key").await;
         assert!(entry.is_none());
     }
 
@@ -310,18 +322,18 @@ mod tests {
         let config = EtcdConfig::default();
         let cache_file = NamedTempFile::new().expect("Failed to create temp file");
         let cache_path = cache_file.path().to_string_lossy().to_string();
-        let monitor = EtcdClusterHealthMonitor::new(config.clone(), cache_path.clone());
+        let monitor = EtcdClusterHealthMonitor::new(config.clone(), cache_path.clone()).await;
 
-        monitor.put_to_cache("key1".to_string(), "value1".to_string(), 1);
-        monitor.put_to_cache("key2".to_string(), "value2".to_string(), 2);
+        monitor.put_to_cache("key1".to_string(), "value1".to_string(), 1).await;
+        monitor.put_to_cache("key2".to_string(), "value2".to_string(), 2).await;
 
         monitor.save_local_cache().await.unwrap();
 
-        let monitor2 = EtcdClusterHealthMonitor::new(config, cache_path);
+        let monitor2 = EtcdClusterHealthMonitor::new(config, cache_path).await;
         monitor2.load_local_cache().await.unwrap();
 
-        let entry1 = monitor2.get_from_cache("key1");
-        let entry2 = monitor2.get_from_cache("key2");
+        let entry1 = monitor2.get_from_cache("key1").await;
+        let entry2 = monitor2.get_from_cache("key2").await;
 
         assert!(entry1.is_some());
         assert!(entry2.is_some());

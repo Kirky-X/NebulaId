@@ -16,7 +16,6 @@
 
 use crate::core::types::GlobalMetrics;
 use arc_swap::ArcSwap;
-use dashmap::DashMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -75,6 +74,12 @@ pub enum AlertStatus {
     Resolved,
     #[default]
     Pending,
+}
+
+/// Internal enum for alert actions
+enum AlertAction {
+    Fire(Alert),
+    Resolve(Alert),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -381,8 +386,7 @@ impl AlertEvaluator for DefaultEvaluator {
             }
 
             e if e.starts_with("clock_backward") => {
-                for entry in metrics.algorithms.iter() {
-                    let alg_metrics = entry.value();
+                for alg_metrics in metrics.algorithms.read().values() {
                     if alg_metrics.p999_latency_ns.load(Ordering::Relaxed) > 0 {
                         return (true, Some("clock_backward_detected".to_string()));
                     }
@@ -545,7 +549,7 @@ impl AlertNotificationSender {
 
 pub struct AlertManager {
     config: Arc<ArcSwap<AlertingConfig>>,
-    states: Arc<DashMap<String, AlertState>>,
+    states: Arc<RwLock<HashMap<String, AlertState>>>,
     alerts_tx: broadcast::Sender<Alert>,
     notification_sender: Arc<AlertNotificationSender>,
     metrics: Arc<GlobalMetrics>,
@@ -567,10 +571,10 @@ impl AlertManager {
         let (_, shutdown_rx) = mpsc::channel(1);
 
         let config_arc = Arc::new(ArcSwap::from_pointee(config));
-        let states = Arc::new(DashMap::new());
+        let states = Arc::new(RwLock::new(HashMap::new()));
 
         for rule in config_arc.load().rules.iter() {
-            states.insert(rule.name.clone(), AlertState::new());
+            states.write().insert(rule.name.clone(), AlertState::new());
         }
 
         let manager = Self {
@@ -642,47 +646,62 @@ impl AlertManager {
         let config_guard = self.config.load();
         let (should_fire, current_value) = self.evaluator.evaluate(rule, &self.metrics);
 
-        let mut state = self.states.entry(rule.name.clone()).or_default();
+        // 先更新状态，然后在发送通知前释放锁
+        let mut action = None;
+        {
+            let mut states = self.states.write();
+            let state = states.entry(rule.name.clone()).or_default();
 
-        if should_fire {
-            state.promote(current_value.clone());
+            if should_fire {
+                state.promote(current_value.clone());
 
-            if state.should_fire(rule.for_duration) {
-                let mut alert = Alert::new(
-                    rule.name.clone(),
-                    rule.severity,
-                    self.format_message(rule, current_value.as_deref()),
-                    self.merge_labels(&rule.labels, &config_guard),
-                    current_value.clone(),
-                );
-                alert.fire();
-
-                if state.current_status != AlertStatus::Firing {
+                if state.should_fire(rule.for_duration)
+                    && state.current_status != AlertStatus::Firing
+                {
                     state.current_status = AlertStatus::Firing;
                     state.last_fired = Some(Instant::now());
 
-                    self.store_alert_to_history(&alert);
+                    let alert = Alert::new(
+                        rule.name.clone(),
+                        rule.severity,
+                        self.format_message(rule, current_value.as_deref()),
+                        self.merge_labels(&rule.labels, &config_guard),
+                        current_value.clone(),
+                    );
+                    action = Some(AlertAction::Fire(alert));
+                }
+            } else {
+                state.demote();
 
-                    if let Err(e) = self.alerts_tx.send(alert.clone()) {
-                        error!("Failed to send alert: {}", e);
-                    }
+                if state.current_status == AlertStatus::Firing && state.consecutive_promotions == 0
+                {
+                    state.current_status = AlertStatus::Resolved;
 
-                    self.notification_sender.send(&alert).await;
+                    let alert = Alert::new(
+                        rule.name.clone(),
+                        rule.severity,
+                        format!("Alert resolved: {}", rule.name),
+                        self.merge_labels(&rule.labels, &config_guard),
+                        None,
+                    );
+                    action = Some(AlertAction::Resolve(alert));
                 }
             }
-        } else {
-            state.demote();
+        } // 在这里释放锁
 
-            if state.current_status == AlertStatus::Firing && state.consecutive_promotions == 0 {
-                state.current_status = AlertStatus::Resolved;
+        // 执行后续操作（不带锁）
+        match action {
+            Some(AlertAction::Fire(mut alert)) => {
+                alert.fire();
+                self.store_alert_to_history(&alert);
 
-                let mut alert = Alert::new(
-                    rule.name.clone(),
-                    rule.severity,
-                    format!("Alert resolved: {}", rule.name),
-                    self.merge_labels(&rule.labels, &config_guard),
-                    None,
-                );
+                if let Err(e) = self.alerts_tx.send(alert.clone()) {
+                    error!("Failed to send alert: {}", e);
+                }
+
+                self.notification_sender.send(&alert).await;
+            }
+            Some(AlertAction::Resolve(mut alert)) => {
                 alert.resolve();
                 self.store_alert_to_history(&alert);
 
@@ -692,6 +711,7 @@ impl AlertManager {
 
                 self.notification_sender.send(&alert).await;
             }
+            None => {}
         }
     }
 
@@ -731,14 +751,12 @@ impl AlertManager {
     }
 
     pub fn get_state(&self, rule_name: &str) -> Option<AlertState> {
-        self.states.get(rule_name).map(|s| s.clone())
+        self.states.read().get(rule_name).cloned()
     }
 
     pub fn get_all_states(&self) -> Vec<(String, AlertState)> {
-        self.states
-            .iter()
-            .map(|e| (e.key().clone(), e.value().clone()))
-            .collect()
+        let states = self.states.read();
+        states.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
     pub fn get_alerts(&self) -> Vec<Alert> {
@@ -794,7 +812,7 @@ impl AlertManager {
     }
 
     pub fn add_rule(&self, rule: AlertRule) {
-        self.states.entry(rule.name.clone()).or_default();
+        self.states.write().entry(rule.name.clone()).or_default();
         let config = self.config.load().as_ref().clone();
         let mut new_config = config;
         new_config.rules.push(rule);
@@ -806,7 +824,7 @@ impl AlertManager {
         let mut new_config = config;
         new_config.rules.retain(|r| r.name != rule_name);
         self.config.store(Arc::new(new_config));
-        self.states.remove(rule_name);
+        self.states.write().remove(rule_name);
     }
 }
 

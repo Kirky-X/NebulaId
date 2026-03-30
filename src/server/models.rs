@@ -189,7 +189,89 @@ impl std::fmt::Display for ApiErrorCode {
     }
 }
 
-/// 增强的 API 错误响应（包含结构化错误码）
+/// Error message constants for consistent error responses
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorMessage {
+    // Authentication errors
+    InvalidApiKey,
+    ApiKeyExpired,
+    ApiKeyDisabled,
+
+    // Resource errors
+    WorkspaceNotFound,
+    GroupNotFound,
+    BizTagNotFound,
+
+    // Validation errors
+    InvalidInput,
+    InvalidIdFormat,
+    InvalidAlgorithmType,
+
+    // Rate limiting
+    RateLimitExceeded,
+
+    // Server errors
+    InternalError,
+    DatabaseError,
+    CacheError,
+    ServiceUnavailable,
+    AlgorithmError,
+    ConfigurationError,
+}
+
+impl ErrorMessage {
+    /// Get the user-friendly error message
+    pub fn message(&self) -> &'static str {
+        match self {
+            // Authentication
+            ErrorMessage::InvalidApiKey => "Invalid API key signature",
+            ErrorMessage::ApiKeyExpired => "API key has expired",
+            ErrorMessage::ApiKeyDisabled => "API key has been disabled",
+
+            // Resources
+            ErrorMessage::WorkspaceNotFound => "Workspace not found",
+            ErrorMessage::GroupNotFound => "Group not found",
+            ErrorMessage::BizTagNotFound => "Biz tag not found",
+
+            // Validation
+            ErrorMessage::InvalidInput => "Invalid input",
+            ErrorMessage::InvalidIdFormat => "Invalid ID format",
+            ErrorMessage::InvalidAlgorithmType => "Invalid algorithm type",
+
+            // Rate limiting
+            ErrorMessage::RateLimitExceeded => "Rate limit exceeded",
+
+            // Server errors
+            ErrorMessage::InternalError => "Internal server error",
+            ErrorMessage::DatabaseError => "Database operation failed",
+            ErrorMessage::CacheError => "Cache service unavailable",
+            ErrorMessage::ServiceUnavailable => "Service unavailable",
+            ErrorMessage::AlgorithmError => "ID generation algorithm error",
+            ErrorMessage::ConfigurationError => "Configuration error",
+        }
+    }
+
+    /// Get error message with context (for development/debugging)
+    pub fn with_context(&self, context: &str) -> String {
+        match self {
+            ErrorMessage::InvalidInput
+            | ErrorMessage::InvalidIdFormat
+            | ErrorMessage::InvalidAlgorithmType
+            | ErrorMessage::WorkspaceNotFound
+            | ErrorMessage::GroupNotFound
+            | ErrorMessage::BizTagNotFound
+            | ErrorMessage::DatabaseError
+            | ErrorMessage::CacheError
+            | ErrorMessage::ConfigurationError
+            | ErrorMessage::AlgorithmError => {
+                format!("{}: {}", self.message(), context)
+            }
+            _ => self.message().to_string(),
+        }
+    }
+}
+
+///增强的 API 错误响应（包含结构化错误码）
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiErrorResponse {
     pub code: String,            // 错误码，如 "1001"

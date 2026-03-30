@@ -70,98 +70,101 @@ pub fn handle_any_error<E: std::fmt::Display>(error: E) -> Response {
 /// 将 CoreError 转换为增强的 API 错误响应（带结构化错误码）
 pub fn core_error_to_api_response(error: &CoreError) -> (StatusCode, Json<ApiErrorResponse>) {
     use crate::core::types::error::CoreError;
+    use crate::server::models::ErrorMessage;
 
     let (code, message, status) = match error {
         CoreError::InvalidInput(msg) => (
             ApiErrorCode::InvalidInput,
-            format!("Invalid input: {}", sanitize_for_production(msg)),
+            ErrorMessage::InvalidInput.with_context(&sanitize_for_production(msg)),
             StatusCode::BAD_REQUEST,
         ),
         CoreError::InvalidIdFormat(msg)
         | CoreError::InvalidIdString(msg)
         | CoreError::InvalidAlgorithmType(msg) => (
             ApiErrorCode::InvalidInput,
-            sanitize_for_production(msg),
+            ErrorMessage::InvalidIdFormat.with_context(&sanitize_for_production(msg)),
             StatusCode::BAD_REQUEST,
         ),
         CoreError::NotFound(msg) => (
             ApiErrorCode::WorkspaceNotFound, // 默认资源错误
-            sanitize_for_production(msg),
+            ErrorMessage::WorkspaceNotFound.with_context(&sanitize_for_production(msg)),
             StatusCode::NOT_FOUND,
         ),
         CoreError::BizTagNotFound(msg) => (
             ApiErrorCode::BizTagNotFound,
-            sanitize_for_production(msg),
+            ErrorMessage::BizTagNotFound.with_context(&sanitize_for_production(msg)),
             StatusCode::NOT_FOUND,
         ),
         CoreError::AuthenticationError(msg) => (
             ApiErrorCode::InvalidApiKey,
-            sanitize_for_production(msg),
+            ErrorMessage::InvalidApiKey.with_context(&sanitize_for_production(msg)),
             StatusCode::UNAUTHORIZED,
         ),
         CoreError::InvalidApiKeySignature => (
             ApiErrorCode::InvalidApiKey,
-            "Invalid API key signature".to_string(),
+            ErrorMessage::InvalidApiKey.message().to_string(),
             StatusCode::UNAUTHORIZED,
         ),
         CoreError::ApiKeyDisabled => (
             ApiErrorCode::ApiKeyDisabled,
-            "API key has been disabled".to_string(),
+            ErrorMessage::ApiKeyDisabled.message().to_string(),
             StatusCode::UNAUTHORIZED,
         ),
         CoreError::ApiKeyExpired => (
             ApiErrorCode::ApiKeyExpired,
-            "API key has expired".to_string(),
+            ErrorMessage::ApiKeyExpired.message().to_string(),
             StatusCode::UNAUTHORIZED,
         ),
-        CoreError::WorkspaceDisabled(msg) => {
-            (ApiErrorCode::Forbidden, msg.clone(), StatusCode::FORBIDDEN)
-        }
+        CoreError::WorkspaceDisabled(msg) => (
+            ApiErrorCode::Forbidden,
+            ErrorMessage::InternalError.with_context(&sanitize_for_production(msg)),
+            StatusCode::FORBIDDEN,
+        ),
         CoreError::RateLimitExceeded => (
             ApiErrorCode::RateLimitExceeded,
-            "Rate limit exceeded".to_string(),
+            ErrorMessage::RateLimitExceeded.message().to_string(),
             StatusCode::TOO_MANY_REQUESTS,
         ),
         CoreError::DatabaseError(_msg) => (
             ApiErrorCode::DatabaseError,
-            "Database operation failed".to_string(),
+            ErrorMessage::DatabaseError.message().to_string(),
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         CoreError::CacheError(_msg) => (
             ApiErrorCode::CacheError,
-            "Cache service unavailable".to_string(),
+            ErrorMessage::CacheError.message().to_string(),
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         CoreError::EtcdError(msg) | CoreError::ParseError(msg) | CoreError::IoError(msg) => (
             ApiErrorCode::InternalError,
-            format!("Operation failed: {}", sanitize_for_production(msg)),
+            ErrorMessage::InternalError.with_context(&sanitize_for_production(msg)),
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         CoreError::TimeoutError => (
             ApiErrorCode::ServiceUnavailable,
-            "Request timeout".to_string(),
+            ErrorMessage::ServiceUnavailable.message().to_string(),
             StatusCode::SERVICE_UNAVAILABLE,
         ),
         CoreError::ClockMovedBackward { .. }
         | CoreError::SequenceOverflow { .. }
         | CoreError::SegmentExhausted { .. } => (
             ApiErrorCode::InternalError,
-            "ID generation algorithm error".to_string(),
+            ErrorMessage::AlgorithmError.message().to_string(),
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         CoreError::InternalError(_msg) => (
             ApiErrorCode::InternalError,
-            "Internal server error".to_string(),
+            ErrorMessage::InternalError.message().to_string(),
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         CoreError::ConfigurationError(msg) => (
             ApiErrorCode::InternalError,
-            format!("Configuration error: {}", sanitize_for_production(msg)),
+            ErrorMessage::ConfigurationError.with_context(&sanitize_for_production(msg)),
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         CoreError::Unknown => (
             ApiErrorCode::InternalError,
-            "Unknown error occurred".to_string(),
+            ErrorMessage::InternalError.message().to_string(),
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
     };

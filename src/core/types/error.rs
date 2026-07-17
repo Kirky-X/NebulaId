@@ -110,8 +110,8 @@ impl From<uuid::Error> for CoreError {
     }
 }
 
-impl From<oxcache::CacheError> for CoreError {
-    fn from(e: oxcache::CacheError) -> Self {
+impl From<oxcache::OxCacheError> for CoreError {
+    fn from(e: oxcache::OxCacheError) -> Self {
         CoreError::CacheError(e.to_string())
     }
 }

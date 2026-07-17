@@ -17,8 +17,8 @@
 //! This module provides a production-ready ConfigProvider that can be used
 //! with AppContainer and ConfigAdapter.
 
-use confers::traits::ConfigProvider;
-use confers::value::AnnotatedValue;
+use confers::interface::ConfigProvider;
+use confers::types::AnnotatedValue;
 use confers::{ConfigBuilder, SourceChainBuilder};
 use std::collections::HashMap;
 
@@ -81,7 +81,7 @@ impl ConfigProviderImpl {
 
     /// Recursively flatten nested configuration into dot-notation keys.
     fn flatten(value: &AnnotatedValue, prefix: &str, result: &mut HashMap<String, AnnotatedValue>) {
-        use confers::value::ConfigValue;
+        use confers::types::ConfigValue;
 
         match &value.inner {
             ConfigValue::Map(map) => {
@@ -135,7 +135,7 @@ pub struct ConfigProviderBuilder {
     files: Vec<String>,
     env_enabled: bool,
     env_prefix: Option<String>,
-    defaults: HashMap<String, confers::value::ConfigValue>,
+    defaults: HashMap<String, confers::types::ConfigValue>,
 }
 
 impl ConfigProviderBuilder {
@@ -171,7 +171,7 @@ impl ConfigProviderBuilder {
 
     /// Add a default value.
     #[allow(dead_code)]
-    pub fn default(mut self, key: impl Into<String>, value: confers::value::ConfigValue) -> Self {
+    pub fn default(mut self, key: impl Into<String>, value: confers::types::ConfigValue) -> Self {
         self.defaults.insert(key.into(), value);
         self
     }

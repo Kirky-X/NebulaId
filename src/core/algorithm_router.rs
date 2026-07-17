@@ -244,9 +244,11 @@ impl AlgorithmRouter {
         ] {
             let builder = AlgorithmBuilder::new(alg_type);
             #[cfg(feature = "etcd")]
-            if let Some(ref monitor) = self.etcd_health_monitor {
-                let _ = builder.with_etcd_health_monitor(monitor.clone());
-            }
+            let builder = if let Some(ref monitor) = self.etcd_health_monitor {
+                builder.with_etcd_health_monitor(monitor.clone())
+            } else {
+                builder
+            };
 
             match builder.build(&self.config).await {
                 Ok(algo) => {

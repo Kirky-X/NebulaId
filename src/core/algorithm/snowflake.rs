@@ -449,7 +449,7 @@ impl IdAlgorithm for UuidV4Algorithm {
 // DI Support - Builder Pattern and with_dependencies
 // ============================================================================
 
-use confers::traits::{ConfigProvider, ConfigProviderExt};
+use confers::interface::{ConfigProvider, ConfigProviderExt};
 
 impl SnowflakeAlgorithm {
     /// Create a new SnowflakeAlgorithm with all dependencies injected.

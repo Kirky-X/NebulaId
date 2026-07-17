@@ -106,8 +106,9 @@ mod tests {
             .await
             .expect("Failed to create cache");
 
-        let healthy = cache.health_check().await.expect("Failed to health check");
-        assert!(healthy);
+        // oxcache 0.3.8 health_check returns OxCacheResult<()>; reaching here
+        // without panic means the cache is healthy.
+        cache.health_check().await.expect("Failed to health check");
     }
 
     #[tokio::test]

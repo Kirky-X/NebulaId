@@ -22,7 +22,7 @@ use crate::core::config::{
     LogLevel, LoggingConfig, MonitoringConfig, RateLimitConfig, SegmentAlgorithmConfig,
     SnowflakeAlgorithmConfig, TlsConfig, UuidV7Config,
 };
-use confers::traits::{ConfigProvider, ConfigProviderExt};
+use confers::interface::{ConfigProvider, ConfigProviderExt};
 use std::sync::Arc;
 
 /// Configuration adapter that wraps a confers ConfigProvider.
@@ -450,11 +450,11 @@ impl std::fmt::Debug for ConfigAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use confers::value::ConfigValue;
+    use confers::types::ConfigValue;
 
     /// Mock ConfigProvider for testing
     struct MockConfigProvider {
-        values: std::collections::HashMap<String, confers::value::AnnotatedValue>,
+        values: std::collections::HashMap<String, confers::types::AnnotatedValue>,
     }
 
     impl MockConfigProvider {
@@ -468,7 +468,7 @@ mod tests {
         fn with_string(mut self, key: &str, value: &str) -> Self {
             self.values.insert(
                 key.to_string(),
-                confers::value::AnnotatedValue::from(ConfigValue::string(value.to_string())),
+                confers::types::AnnotatedValue::from(ConfigValue::string(value.to_string())),
             );
             self
         }
@@ -477,7 +477,7 @@ mod tests {
         fn with_int(mut self, key: &str, value: i64) -> Self {
             self.values.insert(
                 key.to_string(),
-                confers::value::AnnotatedValue::from(ConfigValue::integer(value)),
+                confers::types::AnnotatedValue::from(ConfigValue::integer(value)),
             );
             self
         }
@@ -486,14 +486,14 @@ mod tests {
         fn with_bool(mut self, key: &str, value: bool) -> Self {
             self.values.insert(
                 key.to_string(),
-                confers::value::AnnotatedValue::from(ConfigValue::bool(value)),
+                confers::types::AnnotatedValue::from(ConfigValue::bool(value)),
             );
             self
         }
     }
 
     impl ConfigProvider for MockConfigProvider {
-        fn get_raw(&self, key: &str) -> Option<&confers::value::AnnotatedValue> {
+        fn get_raw(&self, key: &str) -> Option<&confers::types::AnnotatedValue> {
             self.values.get(key)
         }
 

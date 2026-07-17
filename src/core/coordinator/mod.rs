@@ -27,24 +27,15 @@ use std::collections::HashMap;
 #[cfg(feature = "etcd")]
 use std::path::Path;
 #[cfg(feature = "etcd")]
-use std::sync::atomic::Ordering;
-#[cfg(feature = "etcd")]
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8};
 #[cfg(feature = "etcd")]
 use std::time::Instant;
 #[cfg(feature = "etcd")]
 use tokio::fs;
 #[cfg(feature = "etcd")]
-use tokio::fs;
-#[cfg(feature = "etcd")]
-use tokio::time::sleep;
-#[cfg(feature = "etcd")]
 use tokio::time::sleep;
 #[cfg(feature = "etcd")]
 use tokio::time::Duration;
-#[cfg(feature = "etcd")]
-use tracing::{debug, error, warn};
-
 #[cfg(feature = "etcd")]
 use tracing::{debug, error, warn};
 
@@ -415,7 +406,7 @@ impl EtcdClusterHealthMonitor {
         }
     }
 
-    pub async fn load_local_cache(&self) -> Result<()> {
+    pub async fn load_local_cache(&self) -> crate::core::types::Result<()> {
         let path = Path::new(&self.cache_file_path);
         if !path.exists() {
             info!(
@@ -445,7 +436,7 @@ impl EtcdClusterHealthMonitor {
         Ok(())
     }
 
-    pub async fn save_local_cache(&self) -> Result<()> {
+    pub async fn save_local_cache(&self) -> crate::core::types::Result<()> {
         let entries: Vec<LocalCacheEntry> = self.local_cache.read().values().cloned().collect();
 
         let content = serde_json::to_string_pretty(&entries).map_err(|e| {
@@ -820,17 +811,17 @@ impl EtcdDistributedLock {
 
         // 使用事务检查键是否存在，不存在则创建
         let txn = Txn::new()
-            .when(etcd_client::Compare::create_revision(
+            .when(vec![etcd_client::Compare::create_revision(
                 lock_path.clone(),
                 etcd_client::CompareOp::Equal,
                 0,
-            ))
-            .and_then_ops(etcd_client::TxnOp::put(
+            )])
+            .and_then(vec![etcd_client::TxnOp::put(
                 lock_path.clone(),
                 lock_value,
                 Some(etcd_client::PutOptions::new().with_lease(lease_id)),
-            ))
-            .or_else_ops(etcd_client::TxnOp::get(lock_path.clone(), None));
+            )])
+            .or_else(vec![etcd_client::TxnOp::get(lock_path.clone(), None)]);
 
         let mut client = self.client.lock().await;
         let response = client

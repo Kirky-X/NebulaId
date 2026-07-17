@@ -29,7 +29,7 @@
 //! - Support for per-key rate limits
 //! - Built-in concurrency control
 
-use limiteron::error::FlowGuardError;
+use limiteron::error::LimiteronError;
 use limiteron::limiters::{
     ConcurrencyLimiter as LimiteronConcurrencyLimiter, Limiter as LimiteronLimiter,
     TokenBucketLimiter,
@@ -100,7 +100,7 @@ impl InternalRateLimiter {
     }
 
     /// Check if a request is allowed and consume a token
-    async fn check(&self) -> Result<RateLimitResult, FlowGuardError> {
+    async fn check(&self) -> Result<RateLimitResult, LimiteronError> {
         // Update last accessed time
         self.touch();
 
@@ -382,16 +382,16 @@ impl ConcurrencyLimiter {
     /// Acquire a permit for concurrent execution.
     ///
     /// Returns a permit that will be released when dropped.
-    pub async fn acquire(&self) -> Result<tokio::sync::SemaphorePermit<'_>, FlowGuardError> {
+    pub async fn acquire(&self) -> Result<tokio::sync::SemaphorePermit<'_>, LimiteronError> {
         self.inner.acquire(1).await
     }
 
     /// Try to acquire a permit without blocking.
     ///
     /// Returns Ok(permit) if acquired, Err if limit reached.
-    pub async fn try_acquire(&self) -> Result<tokio::sync::SemaphorePermit<'_>, FlowGuardError> {
+    pub async fn try_acquire(&self) -> Result<tokio::sync::SemaphorePermit<'_>, LimiteronError> {
         self.inner.allow(1).await?;
-        Err(FlowGuardError::LimitError(
+        Err(LimiteronError::LimitError(
             "try_acquire requires async context - use acquire() with timeout".to_string(),
         ))
     }

@@ -1090,7 +1090,7 @@ impl SegmentLoader for DatabaseSegmentLoader {
 // DI Support - Builder Pattern and with_dependencies
 // ============================================================================
 
-use confers::traits::{ConfigProvider, ConfigProviderExt};
+use confers::interface::{ConfigProvider, ConfigProviderExt};
 use oxcache::Cache;
 
 impl SegmentAlgorithm {

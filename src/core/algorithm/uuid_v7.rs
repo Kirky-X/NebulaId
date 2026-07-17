@@ -186,7 +186,7 @@ impl IdAlgorithm for UuidV4Impl {
 // DI Support - Builder Pattern and with_dependencies
 // ============================================================================
 
-use confers::traits::ConfigProvider;
+use confers::interface::ConfigProvider;
 
 impl UuidV7Impl {
     /// Create a new UuidV7Impl with dependencies injected.

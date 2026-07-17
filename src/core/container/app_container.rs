@@ -16,7 +16,9 @@
 
 use crate::core::types::CoreError;
 use crate::infrastructure::{ConfigAdapter, ConfigProviderImpl, DatabaseAdapter};
-use confers::traits::ConfigProvider;
+use confers::interface::ConfigProvider;
+use oxcache::backend::{MokaMemoryBackend, RedisBackend};
+use oxcache::cache::{ChainCache, ChainLink};
 use oxcache::Cache;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -130,9 +132,20 @@ impl AppContainer {
         // Get Redis configuration for tiered cache
         let redis_config = config_adapter.get_redis_config();
 
-        // Initialize tiered cache backend (L1 memory + L2 Redis) using oxcache
+        // Initialize tiered cache backend (L1 memory + L2 Redis) using oxcache.
+        // oxcache 0.3.8 removed CacheBuilder::tiered; ChainCache now provides
+        // multi-tier composition and implements CacheBackend, so it can be
+        // wrapped by Cache<K, V> via backend_arc.
+        let l1 = MokaMemoryBackend::builder().capacity(10000).build();
+        let l2 = RedisBackend::new(&redis_config.url)
+            .await
+            .map_err(|e| CoreError::CacheError(e.to_string()))?;
+        let chain = ChainCache::builder()
+            .link(ChainLink::from_backend(l1))
+            .link(ChainLink::from_backend(l2))
+            .build();
         let cache: Cache<String, Vec<u8>> = Cache::builder()
-            .tiered(10000, &redis_config.url)
+            .backend_arc(Arc::new(chain))
             .build()
             .await
             .map_err(|e| CoreError::CacheError(e.to_string()))?;
@@ -196,12 +209,14 @@ impl AppContainer {
 
     /// Check if all components are healthy.
     pub async fn health_check(&self) -> Result<bool, CoreError> {
-        // Check cache health using the direct Cache API
-        let cache_healthy = self
-            .cache_adapter()
+        // Check cache health using the direct Cache API.
+        // oxcache 0.3.8 health_check returns OxCacheResult<()>, so reaching
+        // here without error means the cache is healthy.
+        self.cache_adapter()
             .health_check()
             .await
             .map_err(CoreError::from)?;
+        let cache_healthy = true;
 
         // Check database health
         let db_healthy = self.database_adapter().health_check().await?;

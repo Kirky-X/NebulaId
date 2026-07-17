@@ -9,36 +9,39 @@
 
 repos:
   # Rust Code Formatting (cargo fmt)
+  # 限定 --package nebulaid，避免扫描 path 依赖（confers/oxcache/dbnexus/limiteron）
   - repo: local
     hooks:
       - id: cargo-fmt
         name: Rust Code Formatting
         description: Check code formatting with cargo fmt
-        entry: bash -c 'cargo fmt --all -- --check'
+        entry: bash -c 'cargo fmt --package nebulaid -- --check'
         language: system
         pass_filenames: false
         always_run: true
         stages: [pre-commit]
 
   # Rust Static Analysis (cargo clippy)
+  # 限定 --package nebulaid，避免扫描 path 依赖
   - repo: local
     hooks:
       - id: cargo-clippy
         name: Rust Static Analysis
         description: Run cargo clippy for code quality analysis
-        entry: bash -c 'cargo clippy --lib --bins -- -D warnings'
+        entry: bash -c 'cargo clippy --package nebulaid --all-features -- -D warnings'
         language: system
         pass_filenames: false
         always_run: true
         stages: [pre-commit]
 
   # Rust Compilation Check (cargo check)
+  # 限定 --package nebulaid，避免扫描 path 依赖
   - repo: local
     hooks:
       - id: cargo-check
         name: Rust Compilation Check
         description: Verify project compiles without errors
-        entry: bash -c 'cargo check'
+        entry: bash -c 'cargo check --package nebulaid --all-features'
         language: system
         pass_filenames: false
         always_run: true

@@ -1,0 +1,53 @@
+# Lefthook - Git Hooks 管理器
+# 安装: npm install -g @evilmartians/lefthook && lefthook install
+# 文档: https://github.com/evilmartians/lefthook
+#
+# 所有 Rust 命令限定 --package nebulaid，避免扫描 path 依赖（confers/oxcache/dbnexus/limiteron）
+
+pre-commit:
+  parallel: false
+  commands:
+    # 1. 格式检查
+    cargo-fmt:
+      tags: [rust, fmt]
+      glob: "*.rs"
+      run: cargo fmt --package nebulaid -- --check
+
+    # 2. 静态分析
+    cargo-clippy:
+      tags: [rust, lint]
+      glob: "*.rs"
+      run: cargo clippy --package nebulaid --all-features -- -D warnings
+
+    # 3. 私钥/密钥扫描（gitleaks）
+    private-key-scan:
+      tags: [security, secrets]
+      run: |
+        if ! command -v gitleaks >/dev/null 2>&1; then
+          echo "::warning::gitleaks 未安装，跳过私钥扫描"
+          echo "安装: brew install gitleaks | go install github.com/zricethezlev/gitleaks/v8@latest"
+          exit 0
+        fi
+        gitleaks protect --staged --redact --config .gitleaks.toml || {
+          echo "::error::检测到潜在密钥泄漏，请检查 staged 文件"
+          exit 1
+        }
+
+pre-push:
+  parallel: false
+  commands:
+    # 1. 全特性测试
+    cargo-test:
+      tags: [rust, test]
+      run: cargo test --package nebulaid --all-features
+
+    # 2. 覆盖率门禁（≥80%）
+    cargo-coverage:
+      tags: [rust, coverage]
+      run: |
+        if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
+          echo "::warning::cargo-llvm-cov 未安装，跳过覆盖率门禁"
+          echo "安装: cargo install cargo-llvm-cov --locked"
+          exit 0
+        fi
+        cargo llvm-cov --package nebulaid --all-features --fail-under-lines 80

@@ -1,0 +1,61 @@
+# CODEOWNERS - 自动指定 PR 审阅人
+# 文档: https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# 规则优先级：后定义的规则覆盖先定义的（更具体的规则放后面）
+# 默认 owner: @Kirky-X
+
+# 默认所有者
+*                       @Kirky-X
+
+# 核心源代码
+/src/                   @Kirky-X
+/src/lib.rs             @Kirky-X
+/src/main.rs            @Kirky-X
+
+# ID 生成核心算法
+/src/id/                @Kirky-X
+/src/snowflake/         @Kirky-X
+
+# 数据库 / 存储层
+/src/db/                @Kirky-X
+/src/storage/           @Kirky-X
+
+# 缓存层
+/src/cache/             @Kirky-X
+
+# 限流
+/src/limiter/           @Kirky-X
+
+# API 层（gRPC + HTTP）
+/src/api/               @Kirky-X
+/src/grpc/              @Kirky-X
+/src/http/              @Kirky-X
+
+# 配置
+/src/config/            @Kirky-X
+/config/                @Kirky-X
+
+# 安全相关变更需要严格审阅
+/src/auth/              @Kirky-X
+/src/security/          @Kirky-X
+/src/crypto/            @Kirky-X
+/.gitleaks.toml          @Kirky-X
+deny.toml                @Kirky-X
+
+# CI / CD / 基础设施
+/.github/               @Kirky-X
+/Makefile                @Kirky-X
+/Dockerfile              @Kirky-X
+docker-compose.yml       @Kirky-X
+/lefthook.yml            @Kirky-X
+/.pre-commit-config.yaml @Kirky-X
+
+# 依赖（更新依赖需要审阅）
+/Cargo.toml              @Kirky-X
+/Cargo.lock              @Kirky-X
+
+# 文档（轻量审阅）
+/docs/                   @Kirky-X
+/README.md               @Kirky-X
+/AGENTS.md               @Kirky-X
+/CHANGELOG.md            @Kirky-X

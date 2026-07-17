@@ -39,6 +39,8 @@ Cargo.lock
 .iflow/
 .qoder/
 openspec/
+specmark/
+**/specmark/
 
 # -----------------------------------------------------------------------------
 # Python

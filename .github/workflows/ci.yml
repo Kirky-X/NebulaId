@@ -19,14 +19,17 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_LOG: info
+  # 限定 --package nebulaid，避免扫描 path 依赖（confers/oxcache/dbnexus/limiteron）
+  PKG: nebulaid
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  quick-check:
-    name: Quick Check (fmt + lint)
+  # 阶段 1：格式 + Lint（任意非零退出码阻断合并）
+  fmt-clippy:
+    name: fmt + clippy
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -44,71 +47,14 @@ jobs:
           cache-targets: false
 
       - name: Format Check
-        run: cargo fmt --all -- --check
+        run: cargo fmt --package ${{ env.PKG }} -- --check
 
-      - name: Clippy Lint (lib + bins only)
-        run: cargo clippy --lib --bins -- -D warnings -A clippy::derivable-clones -A clippy::redundant-pub-crate
+      - name: Clippy Lint
+        run: cargo clippy --package ${{ env.PKG }} --all-features -- -D warnings
 
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    needs: quick-check
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "nebula-ci"
-          cache-targets: false
-
-      - name: Build Project
-        run: cargo build --workspace
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: build
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "nebula-ci"
-          cache-targets: false
-
-      - name: Run Tests
-        run: cargo test --workspace
-
-      - name: Generate Code Coverage
-        if: github.event_name == 'pull_request'
-        uses: actions-rs/grcov@v0
-        with:
-          output_type: codecov
-          output_file: cobertura.xml
-        continue-on-error: true
-
-      - name: Upload Coverage Report
-        if: github.event_name == 'pull_request' && success()
-        uses: codecov/codecov-action@v5
-        with:
-          files: cobertura.xml
-          fail_ci_if_error: false
-          token: ${{ secrets.CODECOV_TOKEN }}
-          verbose: true
-        continue-on-error: true
-
-  security-audit:
-    name: Security Audit
+  # 阶段 2：cargo-deny 检查（许可证 + 安全）
+  deny:
+    name: cargo-deny
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -117,5 +63,101 @@ jobs:
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@v1
         with:
-          command: check security
+          command: check
           log-level: warn
+
+  # 阶段 3：cargo-audit 安全审计
+  audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Security Audit
+        run: cargo audit --deny warnings
+
+  # 阶段 4：多 feature matrix 测试 + 覆盖率门禁（≥80%）
+  test:
+    name: Test (${{ matrix.feature }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [fmt-clippy, deny, audit]
+    strategy:
+      fail-fast: false
+      matrix:
+        feature:
+          - default
+          - postgresql
+          - sqlite
+          - etcd
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "nebula-ci-${{ matrix.feature }}"
+          cache-targets: false
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      - name: Build (feature=${{ matrix.feature }})
+        run: |
+          if [ "${{ matrix.feature }}" = "default" ]; then
+            cargo build --package ${{ env.PKG }}
+          else
+            cargo build --package ${{ env.PKG }} --features ${{ matrix.feature }}
+          fi
+
+      - name: Run Tests with Coverage
+        run: |
+          if [ "${{ matrix.feature }}" = "default" ]; then
+            cargo llvm-cov --package ${{ env.PKG }} --fail-under-lines 80 --lcov --output-path lcov.info
+          else
+            cargo llvm-cov --package ${{ env.PKG }} --features ${{ matrix.feature }} --fail-under-lines 80 --lcov --output-path lcov.info
+          fi
+
+      - name: Upload Coverage Report
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: ${{ matrix.feature }}
+          verbose: true
+
+  # 阶段 5：聚合门禁（任一前置 job 失败则阻断合并）
+  gate:
+    name: CI Gate
+    runs-on: ubuntu-latest
+    needs: [fmt-clippy, deny, audit, test]
+    if: always()
+    steps:
+      - name: Verify all jobs succeeded
+        run: |
+          echo "fmt-clippy: ${{ needs.fmt-clippy.result }}"
+          echo "deny:      ${{ needs.deny.result }}"
+          echo "audit:     ${{ needs.audit.result }}"
+          echo "test:      ${{ needs.test.result }}"
+          if [[ "${{ needs.fmt-clippy.result }}" != "success" || \
+                "${{ needs.deny.result }}" != "success" || \
+                "${{ needs.audit.result }}" != "success" || \
+                "${{ needs.test.result }}" != "success" ]]; then
+            echo "::error::One or more CI jobs failed - blocking merge"
+            exit 1
+          fi
+          echo "All CI gates passed"

@@ -41,6 +41,7 @@ Cargo.lock
 openspec/
 specmark/
 **/specmark/
+docs/archive/
 
 # -----------------------------------------------------------------------------
 # Python

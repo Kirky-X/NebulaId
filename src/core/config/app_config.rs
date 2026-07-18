@@ -16,7 +16,7 @@
 
 use super::{
     AlgorithmConfig, AppConfig, AuthConfig, BatchGenerateConfig, ConfigError, ConfigResult,
-    DatabaseConfig, EtcdConfig, LoggingConfig, LogLevel, MonitoringConfig, RateLimitConfig,
+    DatabaseConfig, EtcdConfig, LogLevel, LoggingConfig, MonitoringConfig, RateLimitConfig,
     RedisConfig, TlsConfig,
 };
 use serde::{Deserialize, Serialize};
@@ -432,7 +432,8 @@ mod tests {
             toml_content.contains(&original_url_line),
             "TOML 内容应包含 database.url 行"
         );
-        toml_content = toml_content.replace(&original_url_line, "url = \"${NEBULA_TEST_EXPAND_VAR}\"");
+        toml_content =
+            toml_content.replace(&original_url_line, "url = \"${NEBULA_TEST_EXPAND_VAR}\"");
 
         let temp = tempfile::NamedTempFile::new().expect("创建临时文件应成功");
         std::fs::write(temp.path(), &toml_content).unwrap();
@@ -933,13 +934,13 @@ mod tests {
         // 显式设置触发 false 分支的字段
         other.database.max_connections = 100; // == 100 → 不覆盖
         other.etcd.endpoints = vec![]; // 空 → 不覆盖
-        // database.url: other 用默认值，与 base 相同 → 不覆盖
-        // auth.api_keys: 默认空 → 不覆盖
-        // algorithm.default: 默认 "segment" → 不覆盖
-        // monitoring.metrics_path: 默认 "/metrics" → 不覆盖
-        // monitoring.tracing_enabled: 默认 false → 不覆盖
-        // monitoring.otlp_endpoint: 默认空 → 不覆盖
-        // logging.level: 默认 Info → 不覆盖
+                                       // database.url: other 用默认值，与 base 相同 → 不覆盖
+                                       // auth.api_keys: 默认空 → 不覆盖
+                                       // algorithm.default: 默认 "segment" → 不覆盖
+                                       // monitoring.metrics_path: 默认 "/metrics" → 不覆盖
+                                       // monitoring.tracing_enabled: 默认 false → 不覆盖
+                                       // monitoring.otlp_endpoint: 默认空 → 不覆盖
+                                       // logging.level: 默认 Info → 不覆盖
 
         base.merge(other);
 

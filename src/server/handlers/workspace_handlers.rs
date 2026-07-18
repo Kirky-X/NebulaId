@@ -14,13 +14,13 @@
 
 //! Workspace / Group management handlers (rule 25 split).
 
+use super::helpers::{map_db_error, map_uuid_error};
 use crate::core::{CoreError, Result};
 use crate::server::models::{
     naive_to_rfc3339, ApiKeyResponse, ApiKeyWithSecretResponse, CreateGroupRequest,
-    CreateWorkspaceRequest, GroupListResponse, GroupResponse, UserApiKeyInfo, WorkspaceListResponse,
-    WorkspaceResponse,
+    CreateWorkspaceRequest, GroupListResponse, GroupResponse, UserApiKeyInfo,
+    WorkspaceListResponse, WorkspaceResponse,
 };
-use super::helpers::{map_db_error, map_uuid_error};
 
 impl super::ApiHandlers {
     /// Create a new Workspace (auto-provisions a user API key).

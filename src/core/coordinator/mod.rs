@@ -90,9 +90,7 @@ pub enum LockError {
 }
 
 #[cfg(feature = "etcd")]
-pub use etcd::{
-    EtcdClusterHealthMonitor, EtcdDistributedLock, EtcdLockGuard, EtcdWorkerAllocator,
-};
+pub use etcd::{EtcdClusterHealthMonitor, EtcdDistributedLock, EtcdLockGuard, EtcdWorkerAllocator};
 #[cfg(not(feature = "etcd"))]
 pub use local::{
     EtcdClusterHealthMonitor, LocalDistributedLock, LocalLockGuard, LocalWorkerAllocator,

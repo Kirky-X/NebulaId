@@ -14,13 +14,13 @@
 
 //! API Key management handlers + `KeyRotationHandle` (rule 25 split).
 
+use super::helpers::map_db_error;
 use crate::core::database::{ApiKeyRole, CreateApiKeyRequest as CoreCreateApiKeyRequest};
 use crate::core::{CoreError, Result};
 use crate::server::models::{
     naive_to_rfc3339, ApiKeyListResponse, ApiKeyResponse, ApiKeyWithSecretResponse,
     CreateApiKeyRequest, RevokeApiKeyResponse,
 };
-use super::helpers::map_db_error;
 
 /// Handle for managing the key rotation background task.
 #[derive(Clone, Debug)]

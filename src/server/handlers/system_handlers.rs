@@ -77,26 +77,11 @@ impl super::ApiHandlers {
         let cache = self.config_service.get_cache_metrics().await;
 
         MetricsResponse {
-            total_requests: self
-                .metrics
-                .total_requests
-                .load(Ordering::SeqCst),
-            successful_generations: self
-                .metrics
-                .successful_generations
-                .load(Ordering::SeqCst),
-            failed_generations: self
-                .metrics
-                .failed_generations
-                .load(Ordering::SeqCst),
-            total_ids_generated: self
-                .metrics
-                .total_ids_generated
-                .load(Ordering::SeqCst),
-            avg_latency_ms: self
-                .metrics
-                .avg_latency_ms
-                .load(Ordering::SeqCst),
+            total_requests: self.metrics.total_requests.load(Ordering::SeqCst),
+            successful_generations: self.metrics.successful_generations.load(Ordering::SeqCst),
+            failed_generations: self.metrics.failed_generations.load(Ordering::SeqCst),
+            total_ids_generated: self.metrics.total_ids_generated.load(Ordering::SeqCst),
+            avg_latency_ms: self.metrics.avg_latency_ms.load(Ordering::SeqCst),
             uptime_seconds: std::time::Instant::now()
                 .duration_since(self.start_time)
                 .as_secs(),
@@ -176,8 +161,8 @@ impl super::ApiHandlers {
 
 #[cfg(test)]
 mod tests {
-    use crate::server::config::HotReloadConfig;
     use crate::server::config::management::ConfigManagementService;
+    use crate::server::config::HotReloadConfig;
     use crate::server::handlers::mock_generator::MockIdGenerator;
     use std::sync::Arc;
 

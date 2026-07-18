@@ -54,9 +54,7 @@ impl super::ApiHandlers {
         };
 
         let elapsed = start.elapsed();
-        self.metrics
-            .total_requests
-            .fetch_add(1, Ordering::SeqCst);
+        self.metrics.total_requests.fetch_add(1, Ordering::SeqCst);
         self.metrics
             .successful_generations
             .fetch_add(1, Ordering::SeqCst);
@@ -67,9 +65,7 @@ impl super::ApiHandlers {
         let latency_ms = elapsed.as_millis() as u64;
         let current_avg = self.metrics.avg_latency_ms.load(Ordering::SeqCst);
         let new_avg = (current_avg + latency_ms) / 2;
-        self.metrics
-            .avg_latency_ms
-            .store(new_avg, Ordering::SeqCst);
+        self.metrics.avg_latency_ms.store(new_avg, Ordering::SeqCst);
 
         let algorithm_name = if let Some(ref alg) = req.algorithm {
             alg.parse::<crate::core::types::AlgorithmType>()
@@ -135,9 +131,7 @@ impl super::ApiHandlers {
         };
 
         let elapsed = start.elapsed();
-        self.metrics
-            .total_requests
-            .fetch_add(1, Ordering::SeqCst);
+        self.metrics.total_requests.fetch_add(1, Ordering::SeqCst);
         self.metrics
             .successful_generations
             .fetch_add(1, Ordering::SeqCst);
@@ -148,9 +142,7 @@ impl super::ApiHandlers {
         let latency_ms = elapsed.as_millis() as u64;
         let current_avg = self.metrics.avg_latency_ms.load(Ordering::SeqCst);
         let new_avg = (current_avg + latency_ms) / 2;
-        self.metrics
-            .avg_latency_ms
-            .store(new_avg, Ordering::SeqCst);
+        self.metrics.avg_latency_ms.store(new_avg, Ordering::SeqCst);
 
         Ok(BatchGenerateResponse {
             ids: ids.iter().map(|id| id.to_string()).collect(),
@@ -264,8 +256,8 @@ impl super::ApiHandlers {
 
 #[cfg(test)]
 mod tests {
-    use crate::server::config::HotReloadConfig;
     use crate::server::config::management::ConfigManagementService;
+    use crate::server::config::HotReloadConfig;
     use crate::server::handlers::mock_generator::MockIdGenerator;
     use crate::server::models::{BatchGenerateRequest, GenerateRequest, ParseRequest};
     use std::sync::Arc;

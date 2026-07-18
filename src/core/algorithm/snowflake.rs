@@ -684,7 +684,10 @@ mod tests {
         let algo = SnowflakeAlgorithm::new(0, 0);
         let id1 = algo.generate_id().await.expect("first call should succeed");
         // 不 sleep，确保同一毫秒内第二次调用
-        let id2 = algo.generate_id().await.expect("second call in same ms should succeed");
+        let id2 = algo
+            .generate_id()
+            .await
+            .expect("second call in same ms should succeed");
         assert_ne!(id1.as_u128(), id2.as_u128(), "IDs must be unique");
     }
 
@@ -825,7 +828,8 @@ mod tests {
         let algo = SnowflakeAlgorithm::new(0, 0);
         let current = SnowflakeAlgorithm::get_timestamp();
         // 设置 last_timestamp 远在未来（drift=10000 > 阈值 1000），所有 generate_id 调用都失败
-        algo.last_timestamp.store(current + 10_000, Ordering::SeqCst);
+        algo.last_timestamp
+            .store(current + 10_000, Ordering::SeqCst);
 
         let ctx = GenerateContext::default();
         let result = algo.batch_generate(&ctx, 5).await;
@@ -1044,7 +1048,10 @@ mod tests {
     /// UuidV7Algorithm::algorithm_type 应返回 UuidV7。
     #[test]
     fn test_uuid_v7_algorithm_type_returns_uuid_v7() {
-        assert_eq!(UuidV7Algorithm::new().algorithm_type(), AlgorithmType::UuidV7);
+        assert_eq!(
+            UuidV7Algorithm::new().algorithm_type(),
+            AlgorithmType::UuidV7
+        );
     }
 
     /// UuidV7Algorithm::initialize 应返回 Ok(())。
@@ -1111,7 +1118,10 @@ mod tests {
     /// UuidV4Algorithm::algorithm_type 应返回 UuidV4。
     #[test]
     fn test_uuid_v4_algorithm_type_returns_uuid_v4() {
-        assert_eq!(UuidV4Algorithm::new().algorithm_type(), AlgorithmType::UuidV4);
+        assert_eq!(
+            UuidV4Algorithm::new().algorithm_type(),
+            AlgorithmType::UuidV4
+        );
     }
 
     /// UuidV4Algorithm::initialize 应返回 Ok(())。
@@ -1286,7 +1296,10 @@ mod tests {
         assert_eq!(algo.get_worker_id(), 3);
 
         let ctx = GenerateContext::default();
-        let id = algo.generate(&ctx).await.expect("generate via trait should succeed");
+        let id = algo
+            .generate(&ctx)
+            .await
+            .expect("generate via trait should succeed");
         assert!(id.as_u128() > 0);
     }
 
@@ -1299,7 +1312,10 @@ mod tests {
     async fn test_uuid_v7_generate_via_trait() {
         let algo = UuidV7Algorithm::new();
         let ctx = GenerateContext::default();
-        let id = algo.generate(&ctx).await.expect("generate via trait should succeed");
+        let id = algo
+            .generate(&ctx)
+            .await
+            .expect("generate via trait should succeed");
         assert_eq!(id.to_uuid_v7().get_version(), Some(uuid::Version::SortRand));
     }
 
@@ -1308,7 +1324,10 @@ mod tests {
     async fn test_uuid_v4_generate_via_trait() {
         let algo = UuidV4Algorithm::new();
         let ctx = GenerateContext::default();
-        let id = algo.generate(&ctx).await.expect("generate via trait should succeed");
+        let id = algo
+            .generate(&ctx)
+            .await
+            .expect("generate via trait should succeed");
         assert_eq!(id.to_uuid_v7().get_version(), Some(uuid::Version::Random));
     }
 
@@ -1317,7 +1336,10 @@ mod tests {
     async fn test_snowflake_generate_via_trait() {
         let algo = SnowflakeAlgorithm::new(1, 1);
         let ctx = GenerateContext::default();
-        let id = algo.generate(&ctx).await.expect("generate via trait should succeed");
+        let id = algo
+            .generate(&ctx)
+            .await
+            .expect("generate via trait should succeed");
         assert!(id.as_u128() > 0);
     }
 }

@@ -32,11 +32,11 @@ use tokio::fs;
 use tokio::time::{sleep, Duration};
 use tracing::{debug, error, info, warn};
 
-use crate::core::config::EtcdConfig;
 use super::{
     DistributedLock, EtcdClusterStatus, LocalCacheEntry, LockError, LockGuard,
     WorkerAllocatorError, WorkerIdAllocator,
 };
+use crate::core::config::EtcdConfig;
 
 /// etcd 集群健康监控器。
 pub struct EtcdClusterHealthMonitor {

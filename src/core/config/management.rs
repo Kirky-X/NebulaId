@@ -384,7 +384,8 @@ mod tests {
     use super::*;
     use crate::core::database::{
         BizTag, CreateBizTagRequest, CreateGroupRequest, CreateWorkspaceRequest, Group,
-        UpdateBizTagRequest, UpdateGroupRequest, UpdateWorkspaceRequest, Workspace, WorkspaceStatus,
+        UpdateBizTagRequest, UpdateGroupRequest, UpdateWorkspaceRequest, Workspace,
+        WorkspaceStatus,
     };
     use crate::core::types::id::{AlgorithmType, IdFormat};
     use crate::core::types::Result;
@@ -620,8 +621,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_workspace_returns_none_when_not_found() {
         let mut repo = MockRepository::new();
-        repo.expect_get_workspace()
-            .returning(|_| Ok(None));
+        repo.expect_get_workspace().returning(|_| Ok(None));
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
         let result = manager.get_workspace(Uuid::new_v4()).await;
@@ -633,8 +633,11 @@ mod tests {
     #[tokio::test]
     async fn test_get_workspace_propagates_repository_error() {
         let mut repo = MockRepository::new();
-        repo.expect_get_workspace()
-            .returning(|_| Err(crate::core::CoreError::DatabaseError("conn lost".to_string())));
+        repo.expect_get_workspace().returning(|_| {
+            Err(crate::core::CoreError::DatabaseError(
+                "conn lost".to_string(),
+            ))
+        });
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
         let result = manager.get_workspace(Uuid::new_v4()).await;
@@ -748,8 +751,11 @@ mod tests {
     #[tokio::test]
     async fn test_update_workspace_propagates_repository_error() {
         let mut repo = MockRepository::new();
-        repo.expect_update_workspace()
-            .returning(|_, _| Err(crate::core::CoreError::NotFound("Workspace not found: x".to_string())));
+        repo.expect_update_workspace().returning(|_, _| {
+            Err(crate::core::CoreError::NotFound(
+                "Workspace not found: x".to_string(),
+            ))
+        });
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
         let request = UpdateWorkspaceRequest {
@@ -789,8 +795,11 @@ mod tests {
     #[tokio::test]
     async fn test_delete_workspace_propagates_not_found_error() {
         let mut repo = MockRepository::new();
-        repo.expect_delete_workspace()
-            .returning(|_| Err(crate::core::CoreError::NotFound("Workspace not found: x".to_string())));
+        repo.expect_delete_workspace().returning(|_| {
+            Err(crate::core::CoreError::NotFound(
+                "Workspace not found: x".to_string(),
+            ))
+        });
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
         let result = manager.delete_workspace(Uuid::new_v4()).await;
@@ -844,8 +853,11 @@ mod tests {
     #[tokio::test]
     async fn test_list_workspaces_propagates_repository_error() {
         let mut repo = MockRepository::new();
-        repo.expect_list_workspaces()
-            .returning(|_, _| Err(crate::core::CoreError::DatabaseError("unavailable".to_string())));
+        repo.expect_list_workspaces().returning(|_, _| {
+            Err(crate::core::CoreError::DatabaseError(
+                "unavailable".to_string(),
+            ))
+        });
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
         let result = manager.list_workspaces(None, None).await;
@@ -939,8 +951,11 @@ mod tests {
     #[tokio::test]
     async fn test_create_group_propagates_repository_error() {
         let mut repo = MockRepository::new();
-        repo.expect_create_group()
-            .returning(|_| Err(crate::core::CoreError::NotFound("Workspace not found".to_string())));
+        repo.expect_create_group().returning(|_| {
+            Err(crate::core::CoreError::NotFound(
+                "Workspace not found".to_string(),
+            ))
+        });
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
         let request = CreateGroupRequest {
@@ -1086,8 +1101,11 @@ mod tests {
     #[tokio::test]
     async fn test_update_group_propagates_repository_error() {
         let mut repo = MockRepository::new();
-        repo.expect_update_group()
-            .returning(|_, _| Err(crate::core::CoreError::NotFound("Group not found".to_string())));
+        repo.expect_update_group().returning(|_, _| {
+            Err(crate::core::CoreError::NotFound(
+                "Group not found".to_string(),
+            ))
+        });
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
         let request = UpdateGroupRequest {
@@ -1125,8 +1143,11 @@ mod tests {
     #[tokio::test]
     async fn test_delete_group_propagates_not_found_error() {
         let mut repo = MockRepository::new();
-        repo.expect_delete_group()
-            .returning(|_| Err(crate::core::CoreError::NotFound("Group not found".to_string())));
+        repo.expect_delete_group().returning(|_| {
+            Err(crate::core::CoreError::NotFound(
+                "Group not found".to_string(),
+            ))
+        });
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
         let result = manager.delete_group(Uuid::new_v4()).await;
@@ -1149,7 +1170,11 @@ mod tests {
         let expected = vec![g1.clone(), g2.clone()];
 
         repo.expect_list_groups()
-            .with(predicate::eq(workspace_id), predicate::eq(None), predicate::eq(None))
+            .with(
+                predicate::eq(workspace_id),
+                predicate::eq(None),
+                predicate::eq(None),
+            )
             .times(1)
             .returning(move |_, _, _| Ok(expected.clone()));
 
@@ -1290,8 +1315,11 @@ mod tests {
     #[tokio::test]
     async fn test_create_biz_tag_propagates_repository_error() {
         let mut repo = MockRepository::new();
-        repo.expect_create_biz_tag()
-            .returning(|_| Err(crate::core::CoreError::NotFound("Workspace not found".to_string())));
+        repo.expect_create_biz_tag().returning(|_| {
+            Err(crate::core::CoreError::NotFound(
+                "Workspace not found".to_string(),
+            ))
+        });
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
         let request = CreateBizTagRequest {
@@ -1327,7 +1355,14 @@ mod tests {
         repo.expect_get_biz_tag()
             .with(predicate::eq(biz_tag_id))
             .times(1)
-            .returning(move |_| Ok(Some(sample_biz_tag(biz_tag_id, workspace_id, group_id, "tag1"))));
+            .returning(move |_| {
+                Ok(Some(sample_biz_tag(
+                    biz_tag_id,
+                    workspace_id,
+                    group_id,
+                    "tag1",
+                )))
+            });
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
         let result = manager.get_biz_tag(biz_tag_id).await;
@@ -1362,7 +1397,12 @@ mod tests {
             .with(predicate::eq(biz_tag_id), predicate::always())
             .times(1)
             .returning(move |_, _| {
-                Ok(sample_biz_tag(biz_tag_id, workspace_id, group_id, "renamed"))
+                Ok(sample_biz_tag(
+                    biz_tag_id,
+                    workspace_id,
+                    group_id,
+                    "renamed",
+                ))
             });
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
@@ -1447,7 +1487,12 @@ mod tests {
             .with(predicate::eq(biz_tag_id), predicate::always())
             .times(1)
             .returning(move |_, _| {
-                Ok(sample_biz_tag(biz_tag_id, workspace_id, group_id, "unchanged"))
+                Ok(sample_biz_tag(
+                    biz_tag_id,
+                    workspace_id,
+                    group_id,
+                    "unchanged",
+                ))
             });
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
@@ -1470,8 +1515,11 @@ mod tests {
     #[tokio::test]
     async fn test_update_biz_tag_propagates_repository_error() {
         let mut repo = MockRepository::new();
-        repo.expect_update_biz_tag()
-            .returning(|_, _| Err(crate::core::CoreError::NotFound("BizTag not found".to_string())));
+        repo.expect_update_biz_tag().returning(|_, _| {
+            Err(crate::core::CoreError::NotFound(
+                "BizTag not found".to_string(),
+            ))
+        });
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
         let request = UpdateBizTagRequest {
@@ -1514,8 +1562,11 @@ mod tests {
     #[tokio::test]
     async fn test_delete_biz_tag_propagates_not_found_error() {
         let mut repo = MockRepository::new();
-        repo.expect_delete_biz_tag()
-            .returning(|_| Err(crate::core::CoreError::NotFound("BizTag not found".to_string())));
+        repo.expect_delete_biz_tag().returning(|_| {
+            Err(crate::core::CoreError::NotFound(
+                "BizTag not found".to_string(),
+            ))
+        });
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
         let result = manager.delete_biz_tag(Uuid::new_v4()).await;
@@ -1650,7 +1701,8 @@ mod tests {
     #[tokio::test]
     async fn test_update_biz_tag_config_with_empty_biz_tag_returns_invalid_input() {
         let mut repo = MockRepository::new();
-        repo.expect_get_biz_tag_by_workspace_group_and_name().times(0);
+        repo.expect_get_biz_tag_by_workspace_group_and_name()
+            .times(0);
         repo.expect_update_biz_tag().times(0);
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
@@ -1678,7 +1730,8 @@ mod tests {
     #[tokio::test]
     async fn test_update_biz_tag_config_without_group_id_returns_invalid_input() {
         let mut repo = MockRepository::new();
-        repo.expect_get_biz_tag_by_workspace_group_and_name().times(0);
+        repo.expect_get_biz_tag_by_workspace_group_and_name()
+            .times(0);
         repo.expect_update_biz_tag().times(0);
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
@@ -1746,7 +1799,8 @@ mod tests {
     #[tokio::test]
     async fn test_batch_update_biz_tag_config_with_empty_list_returns_invalid_input() {
         let mut repo = MockRepository::new();
-        repo.expect_get_biz_tag_by_workspace_group_and_name().times(0);
+        repo.expect_get_biz_tag_by_workspace_group_and_name()
+            .times(0);
         repo.expect_update_biz_tag().times(0);
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
@@ -1762,7 +1816,8 @@ mod tests {
     #[tokio::test]
     async fn test_batch_update_biz_tag_config_with_empty_biz_tag_returns_invalid_input() {
         let mut repo = MockRepository::new();
-        repo.expect_get_biz_tag_by_workspace_group_and_name().times(0);
+        repo.expect_get_biz_tag_by_workspace_group_and_name()
+            .times(0);
         repo.expect_update_biz_tag().times(0);
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
@@ -1790,7 +1845,8 @@ mod tests {
     #[tokio::test]
     async fn test_batch_update_biz_tag_config_without_group_id_returns_invalid_input() {
         let mut repo = MockRepository::new();
-        repo.expect_get_biz_tag_by_workspace_group_and_name().times(0);
+        repo.expect_get_biz_tag_by_workspace_group_and_name()
+            .times(0);
         repo.expect_update_biz_tag().times(0);
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
@@ -1848,11 +1904,15 @@ mod tests {
         repo.expect_update_biz_tag()
             .times(1)
             .with(predicate::eq(biz_tag_id_1), predicate::always())
-            .returning(move |_, _| Ok(sample_biz_tag(biz_tag_id_1, workspace_id, group_id, "tag1")));
+            .returning(move |_, _| {
+                Ok(sample_biz_tag(biz_tag_id_1, workspace_id, group_id, "tag1"))
+            });
         repo.expect_update_biz_tag()
             .times(1)
             .with(predicate::eq(biz_tag_id_2), predicate::always())
-            .returning(move |_, _| Ok(sample_biz_tag(biz_tag_id_2, workspace_id, group_id, "tag2")));
+            .returning(move |_, _| {
+                Ok(sample_biz_tag(biz_tag_id_2, workspace_id, group_id, "tag2"))
+            });
 
         let manager = WorkspaceConfigManager::new(Arc::new(repo));
         let requests = vec![
@@ -1911,7 +1971,9 @@ mod tests {
 
         repo.expect_update_biz_tag()
             .times(1)
-            .returning(move |_, _| Ok(sample_biz_tag(biz_tag_id_1, workspace_id, group_id, "tag1")));
+            .returning(move |_, _| {
+                Ok(sample_biz_tag(biz_tag_id_1, workspace_id, group_id, "tag1"))
+            });
 
         // 第二个 BizTag 不存在
         repo.expect_get_biz_tag_by_workspace_group_and_name()

@@ -420,10 +420,7 @@ async fn main() -> Result<()> {
     // into the final binary (prevents linker stripping). Must be called
     // before merge_sdforge_routes builds the axum Router.
     let plugin_counts = init_sdforge();
-    info!(
-        routes = plugin_counts.routes,
-        "sdforge plugins initialized"
-    );
+    info!(routes = plugin_counts.routes, "sdforge plugins initialized");
 
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();

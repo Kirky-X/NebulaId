@@ -7,7 +7,7 @@
 # before each git commit.
 #
 # Usage:
-#   ./scripts/install-pre-commit-hooks.sh
+#   scripts/run.sh install-hooks
 #
 # Requirements:
 #   - Python 3.8+ with pip
@@ -122,7 +122,7 @@ echo ""
 echo -e "如果任何检查失败，提交将被阻止并显示错误信息。"
 echo ""
 echo -e "${YELLOW}提示:${NC} 如需手动运行所有检查，可使用:"
-echo -e "  ${YELLOW}./scripts/pre-commit-check.sh${NC}"
+echo -e "  ${YELLOW}./scripts/run.sh pre-commit${NC}"
 echo ""
 
 # Run initial check to verify everything works

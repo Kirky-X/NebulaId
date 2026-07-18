@@ -942,11 +942,23 @@ mod tests {
         assert_eq!(m.total_requests, 2);
         assert_eq!(m.successful_requests, 1);
         assert_eq!(m.failed_requests, 1);
-        assert_eq!(m.consecutive_failures, 0, "on_success resets consecutive_failures");
+        assert_eq!(
+            m.consecutive_failures, 0,
+            "on_success resets consecutive_failures"
+        );
         assert_eq!(m.consecutive_successes, 1);
-        assert!(m.last_failure_at.is_some(), "last_failure_at must be Some after failure");
-        assert!(m.last_success_at.is_some(), "last_success_at must be Some after success");
-        assert!(m.next_attempt_at.is_some(), "next_attempt_at must be Some after open");
+        assert!(
+            m.last_failure_at.is_some(),
+            "last_failure_at must be Some after failure"
+        );
+        assert!(
+            m.last_success_at.is_some(),
+            "last_success_at must be Some after success"
+        );
+        assert!(
+            m.next_attempt_at.is_some(),
+            "next_attempt_at must be Some after open"
+        );
     }
 
     /// 验证 failure_rate() 在 window_requests==0 时返回 0.0，在有数据时返回正确比例。
@@ -1015,9 +1027,7 @@ mod tests {
         assert_eq!(breaker.state().await, CircuitBreakerState::Open);
         // OPEN 状态下 execute 应直接返回错误，不调用 operation
         // operation 提供一个 Ok 结果；若被错误调用，result 会变为 Ok 使断言失败
-        let result: Result<(), String> = breaker
-            .execute(async { Ok::<(), String>(()) })
-            .await;
+        let result: Result<(), String> = breaker.execute(async { Ok::<(), String>(()) }).await;
         assert!(
             result.is_err(),
             "execute in OPEN state must return error without invoking operation"

@@ -20,6 +20,7 @@ pub mod auth;
 pub mod config;
 pub mod container;
 pub mod database;
+pub mod i18n;
 pub mod monitoring;
 pub mod types;
 

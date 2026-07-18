@@ -37,3 +37,11 @@ pub mod server;
 
 // Internal implementation modules
 pub(crate) mod infrastructure;
+
+// Phase 8 ICU i18n — load locale files at compile time.
+// `i18n!` embeds all `locales/*.yml` as static data; `t!()` macro becomes
+// available crate-wide via `#[macro_use] extern crate rust_i18n`.
+#[macro_use]
+extern crate rust_i18n;
+
+i18n!("locales", fallback = "en");

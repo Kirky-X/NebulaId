@@ -140,6 +140,9 @@ pin-project = "1.1"
 # 速率限制和流量控制 - 使用 limiteron 库
 limiteron = { version = "0.2", default-features = false, features = ["postgres", "quota-control", "ban-manager"] }
 
+# 国际化 (ICU i18n — Phase 8)
+rust-i18n = "3"
+
 [dev-dependencies]
 mockall = "0.13"
 sea-orm = { version = "1.1", features = ["mock"] }

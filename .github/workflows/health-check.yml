@@ -37,6 +37,9 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -67,6 +70,9 @@ jobs:
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -87,6 +93,9 @@ jobs:
 
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2

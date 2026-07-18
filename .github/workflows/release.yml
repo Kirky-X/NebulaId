@@ -54,6 +54,9 @@ jobs:
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -101,6 +104,17 @@ jobs:
 
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protoc
+        shell: bash
+        run: |
+          if [[ "${{ matrix.os }}" == *"ubuntu"* ]]; then
+            sudo apt-get update && sudo apt-get install -y protobuf-compiler
+          elif [[ "${{ matrix.os }}" == *"macos"* ]]; then
+            brew install protobuf
+          elif [[ "${{ matrix.os }}" == *"windows"* ]]; then
+            choco install protoc
+          fi
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2

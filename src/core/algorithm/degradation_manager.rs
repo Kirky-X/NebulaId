@@ -16,6 +16,7 @@
 
 use crate::core::algorithm::{audit_trait::DynAuditLogger, HealthStatus, IdAlgorithm};
 use crate::core::AlgorithmType;
+use arc_swap::ArcSwap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -278,8 +279,8 @@ pub struct AlgorithmMetrics {
 
 pub struct DegradationManager {
     config: DegradationConfig,
-    algorithms: Arc<RwLock<HashMap<AlgorithmType, Arc<dyn IdAlgorithm>>>>,
-    health_states: Arc<RwLock<HashMap<AlgorithmType, Arc<AlgorithmHealthState>>>>,
+    algorithms: Arc<ArcSwap<HashMap<AlgorithmType, Arc<dyn IdAlgorithm>>>>,
+    health_states: Arc<ArcSwap<HashMap<AlgorithmType, Arc<AlgorithmHealthState>>>>,
     current_state: RwLock<DegradationState>,
     primary_algorithm: RwLock<AlgorithmType>,
     fallback_chain: RwLock<Vec<AlgorithmType>>,
@@ -292,8 +293,8 @@ impl DegradationManager {
     pub fn new(config: Option<DegradationConfig>, audit_logger: Option<DynAuditLogger>) -> Self {
         Self {
             config: config.unwrap_or_default(),
-            algorithms: Arc::new(RwLock::new(HashMap::new())),
-            health_states: Arc::new(RwLock::new(HashMap::new())),
+            algorithms: Arc::new(ArcSwap::from_pointee(HashMap::new())),
+            health_states: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             current_state: RwLock::new(DegradationState::Normal),
             primary_algorithm: RwLock::new(AlgorithmType::Segment),
             fallback_chain: RwLock::new(vec![]),
@@ -304,10 +305,16 @@ impl DegradationManager {
     }
 
     pub fn register_algorithm(&self, alg_type: AlgorithmType, algorithm: Arc<dyn IdAlgorithm>) {
-        self.algorithms.write().insert(alg_type, algorithm);
-        self.health_states
-            .write()
-            .insert(alg_type, Arc::new(AlgorithmHealthState::new(alg_type)));
+        self.algorithms.rcu(|old| {
+            let mut new: HashMap<_, _> = (**old).clone();
+            new.insert(alg_type, algorithm.clone());
+            Arc::new(new)
+        });
+        self.health_states.rcu(|old| {
+            let mut new: HashMap<_, _> = (**old).clone();
+            new.insert(alg_type, Arc::new(AlgorithmHealthState::new(alg_type)));
+            Arc::new(new)
+        });
         debug!("Registered algorithm {:?} for health monitoring", alg_type);
     }
 
@@ -322,10 +329,7 @@ impl DegradationManager {
     }
 
     pub async fn record_generation_result(&self, alg_type: AlgorithmType, success: bool) {
-        let state_opt = {
-            let states = self.health_states.read();
-            states.get(&alg_type).cloned()
-        };
+        let state_opt = { self.health_states.load().get(&alg_type).cloned() };
 
         if let Some(state) = state_opt {
             if success {
@@ -419,8 +423,8 @@ impl DegradationManager {
     pub async fn check_all_health(&self) {
         let mut state_changed = false;
 
-        let health_states = self.health_states.read().clone();
-        let algorithms = self.algorithms.read().clone();
+        let health_states = self.health_states.load_full();
+        let algorithms = self.algorithms.load_full();
 
         for (alg_type, health_state) in health_states.iter() {
             if self.config.enable_circuit_breaker {
@@ -522,7 +526,7 @@ impl DegradationManager {
         let primary = *self.primary_algorithm.read();
         let chain = self.fallback_chain.read().clone();
 
-        let health_states = self.health_states.read().clone();
+        let health_states = self.health_states.load_full();
 
         if let Some(state) = health_states.get(&primary) {
             if !state.is_degraded.load(Ordering::SeqCst) {
@@ -547,8 +551,10 @@ impl DegradationManager {
             DegradationState::Normal => *self.primary_algorithm.read(),
             DegradationState::Degraded(alg) => *alg,
             DegradationState::Critical => {
-                for alg in self.fallback_chain.read().clone() {
-                    if let Some(state) = self.health_states.read().get(&alg) {
+                let chain = self.fallback_chain.read().clone();
+                let health_states = self.health_states.load_full();
+                for alg in chain {
+                    if let Some(state) = health_states.get(&alg) {
                         if state.current_state.load(Ordering::SeqCst) {
                             return alg;
                         }
@@ -561,7 +567,7 @@ impl DegradationManager {
 
     pub fn get_algorithm_state(&self, alg_type: AlgorithmType) -> Option<AlgorithmHealthStateInfo> {
         self.health_states
-            .read()
+            .load()
             .get(&alg_type)
             .map(|state| AlgorithmHealthStateInfo {
                 alg_type: state.alg_type,
@@ -574,7 +580,7 @@ impl DegradationManager {
 
     pub fn get_all_states(&self) -> Vec<AlgorithmHealthStateInfo> {
         self.health_states
-            .read()
+            .load()
             .values()
             .map(|state| AlgorithmHealthStateInfo {
                 alg_type: state.alg_type,
@@ -591,16 +597,25 @@ impl DegradationManager {
     }
 
     pub fn manual_degrade(&self, alg_type: AlgorithmType) {
-        let mut health_states = self.health_states.write();
-        let state = health_states
-            .entry(alg_type)
-            .or_insert_with(|| Arc::new(AlgorithmHealthState::new(alg_type)));
-        state.mark_degraded();
+        // 先尝试在已有 state 上标记（无锁读路径）
+        let existing = self.health_states.load().get(&alg_type).cloned();
+        if let Some(state) = existing {
+            state.mark_degraded();
+        } else {
+            // 不存在则插入新 state（rcu 整体替换）
+            let new_state = Arc::new(AlgorithmHealthState::new(alg_type));
+            new_state.mark_degraded();
+            self.health_states.rcu(|old| {
+                let mut new: HashMap<_, _> = (**old).clone();
+                new.insert(alg_type, new_state.clone());
+                Arc::new(new)
+            });
+        }
         info!("Manual degradation triggered for {:?}", alg_type);
     }
 
     pub fn manual_recover(&self, alg_type: AlgorithmType) {
-        if let Some(state) = self.health_states.read().get(&alg_type) {
+        if let Some(state) = self.health_states.load().get(&alg_type) {
             state.reset();
             info!("Manual recovery triggered for {:?}", alg_type);
         }

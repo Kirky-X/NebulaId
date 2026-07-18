@@ -21,11 +21,21 @@ use crate::core::config::{Config, SnowflakeAlgorithmConfig};
 use crate::core::types::{AlgorithmType, CoreError, Id, IdBatch, Result};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime};
 use tracing::info;
 
 const DEFAULT_START_TIME: u64 = 1704067200000;
+
+/// 缓存 epoch 起点（SystemTime::UNIX_EPOCH + DEFAULT_START_TIME），避免每次 checked_add
+fn epoch_start() -> SystemTime {
+    static EPOCH_START: OnceLock<SystemTime> = OnceLock::new();
+    *EPOCH_START.get_or_init(|| {
+        SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_millis(DEFAULT_START_TIME))
+            .expect("Invalid timestamp configuration: DEFAULT_START_TIME causes overflow")
+    })
+}
 
 pub struct SnowflakeAlgorithm {
     config: SnowflakeAlgorithmConfig,
@@ -71,12 +81,8 @@ impl SnowflakeAlgorithm {
     }
 
     fn get_timestamp() -> u64 {
-        let start = SystemTime::UNIX_EPOCH
-            .checked_add(Duration::from_millis(DEFAULT_START_TIME))
-            .expect("Invalid timestamp configuration: DEFAULT_START_TIME causes overflow");
-
         let now = SystemTime::now()
-            .duration_since(start)
+            .duration_since(epoch_start())
             .unwrap_or(Duration::ZERO);
 
         now.as_millis() as u64
@@ -132,7 +138,8 @@ impl SnowflakeAlgorithm {
             let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
 
             if seq & sequence_mask == 0 {
-                self.rotation_count.fetch_add(1, Ordering::SeqCst);
+                // rotation_count 仅用于统计回绕次数，无内存序依赖，使用 Relaxed 即可
+                self.rotation_count.fetch_add(1, Ordering::Relaxed);
                 let next_ts = self.wait_for_next_ms(timestamp).await;
                 return self.generate_id_with_timestamp(next_ts, sequence_mask);
             }

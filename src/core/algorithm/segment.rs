@@ -22,6 +22,7 @@ use crate::core::config::{Config, SegmentAlgorithmConfig};
 use crate::core::coordinator::EtcdClusterHealthMonitor;
 use crate::core::database::SegmentRepository;
 use crate::core::types::{AlgorithmType, CoreError, Id, IdBatch, Result};
+use arc_swap::{ArcSwap, ArcSwapOption};
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
@@ -392,7 +393,8 @@ impl DcFailureDetector {
 
     async fn check_recovery(&self) {
         let now = Instant::now();
-        let states = self.dc_states.read().clone();
+        // 直接持读锁迭代，避免 clone 整个 HashMap（仅修改内部 AtomicU8，不影响 HashMap 结构）
+        let states = self.dc_states.read();
         for (_, state) in states.iter() {
             if state.get_status() == DcStatus::Failed {
                 let last_success = *state.last_success.lock();
@@ -478,8 +480,8 @@ impl AtomicSegment {
 }
 
 pub struct DoubleBuffer {
-    current: Arc<Mutex<Arc<AtomicSegment>>>,
-    next: Arc<Mutex<Option<Arc<AtomicSegment>>>>,
+    current: Arc<ArcSwap<AtomicSegment>>,
+    next: Arc<ArcSwapOption<AtomicSegment>>,
     switch_threshold: f64,
     #[allow(dead_code)]
     loader_tx: mpsc::Sender<()>,
@@ -490,8 +492,8 @@ impl DoubleBuffer {
         let (loader_tx, loader_rx) = mpsc::channel(1);
 
         let initial_segment = Arc::new(AtomicSegment::new(0, 0, 0));
-        let current = Arc::new(Mutex::new(initial_segment));
-        let next = Arc::new(Mutex::new(None));
+        let current = Arc::new(ArcSwap::from(initial_segment));
+        let next = Arc::new(ArcSwapOption::empty());
 
         let db = Self {
             current,
@@ -504,41 +506,36 @@ impl DoubleBuffer {
     }
 
     pub fn set_current(&self, segment: Arc<AtomicSegment>) {
-        let mut current_guard = self.current.lock();
-        *current_guard = segment;
+        self.current.store(segment);
     }
 
     pub fn set_next(&self, segment: Arc<AtomicSegment>) {
-        let mut next_guard = self.next.lock();
-        *next_guard = Some(segment);
+        self.next.store(Some(segment));
     }
 
     pub fn get_next(&self) -> Option<Arc<AtomicSegment>> {
-        let next_guard = self.next.lock();
-        next_guard.clone()
+        self.next.load_full()
     }
 
     pub fn swap(&self) -> Option<Arc<AtomicSegment>> {
-        let mut next_guard = self.next.lock();
-        let new_current = next_guard.take();
-
+        let new_current = self.next.swap(None);
         if let Some(ref new_current) = new_current {
-            let mut current_guard = self.current.lock();
-            *current_guard = new_current.clone();
+            self.current.store(new_current.clone());
         }
-
         new_current
     }
 
     pub fn need_switch(&self) -> bool {
-        let current_guard = self.current.lock();
-        let remaining = current_guard.remaining();
-        let total = {
-            let segment = current_guard.inner.lock();
-            segment.max_id.load(Ordering::Relaxed) - segment.start_id.load(Ordering::Relaxed)
-        };
+        let current = self.current.load_full();
+        // 合并两次锁为一次，减少锁开销（原实现 remaining() 和 total 各锁一次）
+        let segment = current.inner.lock();
+        let current_id = segment.current_id.load(Ordering::Relaxed);
+        let max_id = segment.max_id.load(Ordering::Relaxed);
+        let start_id = segment.start_id.load(Ordering::Relaxed);
+        drop(segment);
 
-        drop(current_guard);
+        let remaining = max_id.saturating_sub(current_id);
+        let total = max_id - start_id;
 
         if total == 0 {
             return true;
@@ -548,8 +545,7 @@ impl DoubleBuffer {
     }
 
     pub fn get_current(&self) -> Arc<AtomicSegment> {
-        let current_guard = self.current.lock();
-        current_guard.clone()
+        self.current.load_full()
     }
 }
 
@@ -679,6 +675,14 @@ impl SegmentAlgorithm {
     }
 
     fn get_or_create_buffer(&self, key: &str) -> Arc<DoubleBuffer> {
+        // 快路径：读锁查找已有 buffer（读多写少场景优化，避免每次获取写锁）
+        {
+            let buffers = self.buffers.read();
+            if let Some(buffer) = buffers.get(key) {
+                return buffer.clone();
+            }
+        }
+        // 慢路径：写锁创建新 buffer
         let mut buffers = self.buffers.write();
         buffers
             .entry(key.to_string())
@@ -740,7 +744,8 @@ impl IdAlgorithm for SegmentAlgorithm {
 
             if let Some((start, end)) = current.try_consume(remaining_needed as u64) {
                 let count = (end - start) as usize;
-                ids.reserve(count);
+                // ids.reserve(count) 已冗余：Vec::with_capacity(size) 已预分配，
+                // 且 count <= remaining_needed = size - ids.len()
                 ids.extend((start..end).map(|id| Id::from_u128(id.into())));
                 self.metrics
                     .total_generated

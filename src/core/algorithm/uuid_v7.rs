@@ -79,8 +79,15 @@ impl IdAlgorithm for UuidV7Impl {
         let mut ids = Vec::with_capacity(size);
 
         for _ in 0..size {
-            ids.push(self.generate(_ctx).await?);
+            let uuid = Uuid::now_v7();
+            ids.push(Id::from_uuid_v7(uuid));
         }
+
+        // 批量更新 metrics，避免循环内逐次 fetch_add
+        let count = ids.len() as u64;
+        self.metrics
+            .total_generated
+            .fetch_add(count, Ordering::Relaxed);
 
         Ok(IdBatch::new(ids, AlgorithmType::UuidV7, String::new()))
     }
@@ -148,8 +155,15 @@ impl IdAlgorithm for UuidV4Impl {
         let mut ids = Vec::with_capacity(size);
 
         for _ in 0..size {
-            ids.push(self.generate(_ctx).await?);
+            let uuid = Uuid::new_v4();
+            ids.push(Id::from_uuid_v4(uuid));
         }
+
+        // 批量更新 metrics，避免循环内逐次 fetch_add
+        let count = ids.len() as u64;
+        self.metrics
+            .total_generated
+            .fetch_add(count, Ordering::Relaxed);
 
         Ok(IdBatch::new(ids, AlgorithmType::UuidV4, String::new()))
     }

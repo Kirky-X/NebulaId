@@ -20,10 +20,11 @@ use crate::core::config::Config;
 #[cfg(feature = "etcd")]
 use crate::core::coordinator::EtcdClusterHealthMonitor;
 use crate::core::types::{AlgorithmType, CoreError, Id, IdBatch, Result};
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 #[async_trait]
@@ -63,7 +64,7 @@ impl IdGenerator for AlgorithmRouter {
         _group: &str,
         biz_tag: &str,
     ) -> Result<String> {
-        if let Some(alg) = self.current_algorithm.read().await.get(biz_tag) {
+        if let Some(alg) = self.current_algorithm.load().get(biz_tag) {
             Ok(format!("{}", *alg))
         } else {
             Ok(format!("{}", self.config.algorithm.get_default_algorithm()))
@@ -126,9 +127,9 @@ impl IdGenerator for AlgorithmRouter {
 
 pub struct AlgorithmRouter {
     config: Config,
-    algorithms: Arc<RwLock<HashMap<AlgorithmType, Arc<dyn IdAlgorithm>>>>,
-    fallback_chain: Vec<AlgorithmType>,
-    current_algorithm: Arc<RwLock<HashMap<String, AlgorithmType>>>,
+    algorithms: Arc<ArcSwap<HashMap<AlgorithmType, Arc<dyn IdAlgorithm>>>>,
+    fallback_chain: SmallVec<[AlgorithmType; 8]>,
+    current_algorithm: Arc<ArcSwap<HashMap<String, AlgorithmType>>>,
     degradation_manager: Arc<DegradationManager>,
     cpu_monitor: Option<Arc<crate::core::algorithm::segment::CpuMonitor>>,
     #[cfg(feature = "etcd")]
@@ -142,7 +143,7 @@ unsafe impl Sync for AlgorithmRouter {}
 
 impl AlgorithmRouter {
     pub fn new(config: Config, audit_logger: Option<DynAuditLogger>) -> Self {
-        let mut fallback_chain = Vec::new();
+        let mut fallback_chain: SmallVec<[AlgorithmType; 8]> = SmallVec::new();
 
         match config.algorithm.get_default_algorithm() {
             AlgorithmType::Segment => {
@@ -161,13 +162,13 @@ impl AlgorithmRouter {
         let degradation_manager = Arc::new(DegradationManager::new(None, audit_logger));
 
         degradation_manager.set_primary_algorithm(primary_algorithm);
-        degradation_manager.set_fallback_chain(fallback_chain.clone());
+        degradation_manager.set_fallback_chain(fallback_chain.to_vec());
 
         Self {
             config,
-            algorithms: Arc::new(RwLock::new(HashMap::new())),
+            algorithms: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             fallback_chain,
-            current_algorithm: Arc::new(RwLock::new(HashMap::new())),
+            current_algorithm: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             degradation_manager,
             cpu_monitor: None,
             etcd_health_monitor: None,
@@ -221,10 +222,11 @@ impl AlgorithmRouter {
                         continue;
                     }
                     let alg_arc: Arc<dyn IdAlgorithm> = Arc::from(algo);
-                    self.algorithms
-                        .write()
-                        .await
-                        .insert(alg_type, alg_arc.clone());
+                    self.algorithms.rcu(|old| {
+                        let mut new: HashMap<_, _> = (**old).clone();
+                        new.insert(alg_type, alg_arc.clone());
+                        Arc::new(new)
+                    });
                     self.degradation_manager
                         .register_algorithm(alg_type, alg_arc);
                     info!("Algorithm {:?} initialized successfully", alg_type);
@@ -236,7 +238,7 @@ impl AlgorithmRouter {
             }
         }
 
-        if self.algorithms.read().await.is_empty() {
+        if self.algorithms.load().is_empty() {
             return Err(CoreError::InternalError(
                 "No algorithms available".to_string(),
             ));
@@ -257,17 +259,18 @@ impl AlgorithmRouter {
     }
 
     async fn get_algorithm(&self, ctx: &GenerateContext) -> AlgorithmType {
-        if let Some(alg) = self.current_algorithm.read().await.get(&ctx.biz_tag) {
+        if let Some(alg) = self.current_algorithm.load().get(&ctx.biz_tag) {
             return *alg;
         }
         self.config.algorithm.get_default_algorithm()
     }
 
     pub async fn set_algorithm(&self, biz_tag: String, algorithm: AlgorithmType) {
-        self.current_algorithm
-            .write()
-            .await
-            .insert(biz_tag, algorithm);
+        self.current_algorithm.rcu(|old| {
+            let mut new: HashMap<_, _> = (**old).clone();
+            new.insert(biz_tag.clone(), algorithm);
+            Arc::new(new)
+        });
     }
 
     pub async fn generate_with_algorithm(
@@ -322,10 +325,9 @@ impl AlgorithmRouter {
             effective_algorithm, ctx.biz_tag
         );
 
-        let alg_opt = {
-            let algs = self.algorithms.read().await;
-            algs.get(&effective_algorithm).cloned()
-        };
+        // 一次性加载算法表（无锁），后续查找复用，避免循环中多次加锁
+        let algorithms = self.algorithms.load_full();
+        let alg_opt = algorithms.get(&effective_algorithm).cloned();
 
         if let Some(alg) = alg_opt {
             info!(
@@ -353,11 +355,7 @@ impl AlgorithmRouter {
                         effective_algorithm, self.fallback_chain
                     );
                     for fallback in &self.fallback_chain {
-                        let fallback_alg_opt = {
-                            let algs = self.algorithms.read().await;
-                            algs.get(fallback).cloned()
-                        };
-                        if let Some(fallback_alg) = fallback_alg_opt {
+                        if let Some(fallback_alg) = algorithms.get(fallback).cloned() {
                             match fallback_alg.generate(ctx).await {
                                 Ok(id) => {
                                     self.degradation_manager
@@ -389,11 +387,7 @@ impl AlgorithmRouter {
         );
 
         for fallback in &self.fallback_chain {
-            let fallback_alg_opt = {
-                let algs = self.algorithms.read().await;
-                algs.get(fallback).cloned()
-            };
-            if let Some(fallback_alg) = fallback_alg_opt {
+            if let Some(fallback_alg) = algorithms.get(fallback).cloned() {
                 match fallback_alg.generate(ctx).await {
                     Ok(id) => {
                         self.degradation_manager
@@ -424,10 +418,9 @@ impl AlgorithmRouter {
     ) -> Result<IdBatch> {
         let effective_algorithm = algorithm;
 
-        let alg_opt = {
-            let algs = self.algorithms.read().await;
-            algs.get(&effective_algorithm).cloned()
-        };
+        // 一次性加载算法表（无锁），后续查找复用
+        let algorithms = self.algorithms.load_full();
+        let alg_opt = algorithms.get(&effective_algorithm).cloned();
 
         if let Some(alg) = alg_opt {
             match alg.batch_generate(ctx, size).await {
@@ -443,11 +436,7 @@ impl AlgorithmRouter {
                         .record_generation_result(effective_algorithm, false)
                         .await;
                     for fallback in &self.fallback_chain {
-                        let fallback_alg_opt = {
-                            let algs = self.algorithms.read().await;
-                            algs.get(fallback).cloned()
-                        };
-                        if let Some(fallback_alg) = fallback_alg_opt {
+                        if let Some(fallback_alg) = algorithms.get(fallback).cloned() {
                             match fallback_alg.batch_generate(ctx, size).await {
                                 Ok(batch) => {
                                     self.degradation_manager
@@ -470,11 +459,7 @@ impl AlgorithmRouter {
         }
 
         for fallback in &self.fallback_chain {
-            let fallback_alg_opt = {
-                let algs = self.algorithms.read().await;
-                algs.get(fallback).cloned()
-            };
-            if let Some(fallback_alg) = fallback_alg_opt {
+            if let Some(fallback_alg) = algorithms.get(fallback).cloned() {
                 match fallback_alg.batch_generate(ctx, size).await {
                     Ok(batch) => {
                         self.degradation_manager
@@ -498,12 +483,12 @@ impl AlgorithmRouter {
     }
 
     pub async fn health_check(&self) -> Vec<(AlgorithmType, HealthStatus)> {
-        let algs = self.algorithms.read().await.clone();
+        let algs = self.algorithms.load_full();
         algs.iter().map(|(k, v)| (*k, v.health_check())).collect()
     }
 
     pub async fn metrics(&self) -> Vec<(AlgorithmType, AlgorithmMetricsSnapshot)> {
-        let algs = self.algorithms.read().await.clone();
+        let algs = self.algorithms.load_full();
         algs.iter().map(|(k, v)| (*k, v.metrics())).collect()
     }
 
@@ -516,7 +501,7 @@ impl AlgorithmRouter {
     }
 
     pub async fn shutdown(&self) {
-        let algs = self.algorithms.read().await.clone();
+        let algs = self.algorithms.load_full();
         for (_, alg) in algs.iter() {
             if let Err(e) = alg.shutdown().await {
                 error!(
@@ -596,7 +581,7 @@ mod tests {
             .set_algorithm("order".to_string(), AlgorithmType::Snowflake)
             .await;
 
-        let entry = router.current_algorithm.read().await.get("order").copied();
+        let entry = router.current_algorithm.load().get("order").copied();
         assert!(entry.is_some());
         assert_eq!(entry.unwrap(), AlgorithmType::Snowflake);
     }

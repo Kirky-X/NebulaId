@@ -122,6 +122,7 @@ rustls-pemfile = "2"
 # 基础组件
 arc-swap = "1.6"
 crossbeam = "0.8"
+smallvec = "1"
 bytes = "1"
 crc32fast = "1"
 either = "1"

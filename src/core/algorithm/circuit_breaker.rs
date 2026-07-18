@@ -17,10 +17,9 @@
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
 use tracing::{error, info};
 
 /// 熔断器错误
@@ -84,6 +83,48 @@ impl CircuitBreakerState {
     }
 }
 
+// 状态原子编码
+const STATE_CLOSED: u8 = 0;
+const STATE_OPEN: u8 = 1;
+const STATE_HALF_OPEN: u8 = 2;
+
+fn state_to_u8(s: CircuitBreakerState) -> u8 {
+    match s {
+        CircuitBreakerState::Closed => STATE_CLOSED,
+        CircuitBreakerState::Open => STATE_OPEN,
+        CircuitBreakerState::HalfOpen => STATE_HALF_OPEN,
+    }
+}
+
+fn u8_to_state(v: u8) -> CircuitBreakerState {
+    match v {
+        STATE_OPEN => CircuitBreakerState::Open,
+        STATE_HALF_OPEN => CircuitBreakerState::HalfOpen,
+        _ => CircuitBreakerState::Closed,
+    }
+}
+
+/// 全局起始 Instant，用于将 Instant 转为 u64 nanos 存储
+static START_INSTANT: OnceLock<Instant> = OnceLock::new();
+
+fn start_instant() -> Instant {
+    *START_INSTANT.get_or_init(Instant::now)
+}
+
+/// 将 Instant 转为 nanos（相对全局起点）
+fn instant_to_nanos(i: Instant) -> u64 {
+    i.duration_since(start_instant()).as_nanos() as u64
+}
+
+/// 将 nanos 转为 Instant；0 视为 None
+fn nanos_to_instant(n: u64) -> Option<Instant> {
+    if n == 0 {
+        None
+    } else {
+        Some(start_instant() + Duration::from_nanos(n))
+    }
+}
+
 /// 熔断器配置
 #[derive(Debug, Clone)]
 pub struct CircuitBreakerConfig {
@@ -125,11 +166,11 @@ pub struct CircuitBreakerMetricsSnapshot {
     pub next_attempt_at: Option<u64>,
 }
 
-/// 熔断器实现
+/// 熔断器实现（无锁化：AtomicU8 状态机 + AtomicU64 时间戳）
 #[derive(Debug)]
 pub struct CircuitBreaker {
     config: CircuitBreakerConfig,
-    state: Arc<Mutex<CircuitBreakerState>>,
+    state: Arc<AtomicU8>,
     consecutive_failures: Arc<AtomicU64>,
     consecutive_successes: Arc<AtomicU64>,
     total_requests: Arc<AtomicU64>,
@@ -137,10 +178,11 @@ pub struct CircuitBreaker {
     failed_requests: Arc<AtomicU64>,
     window_requests: Arc<AtomicU64>,
     window_failures: Arc<AtomicU64>,
-    window_start: Arc<Mutex<Instant>>,
-    last_failure_at: Arc<Mutex<Option<Instant>>>,
-    last_success_at: Arc<Mutex<Option<Instant>>>,
-    next_attempt_at: Arc<Mutex<Option<Instant>>>,
+    // 时间戳以 nanos（相对全局起点）存于 AtomicU64；0 表示 None
+    window_start: Arc<AtomicU64>,
+    last_failure_at: Arc<AtomicU64>,
+    last_success_at: Arc<AtomicU64>,
+    next_attempt_at: Arc<AtomicU64>,
 }
 
 impl Clone for CircuitBreaker {
@@ -168,7 +210,7 @@ impl CircuitBreaker {
     pub fn new(config: CircuitBreakerConfig) -> Self {
         Self {
             config,
-            state: Arc::new(Mutex::new(CircuitBreakerState::Closed)),
+            state: Arc::new(AtomicU8::new(STATE_CLOSED)),
             consecutive_failures: Arc::new(AtomicU64::new(0)),
             consecutive_successes: Arc::new(AtomicU64::new(0)),
             total_requests: Arc::new(AtomicU64::new(0)),
@@ -176,10 +218,10 @@ impl CircuitBreaker {
             failed_requests: Arc::new(AtomicU64::new(0)),
             window_requests: Arc::new(AtomicU64::new(0)),
             window_failures: Arc::new(AtomicU64::new(0)),
-            window_start: Arc::new(Mutex::new(Instant::now())),
-            last_failure_at: Arc::new(Mutex::new(None)),
-            last_success_at: Arc::new(Mutex::new(None)),
-            next_attempt_at: Arc::new(Mutex::new(None)),
+            window_start: Arc::new(AtomicU64::new(instant_to_nanos(Instant::now()))),
+            last_failure_at: Arc::new(AtomicU64::new(0)),
+            last_success_at: Arc::new(AtomicU64::new(0)),
+            next_attempt_at: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -207,28 +249,37 @@ impl CircuitBreaker {
         }
     }
 
-    /// 检查是否允许请求
+    /// 检查是否允许请求（无锁）
     async fn should_allow_request(&self) -> bool {
-        let state = self.state.lock().await;
+        let state = self.state.load(Ordering::Acquire);
 
-        match *state {
-            CircuitBreakerState::Closed => true,
-            CircuitBreakerState::Open => {
+        match state {
+            STATE_CLOSED => true,
+            STATE_OPEN => {
                 // 检查是否超时
-                if let Some(next_attempt) = *self.next_attempt_at.lock().await {
-                    if Instant::now() >= next_attempt {
-                        // 转换为半开状态
-                        drop(state);
-                        self.transition_to_half_open().await;
-                        true
-                    } else {
-                        false
-                    }
+                let next_attempt_nanos = self.next_attempt_at.load(Ordering::Acquire);
+                if next_attempt_nanos == 0 {
+                    return false;
+                }
+                let next_attempt = match nanos_to_instant(next_attempt_nanos) {
+                    Some(t) => t,
+                    None => return false,
+                };
+                if Instant::now() >= next_attempt {
+                    // 转换为半开状态（CAS 避免多线程同时转换）
+                    let _ = self.state.compare_exchange(
+                        STATE_OPEN,
+                        STATE_HALF_OPEN,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                    true
                 } else {
                     false
                 }
             }
-            CircuitBreakerState::HalfOpen => true,
+            STATE_HALF_OPEN => true,
+            _ => true,
         }
     }
 
@@ -238,20 +289,30 @@ impl CircuitBreaker {
         self.successful_requests.fetch_add(1, Ordering::Relaxed);
         self.window_requests.fetch_add(1, Ordering::Relaxed);
 
-        let now = Instant::now();
-        *self.last_success_at.lock().await = Some(now);
+        let now_nanos = instant_to_nanos(Instant::now());
+        self.last_success_at.store(now_nanos, Ordering::Release);
 
         let consecutive_successes = self.consecutive_successes.fetch_add(1, Ordering::Relaxed) + 1;
         self.consecutive_failures.store(0, Ordering::Relaxed);
 
-        let guard = self.state.lock().await;
-        let state = (*guard).clone();
-
-        if state == CircuitBreakerState::HalfOpen
-            && consecutive_successes >= self.config.success_threshold
-        {
-            drop(guard);
-            self.transition_to_closed().await;
+        let state = self.state.load(Ordering::Acquire);
+        if state == STATE_HALF_OPEN && consecutive_successes >= self.config.success_threshold {
+            // 转换到 Closed
+            if self
+                .state
+                .compare_exchange(
+                    STATE_HALF_OPEN,
+                    STATE_CLOSED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                self.consecutive_failures.store(0, Ordering::Relaxed);
+                self.consecutive_successes.store(0, Ordering::Relaxed);
+                self.next_attempt_at.store(0, Ordering::Release);
+                info!("Circuit breaker closed, service recovered");
+            }
         }
     }
 
@@ -263,59 +324,57 @@ impl CircuitBreaker {
         self.window_failures.fetch_add(1, Ordering::Relaxed);
 
         let now = Instant::now();
-        *self.last_failure_at.lock().await = Some(now);
+        let now_nanos = instant_to_nanos(now);
+        self.last_failure_at.store(now_nanos, Ordering::Release);
 
         let consecutive_failures = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
         self.consecutive_successes.store(0, Ordering::Relaxed);
 
-        let mut state = self.state.lock().await;
+        // 检查滑动窗口是否过期
+        let window_start_nanos = self.window_start.load(Ordering::Acquire);
+        if let Some(window_start) = nanos_to_instant(window_start_nanos) {
+            if now.duration_since(window_start)
+                > Duration::from_secs(self.config.window_size_seconds)
+            {
+                self.window_requests.store(0, Ordering::Relaxed);
+                self.window_failures.store(0, Ordering::Relaxed);
+                self.window_start.store(now_nanos, Ordering::Release);
+            }
+        }
 
-        // 检查滑动窗口失败率
+        // 计算滑动窗口失败率
         let window_requests = self.window_requests.load(Ordering::Relaxed);
         let window_failures = self.window_failures.load(Ordering::Relaxed);
 
-        // 重置滑动窗口
-        if now.duration_since(*self.window_start.lock().await)
-            > Duration::from_secs(self.config.window_size_seconds)
-        {
-            self.window_requests.store(0, Ordering::Relaxed);
-            self.window_failures.store(0, Ordering::Relaxed);
-            *self.window_start.lock().await = now;
-        }
-
-        // 根据失败次数或失败率转换状态
+        // 根据失败次数或失败率判断是否应打开熔断器
         let should_open = consecutive_failures >= self.config.failure_threshold
             || (window_requests >= self.config.min_requests
                 && (window_failures as f64 / window_requests as f64) > 0.5);
 
-        if should_open && !matches!(*state, CircuitBreakerState::Open) {
-            *state = CircuitBreakerState::Open;
-            let next_attempt = Instant::now() + Duration::from_millis(self.config.timeout_ms);
-            *self.next_attempt_at.lock().await = Some(next_attempt);
-            error!("Circuit breaker opened, next attempt at {:?}", next_attempt);
-        } else if !matches!(*state, CircuitBreakerState::HalfOpen) {
-            *state = CircuitBreakerState::Open;
-            let next_attempt = Instant::now() + Duration::from_millis(self.config.timeout_ms);
-            *self.next_attempt_at.lock().await = Some(next_attempt);
-            error!("Circuit breaker opened, next attempt at {:?}", next_attempt);
+        let current_state = self.state.load(Ordering::Acquire);
+        // 保持原有语义：非 HalfOpen 状态下，无论 should_open 与否都可能转 Open
+        if should_open && current_state != STATE_OPEN {
+            self.transition_to_open();
+        } else if current_state != STATE_HALF_OPEN {
+            self.transition_to_open();
         }
     }
 
-    /// 转换到打开状态
-    async fn transition_to_open(&self) {
-        let mut state = self.state.lock().await;
-        if !matches!(*state, CircuitBreakerState::Open) {
-            *state = CircuitBreakerState::Open;
-            let next_attempt = Instant::now() + Duration::from_millis(self.config.timeout_ms);
-            *self.next_attempt_at.lock().await = Some(next_attempt);
+    /// 转换到打开状态（无锁 CAS）
+    fn transition_to_open(&self) {
+        let next_attempt = Instant::now() + Duration::from_millis(self.config.timeout_ms);
+        let next_attempt_nanos = instant_to_nanos(next_attempt);
+        let prev = self.state.swap(STATE_OPEN, Ordering::AcqRel);
+        self.next_attempt_at
+            .store(next_attempt_nanos, Ordering::Release);
+        if prev != STATE_OPEN {
             error!("Circuit breaker opened, next attempt at {:?}", next_attempt);
         }
     }
 
     async fn transition_to_half_open(&self) {
-        let mut state = self.state.lock().await;
-        if !matches!(*state, CircuitBreakerState::HalfOpen) {
-            *state = CircuitBreakerState::HalfOpen;
+        let prev = self.state.swap(STATE_HALF_OPEN, Ordering::AcqRel);
+        if prev != STATE_HALF_OPEN {
             self.consecutive_successes.store(0, Ordering::Relaxed);
             self.consecutive_failures.store(0, Ordering::Relaxed);
             info!("Circuit breaker transitioned to half-open");
@@ -324,49 +383,38 @@ impl CircuitBreaker {
 
     /// 转换到关闭状态
     async fn transition_to_closed(&self) {
-        let mut state = self.state.lock().await;
-        if !matches!(*state, CircuitBreakerState::Closed) {
-            *state = CircuitBreakerState::Closed;
+        let prev = self.state.swap(STATE_CLOSED, Ordering::AcqRel);
+        if prev != STATE_CLOSED {
             self.consecutive_failures.store(0, Ordering::Relaxed);
             self.consecutive_successes.store(0, Ordering::Relaxed);
-            *self.next_attempt_at.lock().await = None;
+            self.next_attempt_at.store(0, Ordering::Release);
             info!("Circuit breaker closed, service recovered");
         }
     }
 
     /// 手动重置熔断器
     pub async fn reset(&self) {
-        self.transition_to_closed().await;
+        self.state.store(STATE_CLOSED, Ordering::Release);
         self.consecutive_failures.store(0, Ordering::Relaxed);
         self.consecutive_successes.store(0, Ordering::Relaxed);
         self.window_requests.store(0, Ordering::Relaxed);
         self.window_failures.store(0, Ordering::Relaxed);
-        *self.last_failure_at.lock().await = None;
-        *self.last_success_at.lock().await = None;
-        *self.next_attempt_at.lock().await = None;
+        self.last_failure_at.store(0, Ordering::Release);
+        self.last_success_at.store(0, Ordering::Release);
+        self.next_attempt_at.store(0, Ordering::Release);
     }
 
     /// 获取当前状态
     pub async fn state(&self) -> CircuitBreakerState {
-        let guard = self.state.lock().await;
-        guard.clone()
+        u8_to_state(self.state.load(Ordering::Acquire))
     }
 
     /// 获取指标快照
     pub async fn metrics(&self) -> CircuitBreakerMetricsSnapshot {
-        let state_guard = self.state.lock().await;
-        let state = (*state_guard).clone();
-        let next_attempt_guard = self.next_attempt_at.lock().await;
-        let next_attempt = *next_attempt_guard;
-        let last_failure_guard = self.last_failure_at.lock().await;
-        let last_failure = *last_failure_guard;
-        let last_success_guard = self.last_success_at.lock().await;
-        let last_success = *last_success_guard;
-
-        drop(state_guard);
-        drop(next_attempt_guard);
-        drop(last_failure_guard);
-        drop(last_success_guard);
+        let state = u8_to_state(self.state.load(Ordering::Acquire));
+        let last_failure_nanos = self.last_failure_at.load(Ordering::Acquire);
+        let last_success_nanos = self.last_success_at.load(Ordering::Acquire);
+        let next_attempt_nanos = self.next_attempt_at.load(Ordering::Acquire);
 
         CircuitBreakerMetricsSnapshot {
             state,
@@ -375,9 +423,9 @@ impl CircuitBreaker {
             failed_requests: self.failed_requests.load(Ordering::Relaxed),
             consecutive_failures: self.consecutive_failures.load(Ordering::Relaxed),
             consecutive_successes: self.consecutive_successes.load(Ordering::Relaxed),
-            last_failure_at: last_failure.map(|i| i.elapsed().as_secs()),
-            last_success_at: last_success.map(|i| i.elapsed().as_secs()),
-            next_attempt_at: next_attempt.map(|i| i.elapsed().as_secs()),
+            last_failure_at: nanos_to_instant(last_failure_nanos).map(|i| i.elapsed().as_secs()),
+            last_success_at: nanos_to_instant(last_success_nanos).map(|i| i.elapsed().as_secs()),
+            next_attempt_at: nanos_to_instant(next_attempt_nanos).map(|i| i.elapsed().as_secs()),
         }
     }
 
@@ -391,6 +439,15 @@ impl CircuitBreaker {
         } else {
             window_failures as f64 / window_requests as f64
         }
+    }
+}
+
+// 保留 transition_to_open 的 async 版本以兼容潜在调用（如原 transition_to_open async 方法）
+impl CircuitBreaker {
+    /// 异步版本：转换到打开状态
+    #[allow(dead_code)]
+    async fn transition_to_open_async(&self) {
+        self.transition_to_open();
     }
 }
 

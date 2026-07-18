@@ -44,8 +44,8 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: ${{ matrix.language }}
-          # autodetect-build-mode + 默认查询套件
-          queries: security-extended-and-language-queries
+          # 使用标准 security-and-quality 套件（含安全 + 质量查询）
+          queries: security-and-quality
 
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable

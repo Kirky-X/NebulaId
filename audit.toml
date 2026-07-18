@@ -1,0 +1,44 @@
+# cargo-audit configuration
+# Ref: https://github.com/rustsec/rustsec/tree/main/cargo-audit
+#
+# This file documents why specific RustSec advisories are ignored.
+# Each ignore MUST have a `reason` documenting:
+#   1. Why the advisory doesn't apply OR why it can't be fixed
+#   2. Who depends on the crate (transitive chain)
+#   3. When the ignore should be re-evaluated
+
+[advisories]
+# Each entry here is a RustSec advisory ID that cargo-audit will not flag.
+# CRITICAL: review this list on every `cargo update` and quarterly.
+ignore = [
+    # RUSTSEC-2023-0071 — rsa 0.9.10 — Marvin Attack (timing sidechannel, medium)
+    # Root cause: rsa is a transitive dep of sqlx-mysql (sqlx's mysql backend).
+    # nebulaid enables only postgresql/sqlite features of sqlx, never mysql —
+    # sqlx-mysql is in Cargo.lock metadata only, never compiled into the binary
+    # (verified via `cargo tree --all-features --target all -i rsa` → "nothing to print").
+    # Upstream status: "No fixed upgrade is available!" per RustSec.
+    # Re-evaluate: when sqlx releases a version that drops rsa, or when rsa
+    # publishes a fix (watch https://rustsec.org/advisories/RUSTSEC-2023-0071).
+    "RUSTSEC-2023-0071",
+
+    # RUSTSEC-2026-0173 — proc-macro-error2 2.0.1 — unmaintained (warning)
+    # Root cause: transitive dep of dbnexus-macros (dbnexus v0.4.1 → dbnexus-macros
+    # → proc-macro-error2). dbnexus is an external dependency of nebulaid
+    # (used for database operations). Cannot fix without upstream dbnexus release.
+    # Upstream status: proc-macro-error2 marked unmaintained as of 2026-06-07.
+    # Risk: proc-macro crate, runs at compile time only, no runtime exposure.
+    # Re-evaluate: when dbnexus publishes a version dropping proc-macro-error2.
+    "RUSTSEC-2026-0173",
+
+    # RUSTSEC-2025-0134 — rustls-pemfile 2.2.0 — unmaintained (warning)
+    # Root cause: nebulaid directly depends on rustls-pemfile for PEM parsing
+    # in src/server/config/tls.rs (cert/key/CA loading for TLS termination).
+    # Upstream status: marked unmaintained as of 2025-11-28, no maintained
+    # fork or replacement published yet (rustls-pki-tools is not stable).
+    # Risk: PEM parsing is well-bounded input handling; no known exploit.
+    # Re-evaluate: when a maintained replacement is published.
+    "RUSTSEC-2025-0134",
+]
+
+[yanked]
+enabled = false

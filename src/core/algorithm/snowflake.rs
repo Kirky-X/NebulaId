@@ -137,8 +137,9 @@ impl SnowflakeAlgorithm {
         if timestamp == last_ts {
             let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
 
-            if seq & sequence_mask == 0 {
-                // rotation_count 仅用于统计回绕次数，无内存序依赖，使用 Relaxed 即可
+            // 序列号绕回（耗尽）判定：seq > 0 且掩码后归零（说明已绕过一圈回到 0）。
+            // seq=0 是合法起始值（首次 fetch_add 返回旧值 0），不得误判为耗尽。
+            if seq > 0 && seq & sequence_mask == 0 {
                 self.rotation_count.fetch_add(1, Ordering::Relaxed);
                 let next_ts = self.wait_for_next_ms(timestamp).await;
                 return self.generate_id_with_timestamp(next_ts, sequence_mask);
@@ -152,7 +153,10 @@ impl SnowflakeAlgorithm {
         self.sequence.store(0, Ordering::SeqCst);
         self.last_timestamp.store(timestamp, Ordering::SeqCst);
 
-        let id = self.construct_id(timestamp, 0);
+        // 新毫秒的第一个 ID 用 seq=0，但要通过 fetch_add 推进 sequence 到 1，
+        // 否则下次同毫秒调用 fetch_add(1) 会返回 0，导致 ID 重复。
+        let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
+        let id = self.construct_id(timestamp, seq & sequence_mask);
         self.metrics.total_generated.fetch_add(1, Ordering::Relaxed);
         Ok(id)
     }
@@ -163,7 +167,10 @@ impl SnowflakeAlgorithm {
 
         let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
 
-        if seq & sequence_mask == 0 && timestamp == self.last_timestamp.load(Ordering::SeqCst) {
+        // 序列号溢出判定：seq > 0 且掩码后归零（说明已绕过一圈回到 0）。
+        // seq=0 是合法起始值（首次 fetch_add 返回旧值 0），不得误判为溢出。
+        // 注：timestamp == self.last_timestamp 比较冗余（前一行刚 store），已移除。
+        if seq > 0 && seq & sequence_mask == 0 {
             self.metrics
                 .sequence_overflows
                 .fetch_add(1, Ordering::Relaxed);
@@ -619,5 +626,31 @@ mod tests {
         let uuid = id.to_uuid_v7();
 
         assert_eq!(uuid.get_version(), Some(uuid::Version::Random));
+    }
+
+    /// R-algorithm-001: generate_id_with_timestamp 在 seq=0（首次调用）时必须成功，
+    /// 不得误判为 SequenceOverflow。
+    #[test]
+    fn test_generate_id_with_timestamp_first_seq_succeeds() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        let sequence_mask = algo.config.sequence_mask();
+        let result = algo.generate_id_with_timestamp(1000, sequence_mask);
+        assert!(
+            result.is_ok(),
+            "first call with seq=0 should succeed, got: {:?}",
+            result.err()
+        );
+        let id = result.unwrap();
+        assert!(id.as_u128() > 0, "generated ID must be non-zero");
+    }
+
+    /// R-algorithm-001: 同一毫秒内连续两次 generate_id 调用都应成功（验证 line 140 bug 修复）。
+    #[tokio::test]
+    async fn test_generate_id_same_ms_twice_succeeds() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        let id1 = algo.generate_id().await.expect("first call should succeed");
+        // 不 sleep，确保同一毫秒内第二次调用
+        let id2 = algo.generate_id().await.expect("second call in same ms should succeed");
+        assert_ne!(id1.as_u128(), id2.as_u128(), "IDs must be unique");
     }
 }

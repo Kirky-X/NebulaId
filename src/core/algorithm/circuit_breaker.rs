@@ -352,10 +352,11 @@ impl CircuitBreaker {
                 && (window_failures as f64 / window_requests as f64) > 0.5);
 
         let current_state = self.state.load(Ordering::Acquire);
-        // 保持原有语义：非 HalfOpen 状态下，无论 should_open 与否都可能转 Open
-        if should_open && current_state != STATE_OPEN {
-            self.transition_to_open();
-        } else if current_state != STATE_HALF_OPEN {
+        // 保持原有语义：非 HalfOpen 状态下，无论 should_open 与否都可能转 Open。
+        // 合并 if_same_then_else 双分支：if (should_open && state != OPEN) || (!should_open && state != HALF_OPEN)
+        // 等价于 should_open || state != HALF_OPEN（6 个 case 全部验证等价）。
+        let should_transition = should_open || current_state != STATE_HALF_OPEN;
+        if should_transition {
             self.transition_to_open();
         }
     }
@@ -561,5 +562,44 @@ mod tests {
         // 再次成功应该关闭熔断器
         let _: Result<(), String> = breaker.execute(async { Ok(()) }).await;
         assert_eq!(breaker.state().await, CircuitBreakerState::Closed);
+    }
+
+    /// R-algorithm-002: on_failure 状态转换矩阵回归测试。
+    /// 钉住合并 if-else 双分支前的行为，防止合并条件时引入 bug。
+    /// 关键 case：CLOSED 状态下 should_open=false 仍转 OPEN（else if 分支语义）。
+    #[tokio::test]
+    async fn test_on_failure_transition_matrix_closed_no_should_open() {
+        // failure_threshold=100, window_requests 不会达到 min_requests（默认 10）
+        // → should_open=false，但 CLOSED 状态下仍转 OPEN（合并条件：false || true = true）
+        let config = CircuitBreakerConfig {
+            failure_threshold: 100,
+            min_requests: 100,
+            ..Default::default()
+        };
+        let breaker = CircuitBreaker::new(config);
+        assert_eq!(breaker.state().await, CircuitBreakerState::Closed);
+        breaker.on_failure().await;
+        assert_eq!(
+            breaker.state().await,
+            CircuitBreakerState::Open,
+            "CLOSED + should_open=false must still transition to OPEN"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_on_failure_transition_matrix_closed_with_should_open() {
+        // failure_threshold=1 → 1 次失败即 should_open=true
+        let config = CircuitBreakerConfig {
+            failure_threshold: 1,
+            ..Default::default()
+        };
+        let breaker = CircuitBreaker::new(config);
+        assert_eq!(breaker.state().await, CircuitBreakerState::Closed);
+        breaker.on_failure().await;
+        assert_eq!(
+            breaker.state().await,
+            CircuitBreakerState::Open,
+            "CLOSED + should_open=true must transition to OPEN"
+        );
     }
 }

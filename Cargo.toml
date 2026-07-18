@@ -67,7 +67,7 @@ hyper = { version = "1.8", features = ["full"] }
 
 # OpenAPI 文档
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
-utoipa-swagger-ui = { version = "8", features = ["axum"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 # gRPC / Protobuf
 tonic = { version = "0.14", features = ["tls-webpki-roots"] }

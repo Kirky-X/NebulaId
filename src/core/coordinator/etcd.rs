@@ -38,6 +38,152 @@ use super::{
 };
 use crate::core::config::EtcdConfig;
 
+/// etcd 客户端操作抽象 trait。
+///
+/// 解耦业务逻辑与 `etcd_client::Client`，便于单元测试 mock。所有方法接收 `&self`
+/// （生产实现通过 `EtcdClientWrapper` 的内部 Mutex 提供 interior mutability），
+/// 因此可用 `Arc<dyn EtcdClientOps>` 共享与注入。
+#[async_trait]
+pub trait EtcdClientOps: Send + Sync {
+    /// 获取 key 对应的 value。返回 `None` 表示 key 不存在。
+    async fn kv_get(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, EtcdError>;
+
+    /// 删除 key。
+    async fn kv_delete(&self, key: &str) -> std::result::Result<(), EtcdError>;
+
+    /// 授予 TTL（秒）的 lease，返回 lease_id。
+    async fn lease_grant(&self, ttl: i64) -> std::result::Result<i64, EtcdError>;
+
+    /// 撤销 lease。
+    async fn lease_revoke(&self, lease_id: i64) -> std::result::Result<(), EtcdError>;
+
+    /// 原子 CAS：当 key 的 `create_revision == 0`（不存在）时写入 value 并关联 lease_id。
+    /// 返回 `true` 表示成功，`false` 表示 key 已存在。
+    async fn txn_check_create_rev_and_put(
+        &self,
+        key: &str,
+        value: Vec<u8>,
+        lease_id: i64,
+    ) -> std::result::Result<bool, EtcdError>;
+
+    /// 健康检查 ping：执行一个轻量级 etcd 操作验证连通性。
+    async fn ping(&self) -> std::result::Result<(), EtcdError>;
+}
+
+/// etcd 操作错误类型。
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum EtcdError {
+    #[error("etcd network error: {0}")]
+    Network(String),
+
+    #[error("etcd key not found: {0}")]
+    KeyNotFound(String),
+
+    #[error("etcd lease invalid: {0}")]
+    LeaseInvalid(String),
+
+    #[error("etcd internal error: {0}")]
+    Internal(String),
+}
+
+/// 生产环境 etcd 客户端封装。
+///
+/// `etcd_client::Client` 的所有方法接收 `&mut self`，无法直接满足 `EtcdClientOps`
+/// 的 `&self` 契约。`EtcdClientWrapper` 用 `tokio::sync::Mutex` 提供 interior
+/// mutability，使生产客户端可通过 `Arc<dyn EtcdClientOps>` 注入业务结构。
+pub struct EtcdClientWrapper {
+    inner: tokio::sync::Mutex<etcd_client::Client>,
+}
+
+impl EtcdClientWrapper {
+    /// 连接 etcd 集群并创建客户端封装。
+    pub async fn new(endpoints: Vec<String>) -> std::result::Result<Self, EtcdError> {
+        let client = etcd_client::Client::connect(endpoints, None)
+            .await
+            .map_err(|e| EtcdError::Network(e.to_string()))?;
+        Ok(Self {
+            inner: tokio::sync::Mutex::new(client),
+        })
+    }
+}
+
+#[async_trait]
+impl EtcdClientOps for EtcdClientWrapper {
+    async fn kv_get(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, EtcdError> {
+        let mut client = self.inner.lock().await;
+        let resp = client
+            .get(key, None)
+            .await
+            .map_err(|e| EtcdError::Network(e.to_string()))?;
+        if resp.kvs().is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(resp.kvs()[0].value().to_vec()))
+        }
+    }
+
+    async fn kv_delete(&self, key: &str) -> std::result::Result<(), EtcdError> {
+        let mut client = self.inner.lock().await;
+        client
+            .delete(key, None)
+            .await
+            .map_err(|e| EtcdError::Network(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn lease_grant(&self, ttl: i64) -> std::result::Result<i64, EtcdError> {
+        let mut client = self.inner.lock().await;
+        let resp = client
+            .lease_grant(ttl, None)
+            .await
+            .map_err(|e| EtcdError::LeaseInvalid(e.to_string()))?;
+        Ok(resp.id())
+    }
+
+    async fn lease_revoke(&self, lease_id: i64) -> std::result::Result<(), EtcdError> {
+        let mut client = self.inner.lock().await;
+        client
+            .lease_revoke(lease_id)
+            .await
+            .map_err(|e| EtcdError::LeaseInvalid(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn txn_check_create_rev_and_put(
+        &self,
+        key: &str,
+        value: Vec<u8>,
+        lease_id: i64,
+    ) -> std::result::Result<bool, EtcdError> {
+        use etcd_client::{Compare, CompareOp, PutOptions, Txn, TxnOp};
+
+        let txn = Txn::new()
+            .when(vec![Compare::create_revision(key, CompareOp::Equal, 0)])
+            .and_then(vec![TxnOp::put(
+                key,
+                value,
+                Some(PutOptions::new().with_lease(lease_id)),
+            )])
+            .or_else(vec![TxnOp::get(key, None)]);
+
+        let mut client = self.inner.lock().await;
+        let resp = client
+            .txn(txn)
+            .await
+            .map_err(|e| EtcdError::Network(e.to_string()))?;
+        Ok(resp.succeeded())
+    }
+
+    async fn ping(&self) -> std::result::Result<(), EtcdError> {
+        let mut client = self.inner.lock().await;
+        client
+            .get("", None)
+            .await
+            .map_err(|e| EtcdError::Network(e.to_string()))?;
+        Ok(())
+    }
+}
+
 /// etcd 集群健康监控器。
 pub struct EtcdClusterHealthMonitor {
     config: EtcdConfig,
@@ -48,6 +194,9 @@ pub struct EtcdClusterHealthMonitor {
     local_cache: Arc<RwLock<HashMap<String, LocalCacheEntry>>>,
     cache_file_path: String,
     is_using_cache: AtomicBool,
+    /// 可选注入的 etcd 客户端：`Some` 时 `check_etcd_health` 走可 mock 路径，
+    /// `None` 时每次健康检查新建 `etcd_client::Client`（生产默认）。
+    client: Option<Arc<dyn EtcdClientOps>>,
 }
 
 impl EtcdClusterHealthMonitor {
@@ -61,6 +210,26 @@ impl EtcdClusterHealthMonitor {
             local_cache: Arc::new(RwLock::new(HashMap::new())),
             cache_file_path,
             is_using_cache: AtomicBool::new(false),
+            client: None,
+        }
+    }
+
+    /// 用注入的 etcd 客户端构造监控器，使 `check_etcd_health` 走可测试路径。
+    pub fn new_with_client(
+        config: EtcdConfig,
+        cache_file_path: String,
+        client: Arc<dyn EtcdClientOps>,
+    ) -> Self {
+        Self {
+            config,
+            status: AtomicU8::new(EtcdClusterStatus::Healthy as u8),
+            last_success: Arc::new(tokio::sync::Mutex::new(Instant::now())),
+            failure_count: AtomicU64::new(0),
+            consecutive_failures: AtomicU64::new(0),
+            local_cache: Arc::new(RwLock::new(HashMap::new())),
+            cache_file_path,
+            is_using_cache: AtomicBool::new(false),
+            client: Some(client),
         }
     }
 
@@ -191,6 +360,32 @@ impl EtcdClusterHealthMonitor {
     }
 
     async fn check_etcd_health(&self) {
+        // 注入路径：用 `EtcdClientOps::ping` 验证连通性，可被 mock。
+        // 与生产路径对齐：用 `connect_timeout_ms` 包裹 ping，避免健康检查挂死。
+        if let Some(client) = &self.client {
+            let timeout = Duration::from_millis(self.config.connect_timeout_ms);
+            let ping_result = tokio::time::timeout(timeout, client.ping()).await;
+            match ping_result {
+                Ok(Ok(())) => {
+                    self.record_success().await;
+                    debug!("Etcd cluster health check passed (via injected client)");
+                }
+                Ok(Err(e)) => {
+                    warn!("Etcd cluster health check failed: {}", e);
+                    self.record_failure();
+                }
+                Err(_) => {
+                    warn!(
+                        "Etcd cluster health check timed out after {}ms (via injected client)",
+                        self.config.connect_timeout_ms
+                    );
+                    self.record_failure();
+                }
+            }
+            return;
+        }
+
+        // 生产默认路径：每次检查新建一个临时 client。
         use etcd_client::Client;
 
         if self.config.endpoints.is_empty() {
@@ -247,13 +442,14 @@ impl Clone for EtcdClusterHealthMonitor {
             local_cache: self.local_cache.clone(),
             cache_file_path: self.cache_file_path.clone(),
             is_using_cache: AtomicBool::new(self.is_using_cache.load(Ordering::Relaxed)),
+            client: self.client.clone(),
         }
     }
 }
 
 /// EtcdWorkerAllocator - 使用 etcd 的 Worker ID 分配器。
 pub struct EtcdWorkerAllocator {
-    client: Arc<tokio::sync::Mutex<etcd_client::Client>>,
+    client: Arc<dyn EtcdClientOps>,
     datacenter_id: u8,
     allocated_id: AtomicU16,
     lease_id: AtomicI64,
@@ -278,23 +474,15 @@ impl EtcdWorkerAllocator {
     const MAX_WORKER_ID: u16 = 255;
     const WORKER_PATH_PREFIX: &'static str = "/idgen/workers";
 
+    /// 用注入的 etcd 客户端构造分配器。调用方负责创建 `EtcdClientOps` 实例
+    /// （生产环境用 `EtcdClientWrapper`，测试用 `MockEtcdClientOps`）。
     pub async fn new(
-        endpoints: Vec<String>,
+        client: Arc<dyn EtcdClientOps>,
         datacenter_id: u8,
         config: EtcdConfig,
     ) -> std::result::Result<Self, WorkerAllocatorError> {
-        use etcd_client::{Client, ConnectOptions};
-
-        let options = ConnectOptions::new()
-            .with_connect_timeout(std::time::Duration::from_millis(config.connect_timeout_ms))
-            .with_timeout(std::time::Duration::from_millis(config.watch_timeout_ms));
-
-        let client = Client::connect(endpoints, Some(options))
-            .await
-            .map_err(|e| WorkerAllocatorError::ConnectionFailed(e.to_string()))?;
-
         let allocator = Self {
-            client: Arc::new(tokio::sync::Mutex::new(client)),
+            client,
             datacenter_id,
             allocated_id: AtomicU16::new(0),
             lease_id: AtomicI64::new(0),
@@ -316,15 +504,12 @@ impl EtcdWorkerAllocator {
     }
 
     async fn grant_lease(&self) -> std::result::Result<i64, WorkerAllocatorError> {
-        let lease = self
+        let lease_id = self
             .client
-            .lock()
-            .await
-            .lease_grant(30, None)
+            .lease_grant(30)
             .await
             .map_err(|e| WorkerAllocatorError::LeaseRenewalFailed(e.to_string()))?;
 
-        let lease_id = lease.id();
         self.lease_id.store(lease_id, Ordering::SeqCst);
         info!("Lease granted: {}", lease_id);
         Ok(lease_id)
@@ -343,24 +528,24 @@ impl EtcdWorkerAllocator {
             chrono::Utc::now().timestamp()
         );
 
-        let get_result = {
-            let mut client = self.client.lock().await;
-            client
-                .get(path.clone(), None)
-                .await
-                .map_err(|e| WorkerAllocatorError::EtcdError(e.to_string()))?
-        };
-
-        if get_result.kvs().is_empty() {
-            let put_options = Some(etcd_client::PutOptions::new().with_lease(lease_id));
-            let mut client = self.client.lock().await;
-            match client.put(path, value, put_options).await {
-                Ok(_) => return Ok(true),
-                Err(e) => return Err(WorkerAllocatorError::EtcdError(e.to_string())),
+        // 预检查：key 已存在则跳过。kv_get 错误容错（继续尝试下一个 id）。
+        match self.client.kv_get(&path).await {
+            Ok(Some(_)) => return Ok(false),
+            Ok(None) => {}
+            Err(e) => {
+                warn!("kv_get failed for {}: {}, trying next id", path, e);
+                return Ok(false);
             }
         }
 
-        Ok(false)
+        // 原子 CAS：仅当 key 不存在（create_revision == 0）时写入。
+        let succeeded = self
+            .client
+            .txn_check_create_rev_and_put(&path, value.into_bytes(), lease_id)
+            .await
+            .map_err(|e| WorkerAllocatorError::EtcdError(e.to_string()))?;
+
+        Ok(succeeded)
     }
 
     async fn do_allocate(&self) -> std::result::Result<u16, WorkerAllocatorError> {
@@ -393,8 +578,7 @@ impl WorkerIdAllocator for EtcdWorkerAllocator {
 
     async fn release(&self, worker_id: u16) -> std::result::Result<(), WorkerAllocatorError> {
         let path = self.worker_path(worker_id);
-        let mut client = self.client.lock().await;
-        if let Err(e) = client.delete(path, None).await {
+        if let Err(e) = self.client.kv_delete(&path).await {
             error!("Failed to release worker_id {}: {}", worker_id, e);
             return Err(WorkerAllocatorError::EtcdError(e.to_string()));
         }
@@ -421,45 +605,33 @@ impl WorkerIdAllocator for EtcdWorkerAllocator {
 /// Etcd 分布式锁实现。
 /// 使用 etcd 的 lease 机制实现带 TTL 的分布式锁。
 pub struct EtcdDistributedLock {
-    client: Arc<tokio::sync::Mutex<etcd_client::Client>>,
+    client: Arc<dyn EtcdClientOps>,
     lock_path_prefix: String,
 }
 
 impl EtcdDistributedLock {
-    /// 创建新的 Etcd 分布式锁。
+    /// 用注入的 etcd 客户端创建分布式锁。调用方负责创建 `EtcdClientOps` 实例。
     ///
     /// # Arguments
-    /// * `endpoints` - etcd 集群端点列表
+    /// * `client` - etcd 客户端抽象
     /// * `lock_path_prefix` - 锁键前缀，例如 "/nebula/locks/"
-    ///
-    /// # Returns
-    /// 返回锁实例或连接错误
     pub async fn new(
-        endpoints: Vec<String>,
+        client: Arc<dyn EtcdClientOps>,
         lock_path_prefix: String,
     ) -> std::result::Result<Self, LockError> {
-        use etcd_client::Client;
-
-        let client = Client::connect(endpoints, None)
-            .await
-            .map_err(|e| LockError::ConnectionFailed(e.to_string()))?;
-
         info!(
             "EtcdDistributedLock initialized with prefix: {}",
             lock_path_prefix
         );
 
         Ok(Self {
-            client: Arc::new(tokio::sync::Mutex::new(client)),
+            client,
             lock_path_prefix,
         })
     }
 
-    /// 使用现有 etcd 客户端创建分布式锁。
-    pub fn with_client(
-        client: Arc<tokio::sync::Mutex<etcd_client::Client>>,
-        lock_path_prefix: String,
-    ) -> Self {
+    /// 使用现有 `EtcdClientOps` 客户端创建分布式锁。
+    pub fn with_client(client: Arc<dyn EtcdClientOps>, lock_path_prefix: String) -> Self {
         Self {
             client,
             lock_path_prefix,
@@ -471,56 +643,37 @@ impl EtcdDistributedLock {
         format!("{}{}", self.lock_path_prefix, key)
     }
 
-    /// 尝试获取锁（内部实现）。
-    ///
-    /// 使用 etcd 事务实现原子性的"检查-设置"操作。
+    /// 尝试获取锁（内部实现）：授予 lease + 原子 CAS 写入。
     async fn try_acquire_lock(
         &self,
         key: &str,
         ttl_seconds: i64,
     ) -> std::result::Result<Option<i64>, LockError> {
-        use etcd_client::Txn;
-
         let lock_path = self.lock_path(key);
 
-        let lease = self
+        let lease_id = self
             .client
-            .lock()
-            .await
-            .lease_grant(ttl_seconds, None)
+            .lease_grant(ttl_seconds)
             .await
             .map_err(|e| LockError::EtcdError(e.to_string()))?;
 
-        let lease_id = lease.id();
         let lock_value = format!(
             "holder_pid={},ts={}",
             std::process::id(),
             chrono::Utc::now().timestamp()
         );
 
-        let txn = Txn::new()
-            .when(vec![etcd_client::Compare::create_revision(
-                lock_path.clone(),
-                etcd_client::CompareOp::Equal,
-                0,
-            )])
-            .and_then(vec![etcd_client::TxnOp::put(
-                lock_path.clone(),
-                lock_value,
-                Some(etcd_client::PutOptions::new().with_lease(lease_id)),
-            )])
-            .or_else(vec![etcd_client::TxnOp::get(lock_path.clone(), None)]);
-
-        let mut client = self.client.lock().await;
-        let response = client
-            .txn(txn)
+        let succeeded = self
+            .client
+            .txn_check_create_rev_and_put(&lock_path, lock_value.into_bytes(), lease_id)
             .await
             .map_err(|e| LockError::EtcdError(e.to_string()))?;
 
-        if response.succeeded() {
+        if succeeded {
             Ok(Some(lease_id))
         } else {
-            let _ = client.lease_revoke(lease_id).await;
+            // CAS 失败（key 已存在），撤销刚才授予的 lease 避免泄漏。
+            let _ = self.client.lease_revoke(lease_id).await;
             Ok(None)
         }
     }
@@ -589,7 +742,9 @@ impl DistributedLock for EtcdDistributedLock {
 }
 
 /// Etcd 锁守卫实现。
-/// 当守卫被 drop 时，自动释放锁（撤销 lease）。
+///
+/// 注意：本守卫**未实现 `Drop`**，不会在 drop 时自动释放锁。调用方必须显式调用
+/// `release()` 撤销 lease；若忘记调用，锁将在 lease TTL 到期后由 etcd 自动回收。
 pub struct EtcdLockGuard {
     lock: EtcdDistributedLock,
     key: String,
@@ -600,9 +755,8 @@ pub struct EtcdLockGuard {
 #[async_trait]
 impl LockGuard for EtcdLockGuard {
     async fn release(&self) -> std::result::Result<(), LockError> {
-        let mut client = self.lock.client.lock().await;
-
-        client
+        self.lock
+            .client
             .lease_revoke(self.lease_id)
             .await
             .map_err(|e| LockError::ReleaseFailed {
@@ -627,6 +781,24 @@ mod tests {
     use super::*;
     use crate::core::config::EtcdConfig;
     use tempfile::NamedTempFile;
+
+    mockall::mock! {
+        pub EtcdClientOps {}
+        #[async_trait::async_trait]
+        impl crate::core::coordinator::EtcdClientOps for EtcdClientOps {
+            async fn kv_get(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, crate::core::coordinator::EtcdError>;
+            async fn kv_delete(&self, key: &str) -> std::result::Result<(), crate::core::coordinator::EtcdError>;
+            async fn lease_grant(&self, ttl: i64) -> std::result::Result<i64, crate::core::coordinator::EtcdError>;
+            async fn lease_revoke(&self, lease_id: i64) -> std::result::Result<(), crate::core::coordinator::EtcdError>;
+            async fn txn_check_create_rev_and_put(&self, key: &str, value: Vec<u8>, lease_id: i64) -> std::result::Result<bool, crate::core::coordinator::EtcdError>;
+            async fn ping(&self) -> std::result::Result<(), crate::core::coordinator::EtcdError>;
+        }
+    }
+
+    /// 把 mock 封装为 `Arc<dyn EtcdClientOps>`，方便各测试复用。
+    fn mock_into_client(mock: MockEtcdClientOps) -> Arc<dyn EtcdClientOps> {
+        Arc::new(mock)
+    }
 
     #[tokio::test]
     async fn test_etcd_cluster_health_monitor() {
@@ -694,5 +866,526 @@ mod tests {
         assert!(entry2.is_some());
         assert_eq!(entry1.unwrap().value, "value1");
         assert_eq!(entry2.unwrap().value, "value2");
+    }
+
+    // ===== EtcdWorkerAllocator tests (10) =====
+
+    #[tokio::test]
+    async fn test_allocator_new_succeeds() {
+        let client = mock_into_client(MockEtcdClientOps::new());
+        let allocator = EtcdWorkerAllocator::new(client, 1, EtcdConfig::default()).await;
+
+        assert!(allocator.is_ok());
+        let allocator = allocator.unwrap();
+        // allocated_id 默认 0 → None；lease_id 默认 0；health_status 默认 0 → false
+        assert_eq!(allocator.get_allocated_id(), None);
+        assert!(!allocator.is_healthy());
+    }
+
+    #[tokio::test]
+    async fn test_allocator_allocate_succeeds() {
+        let mut mock = MockEtcdClientOps::new();
+        // worker_id=0 的 key 已存在 → 跳过；其他 id 的 key 不存在 → 进入 CAS
+        mock.expect_kv_get().returning(|key| {
+            if key.ends_with("/0") {
+                Ok(Some(b"taken".to_vec()))
+            } else {
+                Ok(None)
+            }
+        });
+        mock.expect_lease_grant().returning(|_| Ok(123));
+        mock.expect_txn_check_create_rev_and_put()
+            .returning(|_, _, _| Ok(true));
+
+        let allocator = EtcdWorkerAllocator::new(mock_into_client(mock), 1, EtcdConfig::default())
+            .await
+            .unwrap();
+
+        let result = allocator.allocate().await;
+        assert!(result.is_ok());
+        let worker_id = result.unwrap();
+        assert!(
+            worker_id >= 1,
+            "worker_id 应 >= 1 (id 0 被占用应跳过), 实际: {}",
+            worker_id
+        );
+        assert_eq!(allocator.get_allocated_id(), Some(worker_id));
+    }
+
+    #[tokio::test]
+    async fn test_allocator_allocate_no_available_id() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_kv_get().returning(|_| Ok(None)); // 所有 key 都不存在
+        mock.expect_lease_grant().returning(|_| Ok(123));
+        mock.expect_txn_check_create_rev_and_put()
+            .returning(|_, _, _| Ok(false)); // CAS 全部失败（key 已被抢占）
+
+        let allocator = EtcdWorkerAllocator::new(mock_into_client(mock), 1, EtcdConfig::default())
+            .await
+            .unwrap();
+
+        let result = allocator.allocate().await;
+        assert!(
+            matches!(result, Err(WorkerAllocatorError::NoAvailableId)),
+            "应返回 NoAvailableId, 实际: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_allocator_allocate_lease_grant_fails() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_lease_grant()
+            .returning(|_| Err(EtcdError::LeaseInvalid("grant failed".into())));
+
+        let allocator = EtcdWorkerAllocator::new(mock_into_client(mock), 1, EtcdConfig::default())
+            .await
+            .unwrap();
+
+        let result = allocator.allocate().await;
+        assert!(
+            matches!(result, Err(WorkerAllocatorError::LeaseRenewalFailed(_))),
+            "应返回 LeaseRenewalFailed, 实际: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_allocator_allocate_kv_get_network_error_continues() {
+        let mut mock = MockEtcdClientOps::new();
+        let mut seq = mockall::Sequence::new();
+        // 第一次 kv_get (worker_id=0): 网络错误 → 容错跳过
+        mock.expect_kv_get()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|_| Err(EtcdError::Network("net".into())));
+        // 后续 kv_get: Ok(None)
+        mock.expect_kv_get().returning(|_| Ok(None));
+        mock.expect_lease_grant().returning(|_| Ok(123));
+        mock.expect_txn_check_create_rev_and_put()
+            .returning(|_, _, _| Ok(true));
+
+        let allocator = EtcdWorkerAllocator::new(mock_into_client(mock), 1, EtcdConfig::default())
+            .await
+            .unwrap();
+
+        let result = allocator.allocate().await;
+        assert!(result.is_ok());
+        let worker_id = result.unwrap();
+        assert!(
+            worker_id >= 1,
+            "kv_get 错误后应跳过 worker_id 0, 实际分配: {}",
+            worker_id
+        );
+    }
+
+    #[tokio::test]
+    async fn test_allocator_release_succeeds() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_kv_get().returning(|key| {
+            if key.ends_with("/0") {
+                Ok(Some(b"taken".to_vec()))
+            } else {
+                Ok(None)
+            }
+        });
+        mock.expect_lease_grant().returning(|_| Ok(123));
+        mock.expect_txn_check_create_rev_and_put()
+            .returning(|_, _, _| Ok(true));
+        mock.expect_kv_delete().returning(|_| Ok(()));
+
+        let allocator = EtcdWorkerAllocator::new(mock_into_client(mock), 1, EtcdConfig::default())
+            .await
+            .unwrap();
+
+        let worker_id = allocator.allocate().await.unwrap();
+        assert!(worker_id >= 1);
+        assert_eq!(allocator.get_allocated_id(), Some(worker_id));
+
+        let release_result = allocator.release(worker_id).await;
+        assert!(release_result.is_ok());
+        assert_eq!(
+            allocator.get_allocated_id(),
+            None,
+            "release 后 allocated_id 应重置为 0 → None"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_allocator_release_delete_fails() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_kv_get().returning(|key| {
+            if key.ends_with("/0") {
+                Ok(Some(b"taken".to_vec()))
+            } else {
+                Ok(None)
+            }
+        });
+        mock.expect_lease_grant().returning(|_| Ok(123));
+        mock.expect_txn_check_create_rev_and_put()
+            .returning(|_, _, _| Ok(true));
+        mock.expect_kv_delete()
+            .returning(|_| Err(EtcdError::Network("delete failed".into())));
+
+        let allocator = EtcdWorkerAllocator::new(mock_into_client(mock), 1, EtcdConfig::default())
+            .await
+            .unwrap();
+
+        let worker_id = allocator.allocate().await.unwrap();
+        let release_result = allocator.release(worker_id).await;
+        assert!(
+            matches!(release_result, Err(WorkerAllocatorError::EtcdError(_))),
+            "应返回 EtcdError, 实际: {:?}",
+            release_result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_allocator_get_allocated_id_none() {
+        let client = mock_into_client(MockEtcdClientOps::new());
+        let allocator = EtcdWorkerAllocator::new(client, 1, EtcdConfig::default())
+            .await
+            .unwrap();
+
+        assert_eq!(allocator.get_allocated_id(), None);
+    }
+
+    #[tokio::test]
+    async fn test_allocator_get_allocated_id_some() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_kv_get().returning(|key| {
+            if key.ends_with("/0") {
+                Ok(Some(b"taken".to_vec()))
+            } else {
+                Ok(None)
+            }
+        });
+        mock.expect_lease_grant().returning(|_| Ok(123));
+        mock.expect_txn_check_create_rev_and_put()
+            .returning(|_, _, _| Ok(true));
+
+        let allocator = EtcdWorkerAllocator::new(mock_into_client(mock), 1, EtcdConfig::default())
+            .await
+            .unwrap();
+
+        let worker_id = allocator.allocate().await.unwrap();
+        assert!(worker_id >= 1);
+        assert_eq!(allocator.get_allocated_id(), Some(worker_id));
+    }
+
+    #[tokio::test]
+    async fn test_allocator_is_healthy_default_false() {
+        let client = mock_into_client(MockEtcdClientOps::new());
+        let allocator = EtcdWorkerAllocator::new(client, 1, EtcdConfig::default())
+            .await
+            .unwrap();
+
+        assert!(!allocator.is_healthy(), "默认 health_status=0 应为 false");
+    }
+
+    // ===== EtcdDistributedLock tests (8) =====
+
+    #[tokio::test]
+    async fn test_lock_new_succeeds() {
+        let client = mock_into_client(MockEtcdClientOps::new());
+        let lock = EtcdDistributedLock::new(client, "/locks/".to_string()).await;
+
+        assert!(lock.is_ok());
+        let lock = lock.unwrap();
+        assert!(lock.is_healthy(), "is_healthy 应始终返回 true");
+    }
+
+    #[tokio::test]
+    async fn test_lock_acquire_succeeds_first_attempt() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_lease_grant().returning(|_| Ok(456));
+        mock.expect_txn_check_create_rev_and_put()
+            .returning(|_, _, _| Ok(true));
+
+        let lock = EtcdDistributedLock::new(mock_into_client(mock), "/locks/".to_string())
+            .await
+            .unwrap();
+
+        let result = lock.acquire("key1", 5).await;
+        assert!(result.is_ok());
+        // guard 持有但不 release（无 lease_revoke 期望）
+        let _guard = result.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_lock_acquire_retries_on_conflict() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_lease_grant().times(2).returning(|_| Ok(456));
+
+        let mut seq = mockall::Sequence::new();
+        mock.expect_txn_check_create_rev_and_put()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|_, _, _| Ok(false)); // 第一次冲突
+        mock.expect_txn_check_create_rev_and_put()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|_, _, _| Ok(true)); // 第二次成功
+
+        mock.expect_lease_revoke().times(1).returning(|_| Ok(())); // 冲突时撤销
+
+        let lock = EtcdDistributedLock::new(mock_into_client(mock), "/locks/".to_string())
+            .await
+            .unwrap();
+
+        let result = lock.acquire("key1", 5).await;
+        assert!(result.is_ok(), "重试后应成功, 实际: {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn test_lock_acquire_fails_after_max_retries() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_lease_grant().times(3).returning(|_| Ok(456));
+        mock.expect_txn_check_create_rev_and_put()
+            .times(3)
+            .returning(|_, _, _| Ok(false)); // 3 次全部冲突
+        mock.expect_lease_revoke().times(3).returning(|_| Ok(())); // 每次撤销
+
+        let lock = EtcdDistributedLock::new(mock_into_client(mock), "/locks/".to_string())
+            .await
+            .unwrap();
+
+        let result = lock.acquire("key1", 5).await;
+        assert!(
+            matches!(result, Err(LockError::AcquireFailed { .. })),
+            "应返回 AcquireFailed, 实际: {:?}",
+            result.as_ref().err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_lock_acquire_lease_grant_fails() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_lease_grant()
+            .returning(|_| Err(EtcdError::LeaseInvalid("grant failed".into())));
+
+        let lock = EtcdDistributedLock::new(mock_into_client(mock), "/locks/".to_string())
+            .await
+            .unwrap();
+
+        let result = lock.acquire("key1", 5).await;
+        assert!(
+            matches!(result, Err(LockError::EtcdError(_))),
+            "应返回 EtcdError, 实际: {:?}",
+            result.as_ref().err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_lock_is_healthy_always_true() {
+        let client = mock_into_client(MockEtcdClientOps::new());
+        let lock = EtcdDistributedLock::new(client, "/locks/".to_string())
+            .await
+            .unwrap();
+
+        assert!(lock.is_healthy());
+    }
+
+    #[tokio::test]
+    async fn test_lock_guard_release_succeeds() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_lease_revoke().returning(|_| Ok(()));
+
+        let lock = EtcdDistributedLock::new(mock_into_client(mock), "/locks/".to_string())
+            .await
+            .unwrap();
+
+        let guard = EtcdLockGuard {
+            lock,
+            key: "test_key".to_string(),
+            lease_id: 123,
+            lock_path: "/locks/test_key".to_string(),
+        };
+
+        let result = guard.release().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_lock_guard_release_fails() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_lease_revoke()
+            .returning(|_| Err(EtcdError::LeaseInvalid("revoke failed".into())));
+
+        let lock = EtcdDistributedLock::new(mock_into_client(mock), "/locks/".to_string())
+            .await
+            .unwrap();
+
+        let guard = EtcdLockGuard {
+            lock,
+            key: "test_key".to_string(),
+            lease_id: 123,
+            lock_path: "/locks/test_key".to_string(),
+        };
+
+        let result = guard.release().await;
+        assert!(
+            matches!(result, Err(LockError::ReleaseFailed { .. })),
+            "应返回 ReleaseFailed, 实际: {:?}",
+            result
+        );
+    }
+
+    // ===== EtcdClusterHealthMonitor with injected client tests (5) =====
+
+    #[tokio::test]
+    async fn test_health_monitor_new_with_client_succeeds() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_ping().times(1).returning(|| Ok(())); // 验证 client 被注入
+
+        let config = EtcdConfig::default();
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
+        let monitor =
+            EtcdClusterHealthMonitor::new_with_client(config, cache_path, mock_into_client(mock));
+
+        assert_eq!(monitor.get_status(), EtcdClusterStatus::Healthy);
+        assert!(!monitor.is_using_cache());
+
+        // 调用 check_etcd_health 应走注入路径（调用 ping）
+        monitor.check_etcd_health().await;
+        assert_eq!(monitor.get_status(), EtcdClusterStatus::Healthy);
+    }
+
+    #[tokio::test]
+    async fn test_health_monitor_check_with_client_healthy() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_ping().times(1).returning(|| Ok(()));
+
+        let config = EtcdConfig::default();
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
+        let monitor =
+            EtcdClusterHealthMonitor::new_with_client(config, cache_path, mock_into_client(mock));
+
+        monitor.check_etcd_health().await;
+
+        assert_eq!(monitor.get_status(), EtcdClusterStatus::Healthy);
+        assert!(!monitor.is_using_cache());
+    }
+
+    #[tokio::test]
+    async fn test_health_monitor_check_with_client_degraded() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_ping()
+            .times(3)
+            .returning(|| Err(EtcdError::Network("ping failed".into())));
+
+        let config = EtcdConfig::default();
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
+        let monitor =
+            EtcdClusterHealthMonitor::new_with_client(config, cache_path, mock_into_client(mock));
+
+        for _ in 0..3 {
+            monitor.check_etcd_health().await;
+        }
+
+        assert_eq!(monitor.get_status(), EtcdClusterStatus::Degraded);
+        assert!(!monitor.is_using_cache(), "Degraded 状态不应启用本地缓存");
+    }
+
+    #[tokio::test]
+    async fn test_health_monitor_check_with_client_failed() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_ping()
+            .times(5)
+            .returning(|| Err(EtcdError::Network("ping failed".into())));
+
+        let config = EtcdConfig::default();
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
+        let monitor =
+            EtcdClusterHealthMonitor::new_with_client(config, cache_path, mock_into_client(mock));
+
+        for _ in 0..5 {
+            monitor.check_etcd_health().await;
+        }
+
+        assert_eq!(monitor.get_status(), EtcdClusterStatus::Failed);
+        assert!(monitor.is_using_cache(), "Failed 状态应启用本地缓存降级");
+    }
+
+    #[tokio::test]
+    async fn test_health_monitor_check_with_client_recovered() {
+        let mut mock = MockEtcdClientOps::new();
+        let mut seq = mockall::Sequence::new();
+        // 前 5 次 ping 失败 → Failed
+        mock.expect_ping()
+            .times(5)
+            .in_sequence(&mut seq)
+            .returning(|| Err(EtcdError::Network("down".into())));
+        // 第 6 次 ping 成功 → 恢复 Healthy
+        mock.expect_ping()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| Ok(()));
+
+        let config = EtcdConfig::default();
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
+        let monitor =
+            EtcdClusterHealthMonitor::new_with_client(config, cache_path, mock_into_client(mock));
+
+        // 5 次失败 → Failed + cache
+        for _ in 0..5 {
+            monitor.check_etcd_health().await;
+        }
+        assert_eq!(monitor.get_status(), EtcdClusterStatus::Failed);
+        assert!(monitor.is_using_cache());
+
+        // 1 次成功 → 恢复
+        monitor.check_etcd_health().await;
+        assert_eq!(monitor.get_status(), EtcdClusterStatus::Healthy);
+        assert!(!monitor.is_using_cache(), "恢复后应退出本地缓存模式");
+    }
+
+    // ===== EtcdError Display tests (2) =====
+
+    #[test]
+    fn test_etcd_error_display_network_and_lease_invalid() {
+        let net_err = EtcdError::Network("conn refused".to_string());
+        let display = net_err.to_string();
+        assert!(
+            display.contains("network"),
+            "Network Display 应含 'network', 实际: {}",
+            display
+        );
+        assert!(display.contains("conn refused"));
+
+        let lease_err = EtcdError::LeaseInvalid("expired".to_string());
+        let display = lease_err.to_string();
+        assert!(
+            display.contains("lease"),
+            "LeaseInvalid Display 应含 'lease', 实际: {}",
+            display
+        );
+        assert!(display.contains("expired"));
+    }
+
+    #[test]
+    fn test_etcd_error_display_key_not_found_and_internal() {
+        let nf_err = EtcdError::KeyNotFound("/workers/1".to_string());
+        let display = nf_err.to_string();
+        assert!(
+            display.contains("not found"),
+            "KeyNotFound Display 应含 'not found', 实际: {}",
+            display
+        );
+        assert!(display.contains("/workers/1"));
+
+        let int_err = EtcdError::Internal("unexpected".to_string());
+        let display = int_err.to_string();
+        assert!(
+            display.contains("internal"),
+            "Internal Display 应含 'internal', 实际: {}",
+            display
+        );
+        assert!(display.contains("unexpected"));
     }
 }

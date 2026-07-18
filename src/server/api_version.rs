@@ -144,9 +144,14 @@ pub async fn api_version_middleware(
     let mut response = next.run(req).await;
 
     // 在响应头中添加 API 版本
-    response
-        .headers_mut()
-        .insert(&API_VERSION_HEADER, version.as_str().parse().unwrap());
+    // invariant: ApiVersion::as_str() returns "v1"/"v2" which are valid HeaderValue bytes
+    response.headers_mut().insert(
+        &API_VERSION_HEADER,
+        version
+            .as_str()
+            .parse()
+            .expect("invariant: ApiVersion::as_str() is a valid HeaderValue"),
+    );
 
     Ok(response)
 }

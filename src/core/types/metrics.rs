@@ -149,9 +149,10 @@ pub struct QpsWindow {
 
 impl QpsWindow {
     pub fn new(window_secs: u64) -> Self {
+        // invariant: system clock is always after UNIX_EPOCH in production
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("invariant: system clock after UNIX_EPOCH")
             .as_secs();
 
         Self {
@@ -164,9 +165,10 @@ impl QpsWindow {
 
     /// 记录一次请求（完全无锁，仅原子操作）
     pub fn record(&self) {
+        // invariant: system clock is always after UNIX_EPOCH in production
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("invariant: system clock after UNIX_EPOCH")
             .as_secs();
 
         let stored_sec = self
@@ -200,9 +202,10 @@ impl QpsWindow {
 
     /// 批量记录请求（完全无锁）
     pub fn record_batch(&self, count: usize) {
+        // invariant: system clock is always after UNIX_EPOCH in production
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("invariant: system clock after UNIX_EPOCH")
             .as_secs();
 
         let stored_sec = self

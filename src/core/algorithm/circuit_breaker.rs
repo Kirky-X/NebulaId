@@ -602,4 +602,114 @@ mod tests {
             "CLOSED + should_open=true must transition to OPEN"
         );
     }
+
+    /// R-algorithm-002 (T044): 完整 6-case 状态转换矩阵回归测试。
+    /// 钉住 on_failure 中 `should_transition = should_open || state != HALF_OPEN`
+    /// 合并条件的等价表。关键 case：(false, HALF_OPEN) → 不转换（仅此 case
+    /// should_transition=false）。其余 5 个 case should_transition=true →
+    /// 调用 transition_to_open()，结果 state=OPEN（已 OPEN 则保持）。
+    #[tokio::test]
+    async fn test_on_failure_transition_matrix_full() {
+        // Case 1: (should_open=true, OPEN) → 保持 OPEN
+        {
+            let breaker = CircuitBreaker::new(CircuitBreakerConfig {
+                failure_threshold: 1,
+                ..Default::default()
+            });
+            breaker.transition_to_open();
+            assert_eq!(breaker.state().await, CircuitBreakerState::Open);
+            breaker.on_failure().await;
+            assert_eq!(
+                breaker.state().await,
+                CircuitBreakerState::Open,
+                "(true, OPEN) must stay OPEN"
+            );
+        }
+
+        // Case 2: (should_open=true, HALF_OPEN) → 转 OPEN
+        {
+            let breaker = CircuitBreaker::new(CircuitBreakerConfig {
+                failure_threshold: 1,
+                ..Default::default()
+            });
+            breaker.transition_to_open();
+            breaker.transition_to_half_open().await;
+            assert_eq!(breaker.state().await, CircuitBreakerState::HalfOpen);
+            breaker.on_failure().await;
+            assert_eq!(
+                breaker.state().await,
+                CircuitBreakerState::Open,
+                "(true, HALF_OPEN) must transition to OPEN"
+            );
+        }
+
+        // Case 3: (should_open=true, CLOSED) → 转 OPEN
+        {
+            let breaker = CircuitBreaker::new(CircuitBreakerConfig {
+                failure_threshold: 1,
+                ..Default::default()
+            });
+            assert_eq!(breaker.state().await, CircuitBreakerState::Closed);
+            breaker.on_failure().await;
+            assert_eq!(
+                breaker.state().await,
+                CircuitBreakerState::Open,
+                "(true, CLOSED) must transition to OPEN"
+            );
+        }
+
+        // Case 4: (should_open=false, OPEN) → 保持 OPEN
+        {
+            let breaker = CircuitBreaker::new(CircuitBreakerConfig {
+                failure_threshold: 100,
+                min_requests: 100,
+                ..Default::default()
+            });
+            breaker.transition_to_open();
+            assert_eq!(breaker.state().await, CircuitBreakerState::Open);
+            breaker.on_failure().await;
+            assert_eq!(
+                breaker.state().await,
+                CircuitBreakerState::Open,
+                "(false, OPEN) must stay OPEN"
+            );
+        }
+
+        // Case 5: (should_open=false, HALF_OPEN) → 保持 HALF_OPEN（关键 case）
+        // 此 case 是合并 if-else 双分支时唯一 should_transition=false 的场景。
+        // 任何把条件改回 `should_open` 单一判定的回归都会让此 case 错转 OPEN。
+        {
+            let breaker = CircuitBreaker::new(CircuitBreakerConfig {
+                failure_threshold: 100,
+                min_requests: 100,
+                ..Default::default()
+            });
+            breaker.transition_to_open();
+            breaker.transition_to_half_open().await;
+            assert_eq!(breaker.state().await, CircuitBreakerState::HalfOpen);
+            breaker.on_failure().await;
+            assert_eq!(
+                breaker.state().await,
+                CircuitBreakerState::HalfOpen,
+                "(false, HALF_OPEN) must stay HALF_OPEN — key case pins the merged condition"
+            );
+        }
+
+        // Case 6: (should_open=false, CLOSED) → 转 OPEN
+        // 钉住"非 HalfOpen 状态下，无论 should_open 与否都可能转 Open"的原注释语义。
+        {
+            let breaker = CircuitBreaker::new(CircuitBreakerConfig {
+                failure_threshold: 100,
+                min_requests: 100,
+                ..Default::default()
+            });
+            assert_eq!(breaker.state().await, CircuitBreakerState::Closed);
+            breaker.on_failure().await;
+            assert_eq!(
+                breaker.state().await,
+                CircuitBreakerState::Open,
+                "(false, CLOSED) must transition to OPEN (non-HALF_OPEN always transitions)"
+            );
+        }
+    }
 }

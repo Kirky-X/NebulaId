@@ -17,10 +17,8 @@
 pub mod cors;
 pub mod hot_reload;
 pub mod management;
-pub mod server;
 pub mod tls;
 
 // Re-exports for backward compatibility
 pub use self::hot_reload::HotReloadConfig;
-pub use self::server::ConfigManagementService as ServerConfigManagementService;
 pub use self::tls::TlsManager;

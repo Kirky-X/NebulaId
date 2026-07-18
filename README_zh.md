@@ -2,12 +2,9 @@
 
 # 🚀 Nebula ID
 
-<p>
-  <img src="https://img.shields.io/badge/version-0.1.1-blue.svg" alt="Version">
-  <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
-  <img src="https://img.shields.io/badge/build-passing-brightgreen.svg" alt="Build">
-  <img src="https://img.shields.io/badge/coverage-29.98%25-success.svg" alt="Coverage">
-</p>
+[![GitHub release](https://img.shields.io/github/v/release/Kirky-X/NebulaId)](https://github.com/Kirky-X/NebulaId/releases) [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green)](./LICENSE) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/NebulaId/ci.yml?branch=main)](https://github.com/Kirky-X/NebulaId/actions/workflows/ci.yml) [![Security](https://img.shields.io/github/actions/workflow/status/Kirky-X/NebulaId/codeql.yml?branch=main&label=security)](https://github.com/Kirky-X/NebulaId/actions/workflows/codeql.yml)
+
+<p align="center"><b>中文</b> | <a href="./README.md">English</a></p>
 
 <p align="center">
   <strong>企业级高性能应用分布式ID生成系统</strong>
@@ -174,13 +171,18 @@ let id = segment.generate_id()?;
 <tr>
 <td width="50%">
 
-#### 🦀 Rust
+#### 🦀 从源码构建
 
-```toml
-[dependencies]
-nebula-id = { path = "./crates/core" }
-tokio = { version = "1", features = ["full"] }
-uuid = { version = "1", features = ["v7"] }
+```bash
+# 克隆仓库
+git clone https://github.com/Kirky-X/NebulaId.git
+cd NebulaId
+
+# 构建全部特性
+cargo build --all-features --release
+
+# 运行服务
+./target/release/nebula-id
 ```
 
 </td>
@@ -189,25 +191,28 @@ uuid = { version = "1", features = ["v7"] }
 #### 📦 功能标志
 
 ```toml
-[dependencies.nebula-id]
-version = "0.1.1"
-features = ["monitoring", "audit", "grpc"]
-default-features = false
+# Cargo.toml features
+[features]
+default = ["postgresql"]
+postgresql = ["sea-orm/sqlx-postgres", "sqlx/postgres"]
+sqlite    = ["sea-orm/sqlx-sqlite", "sqlx/sqlite"]
+etcd      = ["dep:etcd-client"]
 ```
 
-**核心功能:**
-- `algorithm` - ID生成算法 (Segment, Snowflake, UUID)
-- `database` - 数据库集成 (SeaORM)
-- `cache` - 多级缓存 (Redis, Memory)
-- `coordinator` - 分布式协调 (Etcd)
+**按特性构建:**
+```bash
+# 默认 (PostgreSQL)
+cargo build --release
 
-**服务端功能:**
-- `server` - HTTP/gRPC服务端
-- `monitoring` - 指标和健康检查
-- `auth` - 认证和授权
+# 启用 etcd 分布式协调
+cargo build --release --features etcd
 
-**客户端功能:**
-- `client` - 客户端库用于服务交互
+# 使用 SQLite (不启用 PostgreSQL)
+cargo build --release --no-default-features --features sqlite
+
+# 全部特性
+cargo build --all-features --release
+```
 
 </td>
 </tr>
@@ -915,12 +920,16 @@ features = ["audit", "tls"]
 
 - 🌟 **依赖库** - 基于以下优秀项目：
   - [tokio](https://github.com/tokio-rs/tokio) - 异步运行时
-  - [sea-orm](https://github.com/SeaQL/sea-orm) - 数据库ORM
-  - [etcd-client](https://github.com/etcd-rs/etcd-client) - Etcd客户端
-  - [uuid](https://github.com/uuid-rs/uuid) - UUID生成
-  - [tonic](https://github.com/hyperium/tonic) - gRPC框架
   - [axum](https://github.com/tokio-rs/axum) - HTTP框架
-  - [dashmap](https://github.com/xacrimon/dashmap) - 并发HashMap
+  - [tonic](https://github.com/hyperium/tonic) - gRPC框架
+  - [sea-orm](https://github.com/SeaQL/sea-orm) - 数据库ORM
+  - [etcd-client](https://github.com/etcd-rs/etcd-client) - Etcd客户端（可选，`etcd` 特性）
+  - [uuid](https://github.com/uuid-rs/uuid) - UUID生成
+  - [confers](https://crates.io/crates/confers) - 配置管理
+  - [oxcache](https://crates.io/crates/oxcache) - 多级缓存
+  - [dbnexus](https://crates.io/crates/dbnexus) - 数据库抽象
+  - [limiteron](https://crates.io/crates/limiteron) - 限流
+  - [sdforge](https://crates.io/crates/sdforge) - 服务发现
   - [prometheus-client](https://github.com/prometheus/client_rust) - 指标库
 
 - 👥 **贡献者** - 感谢所有优秀的贡献者！

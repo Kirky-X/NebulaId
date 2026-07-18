@@ -2,12 +2,9 @@
 
 # 🚀 Nebula ID
 
-<p>
-  <img src="https://img.shields.io/badge/version-0.1.1-blue.svg" alt="Version">
-  <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
-  <img src="https://img.shields.io/badge/build-passing-brightgreen.svg" alt="Build">
-  <img src="https://img.shields.io/badge/coverage-29.98%25-success.svg" alt="Coverage">
-</p>
+[![GitHub release](https://img.shields.io/github/v/release/Kirky-X/NebulaId)](https://github.com/Kirky-X/NebulaId/releases) [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green)](./LICENSE) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/NebulaId/ci.yml?branch=main)](https://github.com/Kirky-X/NebulaId/actions/workflows/ci.yml) [![Security](https://img.shields.io/github/actions/workflow/status/Kirky-X/NebulaId/codeql.yml?branch=main&label=security)](https://github.com/Kirky-X/NebulaId/actions/workflows/codeql.yml)
+
+<p align="center"><a href="./README_zh.md">中文文档</a> | <b>English</b></p>
 
 <p align="center">
   <strong>Enterprise-grade distributed ID generation system for high-performance applications</strong>
@@ -173,13 +170,18 @@ Great for high-performance applications requiring millions of IDs per second wit
 <tr>
 <td width="50%">
 
-#### 🦀 Rust
+#### 🦀 Build from Source
 
-```toml
-[dependencies]
-nebula-id = { path = "./crates/core" }
-tokio = { version = "1", features = ["full"] }
-uuid = { version = "1", features = ["v7"] }
+```bash
+# Clone the repository
+git clone https://github.com/Kirky-X/NebulaId.git
+cd NebulaId
+
+# Build all features
+cargo build --all-features --release
+
+# Run the server
+./target/release/nebula-id
 ```
 
 </td>
@@ -188,25 +190,28 @@ uuid = { version = "1", features = ["v7"] }
 #### 📦 Feature Flags
 
 ```toml
-[dependencies.nebula-id]
-version = "0.1.1"
-features = ["monitoring", "audit", "grpc"]
-default-features = false
+# Cargo.toml features
+[features]
+default = ["postgresql"]
+postgresql = ["sea-orm/sqlx-postgres", "sqlx/postgres"]
+sqlite    = ["sea-orm/sqlx-sqlite", "sqlx/sqlite"]
+etcd      = ["dep:etcd-client"]
 ```
 
-**Core Features:**
-- `algorithm` - ID generation algorithms (Segment, Snowflake, UUID)
-- `database` - Database integration (SeaORM)
-- `cache` - Multi-level caching (Redis, Memory)
-- `coordinator` - Distributed coordination (Etcd)
+**Build with specific features:**
+```bash
+# Default (PostgreSQL)
+cargo build --release
 
-**Server Features:**
-- `server` - HTTP/gRPC server
-- `monitoring` - Metrics and health checks
-- `auth` - Authentication and authorization
+# With etcd distributed coordination
+cargo build --release --features etcd
 
-**Client Features:**
-- `client` - Client library for service interaction
+# With SQLite (no PostgreSQL)
+cargo build --release --no-default-features --features sqlite
+
+# All features
+cargo build --all-features --release
+```
 
 </td>
 </tr>
@@ -915,12 +920,16 @@ You may choose either license for your use.
 
 - 🌟 **Dependencies** - Built on these amazing projects:
   - [tokio](https://github.com/tokio-rs/tokio) - Async runtime
-  - [sea-orm](https://github.com/SeaQL/sea-orm) - Database ORM
-  - [etcd-client](https://github.com/etcd-rs/etcd-client) - Etcd client
-  - [uuid](https://github.com/uuid-rs/uuid) - UUID generation
-  - [tonic](https://github.com/hyperium/tonic) - gRPC framework
   - [axum](https://github.com/tokio-rs/axum) - HTTP framework
-  - [dashmap](https://github.com/xacrimon/dashmap) - Concurrent HashMap
+  - [tonic](https://github.com/hyperium/tonic) - gRPC framework
+  - [sea-orm](https://github.com/SeaQL/sea-orm) - Database ORM
+  - [etcd-client](https://github.com/etcd-rs/etcd-client) - Etcd client (optional, `etcd` feature)
+  - [uuid](https://github.com/uuid-rs/uuid) - UUID generation
+  - [confers](https://crates.io/crates/confers) - Configuration management
+  - [oxcache](https://crates.io/crates/oxcache) - Multi-level cache
+  - [dbnexus](https://crates.io/crates/dbnexus) - Database abstraction
+  - [limiteron](https://crates.io/crates/limiteron) - Rate limiting
+  - [sdforge](https://crates.io/crates/sdforge) - Service discovery
   - [prometheus-client](https://github.com/prometheus/client_rust) - Metrics
 
 - 👥 **Contributors** - Thanks to all our amazing contributors!

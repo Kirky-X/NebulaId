@@ -9,15 +9,17 @@ Nebula ID is an enterprise-grade distributed ID generation system written in Rus
 ## Build Commands
 
 ```bash
-# Development build
-cargo build
+# Development build (default features: postgresql)
+cargo build --package nebulaid
 
 # Production release build
-cargo build --release
+cargo build --package nebulaid --release
 
-# Build specific crate
-cargo build -p nebula-core
-cargo build -p nebula-server
+# Build with all features (postgresql + sqlite + etcd)
+cargo build --package nebulaid --all-features
+
+# Build with specific feature
+cargo build --package nebulaid --features etcd
 ```
 
 ## Lint & Format Commands
@@ -38,26 +40,29 @@ cargo clippy --lib --bins -- -D warnings -A clippy::derivable-clones -A clippy::
 
 ## Pre-commit Hooks
 
-Install and configure pre-commit hooks for automatic code quality checks before commits:
+The project uses both [pre-commit](https://pre-commit.com/) and [lefthook](https://github.com/evilmartians/lefthook) for git hook management.
 
 ```bash
-# Install pre-commit hooks
+# Install lefthook hooks (recommended)
+lefthook install
+
+# Install pre-commit hooks (alternative)
 ./scripts/install-pre-commit-hooks.sh
 
-# Manually run all hooks on all files
+# Manually run all pre-commit hooks on all files
 pre-commit run --all-files
 
 # Update pre-commit hooks to latest versions
 pre-commit autoupdate
 ```
 
-### Hooks Configuration (`.pre-commit-config.yaml`)
+### Hooks Configuration (`.pre-commit-config.yaml` + `lefthook.yml`)
 
 | Hook | Command | Purpose |
 |------|---------|---------|
 | cargo-fmt | `cargo fmt --all -- --check` | Code formatting |
 | cargo-clippy | `cargo clippy --lib --bins` | Static analysis |
-| cargo-check | `cargo check --workspace` | Compilation check |
+| cargo-check | `cargo check --package nebulaid` | Compilation check |
 
 ### Troubleshooting
 
@@ -74,30 +79,23 @@ pip install --user --upgrade pre-commit
 
 ```bash
 # Run all tests with 4 threads
-cargo test -- --test-threads=4
+cargo test --package nebulaid --all-features -- --test-threads=4
 
 # Run all tests including slow tests
-cargo test
+cargo test --package nebulaid --all-features
 
 # Run specific test by name
-cargo test test_name
-cargo test --package nebula-core test_segment
+cargo test --package nebulaid --all-features test_segment
 
 # Run tests in a specific module
-cargo test -p nebula-core --lib algorithm::segment
+cargo test --package nebulaid --all-features --lib algorithm::segment
 
 # Run tests matching a pattern
-cargo test -- segment_
-cargo test -- degradation_
-
-# Run integration tests
-cargo test --test integration
-
-# Skip slow tests
-cargo test -- --skip slow
+cargo test --package nebulaid --all-features -- segment_
+cargo test --package nebulaid --all-features -- degradation_
 
 # Run with output capture disabled
-cargo test -- --nocapture
+cargo test --package nebulaid --all-features -- --nocapture
 
 # Test coverage
 cargo tarpaulin --out Html
@@ -110,7 +108,9 @@ GitHub Actions workflows are located in `.github/workflows/`:
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
 | `ci.yml` | Push/PR | Main CI: lint, build, test, security audit |
+| `codeql.yml` | Push/PR | GitHub CodeQL semantic security analysis |
 | `code-review.yml` | Push/PR | AI-powered code review |
+| `health-check.yml` | Schedule | Repository health metrics |
 | `release.yml` | Tag `v*` | Multi-platform release builds |
 
 ### CI Pipeline (ci.yml)
@@ -124,14 +124,15 @@ GitHub Actions workflows are located in `.github/workflows/`:
 - Clippy lint (lib + bins only): `cargo clippy --lib --bins`
 
 **Build Job:**
-- Compile all workspace crates: `cargo build --workspace`
+- Compile the package: `cargo build --package nebulaid --all-features`
 
 **Test Job:**
-- Run all tests: `cargo test --workspace`
+- Run all tests: `cargo test --package nebulaid --all-features`
 - Generate coverage for PRs (codecov)
 
 **Security Audit Job:**
 - Vulnerability scanning: `cargo deny check security`
+- CodeQL semantic analysis (separate `codeql.yml` workflow)
 
 ### Pre-commit Check Script
 
@@ -276,25 +277,56 @@ pub async fn generate_id(&self, ctx: &GenerateContext) -> Result<Id>;
 
 ### Module Organization
 
+```mermaid
+graph TD
+    Root["src/"] --> Core["core/"]
+    Root --> Server["server/"]
+    Root --> Infra["infrastructure/"]
+    Root --> Lib["lib.rs"]
+    Root --> Main["main.rs"]
+    Root --> Build["build.rs"]
+
+    Core --> Algo["algorithm/<br/>segment, snowflake, uuid_v7,<br/>circuit_breaker, router, degradation_manager"]
+    Core --> Auth["auth/"]
+    Core --> Config["config/"]
+    Core --> Container["container/<br/>app_container (DI)"]
+    Core --> Coord["coordinator/<br/>etcd cluster health, worker allocator"]
+    Core --> DB["database/<br/>SeaORM entities & repository"]
+    Core --> Mon["monitoring/"]
+    Core --> Types["types/<br/>id, error, metrics, segment_info"]
+    Core --> Tests["tests/<br/>integration, degradation, cache, dynamic_step"]
+
+    Server --> MW["middleware/<br/>api_key_auth, size_limit, utils"]
+    Server --> Rate["rate_limit/<br/>limiter, middleware"]
+    Server --> Handlers["handlers/"]
+    Server --> Audit["audit/"]
+    Server --> Cfg["config/<br/>tls, cors, hot_reload, server, management"]
+    Server --> Proto["proto/<br/>gRPC protobuf generated"]
+    Server --> Router["router.rs, openapi.rs, grpc.rs"]
+
+    Infra --> Repos["repositories/"]
+    Infra --> Adapter["config_adapter,<br/>config_provider, database_adapter"]
+
+    style Root fill:#e1f5ff
+    style Core fill:#b3e5fc
+    style Server fill:#c8e6c9
+    style Infra fill:#fff9c4
 ```
-crates/core/src/
-├── lib.rs              # Public API exports
-├── algorithm/          # ID generation algorithms
-│   ├── mod.rs
-│   ├── segment.rs
-│   ├── snowflake.rs
-│   ├── traits.rs       # IdAlgorithm trait
-│   └── router.rs
-├── cache/              # Caching layer
-├── config/             # Configuration
-├── database/           # SeaORM entities & repositories
-└── coordinator/        # Distributed coordination (etcd)
-```
+
+**Key modules:**
+- `src/core/algorithm/` - ID generation algorithms (Segment, Snowflake, UUID v7/v4) with circuit breaker, degradation manager, and router
+- `src/core/container/app_container.rs` - Dependency injection container
+- `src/core/coordinator/` - Etcd-based distributed coordination (leader election, worker allocation, cluster health)
+- `src/core/database/` - SeaORM entities and repository layer
+- `src/server/middleware/` - HTTP middleware (API key auth, size limit)
+- `src/server/rate_limit/` - Rate limiting (powered by `limiteron`)
+- `src/server/config/` - Server configuration (TLS, CORS, hot reload)
+- `src/infrastructure/` - Infrastructure adapters and repository implementations
 
 ### Testing
 
 - Place unit tests in `tests/` module at the end of source files
-- Place integration tests in `crates/*/tests/` directory
+- Place integration tests in `src/core/tests/` directory
 - Use `#[cfg(test)]` to mark test modules
 - Follow naming convention: `test_*` or `should_*`
 
@@ -314,33 +346,38 @@ mod tests {
 
 ## Dependencies
 
-All dependencies are defined in workspace `Cargo.toml` under `[workspace.dependencies]`. When adding new dependencies:
+All dependencies are defined in the single-package `Cargo.toml` (no workspace). Key external libraries:
 
-1. Add version to `[workspace.dependencies]`
-2. Use the workspace dependency in crate `Cargo.toml`:
+| Library | Version | Purpose |
+|---------|---------|---------|
+| `confers` | 0.4 | Configuration management |
+| `oxcache` | 0.3 | Multi-level cache abstraction |
+| `dbnexus` | 0.4 | Database abstraction (postgres) |
+| `limiteron` | 0.2 | Rate limiting (quota-control, ban-manager) |
+| `sdforge` | 0.4 | Service discovery (http, grpc) |
+| `sea-orm` | 1.1 | Database ORM |
+| `axum` | 0.8 | HTTP framework |
+| `tonic` | 0.14 | gRPC framework |
+| `etcd-client` | 0.17 | Etcd client (optional, `etcd` feature) |
 
-```toml
-[dependencies]
-serde = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
-```
+When adding new dependencies, edit `Cargo.toml` `[dependencies]` directly. Prefer `default-features = false` and explicit feature lists (rule 28).
 
 ## Database Migrations
 
 ```bash
 # Run migrations
-cargo run --bin migrate -- crates/server
+cargo run --bin nebula-id -- migrate
 
-# Or via Makefile
-make db-migrate
+# Initialize database schema
+psql -U idgen -d idgen -f scripts/init.sql
 ```
 
 ## Debugging
 
 ```bash
 # Enable debug logging
-RUST_LOG=debug cargo run
+RUST_LOG=debug cargo run --bin nebula-id
 
 # Module-specific logging
-RUST_LOG=nebula_core::algorithm=debug cargo run
+RUST_LOG=nebulaid::core::algorithm=debug cargo run --bin nebula-id
 ```

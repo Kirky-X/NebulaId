@@ -189,17 +189,17 @@ git remote -v
 ### 构建与测试
 
 ```bash
-# 构建项目
-cargo build
+# 构建项目（默认 postgresql 特性）
+cargo build --package nebulaid
 
-# 运行测试
-cargo test
+# 构建全部特性（postgresql + sqlite + etcd）
+cargo build --package nebulaid --all-features
 
-# 运行示例
-cargo run --example basic
+# 运行全部测试
+cargo test --package nebulaid --all-features
 
 # 构建文档
-cargo doc --no-deps
+cargo doc --no-deps --package nebulaid
 ```
 
 ---
@@ -265,40 +265,47 @@ git checkout -b docs/update-readme
 
 #### 2️⃣ 修改代码
 
-请遵循项目的编码标准和最佳实践。参考 [crates/core/src/algorithm/](crates/core/src/algorithm/) 中的实现模式。
+请遵循项目的编码标准和最佳实践。参考 [src/core/algorithm/](../src/core/algorithm/) 中的实现模式。
 
 #### 3️⃣ 运行静态检查与测试
 
 在提交前，请确保代码通过所有本地检查。
 
 ```bash
+# 安装 git hooks（二选一）
+lefthook install              # 推荐：使用 lefthook
+./scripts/install-pre-commit-hooks.sh  # 或使用 pre-commit
+
 # 运行预提交检查脚本（推荐）
 ./scripts/pre-commit-check.sh
 
 # 或手动执行以下步骤：
 
 # 格式化代码
-cargo fmt
+cargo fmt --all
 
 # 运行 Clippy 静态分析 (必须无警告)
-cargo clippy -- -D warnings
+cargo clippy --package nebulaid --all-features -- -D warnings
 
 # 运行所有测试
-cargo test --all-features
+cargo test --package nebulaid --all-features
 
-# 运行特定 crate 的测试
-cargo test -p nebula-id-core
-cargo test -p nebula-id-server
+# 运行特定模块的测试
+cargo test --package nebulaid --all-features --lib algorithm::segment
+cargo test --package nebulaid --all-features --lib algorithm::snowflake
 ```
 
 **预提交检查脚本**会自动执行以下检查：
-1. 代码格式化
+1. 代码格式化（cargo fmt）
 2. Clippy 静态分析
 3. 构建验证
 4. 测试执行
-5. 安全审计（如果配置了 deny.toml）
-6. 文档生成
-7. 代码覆盖率
+5. 安全审计（cargo deny）
+
+**CI 流水线**（`.github/workflows/`）会在 PR 上自动运行：
+- `ci.yml`: lint → build → test → security audit
+- `codeql.yml`: GitHub CodeQL 语义安全分析
+- `code-review.yml`: AI 代码评审
 
 #### 4️⃣ 提交代码
 

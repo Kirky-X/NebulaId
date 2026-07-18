@@ -502,7 +502,7 @@ impl AlgorithmRouter {
 
     pub async fn shutdown(&self) {
         let algs = self.algorithms.load_full();
-        for (_, alg) in algs.iter() {
+        for alg in algs.values() {
             if let Err(e) = alg.shutdown().await {
                 error!(
                     "Error shutting down algorithm {:?}: {}",

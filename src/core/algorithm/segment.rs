@@ -395,7 +395,7 @@ impl DcFailureDetector {
         let now = Instant::now();
         // 直接持读锁迭代，避免 clone 整个 HashMap（仅修改内部 AtomicU8，不影响 HashMap 结构）
         let states = self.dc_states.read();
-        for (_, state) in states.iter() {
+        for state in states.values() {
             if state.get_status() == DcStatus::Failed {
                 let last_success = *state.last_success.lock();
                 if now.duration_since(last_success) > self.recovery_timeout {

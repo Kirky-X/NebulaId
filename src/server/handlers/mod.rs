@@ -27,6 +27,8 @@ pub mod api_key_handlers;
 pub mod biz_tag_handlers;
 pub mod helpers;
 pub mod id_handlers;
+// pre-existing test helper module (MockIdGenerator); not part of T027-T033 split,
+// retained from pre-refactor codebase (T047 convergence annotation).
 pub mod mock_generator;
 pub mod system_handlers;
 pub mod workspace_handlers;
@@ -82,5 +84,15 @@ impl ApiHandlers {
 
     pub fn get_config_service(&self) -> Arc<ConfigManagementService> {
         self.config_service.clone()
+    }
+
+    /// Shut down a previously started key rotation background task.
+    ///
+    /// Delegate entry point on `ApiHandlers` (aligns with spec T033 wording);
+    /// the actual shutdown signalling stays on `KeyRotationHandle::shutdown`
+    /// (T045 convergence: closes the partial gap where spec listed
+    /// `shutdown` under `ApiHandlers` but impl placed it on the handle).
+    pub fn shutdown(&self, handle: KeyRotationHandle) {
+        handle.shutdown();
     }
 }

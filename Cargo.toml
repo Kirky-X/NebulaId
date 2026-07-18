@@ -28,6 +28,16 @@ postgresql = ["sea-orm/sqlx-postgres", "sqlx/postgres"]
 sqlite = ["sea-orm/sqlx-sqlite", "sqlx/sqlite"]
 etcd = ["dep:etcd-client"]
 
+# sdforge 0.4.2 macros emit #[cfg(feature = "...")] gates for sdforge-internal
+# features (http/grpc/cli/mcp/openapi/websocket) inside #[forge] expansions.
+# check-cfg only knows about nebulaid's own [features] table, so it would
+# flag these as unexpected. Declare them as known cfg values to silence the
+# spurious warnings without actually exposing them as nebulaid features.
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = [
+    'cfg(feature, values("http", "grpc", "cli", "mcp", "openapi", "websocket", "streaming", "cache", "logging", "inklog", "i18n", "security", "ratelimit", "ratelimit-http", "docs", "limiteron-integration", "kit"))',
+] }
+
 [dependencies]
 # 外部组件（基础设施层）
 confers = "0.4"

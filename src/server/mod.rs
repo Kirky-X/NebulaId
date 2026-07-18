@@ -30,6 +30,7 @@ pub mod middleware;
 pub mod models;
 pub mod openapi;
 pub mod rate_limit;
+pub mod sdforge_adapter;
 
 // Proto module (internal use only, but needed by binary target)
 pub mod proto;

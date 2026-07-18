@@ -88,7 +88,7 @@ sea-orm-migration = { version = "1.1", optional = true }
 sqlx = { version = "0.8", default-features = false, optional = true, features = ["runtime-tokio", "tls-rustls", "uuid", "chrono"] }
 
 # 监控与指标
-prometheus-client = { version = "0.24", default-features = false }
+prometheus-client = { version = "0.25", default-features = false }
 prometheus = "0.14"
 
 # 日志追踪

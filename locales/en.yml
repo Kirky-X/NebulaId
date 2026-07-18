@@ -1,2 +1,29 @@
 _version: 1
-# Phase 8 ICU i18n — English locale (skeleton, populated in T038-T039)
+# Phase 8 ICU i18n — English locale
+# Populated by T038 (CoreError Display) + T039 (tracing logs) + T040-T041 (API)
+
+# CoreError Display strings (T038)
+error.invalid_id_format: "Invalid ID format: %{value}"
+error.invalid_id_string: "Invalid ID string: %{value}"
+error.invalid_algorithm_type: "Invalid algorithm type: %{value}"
+error.clock_moved_backward: "Clock moved backward, last timestamp: %{last_timestamp}"
+error.sequence_overflow: "Sequence overflow, timestamp: %{timestamp}"
+error.segment_exhausted: "Segment exhausted, max_id: %{max_id}"
+error.database_error: "Database error: %{value}"
+error.cache_error: "Cache error: %{value}"
+error.configuration_error: "Configuration error: %{value}"
+error.authentication_error: "Authentication error: %{value}"
+error.rate_limit_exceeded: "Rate limit exceeded"
+error.not_found: "Resource not found: %{value}"
+error.workspace_disabled: "Workspace disabled: %{value}"
+error.biz_tag_not_found: "Biz tag not found: %{value}"
+error.api_key_disabled: "API key disabled"
+error.api_key_expired: "API key expired"
+error.invalid_api_key_signature: "Invalid API key signature"
+error.etcd_error: "Etcd error: %{value}"
+error.parse_error: "Parse error: %{value}"
+error.io_error: "I/O error: %{value}"
+error.timeout_error: "Timeout error"
+error.internal_error: "Internal error: %{value}"
+error.invalid_input: "Invalid input: %{value}"
+error.unknown: "Unknown error"

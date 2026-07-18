@@ -66,7 +66,6 @@ sdforge = { version = "0.4", default-features = false, features = ["http", "grpc
 
 # 工具
 async-trait = "0.1"
-derive_more = { version = "2.0", features = ["display", "error", "from"] }
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"

@@ -1,2 +1,29 @@
 _version: 1
-# Phase 8 ICU i18n — 简体中文 locale (skeleton, populated in T038-T039)
+# Phase 8 ICU i18n — 简体中文 locale
+# Populated by T038 (CoreError Display) + T039 (tracing logs) + T040-T041 (API)
+
+# CoreError Display strings (T038)
+error.invalid_id_format: "无效的 ID 格式：%{value}"
+error.invalid_id_string: "无效的 ID 字符串：%{value}"
+error.invalid_algorithm_type: "无效的算法类型：%{value}"
+error.clock_moved_backward: "时钟回拨，最后时间戳：%{last_timestamp}"
+error.sequence_overflow: "序列号溢出，时间戳：%{timestamp}"
+error.segment_exhausted: "号段耗尽，max_id：%{max_id}"
+error.database_error: "数据库错误：%{value}"
+error.cache_error: "缓存错误：%{value}"
+error.configuration_error: "配置错误：%{value}"
+error.authentication_error: "认证错误：%{value}"
+error.rate_limit_exceeded: "速率限制超出"
+error.not_found: "资源未找到：%{value}"
+error.workspace_disabled: "工作空间已禁用：%{value}"
+error.biz_tag_not_found: "业务标签未找到：%{value}"
+error.api_key_disabled: "API 密钥已禁用"
+error.api_key_expired: "API 密钥已过期"
+error.invalid_api_key_signature: "无效的 API 密钥签名"
+error.etcd_error: "Etcd 错误：%{value}"
+error.parse_error: "解析错误：%{value}"
+error.io_error: "I/O 错误：%{value}"
+error.timeout_error: "超时错误"
+error.internal_error: "内部错误：%{value}"
+error.invalid_input: "无效输入：%{value}"
+error.unknown: "未知错误"

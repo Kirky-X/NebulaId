@@ -20,7 +20,7 @@ use nebulaid::core::database::{self, ApiKeyRepository};
 use nebulaid::core::types::Result;
 use nebulaid::server::audit::AuditLogger;
 use nebulaid::server::config::hot_reload::HotReloadConfig;
-use nebulaid::server::config::management::ConfigManagementService;
+use nebulaid::server::config::management::{ConfigManagementService, ConfigManager};
 use nebulaid::server::config::tls::TlsManager;
 use nebulaid::server::grpc::GrpcServer;
 use nebulaid::server::handlers::ApiHandlers;
@@ -306,7 +306,7 @@ async fn start_http_server(
     auth: Arc<ApiKeyAuth>,
     rate_limiter: Arc<RateLimiter>,
     audit_logger: Arc<AuditLogger>,
-    _config_service: Arc<ConfigManagementService>,
+    _config_service: Arc<dyn ConfigManagementService>,
     tls_manager: Option<Arc<TlsManager>>,
 ) -> Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], DEFAULT_SERVER_PORT));
@@ -541,7 +541,7 @@ async fn main() -> Result<()> {
         .await?;
 
         let (handlers, config_service) = if let Some(ref repo) = repository {
-            let cs = Arc::new(ConfigManagementService::with_repository(
+            let cs = Arc::new(ConfigManager::with_repository(
                 hot_config,
                 id_generator.clone(),
                 repo.clone(),
@@ -555,10 +555,7 @@ async fn main() -> Result<()> {
             ));
             (h, cs)
         } else {
-            let cs = Arc::new(ConfigManagementService::new(
-                hot_config,
-                id_generator.clone(),
-            ));
+            let cs = Arc::new(ConfigManager::new(hot_config, id_generator.clone()));
             let h = Arc::new(ApiHandlers::new(id_generator.clone(), cs.clone()));
             (h, cs)
         };
@@ -643,7 +640,7 @@ async fn main() -> Result<()> {
         let id_generator = create_id_generator(&config, audit_logger.clone(), None).await?;
 
         let (handlers, config_service) = if let Some(ref repo) = repository {
-            let cs = Arc::new(ConfigManagementService::with_repository(
+            let cs = Arc::new(ConfigManager::with_repository(
                 hot_config,
                 id_generator.clone(),
                 repo.clone(),
@@ -657,10 +654,7 @@ async fn main() -> Result<()> {
             ));
             (h, cs)
         } else {
-            let cs = Arc::new(ConfigManagementService::new(
-                hot_config,
-                id_generator.clone(),
-            ));
+            let cs = Arc::new(ConfigManager::new(hot_config, id_generator.clone()));
             let h = Arc::new(ApiHandlers::new(id_generator.clone(), cs.clone()));
             (h, cs)
         };
@@ -879,7 +873,7 @@ mod tests {
             config.clone(),
             "config/config.toml".to_string(),
         ));
-        let config_service = Arc::new(ConfigManagementService::new(hot_config, router.clone()));
+        let config_service = Arc::new(ConfigManager::new(hot_config, router.clone()));
         let handlers = Arc::new(ApiHandlers::with_api_key_repository(
             router,
             config_service,
@@ -1016,7 +1010,7 @@ mod tests {
             config.clone(),
             "config/config.toml".to_string(),
         ));
-        let config_service = Arc::new(ConfigManagementService::new(hot_config, router.clone()));
+        let config_service = Arc::new(ConfigManager::new(hot_config, router.clone()));
         let handlers = Arc::new(ApiHandlers::with_api_key_repository(
             router,
             config_service.clone(),

@@ -38,21 +38,11 @@ use std::sync::Arc;
 use tower_http::set_header::SetResponseHeaderLayer;
 use validator::Validate;
 
-use std::ops::Deref;
-
 #[derive(Clone)]
 pub struct AppState {
     pub handlers: Arc<ApiHandlers>,
     pub auth: Arc<ApiKeyAuth>,
-    pub config_service: Arc<ConfigManagementService>,
-}
-
-impl Deref for AppState {
-    type Target = ConfigManagementService;
-
-    fn deref(&self) -> &Self::Target {
-        &self.config_service
-    }
+    pub config_service: Arc<dyn ConfigManagementService>,
 }
 
 pub async fn create_router(
@@ -838,6 +828,7 @@ mod tests {
     use super::*;
     use crate::core::algorithm::AlgorithmRouter;
     use crate::core::config::Config;
+    use crate::server::config::management::ConfigManager;
     use crate::server::config::HotReloadConfig;
     use std::sync::Arc;
 
@@ -848,10 +839,7 @@ mod tests {
             "config/config.toml".to_string(),
         ));
         let algorithm_router = Arc::new(AlgorithmRouter::new(config.clone(), None));
-        let config_service = Arc::new(ConfigManagementService::new(
-            hot_config,
-            algorithm_router.clone(),
-        ));
+        let config_service = Arc::new(ConfigManager::new(hot_config, algorithm_router.clone()));
         let handlers = ApiHandlers::new(algorithm_router, config_service);
         Arc::new(handlers)
     }

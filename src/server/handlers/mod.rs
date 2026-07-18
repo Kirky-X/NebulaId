@@ -41,7 +41,7 @@ pub struct ApiHandlers {
     pub(super) id_generator: Arc<dyn crate::core::algorithm::IdGenerator>,
     pub(super) metrics: ApiMetrics,
     pub(super) start_time: std::time::Instant,
-    pub(super) config_service: Arc<ConfigManagementService>,
+    pub(super) config_service: Arc<dyn ConfigManagementService>,
     pub(super) api_key_repo: Option<Arc<dyn ApiKeyRepository>>,
 }
 
@@ -57,7 +57,7 @@ pub struct ApiMetrics {
 impl ApiHandlers {
     pub fn new(
         id_generator: Arc<dyn crate::core::algorithm::IdGenerator>,
-        config_service: Arc<ConfigManagementService>,
+        config_service: Arc<dyn ConfigManagementService>,
     ) -> Self {
         Self {
             id_generator,
@@ -70,7 +70,7 @@ impl ApiHandlers {
 
     pub fn with_api_key_repository(
         id_generator: Arc<dyn crate::core::algorithm::IdGenerator>,
-        config_service: Arc<ConfigManagementService>,
+        config_service: Arc<dyn ConfigManagementService>,
         api_key_repo: Arc<dyn ApiKeyRepository>,
     ) -> Self {
         Self {
@@ -82,7 +82,7 @@ impl ApiHandlers {
         }
     }
 
-    pub fn get_config_service(&self) -> Arc<ConfigManagementService> {
+    pub fn get_config_service(&self) -> Arc<dyn ConfigManagementService> {
         self.config_service.clone()
     }
 

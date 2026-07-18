@@ -161,7 +161,7 @@ impl super::ApiHandlers {
 
 #[cfg(test)]
 mod tests {
-    use crate::server::config::management::ConfigManagementService;
+    use crate::server::config::management::{ConfigManagementService, ConfigManager};
     use crate::server::config::HotReloadConfig;
     use crate::server::handlers::mock_generator::MockIdGenerator;
     use std::sync::Arc;
@@ -179,9 +179,8 @@ mod tests {
             None,
         ));
 
-        let config_service: Arc<ConfigManagementService> = Arc::new(
-            crate::server::config::management::ConfigManagementService::new(hot_config, router),
-        );
+        let config_service: Arc<dyn ConfigManagementService> =
+            Arc::new(ConfigManager::new(hot_config, router));
         let handlers = super::super::ApiHandlers::new(mock_gen.clone(), config_service);
         (Arc::new(handlers), mock_gen)
     }

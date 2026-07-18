@@ -21,4 +21,5 @@ pub mod tls;
 
 // Re-exports for backward compatibility
 pub use self::hot_reload::HotReloadConfig;
+pub use self::management::{ConfigManagementService, ConfigManager};
 pub use self::tls::TlsManager;

@@ -27,12 +27,83 @@ use crate::server::models::{
     SnowflakeConfigInfo, TlsConfigInfo, UpdateConfigResponse, UpdateLoggingRequest,
     UpdateRateLimitRequest, UuidV7ConfigInfo, WorkspaceListResponse, WorkspaceResponse,
 };
+use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 use validator::Validate;
 
-pub struct ConfigManagementService {
+/// Configuration management service trait.
+///
+/// Decouples handlers/router from the concrete `ConfigManager` implementation
+/// so business logic can be mock-tested (rule 25: trait + pub re-export in
+/// mod.rs; impl lives in this file). All async methods are object-safe via
+/// `async_trait`; sync methods (`get_config`, `get_secure_config`,
+/// `get_batch_max_size`) take `&self` and are naturally object-safe.
+#[async_trait]
+pub trait ConfigManagementService: Send + Sync {
+    fn get_config(&self) -> ConfigResponse;
+    fn get_secure_config(&self) -> SecureConfigResponse;
+    fn get_batch_max_size(&self) -> u32;
+
+    async fn update_rate_limit(&self, req: UpdateRateLimitRequest) -> UpdateConfigResponse;
+    async fn update_logging(&self, req: UpdateLoggingRequest) -> UpdateConfigResponse;
+    async fn reload_config(&self) -> UpdateConfigResponse;
+    async fn get_rate_limit_override(&self) -> Option<(u32, u32)>;
+    async fn set_algorithm(&self, req: SetAlgorithmRequest) -> SetAlgorithmResponse;
+
+    async fn create_biz_tag(
+        &self,
+        request: &crate::core::database::CreateBizTagRequest,
+    ) -> crate::core::Result<crate::core::database::BizTag>;
+    async fn get_biz_tag(
+        &self,
+        id: Uuid,
+    ) -> crate::core::Result<Option<crate::core::database::BizTag>>;
+    async fn update_biz_tag(
+        &self,
+        id: Uuid,
+        request: &crate::core::database::UpdateBizTagRequest,
+    ) -> crate::core::Result<crate::core::database::BizTag>;
+    async fn delete_biz_tag(&self, id: Uuid) -> crate::core::Result<()>;
+    async fn count_biz_tags(
+        &self,
+        workspace_id: Uuid,
+        group_id: Option<Uuid>,
+    ) -> crate::core::Result<u64>;
+    async fn list_biz_tags(
+        &self,
+        workspace_id: Uuid,
+        group_id: Option<Uuid>,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> crate::core::Result<Vec<crate::core::database::BizTag>>;
+
+    async fn create_workspace(
+        &self,
+        req: CreateWorkspaceRequest,
+    ) -> crate::core::Result<WorkspaceResponse>;
+    async fn list_workspaces(&self) -> crate::core::Result<WorkspaceListResponse>;
+    async fn get_workspace(&self, name: &str) -> crate::core::Result<Option<WorkspaceResponse>>;
+    async fn create_group(&self, req: CreateGroupRequest) -> crate::core::Result<GroupResponse>;
+    async fn list_groups(&self, workspace: &str) -> crate::core::Result<GroupListResponse>;
+
+    async fn get_database_metrics(&self) -> DatabaseMetrics;
+    async fn get_cache_metrics(&self) -> CacheMetrics;
+    async fn get_algorithm_metrics(
+        &self,
+    ) -> Vec<(
+        crate::core::types::AlgorithmType,
+        crate::core::algorithm::AlgorithmMetricsSnapshot,
+    )>;
+}
+
+/// Production implementation of `ConfigManagementService`.
+///
+/// Renamed from `ConfigManagementService` (the struct) to `ConfigManager` so
+/// the trait can claim the canonical name; callers refer to the trait via
+/// `Arc<dyn ConfigManagementService>` and construct via `ConfigManager::new`.
+pub struct ConfigManager {
     hot_config: Arc<HotReloadConfig>,
     rate_limiter: Arc<RwLock<Option<(u32, u32)>>>,
     algorithm_router: Arc<crate::core::algorithm::AlgorithmRouter>,
@@ -41,7 +112,7 @@ pub struct ConfigManagementService {
     group_repository: Option<Arc<dyn crate::core::database::GroupRepository + Send + Sync>>,
 }
 
-impl ConfigManagementService {
+impl ConfigManager {
     pub fn new(
         hot_config: Arc<HotReloadConfig>,
         algorithm_router: Arc<crate::core::algorithm::AlgorithmRouter>,
@@ -71,16 +142,6 @@ impl ConfigManagementService {
             workspace_repository: Some(workspace_repository),
             group_repository: Some(group_repository),
         }
-    }
-
-    pub fn get_config(&self) -> ConfigResponse {
-        let config = self.hot_config.get_config();
-        Self::config_to_response(&config)
-    }
-
-    pub fn get_secure_config(&self) -> SecureConfigResponse {
-        let config = self.hot_config.get_config();
-        Self::secure_config_to_response(&config)
     }
 
     fn config_to_response(config: &Config) -> ConfigResponse {
@@ -188,8 +249,21 @@ impl ConfigManagementService {
             },
         }
     }
+}
 
-    pub async fn update_rate_limit(&self, req: UpdateRateLimitRequest) -> UpdateConfigResponse {
+#[async_trait]
+impl ConfigManagementService for ConfigManager {
+    fn get_config(&self) -> ConfigResponse {
+        let config = self.hot_config.get_config();
+        Self::config_to_response(&config)
+    }
+
+    fn get_secure_config(&self) -> SecureConfigResponse {
+        let config = self.hot_config.get_config();
+        Self::secure_config_to_response(&config)
+    }
+
+    async fn update_rate_limit(&self, req: UpdateRateLimitRequest) -> UpdateConfigResponse {
         if let Err(e) = req.validate() {
             return UpdateConfigResponse {
                 success: false,
@@ -222,7 +296,7 @@ impl ConfigManagementService {
         }
     }
 
-    pub async fn update_logging(&self, req: UpdateLoggingRequest) -> UpdateConfigResponse {
+    async fn update_logging(&self, req: UpdateLoggingRequest) -> UpdateConfigResponse {
         if let Err(e) = req.validate() {
             return UpdateConfigResponse {
                 success: false,
@@ -246,7 +320,7 @@ impl ConfigManagementService {
         }
     }
 
-    pub async fn reload_config(&self) -> UpdateConfigResponse {
+    async fn reload_config(&self) -> UpdateConfigResponse {
         match self.hot_config.reload_from_file().await {
             Ok(_) => UpdateConfigResponse {
                 success: true,
@@ -261,12 +335,12 @@ impl ConfigManagementService {
         }
     }
 
-    pub async fn get_rate_limit_override(&self) -> Option<(u32, u32)> {
+    async fn get_rate_limit_override(&self) -> Option<(u32, u32)> {
         let guard = self.rate_limiter.read().await;
         *guard
     }
 
-    pub async fn set_algorithm(&self, req: SetAlgorithmRequest) -> SetAlgorithmResponse {
+    async fn set_algorithm(&self, req: SetAlgorithmRequest) -> SetAlgorithmResponse {
         if let Err(e) = req.validate() {
             return SetAlgorithmResponse {
                 success: false,
@@ -314,7 +388,7 @@ impl ConfigManagementService {
 
     // ========== BizTag CRUD Methods ==========
 
-    pub async fn create_biz_tag(
+    async fn create_biz_tag(
         &self,
         request: &crate::core::database::CreateBizTagRequest,
     ) -> crate::core::Result<crate::core::database::BizTag> {
@@ -327,7 +401,7 @@ impl ConfigManagementService {
         }
     }
 
-    pub async fn get_biz_tag(
+    async fn get_biz_tag(
         &self,
         id: Uuid,
     ) -> crate::core::Result<Option<crate::core::database::BizTag>> {
@@ -340,7 +414,7 @@ impl ConfigManagementService {
         }
     }
 
-    pub async fn update_biz_tag(
+    async fn update_biz_tag(
         &self,
         id: Uuid,
         request: &crate::core::database::UpdateBizTagRequest,
@@ -354,7 +428,7 @@ impl ConfigManagementService {
         }
     }
 
-    pub async fn delete_biz_tag(&self, id: Uuid) -> crate::core::Result<()> {
+    async fn delete_biz_tag(&self, id: Uuid) -> crate::core::Result<()> {
         if let Some(ref repo) = self.repository {
             repo.delete_biz_tag(id).await
         } else {
@@ -364,7 +438,7 @@ impl ConfigManagementService {
         }
     }
 
-    pub async fn count_biz_tags(
+    async fn count_biz_tags(
         &self,
         workspace_id: Uuid,
         group_id: Option<Uuid>,
@@ -378,7 +452,7 @@ impl ConfigManagementService {
         }
     }
 
-    pub async fn list_biz_tags(
+    async fn list_biz_tags(
         &self,
         workspace_id: Uuid,
         group_id: Option<Uuid>,
@@ -397,7 +471,7 @@ impl ConfigManagementService {
 
     // ========== Workspace CRUD Methods ==========
 
-    pub async fn create_workspace(
+    async fn create_workspace(
         &self,
         req: CreateWorkspaceRequest,
     ) -> crate::core::Result<WorkspaceResponse> {
@@ -427,7 +501,7 @@ impl ConfigManagementService {
         }
     }
 
-    pub async fn list_workspaces(&self) -> crate::core::Result<WorkspaceListResponse> {
+    async fn list_workspaces(&self) -> crate::core::Result<WorkspaceListResponse> {
         if let Some(ref repo) = self.workspace_repository {
             let workspaces = repo.list_workspaces(None, None).await?;
             let total = workspaces.len() as u64;
@@ -456,10 +530,7 @@ impl ConfigManagementService {
         }
     }
 
-    pub async fn get_workspace(
-        &self,
-        name: &str,
-    ) -> crate::core::Result<Option<WorkspaceResponse>> {
+    async fn get_workspace(&self, name: &str) -> crate::core::Result<Option<WorkspaceResponse>> {
         if let Some(ref repo) = self.workspace_repository {
             let workspace = repo.get_workspace_by_name(name).await?;
             Ok(workspace.map(|w| WorkspaceResponse {
@@ -482,10 +553,7 @@ impl ConfigManagementService {
 
     // ========== Group CRUD Methods ==========
 
-    pub async fn create_group(
-        &self,
-        req: CreateGroupRequest,
-    ) -> crate::core::Result<GroupResponse> {
+    async fn create_group(&self, req: CreateGroupRequest) -> crate::core::Result<GroupResponse> {
         if let Some(ref workspace_repo) = self.workspace_repository {
             if let Some(ref group_repo) = self.group_repository {
                 // First get the workspace by name
@@ -527,7 +595,7 @@ impl ConfigManagementService {
         }
     }
 
-    pub async fn list_groups(&self, workspace: &str) -> crate::core::Result<GroupListResponse> {
+    async fn list_groups(&self, workspace: &str) -> crate::core::Result<GroupListResponse> {
         if let Some(ref workspace_repo) = self.workspace_repository {
             if let Some(ref group_repo) = self.group_repository {
                 let workspace = workspace_repo.get_workspace_by_name(workspace).await?;
@@ -570,7 +638,7 @@ impl ConfigManagementService {
         }
     }
 
-    pub async fn get_database_metrics(&self) -> DatabaseMetrics {
+    async fn get_database_metrics(&self) -> DatabaseMetrics {
         // Get database adapter from container if available
         let metrics = if let Some(ref repo) = self.repository {
             // Check database health
@@ -615,7 +683,7 @@ impl ConfigManagementService {
         metrics
     }
 
-    pub async fn get_cache_metrics(&self) -> CacheMetrics {
+    async fn get_cache_metrics(&self) -> CacheMetrics {
         // Get algorithm metrics for cache hit rate
         let algorithm_metrics = self.algorithm_router.metrics().await;
         let cache_hit_rate = if !algorithm_metrics.is_empty() {
@@ -637,7 +705,7 @@ impl ConfigManagementService {
         }
     }
 
-    pub async fn get_algorithm_metrics(
+    async fn get_algorithm_metrics(
         &self,
     ) -> Vec<(
         crate::core::types::AlgorithmType,
@@ -646,7 +714,7 @@ impl ConfigManagementService {
         self.algorithm_router.metrics().await
     }
 
-    pub fn get_batch_max_size(&self) -> u32 {
+    fn get_batch_max_size(&self) -> u32 {
         let config = self.hot_config.get_config();
         config.batch_generate.max_batch_size
     }
@@ -678,7 +746,7 @@ mod tests {
     #[tokio::test]
     async fn test_config_to_response() {
         let config = test_config();
-        let response = ConfigManagementService::config_to_response(&config);
+        let response = ConfigManager::config_to_response(&config);
 
         // Engine depends on environment - SQLite for tests, PostgreSQL for production
         assert!(response.database.engine == "postgresql" || response.database.engine == "sqlite");
@@ -699,7 +767,7 @@ mod tests {
             "config/config.toml".to_string(),
         ));
         let algorithm_router = create_test_algorithm_router();
-        let _service = ConfigManagementService::new(hot_config, algorithm_router);
+        let _service = ConfigManager::new(hot_config, algorithm_router);
 
         let valid_req = UpdateRateLimitRequest {
             default_rps: Some(5000),
@@ -721,7 +789,7 @@ mod tests {
             "config/config.toml".to_string(),
         ));
         let algorithm_router = create_test_algorithm_router();
-        let _service = ConfigManagementService::new(hot_config, algorithm_router);
+        let _service = ConfigManager::new(hot_config, algorithm_router);
 
         let valid_req = UpdateLoggingRequest {
             level: Some("debug".to_string()),
@@ -744,7 +812,7 @@ mod tests {
             "config/config.toml".to_string(),
         ));
         let algorithm_router = create_test_algorithm_router();
-        let service = ConfigManagementService::new(hot_config, algorithm_router.clone());
+        let service = ConfigManager::new(hot_config, algorithm_router.clone());
 
         let req = SetAlgorithmRequest {
             biz_tag: "test-biz".to_string(),
@@ -764,7 +832,7 @@ mod tests {
             "config/config.toml".to_string(),
         ));
         let algorithm_router = create_test_algorithm_router();
-        let service = ConfigManagementService::new(hot_config, algorithm_router);
+        let service = ConfigManager::new(hot_config, algorithm_router);
 
         let req = SetAlgorithmRequest {
             biz_tag: "test-biz".to_string(),

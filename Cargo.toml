@@ -23,16 +23,35 @@ protoc-bin-vendored = "3.2.0"
 tonic-prost-build = "0.14"
 
 [features]
-default = ["postgresql"]
+default = ["postgresql", "http", "grpc"]
 postgresql = ["sea-orm/sqlx-postgres", "sqlx/postgres"]
 sqlite = ["sea-orm/sqlx-sqlite", "sqlx/sqlite"]
 etcd = ["dep:etcd-client"]
 
-# sdforge 0.4.2 macros emit #[cfg(feature = "...")] gates for sdforge-internal
-# features (http/grpc/cli/mcp/openapi/websocket) inside #[forge] expansions.
-# check-cfg only knows about nebulaid's own [features] table, so it would
-# flag these as unexpected. Declare them as known cfg values to silence the
-# spurious warnings without actually exposing them as nebulaid features.
+# sdforge 0.4.4 macros emit #[cfg(feature = "http")] / #[cfg(feature = "grpc")]
+# gates *inside* the downstream crate's #[forge] expansion. These gates are
+# evaluated against nebulaid's own [features] table, not sdforge's. Without
+# mirror features here, inventory::submit!(RouteRegistration) gets cfg'd out
+# and init_all_plugins() returns 0 routes (silent regression observed when
+# sdforge-macros upgraded 0.4.2 → 0.4.4, which added these gates).
+#
+# These are empty mirror features — sdforge's http/grpc features are still
+# hardcoded in the sdforge dependency declaration below. The mirror features
+# only exist so the macro-emitted #[cfg(feature = "http")] evaluates to true
+# in nebulaid's crate context. When a user explicitly disables them via
+# --no-default-features, sdforge::http remains available (hardcoded) but
+# inventory::submit! is cfg'd out — init_sdforge() will return 0 routes,
+# which is the expected behavior for a build that opts out of sdforge
+# route registration.
+http = []
+grpc = []
+
+# sdforge 0.4.4 macros also emit #[cfg(feature = "...")] gates for other
+# sdforge-internal features (cli/mcp/openapi/websocket/streaming/cache/...)
+# inside #[forge] expansions. check-cfg only knows about nebulaid's own
+# [features] table, so it would flag these as unexpected. Declare them as
+# known cfg values to silence the spurious warnings without actually
+# exposing them as nebulaid features (we only enable http + grpc above).
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = [
     'cfg(feature, values("http", "grpc", "cli", "mcp", "openapi", "websocket", "streaming", "cache", "logging", "inklog", "i18n", "security", "ratelimit", "ratelimit-http", "docs", "limiteron-integration", "kit"))',
@@ -55,46 +74,35 @@ serde_json = "1"
 # 异步运行时
 tokio = { version = "1.50", features = ["full"] }
 tokio-stream = "0.1"
-futures = "0.3"
 futures-util = "0.3"
 
 # Web 框架
 axum = { version = "0.8", features = ["json", "macros"] }
-axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = { version = "0.5", features = ["full"] }
 tower-http = { version = "0.5", features = ["cors", "compression-gzip", "timeout", "limit", "trace", "set-header"] }
 hyper = { version = "1.8", features = ["full"] }
 
 # OpenAPI 文档
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
-utoipa-swagger-ui = { version = "8", features = ["axum"] }
 
 # gRPC / Protobuf
 tonic = { version = "0.14", features = ["tls-webpki-roots"] }
 tonic-prost = "0.14"
 prost = "0.14"
-prost-types = "0.14"
 
 # 分布式协调
 etcd-client = { version = "0.17", optional = true }
 
 # 缓存与存储
-lru = "0.16"
 parking_lot = "0.12"
 
 # 数据库
 sea-orm = { version = "1.1", features = ["runtime-tokio-rustls", "with-chrono", "with-uuid", "postgres-array"] }
-sea-orm-migration = { version = "1.1", optional = true }
 sqlx = { version = "0.8", default-features = false, optional = true, features = ["runtime-tokio", "tls-rustls", "uuid", "chrono"] }
-
-# 监控与指标
-prometheus-client = { version = "0.24", default-features = false }
-prometheus = "0.14"
 
 # 日志追踪
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
-tracing-appender = "0.2"
 
 # 工具库
 uuid = { version = "1.22", features = ["v4", "v7", "v8", "serde"] }
@@ -110,28 +118,19 @@ regex = "1"
 toml = "1.1"
 reqwest = { version = "0.13", features = ["json"] }
 validator = { version = "0.20", features = ["derive"] }
-winnow = "0.5"
 serde_with = "3"
 config = "0.15"
-humantime = "2"
-
-# 命令行
-clap = { version = "4.6", features = ["derive"] }
 
 # 错误处理
 anyhow = "1.0"
 
-# 认证
-authrs = { version = "0.1.2", features = ["api-key"] }
-
 # 加密
 rustls = "0.23"
-tokio-rustls = "0.25"
+tokio-rustls = "0.26"
 rustls-pemfile = "2"
 
 # 基础组件
 arc-swap = "1.6"
-crossbeam = "0.8"
 smallvec = "1"
 bytes = "1"
 crc32fast = "1"
@@ -143,11 +142,8 @@ limiteron = { version = "0.2", default-features = false, features = ["postgres",
 
 [dev-dependencies]
 mockall = "0.13"
-proptest = "1.4"
-quickcheck = "1"
 sea-orm = { version = "1.1", features = ["mock"] }
 tempfile = "3"
-tokio-test = "0.4"
 reqwest = { version = "0.13", features = ["json"] }
 
 [profile.release]

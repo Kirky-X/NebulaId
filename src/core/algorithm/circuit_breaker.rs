@@ -712,4 +712,367 @@ mod tests {
             );
         }
     }
+
+    /// 验证 CircuitBreakerError::new 构造、Display 格式化以及 From<CircuitBreakerError> for String 转换。
+    #[test]
+    fn test_circuit_breaker_error_new_display_from_string() {
+        let err = CircuitBreakerError::new("boom".to_string());
+        assert_eq!(err.message, "boom");
+        assert_eq!(format!("{}", err), "boom");
+        // From<CircuitBreakerError> for String 提取 message 字段
+        let s: String = err.into();
+        assert_eq!(s, "boom");
+    }
+
+    /// 验证 CircuitOpenError 的 Display 输出与 Error trait 可用性。
+    #[test]
+    fn test_circuit_open_error_display_and_error_trait() {
+        let err = CircuitOpenError;
+        assert_eq!(format!("{}", err), "Circuit breaker is open");
+        // 可作为 dyn Error 使用
+        let _: &dyn Error = &err;
+    }
+
+    /// 验证 is_open / is_half_open / is_closed 三个状态判定方法在所有状态下的返回值。
+    #[test]
+    fn test_circuit_breaker_state_helpers_all_variants() {
+        assert!(CircuitBreakerState::Closed.is_closed());
+        assert!(!CircuitBreakerState::Closed.is_open());
+        assert!(!CircuitBreakerState::Closed.is_half_open());
+
+        assert!(CircuitBreakerState::Open.is_open());
+        assert!(!CircuitBreakerState::Open.is_closed());
+        assert!(!CircuitBreakerState::Open.is_half_open());
+
+        assert!(CircuitBreakerState::HalfOpen.is_half_open());
+        assert!(!CircuitBreakerState::HalfOpen.is_closed());
+        assert!(!CircuitBreakerState::HalfOpen.is_open());
+    }
+
+    /// 验证 state_to_u8 对三个状态的编码与常量一致。
+    #[test]
+    fn test_state_to_u8_all_variants() {
+        assert_eq!(state_to_u8(CircuitBreakerState::Closed), STATE_CLOSED);
+        assert_eq!(state_to_u8(CircuitBreakerState::Open), STATE_OPEN);
+        assert_eq!(state_to_u8(CircuitBreakerState::HalfOpen), STATE_HALF_OPEN);
+    }
+
+    /// 验证 u8_to_state 的默认回退分支：未知值回落到 Closed。
+    #[test]
+    fn test_u8_to_state_default_fallback() {
+        assert_eq!(u8_to_state(STATE_CLOSED), CircuitBreakerState::Closed);
+        assert_eq!(u8_to_state(STATE_OPEN), CircuitBreakerState::Open);
+        assert_eq!(u8_to_state(STATE_HALF_OPEN), CircuitBreakerState::HalfOpen);
+        // 未知值 → Closed（防御性回退）
+        assert_eq!(u8_to_state(255), CircuitBreakerState::Closed);
+    }
+
+    /// 验证 nanos_to_instant 的 None 分支（n == 0）与 Some 分支（n > 0）。
+    #[test]
+    fn test_nanos_to_instant_zero_and_nonzero() {
+        assert!(nanos_to_instant(0).is_none());
+        let instant = nanos_to_instant(1).expect("non-zero nanos must yield Some");
+        // 转换回 nanos 应近似等于原值（允许纳秒级误差）
+        let back = instant.duration_since(start_instant()).as_nanos() as u64;
+        assert!(back >= 1);
+    }
+
+    /// 验证 OPEN 状态下 next_attempt_at == 0 时 should_allow_request 返回 false。
+    /// 覆盖 should_allow_request 中 "next_attempt_nanos == 0" 早返回分支。
+    #[tokio::test]
+    async fn test_should_allow_request_open_next_attempt_zero() {
+        let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
+        // 手动将状态置为 OPEN，next_attempt_at 置为 0
+        breaker.state.store(STATE_OPEN, Ordering::Release);
+        breaker.next_attempt_at.store(0, Ordering::Release);
+        let allowed = breaker.should_allow_request().await;
+        assert!(!allowed, "OPEN + next_attempt_at==0 must reject request");
+    }
+
+    /// 验证 should_allow_request 对未知状态字节的 fail-open 行为（_ => true 分支）。
+    #[tokio::test]
+    async fn test_should_allow_request_invalid_state_fallback() {
+        let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
+        // 写入非法状态值（不在 0/1/2 之中）
+        breaker.state.store(255, Ordering::Release);
+        let allowed = breaker.should_allow_request().await;
+        assert!(allowed, "invalid state byte must fail-open (return true)");
+    }
+
+    /// 验证 OPEN 状态下未到 next_attempt 时刻时 should_allow_request 返回 false。
+    #[tokio::test]
+    async fn test_should_allow_request_open_not_timed_out() {
+        let breaker = CircuitBreaker::new(CircuitBreakerConfig {
+            timeout_ms: 10_000, // 远大于测试时长
+            ..Default::default()
+        });
+        breaker.transition_to_open(); // 设置 next_attempt_at 为未来时刻
+        let allowed = breaker.should_allow_request().await;
+        assert!(!allowed, "OPEN + not yet timed out must reject request");
+    }
+
+    /// 验证 on_failure 在滑动窗口过期时重置 window_requests / window_failures / window_start。
+    #[tokio::test]
+    async fn test_on_failure_sliding_window_expiration() {
+        // window_size_seconds=0 使窗口立即过期
+        let config = CircuitBreakerConfig {
+            failure_threshold: 100,
+            min_requests: 100,
+            window_size_seconds: 0,
+            ..Default::default()
+        };
+        let breaker = CircuitBreaker::new(config);
+        // 预填滑动窗口计数
+        breaker.window_requests.store(5, Ordering::Relaxed);
+        breaker.window_failures.store(3, Ordering::Relaxed);
+        // window_start 已由 new() 设置为构造时刻；window_size_seconds=0 时立即过期
+        breaker.on_failure().await;
+        // 过期后 window_requests / window_failures 被 store(0) 重置
+        // （fetch_add 发生在重置之前，但重置覆盖为 0）
+        assert_eq!(
+            breaker.window_requests.load(Ordering::Relaxed),
+            0,
+            "expired window requests must be reset to 0"
+        );
+        assert_eq!(
+            breaker.window_failures.load(Ordering::Relaxed),
+            0,
+            "expired window failures must be reset to 0"
+        );
+    }
+
+    /// 验证 on_failure 在 window_failures/window_requests > 0.5 且
+    /// window_requests >= min_requests 时通过失败率分支触发 should_open=true → 转 OPEN。
+    #[tokio::test]
+    async fn test_on_failure_window_failure_rate_triggers_open() {
+        // failure_threshold=100 使 consecutive_failures 路径不触发 should_open
+        // min_requests=2 使窗口失败率路径可达
+        let config = CircuitBreakerConfig {
+            failure_threshold: 100,
+            min_requests: 2,
+            window_size_seconds: 60, // 窗口不过期
+            ..Default::default()
+        };
+        let breaker = CircuitBreaker::new(config);
+        // 预填窗口：2 请求 2 失败（rate=1.0 > 0.5）
+        breaker.window_requests.store(2, Ordering::Relaxed);
+        breaker.window_failures.store(2, Ordering::Relaxed);
+        // consecutive_failures=0 < 100，故 should_open 仅由失败率分支驱动
+        breaker.on_failure().await;
+        assert_eq!(
+            breaker.state().await,
+            CircuitBreakerState::Open,
+            "window failure rate > 0.5 with enough requests must open the breaker"
+        );
+    }
+
+    /// 验证 transition_to_closed 从 OPEN 状态恢复到 CLOSED 时清零计数器与 next_attempt_at。
+    #[tokio::test]
+    async fn test_transition_to_closed_from_open() {
+        let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
+        breaker.transition_to_open();
+        // 填充非零计数器
+        breaker.consecutive_failures.store(5, Ordering::Relaxed);
+        breaker.consecutive_successes.store(3, Ordering::Relaxed);
+        assert!(breaker.next_attempt_at.load(Ordering::Acquire) > 0);
+        // 执行转换
+        breaker.transition_to_closed().await;
+        assert_eq!(breaker.state().await, CircuitBreakerState::Closed);
+        assert_eq!(breaker.consecutive_failures.load(Ordering::Relaxed), 0);
+        assert_eq!(breaker.consecutive_successes.load(Ordering::Relaxed), 0);
+        assert_eq!(breaker.next_attempt_at.load(Ordering::Acquire), 0);
+    }
+
+    /// 验证 transition_to_closed 在已处于 CLOSED 时是幂等的（prev == CLOSED 不重置）。
+    #[tokio::test]
+    async fn test_transition_to_closed_idempotent() {
+        let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
+        // 初始即为 CLOSED，prev == CLOSED，不应进入重置分支
+        breaker.consecutive_failures.store(7, Ordering::Relaxed);
+        breaker.transition_to_closed().await;
+        // 计数器未被重置（prev == CLOSED 分支不执行 store(0)）
+        assert_eq!(breaker.consecutive_failures.load(Ordering::Relaxed), 7);
+        assert_eq!(breaker.state().await, CircuitBreakerState::Closed);
+    }
+
+    /// 验证 transition_to_half_open 在已处于 HALF_OPEN 时是幂等的（prev == HALF_OPEN 不重置计数器）。
+    #[tokio::test]
+    async fn test_transition_to_half_open_idempotent() {
+        let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
+        breaker.transition_to_open();
+        // 第一次：OPEN → HALF_OPEN，prev=OPEN，重置计数器
+        breaker.transition_to_half_open().await;
+        assert_eq!(breaker.state().await, CircuitBreakerState::HalfOpen);
+        // 填充非零计数器
+        breaker.consecutive_failures.store(9, Ordering::Relaxed);
+        breaker.consecutive_successes.store(4, Ordering::Relaxed);
+        // 第二次：HALF_OPEN → HALF_OPEN，prev=HALF_OPEN，不应重置
+        breaker.transition_to_half_open().await;
+        assert_eq!(breaker.consecutive_failures.load(Ordering::Relaxed), 9);
+        assert_eq!(breaker.consecutive_successes.load(Ordering::Relaxed), 4);
+        assert_eq!(breaker.state().await, CircuitBreakerState::HalfOpen);
+    }
+
+    /// 验证 metrics() 在全新熔断器上返回全 None 时间戳与零计数。
+    #[tokio::test]
+    async fn test_metrics_fresh_breaker_all_none() {
+        let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
+        let m = breaker.metrics().await;
+        assert_eq!(m.state, CircuitBreakerState::Closed);
+        assert_eq!(m.total_requests, 0);
+        assert_eq!(m.successful_requests, 0);
+        assert_eq!(m.failed_requests, 0);
+        assert_eq!(m.consecutive_failures, 0);
+        assert_eq!(m.consecutive_successes, 0);
+        assert_eq!(m.last_failure_at, None);
+        assert_eq!(m.last_success_at, None);
+        assert_eq!(m.next_attempt_at, None);
+    }
+
+    /// 验证 metrics() 在发生失败/成功后返回 Some 时间戳与正确计数。
+    #[tokio::test]
+    async fn test_metrics_after_activity_some_timestamps() {
+        let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
+        // on_failure 会触发 transition_to_open（CLOSED → OPEN），设置 last_failure_at / next_attempt_at
+        breaker.on_failure().await;
+        // on_success 在 OPEN 状态下设置 last_success_at（不触发状态转换）
+        breaker.on_success().await;
+        let m = breaker.metrics().await;
+        assert_eq!(m.state, CircuitBreakerState::Open);
+        assert_eq!(m.total_requests, 2);
+        assert_eq!(m.successful_requests, 1);
+        assert_eq!(m.failed_requests, 1);
+        assert_eq!(m.consecutive_failures, 0, "on_success resets consecutive_failures");
+        assert_eq!(m.consecutive_successes, 1);
+        assert!(m.last_failure_at.is_some(), "last_failure_at must be Some after failure");
+        assert!(m.last_success_at.is_some(), "last_success_at must be Some after success");
+        assert!(m.next_attempt_at.is_some(), "next_attempt_at must be Some after open");
+    }
+
+    /// 验证 failure_rate() 在 window_requests==0 时返回 0.0，在有数据时返回正确比例。
+    #[tokio::test]
+    async fn test_failure_rate_zero_and_nonzero() {
+        let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
+        // 全新：window_requests == 0 → 0.0
+        assert_eq!(breaker.failure_rate(), 0.0);
+        // 2 次失败 + 1 次成功 → window_requests=3, window_failures=2 → 2/3
+        breaker.on_failure().await;
+        breaker.on_failure().await;
+        breaker.on_success().await;
+        let rate = breaker.failure_rate();
+        assert!(
+            (rate - 2.0 / 3.0).abs() < 1e-9,
+            "failure_rate must be 2/3, got {}",
+            rate
+        );
+    }
+
+    /// 验证 transition_to_open_async 异步包装器调用 transition_to_open 后状态为 OPEN。
+    #[tokio::test]
+    async fn test_transition_to_open_async_wrapper() {
+        let breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
+        assert_eq!(breaker.state().await, CircuitBreakerState::Closed);
+        breaker.transition_to_open_async().await;
+        assert_eq!(breaker.state().await, CircuitBreakerState::Open);
+        assert!(breaker.next_attempt_at.load(Ordering::Acquire) > 0);
+    }
+
+    /// 验证 Clone 后两个实例共享底层状态（Arc 语义）。
+    #[tokio::test]
+    async fn test_circuit_breaker_clone_shares_state() {
+        let breaker = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 1,
+            ..Default::default()
+        });
+        let cloned = breaker.clone();
+        // 在原实例上触发 OPEN
+        breaker.on_failure().await;
+        // 克隆应看到相同的 OPEN 状态（Arc 共享）
+        assert_eq!(breaker.state().await, CircuitBreakerState::Open);
+        assert_eq!(
+            cloned.state().await,
+            CircuitBreakerState::Open,
+            "clone must share state via Arc"
+        );
+        // 计数器也共享
+        assert_eq!(
+            cloned.failed_requests.load(Ordering::Relaxed),
+            breaker.failed_requests.load(Ordering::Relaxed)
+        );
+    }
+
+    /// 验证 execute 在 OPEN 状态下返回 CircuitBreakerError 派生的错误（拒绝请求）。
+    /// 错误消息来自全局静态 CIRCUIT_BREAKER_OPEN，经 From<CircuitBreakerError> for String 转换。
+    #[tokio::test]
+    async fn test_execute_open_state_returns_open_error() {
+        let breaker = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 1,
+            timeout_ms: 10_000, // 不让超时干扰
+            ..Default::default()
+        });
+        // 1 次失败即触发 OPEN
+        let _: Result<(), String> = breaker.execute(async { Err("fail".to_string()) }).await;
+        assert_eq!(breaker.state().await, CircuitBreakerState::Open);
+        // OPEN 状态下 execute 应直接返回错误，不调用 operation
+        // operation 提供一个 Ok 结果；若被错误调用，result 会变为 Ok 使断言失败
+        let result: Result<(), String> = breaker
+            .execute(async { Ok::<(), String>(()) })
+            .await;
+        assert!(
+            result.is_err(),
+            "execute in OPEN state must return error without invoking operation"
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "Circuit breaker is open",
+            "error must carry the canonical open-state message"
+        );
+    }
+
+    /// 验证 on_success 在 HALF_OPEN 状态下达到 success_threshold 边界（=1）即转 CLOSED。
+    #[tokio::test]
+    async fn test_on_success_half_open_threshold_boundary() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 1,
+            success_threshold: 1, // 边界：1 次成功即恢复
+            timeout_ms: 50,
+            ..Default::default()
+        };
+        let breaker = CircuitBreaker::new(config);
+        breaker.transition_to_open();
+        // 等待超时使 should_allow_request 把 OPEN 转 HALF_OPEN
+        sleep(Duration::from_millis(60)).await;
+        let _: Result<(), String> = breaker.execute(async { Ok(()) }).await;
+        // success_threshold=1，1 次成功即 HALF_OPEN → CLOSED
+        assert_eq!(breaker.state().await, CircuitBreakerState::Closed);
+        // 转换后计数器清零
+        assert_eq!(breaker.consecutive_successes.load(Ordering::Relaxed), 0);
+        assert_eq!(breaker.consecutive_failures.load(Ordering::Relaxed), 0);
+        assert_eq!(breaker.next_attempt_at.load(Ordering::Acquire), 0);
+    }
+
+    /// 验证 on_success 在 HALF_OPEN 状态下未达 success_threshold 时保持 HALF_OPEN。
+    #[tokio::test]
+    async fn test_on_success_half_open_below_threshold_stays_half_open() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 1,
+            success_threshold: 3, // 需 3 次成功
+            timeout_ms: 50,
+            ..Default::default()
+        };
+        let breaker = CircuitBreaker::new(config);
+        breaker.transition_to_open();
+        sleep(Duration::from_millis(60)).await;
+        // 第 1 次成功：should_allow_request 把 OPEN 转 HALF_OPEN，on_success 因 1 < 3 保持 HALF_OPEN
+        let _: Result<(), String> = breaker.execute(async { Ok(()) }).await;
+        assert_eq!(breaker.state().await, CircuitBreakerState::HalfOpen);
+        assert_eq!(breaker.consecutive_successes.load(Ordering::Relaxed), 1);
+        // 第 2 次成功：仍 < 3，保持 HALF_OPEN
+        let _: Result<(), String> = breaker.execute(async { Ok(()) }).await;
+        assert_eq!(breaker.state().await, CircuitBreakerState::HalfOpen);
+        assert_eq!(breaker.consecutive_successes.load(Ordering::Relaxed), 2);
+        // 第 3 次成功：达到阈值，转 CLOSED
+        let _: Result<(), String> = breaker.execute(async { Ok(()) }).await;
+        assert_eq!(breaker.state().await, CircuitBreakerState::Closed);
+    }
 }

@@ -561,6 +561,40 @@ impl SnowflakeAlgorithmBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use confers::types::{AnnotatedValue, ConfigValue, SourceId};
+    use std::collections::HashMap;
+
+    /// 测试用的 ConfigProvider mock，支持预设 int 值。
+    struct MockConfigProvider {
+        values: HashMap<String, AnnotatedValue>,
+    }
+
+    impl MockConfigProvider {
+        fn new() -> Self {
+            Self {
+                values: HashMap::new(),
+            }
+        }
+
+        fn with_int(mut self, key: impl Into<String>, value: i64) -> Self {
+            let key = key.into();
+            self.values.insert(
+                key.clone(),
+                AnnotatedValue::new(ConfigValue::I64(value), SourceId::default(), key),
+            );
+            self
+        }
+    }
+
+    impl ConfigProvider for MockConfigProvider {
+        fn get_raw(&self, key: &str) -> Option<&AnnotatedValue> {
+            self.values.get(key)
+        }
+
+        fn keys(&self) -> Vec<String> {
+            self.values.keys().cloned().collect()
+        }
+    }
 
     #[test]
     fn test_snowflake_config_masks() {
@@ -652,5 +686,638 @@ mod tests {
         // 不 sleep，确保同一毫秒内第二次调用
         let id2 = algo.generate_id().await.expect("second call in same ms should succeed");
         assert_ne!(id1.as_u128(), id2.as_u128(), "IDs must be unique");
+    }
+
+    // ========================================================================
+    // 时钟回拨路径
+    // ========================================================================
+
+    /// R-algorithm-002: 时钟回拨超过阈值时，generate_id 应返回 ClockMovedBackward 错误，
+    /// 且 clock_drift_ms 应被记录、health_check 应反映 Unhealthy 状态。
+    #[tokio::test]
+    async fn test_generate_id_clock_backward_exceeds_threshold_returns_error() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        let current = SnowflakeAlgorithm::get_timestamp();
+        let future_ts = current + 2000;
+        algo.last_timestamp.store(future_ts, Ordering::SeqCst);
+
+        let result = algo.generate_id().await;
+        match result {
+            Err(CoreError::ClockMovedBackward { last_timestamp }) => {
+                assert_eq!(last_timestamp, future_ts);
+            }
+            other => panic!("expected ClockMovedBackward, got {:?}", other),
+        }
+
+        // 验证 clock_drift_ms 已被记录为 2000
+        assert_eq!(algo.clock_drift_ms.load(Ordering::Relaxed), 2000);
+        // 验证 health_check 反映不健康状态
+        assert!(matches!(algo.health_check(), HealthStatus::Unhealthy(_)));
+    }
+
+    /// R-algorithm-003: 时钟回拨未超过阈值时，generate_id 应等待下一毫秒并成功生成 ID，
+    /// 且 last_timestamp 应推进到 wait_ts。
+    #[tokio::test]
+    async fn test_generate_id_clock_backward_within_threshold_waits_and_succeeds() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        let current = SnowflakeAlgorithm::get_timestamp();
+        // 设置 last_timestamp 为未来 1ms，drift=1 <= 默认阈值 1000
+        algo.last_timestamp.store(current + 1, Ordering::SeqCst);
+
+        let result = algo.generate_id().await;
+        assert!(
+            result.is_ok(),
+            "should succeed after waiting, got: {:?}",
+            result.err()
+        );
+        let id = result.unwrap();
+        assert!(id.as_u128() > 0, "generated ID must be non-zero");
+
+        // 验证 last_timestamp 已推进到 wait_ts（> current）
+        let last_ts = algo.get_last_timestamp();
+        assert!(
+            last_ts > current,
+            "last_timestamp should advance to wait_ts, got {}",
+            last_ts
+        );
+    }
+
+    /// R-algorithm-001: 同毫秒内序列号耗尽（seq & mask == 0 且 seq > 0）时，
+    /// 应触发 rotation_count 自增并等待下一毫秒后生成新 ID。
+    #[tokio::test]
+    async fn test_generate_id_sequence_wraparound_triggers_rotation() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        let mask = algo.config.sequence_mask();
+        let rotation_before = algo.rotation_count.load(Ordering::Relaxed);
+
+        // 重试多次以确保至少一次走绕回路径（依赖时间戳恰好等于 last_timestamp）
+        // 每次尝试失败的概率 < 1%（仅在跨毫秒边界时发生），50 次后几乎必然成功
+        let mut triggered = false;
+        for _ in 0..50 {
+            let ts = SnowflakeAlgorithm::get_timestamp();
+            algo.last_timestamp.store(ts, Ordering::SeqCst);
+            // 设置 sequence 为 mask+1，模拟同毫秒内已生成 mask+1 个 ID 后的状态
+            algo.sequence.store(mask + 1, Ordering::SeqCst);
+
+            if let Ok(id) = algo.generate_id().await {
+                let rotation_after = algo.rotation_count.load(Ordering::Relaxed);
+                if rotation_after > rotation_before {
+                    assert!(id.as_u128() > 0, "generated ID must be non-zero");
+                    triggered = true;
+                    break;
+                }
+            }
+        }
+
+        assert!(
+            triggered,
+            "wraparound branch should trigger within 50 attempts (rotation_count should increase)"
+        );
+    }
+
+    // ========================================================================
+    // wait_for_next_ms
+    // ========================================================================
+
+    /// wait_for_next_ms 应返回比输入 last_ts 更大的时间戳（循环体至少执行一次）。
+    #[tokio::test]
+    async fn test_wait_for_next_ms_returns_timestamp_greater_than_input() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        let current = SnowflakeAlgorithm::get_timestamp();
+        // 输入 current + 5，确保需要等待若干毫秒才能 current > last_ts
+        let result = algo.wait_for_next_ms(current + 5).await;
+        assert!(
+            result > current + 5,
+            "wait_for_next_ms should return timestamp > input, got {}",
+            result
+        );
+    }
+
+    // ========================================================================
+    // batch_generate
+    // ========================================================================
+
+    /// batch_generate 正常路径应返回指定数量的唯一 ID，且 algorithm 字段为 Snowflake。
+    #[tokio::test]
+    async fn test_batch_generate_normal_path() {
+        let algo = SnowflakeAlgorithm::new(1, 1);
+        let ctx = GenerateContext::default();
+        let batch = algo
+            .batch_generate(&ctx, 10)
+            .await
+            .expect("batch should succeed");
+        assert_eq!(batch.ids.len(), 10);
+        assert_eq!(batch.algorithm, AlgorithmType::Snowflake);
+
+        let mut seen = std::collections::HashSet::new();
+        for id in &batch.ids {
+            assert!(
+                seen.insert(id.as_u128()),
+                "duplicate ID in batch: {}",
+                id.as_u128()
+            );
+        }
+    }
+
+    /// batch_generate 在所有 generate_id 调用都失败时，应重试 MAX_RETRIES 次后返回 InternalError。
+    #[tokio::test]
+    async fn test_batch_generate_retries_exhausted_returns_internal_error() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        let current = SnowflakeAlgorithm::get_timestamp();
+        // 设置 last_timestamp 远在未来（drift=10000 > 阈值 1000），所有 generate_id 调用都失败
+        algo.last_timestamp.store(current + 10_000, Ordering::SeqCst);
+
+        let ctx = GenerateContext::default();
+        let result = algo.batch_generate(&ctx, 5).await;
+        match result {
+            Err(CoreError::InternalError(msg)) => {
+                assert!(
+                    msg.contains("max retries"),
+                    "error message should mention max retries, got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected InternalError, got {:?}", other),
+        }
+    }
+
+    // ========================================================================
+    // health_check
+    // ========================================================================
+
+    /// health_check 在无时钟漂移时应返回 Healthy。
+    #[test]
+    fn test_health_check_healthy_when_no_drift() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        assert!(matches!(algo.health_check(), HealthStatus::Healthy));
+    }
+
+    /// health_check 在 clock_drift_ms 严格大于阈值时应返回 Unhealthy。
+    #[test]
+    fn test_health_check_unhealthy_when_drift_exceeds_threshold() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        let threshold = algo.config.clock_drift_threshold_ms;
+        algo.clock_drift_ms.store(threshold + 1, Ordering::Relaxed);
+
+        match algo.health_check() {
+            HealthStatus::Unhealthy(msg) => {
+                assert!(
+                    msg.contains("Clock drift"),
+                    "message should mention clock drift: {}",
+                    msg
+                );
+            }
+            other => panic!("expected Unhealthy, got {:?}", other),
+        }
+    }
+
+    /// health_check 在 clock_drift_ms 等于阈值时应返回 Healthy（边界：drift > threshold 才 Unhealthy）。
+    #[test]
+    fn test_health_check_healthy_when_drift_equals_threshold() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        let threshold = algo.config.clock_drift_threshold_ms;
+        algo.clock_drift_ms.store(threshold, Ordering::Relaxed);
+        assert!(matches!(algo.health_check(), HealthStatus::Healthy));
+    }
+
+    // ========================================================================
+    // metrics / algorithm_type / initialize / shutdown
+    // ========================================================================
+
+    /// metrics 在生成 ID 后应反映正确的 total_generated 计数。
+    #[tokio::test]
+    async fn test_metrics_snapshot_reflects_generation() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        assert_eq!(algo.metrics().total_generated, 0);
+
+        for _ in 0..3 {
+            let _ = algo.generate_id().await.unwrap();
+        }
+
+        let snap = algo.metrics();
+        assert!(
+            snap.total_generated >= 3,
+            "total_generated should be >= 3, got {}",
+            snap.total_generated
+        );
+        assert_eq!(snap.current_qps, 0);
+        assert_eq!(snap.p50_latency_us, 0);
+        assert_eq!(snap.p99_latency_us, 0);
+        assert_eq!(snap.cache_hit_rate, 0.0);
+    }
+
+    /// algorithm_type 应返回 Snowflake。
+    #[test]
+    fn test_algorithm_type_returns_snowflake() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        assert_eq!(algo.algorithm_type(), AlgorithmType::Snowflake);
+    }
+
+    /// initialize 应从 Config 加载 datacenter_id、worker_id 和 snowflake 配置。
+    #[tokio::test]
+    async fn test_initialize_updates_config_and_ids() {
+        let mut algo = SnowflakeAlgorithm::new(0, 0);
+        let mut config = Config::default();
+        config.app.dc_id = 5;
+        config.app.worker_id = 7;
+        config.algorithm.snowflake.datacenter_id_bits = 2;
+        config.algorithm.snowflake.worker_id_bits = 4;
+        config.algorithm.snowflake.sequence_bits = 8;
+        config.algorithm.snowflake.clock_drift_threshold_ms = 500;
+
+        algo.initialize(&config)
+            .await
+            .expect("initialize should succeed");
+
+        assert_eq!(algo.get_datacenter_id(), 5);
+        assert_eq!(algo.get_worker_id(), 7);
+        assert_eq!(algo.config.datacenter_id_bits, 2);
+        assert_eq!(algo.config.worker_id_bits, 4);
+        assert_eq!(algo.config.sequence_bits, 8);
+        assert_eq!(algo.config.clock_drift_threshold_ms, 500);
+    }
+
+    /// shutdown 应返回 Ok(())。
+    #[tokio::test]
+    async fn test_shutdown_returns_ok() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        assert!(algo.shutdown().await.is_ok());
+    }
+
+    // ========================================================================
+    // getters
+    // ========================================================================
+
+    /// get_datacenter_id 应返回构造时设置的 datacenter_id。
+    #[test]
+    fn test_get_datacenter_id_returns_set_value() {
+        let algo = SnowflakeAlgorithm::new(5, 7);
+        assert_eq!(algo.get_datacenter_id(), 5);
+    }
+
+    /// get_worker_id 应返回构造时设置的 worker_id。
+    #[test]
+    fn test_get_worker_id_returns_set_value() {
+        let algo = SnowflakeAlgorithm::new(5, 7);
+        assert_eq!(algo.get_worker_id(), 7);
+    }
+
+    /// get_last_timestamp 应反映 last_timestamp 原子变量的当前值。
+    #[test]
+    fn test_get_last_timestamp_reflects_state() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        assert_eq!(algo.get_last_timestamp(), 0);
+        algo.last_timestamp.store(12345, Ordering::SeqCst);
+        assert_eq!(algo.get_last_timestamp(), 12345);
+    }
+
+    /// get_sequence 应反映 sequence 原子变量的当前值。
+    #[test]
+    fn test_get_sequence_reflects_state() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        assert_eq!(algo.get_sequence(), 0);
+        algo.sequence.store(999, Ordering::SeqCst);
+        assert_eq!(algo.get_sequence(), 999);
+    }
+
+    // ========================================================================
+    // UuidV7Algorithm
+    // ========================================================================
+
+    /// UuidV7Algorithm::default() 应等价于 new()（行为验证）。
+    #[test]
+    fn test_uuid_v7_default_equals_new() {
+        let a = UuidV7Algorithm::new();
+        let b = UuidV7Algorithm::default();
+        assert!(a.generate_uuid_v7().is_ok());
+        assert!(b.generate_uuid_v7().is_ok());
+    }
+
+    /// UuidV7Algorithm::batch_generate 正常路径应返回指定数量的 UUID v7。
+    #[tokio::test]
+    async fn test_uuid_v7_batch_generate_normal() {
+        let algo = UuidV7Algorithm::new();
+        let ctx = GenerateContext::default();
+        let batch = algo
+            .batch_generate(&ctx, 5)
+            .await
+            .expect("batch should succeed");
+        assert_eq!(batch.ids.len(), 5);
+        assert_eq!(batch.algorithm, AlgorithmType::UuidV7);
+        for id in &batch.ids {
+            assert_eq!(id.to_uuid_v7().get_version(), Some(uuid::Version::SortRand));
+        }
+    }
+
+    /// UuidV7Algorithm::batch_generate 在 size=0 时应返回 InternalError("Unknown error")。
+    #[tokio::test]
+    async fn test_uuid_v7_batch_generate_empty_size_returns_error() {
+        let algo = UuidV7Algorithm::new();
+        let ctx = GenerateContext::default();
+        match algo.batch_generate(&ctx, 0).await {
+            Err(CoreError::InternalError(msg)) => {
+                assert!(msg.contains("Unknown error"), "got: {}", msg);
+            }
+            other => panic!("expected InternalError, got {:?}", other),
+        }
+    }
+
+    /// UuidV7Algorithm::health_check 应返回 Healthy。
+    #[test]
+    fn test_uuid_v7_health_check_returns_healthy() {
+        assert!(matches!(
+            UuidV7Algorithm::new().health_check(),
+            HealthStatus::Healthy
+        ));
+    }
+
+    /// UuidV7Algorithm::metrics 应反映生成计数。
+    #[tokio::test]
+    async fn test_uuid_v7_metrics_snapshot() {
+        let algo = UuidV7Algorithm::new();
+        assert_eq!(algo.metrics().total_generated, 0);
+        let _ = algo.generate_uuid_v7().unwrap();
+        let _ = algo.generate_uuid_v7().unwrap();
+        assert_eq!(algo.metrics().total_generated, 2);
+    }
+
+    /// UuidV7Algorithm::algorithm_type 应返回 UuidV7。
+    #[test]
+    fn test_uuid_v7_algorithm_type_returns_uuid_v7() {
+        assert_eq!(UuidV7Algorithm::new().algorithm_type(), AlgorithmType::UuidV7);
+    }
+
+    /// UuidV7Algorithm::initialize 应返回 Ok(())。
+    #[tokio::test]
+    async fn test_uuid_v7_initialize_returns_ok() {
+        let mut algo = UuidV7Algorithm::new();
+        assert!(algo.initialize(&Config::default()).await.is_ok());
+    }
+
+    /// UuidV7Algorithm::shutdown 应返回 Ok(())。
+    #[tokio::test]
+    async fn test_uuid_v7_shutdown_returns_ok() {
+        assert!(UuidV7Algorithm::new().shutdown().await.is_ok());
+    }
+
+    // ========================================================================
+    // UuidV4Algorithm
+    // ========================================================================
+
+    /// UuidV4Algorithm::default() 应等价于 new()（行为验证）。
+    #[test]
+    fn test_uuid_v4_default_equals_new() {
+        let a = UuidV4Algorithm::new();
+        let b = UuidV4Algorithm::default();
+        assert!(a.generate_uuid_v4().is_ok());
+        assert!(b.generate_uuid_v4().is_ok());
+    }
+
+    /// UuidV4Algorithm::batch_generate 正常路径应返回指定数量的 UUID v4。
+    #[tokio::test]
+    async fn test_uuid_v4_batch_generate_normal() {
+        let algo = UuidV4Algorithm::new();
+        let ctx = GenerateContext::default();
+        let batch = algo
+            .batch_generate(&ctx, 5)
+            .await
+            .expect("batch should succeed");
+        assert_eq!(batch.ids.len(), 5);
+        assert_eq!(batch.algorithm, AlgorithmType::UuidV4);
+        for id in &batch.ids {
+            assert_eq!(id.to_uuid_v7().get_version(), Some(uuid::Version::Random));
+        }
+    }
+
+    /// UuidV4Algorithm::health_check 应返回 Healthy。
+    #[test]
+    fn test_uuid_v4_health_check_returns_healthy() {
+        assert!(matches!(
+            UuidV4Algorithm::new().health_check(),
+            HealthStatus::Healthy
+        ));
+    }
+
+    /// UuidV4Algorithm::metrics 应反映生成计数。
+    #[tokio::test]
+    async fn test_uuid_v4_metrics_snapshot() {
+        let algo = UuidV4Algorithm::new();
+        assert_eq!(algo.metrics().total_generated, 0);
+        let _ = algo.generate_uuid_v4().unwrap();
+        let _ = algo.generate_uuid_v4().unwrap();
+        assert_eq!(algo.metrics().total_generated, 2);
+    }
+
+    /// UuidV4Algorithm::algorithm_type 应返回 UuidV4。
+    #[test]
+    fn test_uuid_v4_algorithm_type_returns_uuid_v4() {
+        assert_eq!(UuidV4Algorithm::new().algorithm_type(), AlgorithmType::UuidV4);
+    }
+
+    /// UuidV4Algorithm::initialize 应返回 Ok(())。
+    #[tokio::test]
+    async fn test_uuid_v4_initialize_returns_ok() {
+        let mut algo = UuidV4Algorithm::new();
+        assert!(algo.initialize(&Config::default()).await.is_ok());
+    }
+
+    /// UuidV4Algorithm::shutdown 应返回 Ok(())。
+    #[tokio::test]
+    async fn test_uuid_v4_shutdown_returns_ok() {
+        assert!(UuidV4Algorithm::new().shutdown().await.is_ok());
+    }
+
+    // ========================================================================
+    // DI: with_dependencies
+    // ========================================================================
+
+    /// with_dependencies 应从 ConfigProvider 加载所有 snowflake 配置项。
+    #[test]
+    fn test_with_dependencies_loads_config_from_provider() {
+        let provider = MockConfigProvider::new()
+            .with_int("algorithm.snowflake.datacenter_id_bits", 2)
+            .with_int("algorithm.snowflake.worker_id_bits", 4)
+            .with_int("algorithm.snowflake.sequence_bits", 8)
+            .with_int("algorithm.snowflake.clock_drift_threshold_ms", 500);
+        let provider_arc: Arc<dyn ConfigProvider> = Arc::new(provider);
+
+        let algo = SnowflakeAlgorithm::with_dependencies(&provider_arc, 3, 5);
+
+        assert_eq!(algo.get_datacenter_id(), 3);
+        assert_eq!(algo.get_worker_id(), 5);
+        assert_eq!(algo.config.datacenter_id_bits, 2);
+        assert_eq!(algo.config.worker_id_bits, 4);
+        assert_eq!(algo.config.sequence_bits, 8);
+        assert_eq!(algo.config.clock_drift_threshold_ms, 500);
+    }
+
+    /// with_dependencies 在 provider 缺少键时应使用默认值（3, 8, 10, 1000）。
+    #[test]
+    fn test_with_dependencies_uses_defaults_when_provider_empty() {
+        let provider_arc: Arc<dyn ConfigProvider> = Arc::new(MockConfigProvider::new());
+
+        let algo = SnowflakeAlgorithm::with_dependencies(&provider_arc, 1, 2);
+
+        assert_eq!(algo.get_datacenter_id(), 1);
+        assert_eq!(algo.get_worker_id(), 2);
+        assert_eq!(algo.config.datacenter_id_bits, 3);
+        assert_eq!(algo.config.worker_id_bits, 8);
+        assert_eq!(algo.config.sequence_bits, 10);
+        assert_eq!(algo.config.clock_drift_threshold_ms, 1000);
+    }
+
+    // ========================================================================
+    // Builder
+    // ========================================================================
+
+    /// SnowflakeAlgorithmBuilder::new() 应创建空 builder（所有字段为 None）。
+    #[test]
+    fn test_builder_new_creates_empty_builder() {
+        let builder = SnowflakeAlgorithmBuilder::new();
+        assert!(builder.config.is_none());
+        assert!(builder.datacenter_id.is_none());
+        assert!(builder.worker_id.is_none());
+    }
+
+    /// SnowflakeAlgorithmBuilder::default() 应等价于 new()。
+    #[test]
+    fn test_builder_default_equals_new() {
+        let a = SnowflakeAlgorithmBuilder::new();
+        let b = SnowflakeAlgorithmBuilder::default();
+        assert!(a.config.is_none() && b.config.is_none());
+        assert!(a.datacenter_id.is_none() && b.datacenter_id.is_none());
+        assert!(a.worker_id.is_none() && b.worker_id.is_none());
+    }
+
+    /// Builder::build() 在无 config 时应使用 SnowflakeAlgorithm::new 构造（默认配置）。
+    #[test]
+    fn test_builder_build_without_config_uses_new_constructor() {
+        let algo = SnowflakeAlgorithmBuilder::new()
+            .datacenter_id(5)
+            .worker_id(7)
+            .build();
+
+        assert_eq!(algo.get_datacenter_id(), 5);
+        assert_eq!(algo.get_worker_id(), 7);
+        // 默认 SnowflakeAlgorithmConfig
+        assert_eq!(algo.config.datacenter_id_bits, 3);
+        assert_eq!(algo.config.worker_id_bits, 8);
+        assert_eq!(algo.config.sequence_bits, 10);
+        assert_eq!(algo.config.clock_drift_threshold_ms, 1000);
+    }
+
+    /// Builder::build() 在有 config 时应使用 with_dependencies 构造（从 provider 加载配置）。
+    #[test]
+    fn test_builder_build_with_config_uses_with_dependencies() {
+        let provider = Arc::new(
+            MockConfigProvider::new()
+                .with_int("algorithm.snowflake.datacenter_id_bits", 2)
+                .with_int("algorithm.snowflake.worker_id_bits", 4)
+                .with_int("algorithm.snowflake.sequence_bits", 8)
+                .with_int("algorithm.snowflake.clock_drift_threshold_ms", 500),
+        );
+
+        let algo = SnowflakeAlgorithmBuilder::new()
+            .config(provider)
+            .datacenter_id(3)
+            .worker_id(5)
+            .build();
+
+        assert_eq!(algo.get_datacenter_id(), 3);
+        assert_eq!(algo.get_worker_id(), 5);
+        assert_eq!(algo.config.datacenter_id_bits, 2);
+        assert_eq!(algo.config.worker_id_bits, 4);
+        assert_eq!(algo.config.sequence_bits, 8);
+        assert_eq!(algo.config.clock_drift_threshold_ms, 500);
+    }
+
+    /// Builder::build() 在未设置 dc_id/worker_id 时应默认为 0。
+    #[test]
+    fn test_builder_build_defaults_to_zero_ids() {
+        let algo = SnowflakeAlgorithmBuilder::new().build();
+        assert_eq!(algo.get_datacenter_id(), 0);
+        assert_eq!(algo.get_worker_id(), 0);
+    }
+
+    /// Builder 链式 setter 应正确设置所有字段。
+    #[test]
+    fn test_builder_chained_setters_work() {
+        let provider: Arc<dyn ConfigProvider> = Arc::new(MockConfigProvider::new());
+        let builder = SnowflakeAlgorithmBuilder::new()
+            .config(provider.clone())
+            .datacenter_id(11)
+            .worker_id(22);
+        assert!(builder.config.is_some());
+        assert_eq!(builder.datacenter_id, Some(11));
+        assert_eq!(builder.worker_id, Some(22));
+        // 验证 provider Arc 引用计数正确（clone 后仍指向同一对象）
+        assert_eq!(Arc::strong_count(&provider), 2);
+    }
+
+    /// Builder 生成的算法应可正常生成 ID（端到端验证）。
+    #[tokio::test]
+    async fn test_builder_built_algorithm_can_generate_id() {
+        let algo = SnowflakeAlgorithmBuilder::new()
+            .datacenter_id(1)
+            .worker_id(2)
+            .build();
+
+        let id = algo.generate_id().await.expect("generate should succeed");
+        assert!(id.as_u128() > 0);
+    }
+
+    /// SnowflakeAlgorithm::builder() 应等价于 SnowflakeAlgorithmBuilder::new()。
+    #[test]
+    fn test_snowflake_builder_method_creates_empty_builder() {
+        let builder = SnowflakeAlgorithm::builder();
+        assert!(builder.config.is_none());
+        assert!(builder.datacenter_id.is_none());
+        assert!(builder.worker_id.is_none());
+    }
+
+    /// SnowflakeAlgorithm::builder() 构造的算法应可正常工作。
+    #[tokio::test]
+    async fn test_snowflake_builder_method_builds_working_algorithm() {
+        let algo = SnowflakeAlgorithm::builder()
+            .datacenter_id(2)
+            .worker_id(3)
+            .build();
+        assert_eq!(algo.get_datacenter_id(), 2);
+        assert_eq!(algo.get_worker_id(), 3);
+
+        let ctx = GenerateContext::default();
+        let id = algo.generate(&ctx).await.expect("generate via trait should succeed");
+        assert!(id.as_u128() > 0);
+    }
+
+    // ========================================================================
+    // trait generate 方法覆盖（UuidV7 / UuidV4）
+    // ========================================================================
+
+    /// UuidV7Algorithm 通过 IdAlgorithm::generate trait 方法应正常生成 UUID v7。
+    #[tokio::test]
+    async fn test_uuid_v7_generate_via_trait() {
+        let algo = UuidV7Algorithm::new();
+        let ctx = GenerateContext::default();
+        let id = algo.generate(&ctx).await.expect("generate via trait should succeed");
+        assert_eq!(id.to_uuid_v7().get_version(), Some(uuid::Version::SortRand));
+    }
+
+    /// UuidV4Algorithm 通过 IdAlgorithm::generate trait 方法应正常生成 UUID v4。
+    #[tokio::test]
+    async fn test_uuid_v4_generate_via_trait() {
+        let algo = UuidV4Algorithm::new();
+        let ctx = GenerateContext::default();
+        let id = algo.generate(&ctx).await.expect("generate via trait should succeed");
+        assert_eq!(id.to_uuid_v7().get_version(), Some(uuid::Version::Random));
+    }
+
+    /// SnowflakeAlgorithm 通过 IdAlgorithm::generate trait 方法应正常生成 ID。
+    #[tokio::test]
+    async fn test_snowflake_generate_via_trait() {
+        let algo = SnowflakeAlgorithm::new(1, 1);
+        let ctx = GenerateContext::default();
+        let id = algo.generate(&ctx).await.expect("generate via trait should succeed");
+        assert!(id.as_u128() > 0);
     }
 }

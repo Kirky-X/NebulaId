@@ -142,10 +142,7 @@ fn sanitize_for_production(msg: &str) -> String {
 ///   (`RateLimitExceeded`, `ApiKeyDisabled`, `ApiKeyExpired`,
 ///   `InvalidApiKeySignature`, `TimeoutError`): the localized message is
 ///   returned verbatim — there is no caller-controlled content to filter.
-pub(crate) fn core_error_to_response(
-    e: &CoreError,
-    locale: Locale,
-) -> (StatusCode, Json<ErrorResponse>) {
+pub fn core_error_to_response(e: &CoreError, locale: Locale) -> (StatusCode, Json<ErrorResponse>) {
     let status = core_error_status_code(e);
 
     // 5xx-class internal errors — log full detail server-side, return
@@ -254,7 +251,7 @@ pub(crate) fn core_error_to_response(
 
 /// Build a 400 response for an invalid UUID path parameter, with the
 /// locale-translated message.
-pub(crate) fn invalid_uuid_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>) {
+pub fn invalid_uuid_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>) {
     let message = translate_with_locale(locale.as_str(), "api.error.invalid_uuid_format");
     (
         StatusCode::BAD_REQUEST,

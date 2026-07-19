@@ -24,7 +24,6 @@ pub mod router;
 // Users should only use types re-exported in lib.rs
 pub mod audit;
 pub mod config;
-pub mod error_handler;
 pub mod handlers;
 pub mod middleware;
 pub mod models;

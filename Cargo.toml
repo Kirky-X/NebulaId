@@ -140,13 +140,34 @@ pin-project = "1.1"
 limiteron = { version = "0.2", default-features = false, features = ["postgres", "quota-control", "ban-manager"] }
 
 # 国际化 (ICU i18n — Phase 8)
-rust-i18n = "3"
+# Phase 8 T041 (MED-001 fix) — pinned to `3.1` (Major.Minor per rule 29).
+# `src/core/i18n.rs` calls `crate::_rust_i18n_try_translate` and
+# `rust_i18n::replace_patterns`, both `#[doc(hidden)] pub fn` generated
+# by the `i18n!` macro. The minor pin limits breakage risk if a future
+# 3.x release renames or removes these hidden APIs. If rust-i18n 4.x
+# exposes a stable per-locale translate API, migrate accordingly.
+#
+# Phase 8 T041 (LOW L-8 fix, rule 28) — `default-features = false`
+# disables rust-i18n's default `accept-language` feature (we provide
+# our own `parse_accept_language` in `src/server/middleware/locale.rs`
+# with stricter RFC 7231 §5.3.1 conformance + DoS guards). The
+# `i18n!` macro and `t!()` / `_rust_i18n_try_translate` / `replace_patterns`
+# APIs do not require the default features.
+rust-i18n = { version = "3.1", default-features = false }
 
 [dev-dependencies]
 mockall = "0.13"
 sea-orm = { version = "1.1", features = ["mock"] }
 tempfile = "3"
 reqwest = { version = "0.13", features = ["json"] }
+# Phase 8 T041 (LOW L4 perf) — criterion bench for i18n translation
+# overhead and locale negotiation. `default-features = false` per rule 28;
+# we only need the sync API (no async_tokio) for these micro-benchmarks.
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+name = "i18n"
+harness = false
 
 [profile.release]
 opt-level = 3

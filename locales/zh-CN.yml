@@ -1,6 +1,45 @@
 _version: 1
 # Phase 8 ICU i18n — 简体中文 locale
 # Populated by T038 (CoreError Display) + T039 (tracing logs) + T040-T041 (API)
+#
+# Key 命名空间约定 (LOW-002):
+# - error.* : CoreError Display 字符串（由 CoreError::to_localized_string 使用）
+#             定义在 src/core/types/error.rs::i18n_key()
+# - api.error.* : API 响应错误消息（由 src/server/handlers/helpers.rs 使用）
+#                 用于非 CoreError 派生的 handler 构造错误
+#                 （UUID 解析失败、验证失败、workspace 不匹配等）
+#                 也用于通用 5xx 消息（database_error、internal_error 等），
+#                 由 `core_error_to_response` 在底层 CoreError String 可能含
+#                 敏感数据时返回——客户端只看到通用消息。
+# - log.* : tracing 日志消息（由 t!() 宏使用，全局 locale）
+#           注意：T041 之后，新增 tracing 日志应改为结构化字段而非 t!()
+#           （见 LOW L-5 修复）。已有 log.* 键保留以兼容旧行为，不应再新增。
+
+# API error response messages (T041)
+# Used by src/server/handlers/helpers.rs to translate handler error responses
+# based on the negotiated Locale from locale_middleware (Accept-Language header).
+api.error.invalid_uuid_format: "无效的 UUID 格式"
+api.error.validation_error: "验证错误：%{error}"
+api.error.validation_error_field: "字段验证错误：%{field}（%{rule}）"
+api.error.admin_cannot_perform: "Admin API key 无法执行此操作"
+api.error.workspace_mismatch: "访问被拒绝：工作空间不匹配"
+api.error.workspace_name_not_found: "工作空间 '%{name}' 未找到"
+api.error.workspace_not_found: "工作空间未找到"
+api.error.invalid_workspace_id: "无效的工作空间 ID"
+api.error.workspace_id_required: "用户密钥需要 workspace_id"
+
+# Phase 8 T041（CRITICAL C-1 / HIGH H-1 修复）—— 5xx 通用错误文案。
+# 由 `helpers::core_error_to_response` 用于内部错误响应：底层 `CoreError`
+# 的 String 可能含敏感信息（数据库连接串、文件路径等），仅服务端
+# 通过 `tracing::error!` 记录完整错误，客户端只看到下面的通用文案。
+api.error.internal_error: "内部服务器错误"
+api.error.database_error: "数据库操作失败"
+api.error.cache_error: "缓存服务不可用"
+api.error.configuration_error: "配置错误"
+api.error.algorithm_error: "ID 生成算法错误"
+api.error.etcd_error: "Etcd 服务不可用"
+api.error.io_error: "I/O 错误"
+api.error.parse_error: "解析错误"
 
 # CoreError Display strings (T038)
 error.invalid_id_format: "无效的 ID 格式：%{value}"

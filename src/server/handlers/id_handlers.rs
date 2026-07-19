@@ -25,14 +25,17 @@ impl super::ApiHandlers {
     pub async fn generate(&self, req: GenerateRequest) -> Result<GenerateResponse> {
         let start = std::time::Instant::now();
 
+        // Phase 8 T041 (LOW L-5 fix) — server-side log uses structured
+        // fields only; no `t!()` translation. The previous `t!()` call
+        // consulted the process-wide global locale, which races with
+        // concurrent requests under different `Accept-Language` headers
+        // (log language mixing). Structured fields are locale-independent
+        // and easier to filter in log aggregation.
         tracing::debug!(
-            "{}",
-            t!(
-                "log.server.handlers.id_handlers.generate_request",
-                workspace = req.workspace,
-                group = req.group,
-                biz_tag = req.biz_tag
-            )
+            event = "generate_request",
+            workspace = %req.workspace,
+            group = %req.group,
+            biz_tag = %req.biz_tag,
         );
 
         let result = if let Some(ref alg_str) = req.algorithm {

@@ -1,6 +1,48 @@
 _version: 1
 # Phase 8 ICU i18n — English locale
 # Populated by T038 (CoreError Display) + T039 (tracing logs) + T040-T041 (API)
+#
+# Key namespace conventions (LOW-002):
+# - error.* : CoreError Display strings (used by CoreError::to_localized_string)
+#             Defined in src/core/types/error.rs::i18n_key()
+# - api.error.* : API response error messages (used by src/server/handlers/helpers.rs)
+#                 Used for handler-constructed errors not from CoreError
+#                 (UUID parse failure, validation, workspace mismatch, etc.)
+#                 Also used for generic 5xx messages (database_error,
+#                 internal_error, etc.) emitted by `core_error_to_response`
+#                 when the underlying CoreError String may carry sensitive
+#                 data — only the generic message reaches the client.
+# - log.* : tracing log messages (used by t!() macro, global locale)
+#           NOTE: T041之后，新增 tracing 日志应改为结构化字段而非 t!()
+#           (see LOW L-5 fix). Existing log.* keys are preserved for
+#           backwards compatibility but should not be added to.
+
+# API error response messages (T041)
+# Used by src/server/handlers/helpers.rs to translate handler error responses
+# based on the negotiated Locale from locale_middleware (Accept-Language header).
+api.error.invalid_uuid_format: "Invalid UUID format"
+api.error.validation_error: "Validation error: %{error}"
+api.error.validation_error_field: "Validation error in field: %{field} (%{rule})"
+api.error.admin_cannot_perform: "Admin API key cannot perform this operation"
+api.error.workspace_mismatch: "Access denied: workspace mismatch"
+api.error.workspace_name_not_found: "Workspace '%{name}' not found"
+api.error.workspace_not_found: "Workspace not found"
+api.error.invalid_workspace_id: "Invalid workspace ID"
+api.error.workspace_id_required: "workspace_id is required for user keys"
+
+# Phase 8 T041 (CRITICAL C-1 / HIGH H-1 fix) — generic 5xx messages.
+# Used by `helpers::core_error_to_response` for internal errors whose
+# underlying `CoreError` String may contain sensitive data (DB URLs,
+# file paths, etc.). The full error is logged server-side via
+# `tracing::error!`; only these generic strings reach the client.
+api.error.internal_error: "Internal server error"
+api.error.database_error: "Database operation failed"
+api.error.cache_error: "Cache service unavailable"
+api.error.configuration_error: "Configuration error"
+api.error.algorithm_error: "ID generation algorithm error"
+api.error.etcd_error: "Etcd service unavailable"
+api.error.io_error: "I/O error"
+api.error.parse_error: "Parse error"
 
 # CoreError Display strings (T038)
 error.invalid_id_format: "Invalid ID format: %{value}"

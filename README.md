@@ -39,6 +39,8 @@
 - [🧪 Testing](#-testing)
 - [📊 Performance](#-performance)
 - [🔒 Security](#-security)
+- [🌐 Internationalization](#-internationalization)
+- [🛠️ scripts/run.sh Usage](#️-scriptsrunsh-usage)
 - [🗺️ Roadmap](#️-roadmap)
 - [🤝 Contributing](#-contributing)
 - [📄 License](#-license)
@@ -614,7 +616,7 @@ cargo test test_name
 cargo test --test integration
 
 # Run pre-commit checks (format, lint, build, test, security, docs, coverage)
-./scripts/pre-commit-check.sh
+./scripts/run.sh pre-commit
 ```
 
 <details>
@@ -624,9 +626,11 @@ cargo test --test integration
 
 | Category | Tests | Coverage |
 |----------|-------|----------|
-| Unit Tests | 109 | 30% |
-| Integration Tests | 42 | 30% |
-| **Total** | **151** | **29.98%** |
+| Unit Tests | 453 | 95%+ |
+| Integration Tests | 42 | 95%+ |
+| **Total** | **495+** | **95%+** |
+
+> Since v0.2.0, the CI coverage gate has been raised to `--fail-under-lines 95` (see `.github/workflows/ci.yml`).
 
 </details>
 
@@ -736,11 +740,117 @@ Track all ID generation operations
 
 ```toml
 [dependencies.nebula-id]
-version = "0.1.1"
+version = "0.2.0"
 features = ["audit", "tls"]
 ```
 
 </details>
+
+---
+
+## 🌐 Internationalization
+
+<div align="center">
+
+### 🌍 ICU i18n Support (new in v0.2.0)
+
+</div>
+
+Nebula ID ships with built-in ICU internationalization since v0.2.0, powered by [`rust-i18n`](https://crates.io/crates/rust-i18n) `3.1`. It covers runtime translation of error messages and log entries.
+
+**Supported locale matrix:**
+
+| Locale tag | Language | Locales file | Status |
+|------------|----------|--------------|--------|
+| `en` | English (default) | `locales/en.yml` | ✅ Complete |
+| `zh-CN` | Simplified Chinese | `locales/zh-CN.yml` | ✅ Complete |
+
+**Negotiation flow:**
+
+1. The client declares preferred languages via the HTTP `Accept-Language` header (per [RFC 7231 5.3.5](https://www.rfc-editor.org/rfc/rfc7231#section-5.3.5)), e.g. `Accept-Language: zh-CN,zh;q=0.9,en;q=0.8`.
+2. `locale_middleware` (`src/server/middleware/locale.rs`) parses the header, sorts candidates by descending q-value, and picks the first supported locale (exact match wins; otherwise prefix match such as `zh` → `zh-CN`).
+3. On missing header or no match, the default locale `en` is used.
+4. Business handlers read the negotiated result via `Extension<Locale>` and translate error response messages with `translate_with_locale_args`.
+
+**curl examples:**
+
+```bash
+# Chinese error response
+curl -H "Accept-Language: zh-CN" http://localhost:8080/api/v1/invalid
+# {
+#   "code": 404,
+#   "message": "未找到路径",
+#   "details": "..."
+# }
+
+# English error response (default)
+curl http://localhost:8080/api/v1/invalid
+# {
+#   "code": 404,
+#   "message": "Path not found",
+#   "details": "..."
+# }
+```
+
+> **Security note**: `Locale` is derived from user input (the `Accept-Language` header) and is forgeable. Do **not** use it for any authentication, authorization, or security decision it is intended solely for content negotiation.
+
+See [API Reference  Accept-Language](docs/API_REFERENCE.md#accept-language-header) and [Architecture  i18n module](docs/ARCHITECTURE.md#8-i18n-module-position) for details.
+
+---
+
+## 🛠️ scripts/run.sh Usage
+
+<div align="center">
+
+### 📦 Unified Script Entry (new in v0.2.0)
+
+</div>
+
+Since v0.2.0 all development/deployment scripts are merged into a single entry point `scripts/run.sh`, replacing the scattered v0.1.x scripts (`deploy`, `pre-commit-check`, `redis_test`, `test_api`, `install-pre-commit-hooks`, etc.). The legacy scripts have been renamed to `_*_impl.sh` internal implementations and are no longer invoked directly.
+
+**Subcommand overview:**
+
+| Subcommand | Alias | Purpose | Internal impl |
+|------------|-------|---------|---------------|
+| `deploy` | — | Deploy Nebula ID via docker-compose | `_deploy_impl.sh` |
+| `lint` | `pre-commit` | Run local CI pre-checks (fmt + clippy + test + security/docs/coverage) | `_pre_commit_impl.sh` |
+| `redis-test` | — | Run Redis integration tests | `_redis_test_impl.sh` |
+| `api-test` | — | Run API endpoint tests, optional `server_url` argument | `_api_test_impl.sh` |
+| `install-hooks` | — | Install git pre-commit hooks | `_install_hooks_impl.sh` |
+| `pre-commit` | `lint` | Same as `lint`, runs local CI pre-checks | `_pre_commit_impl.sh` |
+| `help` | `--help`, `-h` | Show usage information | — |
+
+**Examples:**
+
+```bash
+# Show help
+./scripts/run.sh help
+
+# Deploy (docker-compose full stack)
+./scripts/run.sh deploy
+
+# Local CI pre-checks (must run before commit)
+./scripts/run.sh pre-commit
+# Or the equivalent alias
+./scripts/run.sh lint
+
+# Redis integration tests (requires Redis listening on 6379)
+./scripts/run.sh redis-test
+
+# API endpoint tests (defaults to http://localhost:8080)
+./scripts/run.sh api-test
+# Specify server URL
+./scripts/run.sh api-test http://localhost:8080
+
+# Install git pre-commit hooks
+./scripts/run.sh install-hooks
+```
+
+**GitHub Actions integration:**
+
+CI calls go through the same entry point (see `.github/workflows/ci.yml`, `release.yml`, `health-check.yml`), keeping local and CI behavior identical.
+
+See [Deployment Guide  scripts/run.sh Subcommands](docs/DEPLOYMENT.md#8-scriptsrunsh-subcommands) for details.
 
 ---
 

@@ -683,7 +683,7 @@ pub fn naive_to_rfc3339(dt: chrono::NaiveDateTime) -> String {
     chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc).to_rfc3339()
 }
 
-/// Shared utility: Convert DateTime<FixedOffset> to RFC3339 formatted string
+/// Shared utility: Convert `DateTime<FixedOffset>` to RFC3339 formatted string
 pub fn datetime_to_rfc3339(dt: chrono::DateTime<chrono::FixedOffset>) -> String {
     dt.to_rfc3339()
 }

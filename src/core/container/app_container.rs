@@ -76,7 +76,7 @@ impl AppContainer {
     /// # Arguments
     ///
     /// * `config` - Configuration provider from confers
-    /// * `cache` - Cache backend from oxcache (Cache<String, Vec<u8>>)
+    /// * `cache` - Cache backend from oxcache (`Cache<String, Vec<u8>>`)
     /// * `database` - Connection pool from dbnexus
     pub fn with_dependencies(
         config: Arc<dyn ConfigProvider>,

@@ -136,7 +136,7 @@ fn sanitize_for_production(msg: &str) -> String {
 ///   `WorkspaceDisabled`, `InvalidIdFormat`, `InvalidIdString`,
 ///   `InvalidAlgorithmType`, `ParseError`): the localized message is
 ///   generated via `CoreError::to_localized_string` and then run through
-///   [`sanitize_for_production`] to cap length at
+///   `sanitize_for_production` to cap length at
 ///   `MAX_CLIENT_MESSAGE_LEN` bytes.
 /// - **4xx-class errors without inner `String`**
 ///   (`RateLimitExceeded`, `ApiKeyDisabled`, `ApiKeyExpired`,

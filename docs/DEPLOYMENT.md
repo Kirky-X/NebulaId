@@ -136,6 +136,29 @@ docker run -d \
 | `RUST_LOG` | info | 日志级别 (trace/debug/info/warn/error) |
 | `RUST_BACKTRACE` | 0 | 错误堆栈 (0/1/full) |
 | `DATABASE_URL` | - | 完整数据库 URL（覆盖其他配置） |
+| `LOCALE` | `en` | 进程默认 locale（v0.2.0 新增）。可选值：`en`、`zh-CN`。仅用于设置 `rust-i18n` 全局 locale 影响启动日志与未走 `Accept-Language` 中间件的路径；`/api/v1/*` 路由的运行时响应语言由请求 `Accept-Language` 头协商，不受此变量影响。 |
+
+### 4.3 LOCALE 环境变量详解（v0.2.0 新增）
+
+`LOCALE` 控制服务进程的全局默认 locale，主要影响以下场景：
+
+- **启动日志**：服务启动期间的 `tracing::{info,warn,error}!` 输出会按 `LOCALE` 翻译（参见 `src/main.rs` 中 `i18n::init_i18n(&locale)`）。
+- **非 `/api/v1/*` 路径的日志**：`/health`、`/ready`、`/metrics` 等不经过 `locale_middleware` 的路径，其日志消息使用 `LOCALE` 设置的全局 locale。
+- **未携带 `Accept-Language` 头的请求**：`locale_middleware` 协商失败时回退到 `Locale::DEFAULT`（即 `en`），**不**回退到 `LOCALE`。这是有意设计 — 全局 locale 与请求级 locale 解耦，避免请求间互相污染。
+
+**配置示例：**
+
+```bash
+# 启动时使用中文 locale（启动日志将为中文）
+export LOCALE=zh-CN
+./target/release/nebula-id
+
+# 或在 docker-compose 中配置
+# docker/.env:
+#   LOCALE=zh-CN
+```
+
+> **注意**：`LOCALE` 仅影响日志输出语言，**不**影响 `/api/v1/*` 路由的 HTTP 错误响应语言。HTTP 响应语言由每个请求的 `Accept-Language` 头独立协商，详见 [API 参考 - Accept-Language](API_REFERENCE.md#accept-language-header)。
 
 ## 5. 健康检查与监控
 
@@ -223,6 +246,142 @@ EOF
 - 多数据中心：不同 `dc_id`，共享 Etcd 集群
 - 数据库主从复制：PostgreSQL streaming replication
 - Etcd 集群：3 或 5 节点奇数部署
+
+## 8. scripts/run.sh 子命令
+
+自 v0.2.0 起，所有开发与部署脚本合并为统一入口 `scripts/run.sh`，替代了 v0.1.x 的多个分散脚本（`deploy`、`pre-commit-check`、`redis_test`、`test_api`、`install-pre-commit-hooks` 等）。旧脚本已重命名为 `_*_impl.sh` 内部实现，不再直接调用。
+
+```bash
+# 通用调用格式
+scripts/run.sh <subcommand> [args...]
+# 等价于
+./scripts/run.sh <subcommand> [args...]
+```
+
+### 8.1 子命令总览
+
+| 子命令 | 别名 | 调用的内部实现 | 用途 |
+|--------|------|----------------|------|
+| `deploy` | — | `_deploy_impl.sh` | 通过 docker-compose 部署 Nebula ID 全栈 |
+| `lint` | `pre-commit` | `_pre_commit_impl.sh` | 运行本地 CI 预检（fmt + clippy + test + 安全/文档/覆盖率） |
+| `redis-test` | — | `_redis_test_impl.sh` | 运行 Redis 集成测试（SET/GET/EXISTS/TTL/DELETE） |
+| `api-test` | — | `_api_test_impl.sh` | 运行 API 端点测试，可选参数 `server_url` |
+| `install-hooks` | — | `_install_hooks_impl.sh` | 安装 git pre-commit hooks（基于 Python `pre-commit` + Rust 工具链） |
+| `pre-commit` | `lint` | `_pre_commit_impl.sh` | 同 `lint`，运行本地 CI 预检 |
+| `help` | `--help`、`-h` | — | 显示 Usage 信息 |
+
+未识别的子命令会以非零退出码退出并打印 Usage。
+
+### 8.2 deploy — 部署
+
+```bash
+# 部署 Nebula ID 全栈（PostgreSQL + Redis + Etcd + App）
+./scripts/run.sh deploy
+```
+
+内部调用 `_deploy_impl.sh`，执行流程：
+
+1. 检查 Docker 20.10+ / Docker Compose v2 是否安装
+2. 读取 `docker/.env` 配置（密码、端口等敏感配置）
+3. `docker compose -f docker/docker-compose.yml up -d` 启动全部服务
+4. 等待 PostgreSQL / Redis / Etcd 健康检查通过（最多 30 次重试，间隔 2 秒）
+5. 等待 App 的 `/health` 端点返回 200 OK
+6. 打印各服务状态与日志入口
+
+前置条件：`docker/.env` 已配置（参考 `docker/.env.example`）。
+
+### 8.3 lint / pre-commit — 本地 CI 预检
+
+```bash
+# 提交前必跑
+./scripts/run.sh pre-commit
+# 或等价别名
+./scripts/run.sh lint
+```
+
+内部调用 `_pre_commit_impl.sh`，按以下顺序运行检查（任一失败即停止）：
+
+1. **格式化检查**：`cargo fmt --check`
+2. **静态分析**：`cargo clippy --all-features --all-targets -- -D warnings`
+3. **构建**：`cargo build --all-features`
+4. **测试**：`cargo test --all-features`
+5. **安全审计**：`cargo audit`（若已安装）
+6. **文档构建**：`cargo doc --no-deps --all-features`
+7. **覆盖率**：`cargo llvm-cov --all-features --fail-under-lines 95`
+
+GitHub Actions CI（`.github/workflows/ci.yml`）通过同一入口调用此子命令，确保本地与 CI 行为一致。
+
+### 8.4 redis-test — Redis 集成测试
+
+```bash
+# 运行 Redis 操作集成测试（需先启动 Redis 监听 6379）
+./scripts/run.sh redis-test
+```
+
+内部调用 `_redis_test_impl.sh`，依次执行 7 项 Redis 操作验证：
+
+1. `PING` 连通性
+2. `SET` 写入
+3. `GET` 读取
+4. `EXISTS` 存在性
+5. `TTL` 剩余时间
+6. `DEL` 删除
+7. 删除后 `EXISTS` 验证
+
+前置条件：Redis 监听 `localhost:6379`（无密码、默认 db 0）。可通过 `docker compose -f docker/docker-compose.yml up -d redis` 启动。
+
+### 8.5 api-test — API 端点测试
+
+```bash
+# 默认测试 http://localhost:8080
+./scripts/run.sh api-test
+
+# 指定服务器 URL
+./scripts/run.sh api-test http://localhost:8080
+```
+
+内部调用 `_api_test_impl.sh`，对 Nebula ID HTTP API 执行端到端测试：
+
+- 健康检查端点：`GET /health`、`GET /ready`
+- 指标端点：`GET /metrics`
+- ID 生成端点：`POST /api/v1/id/generate`、`POST /api/v1/id/batch-generate`
+- ID 解析端点：`POST /api/v1/id/parse`
+- 鉴权测试：`X-API-Key` 头校验
+- 配置端点：`GET /api/v1/config`
+
+每个测试用例输出 PASS/FAIL，最终汇总 `PASSED`/`FAILED` 计数。
+
+前置条件：Nebula ID 服务已启动并监听 `server_url`。
+
+### 8.6 install-hooks — 安装 git pre-commit hooks
+
+```bash
+# 安装 git pre-commit hooks（首次克隆仓库后执行一次）
+./scripts/run.sh install-hooks
+```
+
+内部调用 `_install_hooks_impl.sh`，执行流程：
+
+1. 检查 Python 3.8+ 与 pip，缺失则提示安装方法
+2. 检查 Rust 工具链（`cargo`、`rustfmt`、`clippy`），缺失则通过 `rustup component add` 安装
+3. 通过 `pip3 install --user pre-commit` 安装 `pre-commit` 工具
+4. `pre-commit install` 将 hook 装入 `.git/hooks/pre-commit`
+5. `pre-commit run --all-files` 验证 hooks 工作正常
+
+安装后每次 `git commit` 都会自动运行 `pre-commit` 钩子（参考 `.pre-commit-config.yaml`），包含格式化、clippy、安全审计等检查。
+
+### 8.7 help — 显示 Usage
+
+```bash
+./scripts/run.sh help
+# 或
+./scripts/run.sh --help
+./scripts/run.sh -h
+# 未带参数时也等价于 help
+./scripts/run.sh
+```
+
+输出全部子命令的 Usage 与示例。
 
 ## 相关文档
 

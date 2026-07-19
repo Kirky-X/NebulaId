@@ -24,6 +24,10 @@
   - [DcFailureDetector](#dcfailuredetector)
 - [Type Definitions](#type-definitions)
 - [Error Handling](#error-handling)
+- [HTTP Request Headers](#http-request-headers)
+  - [Accept-Language Header](#accept-language-header)
+- [HTTP Endpoints](#http-endpoints)
+  - [/health/sdforge](#healthsdforge)
 - [Examples](#examples)
 
 ---
@@ -869,6 +873,188 @@ Common error variants encountered during ID generation.
 | `CacheUnavailable` | Local cache is unavailable |
 | `InternalError` | Internal error with description |
 | `ConfigError` | Configuration error |
+
+### Localized Error Responses (v0.2.0+)
+
+Since v0.2.0 the `message` and `details` fields of every HTTP error response
+are translated according to the request's negotiated `Locale` (see
+[Accept-Language Header](#accept-language-header)). The HTTP status code and
+JSON structure are unchanged across locales; only the human-readable text
+differs.
+
+**Example - 400 Bad Request (English, default):**
+
+```http
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+
+{
+  "code": 400,
+  "message": "Invalid input: negative",
+  "details": "size must be between 1 and 100"
+}
+```
+
+**Example - 400 Bad Request (Simplified Chinese, `Accept-Language: zh-CN`):**
+
+```http
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+
+{
+  "code": 400,
+  "message": "无效输入：negative",
+  "details": "size 必须在 1 到 100 之间"
+}
+```
+
+**Example - 500 Internal Server Error (English):**
+
+```json
+{
+  "code": 500,
+  "message": "Database error: connection refused",
+  "details": "..."
+}
+```
+
+**Example - 500 Internal Server Error (Simplified Chinese):**
+
+```json
+{
+  "code": 500,
+  "message": "数据库错误：connection refused",
+  "details": "..."
+}
+```
+
+The translation keys live in `locales/en.yml` and `locales/zh-CN.yml` under
+the `error.*` namespace. Missing keys fall back to the default locale (`en`),
+then to the key itself (never an empty string).
+
+---
+
+## HTTP Request Headers
+
+### `Accept-Language` Header
+
+Nebula ID honors the HTTP `Accept-Language` request header (per
+[RFC 7231 §5.3.5](https://www.rfc-editor.org/rfc/rfc7231#section-5.3.5)) to
+negotiate the natural language of error response messages. The header is
+parsed by `locale_middleware` (see `src/server/middleware/locale.rs`) on
+every `/api/v1/*` request and the negotiated `Locale` is injected as
+`Extension<Locale>` for downstream handlers.
+
+**Supported locale matrix:**
+
+| Locale tag | Language | Locales file | Status |
+|------------|----------|--------------|--------|
+| `en` | English (default) | `locales/en.yml` | ✅ Complete |
+| `zh-CN` | Simplified Chinese | `locales/zh-CN.yml` | ✅ Complete |
+
+**Negotiation rules:**
+
+1. Each `<language-tag>[;q=<weight>]` entry is parsed. Entries with `q=0`
+   (explicitly not accepted) or malformed q-values are dropped per RFC 7231
+   §5.3.1.
+2. Surviving candidates are sorted by descending q-value, with stable
+   ordering on ties to preserve header order.
+3. For each candidate, an exact match is attempted first (`zh-CN` -> `ZhCn`),
+   then a prefix match (`zh` -> `ZhCn`, `en-US` -> `En`). The wildcard `*`
+   never matches a concrete locale.
+4. If no candidate matches, the default locale `en` is used.
+5. Missing or malformed `Accept-Language` header also falls back to `en`.
+6. The header is capped at 4 KiB to prevent DoS via pathologically long
+   values.
+
+**curl examples:**
+
+```bash
+# Request Chinese responses
+curl -H "Accept-Language: zh-CN" http://localhost:8080/api/v1/id/generate \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: <your-api-key>" \
+    -d '{"workspace":"default","group":"default","biz_tag":"test"}'
+
+# Request English responses (explicit)
+curl -H "Accept-Language: en-US,en;q=0.9" http://localhost:8080/api/v1/id/generate \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: <your-api-key>" \
+    -d '{"workspace":"default","group":"default","biz_tag":"test"}'
+
+# Mixed q-value negotiation (zh-CN wins because q=0.9 > en q=0.8)
+curl -H "Accept-Language: zh-CN;q=0.9, en;q=0.8" http://localhost:8080/api/v1/invalid
+```
+
+> **Security note**: `Locale` is derived from user input (`Accept-Language`
+> header) and is forgeable. It MUST NOT be used for any authentication,
+> authorization, or security decision. It is intended solely for content
+> negotiation (translating error messages).
+
+The locale middleware applies only to `/api/v1/*` routes. The root
+`/health`, `/ready`, `/metrics`, and `/api-docs/openapi.json` endpoints do
+not consume `Extension<Locale>` and therefore skip the `Accept-Language`
+parse cost.
+
+---
+
+## HTTP Endpoints
+
+### `/health/sdforge`
+
+```
+GET /health/sdforge
+```
+
+**Description:**
+
+sdforge integration health check. The endpoint is registered via the
+`#[forge]` macro (see `src/server/sdforge_adapter.rs::sdforge_health`) and
+exposed through the `sdforge` 0.4.2 inventory route merger. It returns the
+Nebula ID crate version so callers can confirm the route is served by the
+running binary.
+
+> This endpoint was added in v0.1.x but not documented until v0.2.0. It is
+> distinct from the application-level `/health` route and exists primarily
+> to verify that the `sdforge` plugin linker-stripping prevention works.
+
+**Authentication:** None (public endpoint, same as `/health`).
+
+**Request:** No parameters, no body.
+
+**Response - 200 OK:**
+
+```json
+{
+  "status": "ok",
+  "sdforge_version": "0.2.0"
+}
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | string | Always `"ok"` for a 200 response |
+| `sdforge_version` | string | The Nebula ID crate version (from `CARGO_PKG_VERSION` at compile time) |
+
+**curl example:**
+
+```bash
+curl http://localhost:8080/health/sdforge
+# {"status":"ok","sdforge_version":"0.2.0"}
+```
+
+**Notes:**
+
+- The route is registered via the `#[forge]` macro annotation:
+  `#[forge(name = "sdforge_health", version = "v1", description = "sdforge integration health check", path = "/health/sdforge", method = "GET")]`.
+  The `name` parameter uses the underscore-separated form `sdforge_health`
+  (rather than the hyphenated `sdforge-health`) because `sdforge_macros`
+  0.4.2 validates that `name` is a valid Rust identifier. The HTTP route
+  path is unaffected.
+- `init_sdforge()` must be called once at startup (see `src/main.rs`) so
+  inventory-registered routes are not stripped by the linker.
 
 ---
 

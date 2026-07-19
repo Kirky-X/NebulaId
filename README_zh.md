@@ -39,6 +39,8 @@
 - [🧪 测试](#-测试)
 - [📊 性能](#-性能)
 - [🔒 安全](#-安全)
+- [🌐 国际化](#-国际化)
+- [🛠️ scripts/run.sh 用法](#️-scriptsrunsh-用法)
 - [🗺️ 路线图](#️-路线图)
 - [🤝 贡献指南](#-贡献指南)
 - [📄 许可证](#-许可证)
@@ -616,7 +618,7 @@ cargo test test_name
 cargo test --test integration
 
 # 运行预提交检查（格式化、静态分析、构建、测试、安全、文档、覆盖率）
-./scripts/pre-commit-check.sh
+./scripts/run.sh pre-commit
 ```
 
 <details>
@@ -626,9 +628,11 @@ cargo test --test integration
 
 | 类别 | 测试数量 | 覆盖率 |
 |----------|-------|----------|
-| 单元测试 | 109 | 30% |
-| 集成测试 | 42 | 30% |
-| **总计** | **151** | **29.98%** |
+| 单元测试 | 453 | 95%+ |
+| 集成测试 | 42 | 95%+ |
+| **总计** | **495+** | **95%+** |
+
+> 自 v0.2.0 起，CI 覆盖率门禁已调高至 `--fail-under-lines 95`（见 `.github/workflows/ci.yml`）。
 
 </details>
 
@@ -738,11 +742,117 @@ test uuid_v4_next_id    ... bench: 50 ns/iter (+/- 5)
 
 ```toml
 [dependencies.nebula-id]
-version = "0.1.1"
+version = "0.2.0"
 features = ["audit", "tls"]
 ```
 
 </details>
+
+---
+
+## 🌐 国际化
+
+<div align="center">
+
+### 🌍 ICU i18n 支持（v0.2.0 新增）
+
+</div>
+
+Nebula ID 自 v0.2.0 起内置 ICU 国际化支持，基于 [`rust-i18n`](https://crates.io/crates/rust-i18n) `3.1` 实现，覆盖错误消息与日志的运行时翻译。
+
+**支持的语言（locale）矩阵：**
+
+| Locale 标签 | 语言 | locales 文件 | 状态 |
+|-------------|------|--------------|------|
+| `en` | English（默认） | `locales/en.yml` | ✅ 完整 |
+| `zh-CN` | 简体中文 | `locales/zh-CN.yml` | ✅ 完整 |
+
+**协商机制：**
+
+1. 客户端通过 HTTP `Accept-Language` 头声明偏好语言（遵循 [RFC 7231 §5.3.5](https://www.rfc-editor.org/rfc/rfc7231#section-5.3.5)），例如 `Accept-Language: zh-CN,zh;q=0.9,en;q=0.8`。
+2. `locale_middleware`（`src/server/middleware/locale.rs`）解析头并按 q-value 降序排序，匹配首个受支持的 locale（精确匹配优先，次之 prefix 匹配如 `zh` → `zh-CN`）。
+3. 匹配失败或头缺失时回退到默认 locale `en`。
+4. 业务 handler 通过 `Extension<Locale>` 读取协商结果，用 `translate_with_locale_args` 翻译错误响应消息。
+
+**curl 示例：**
+
+```bash
+# 中文错误响应
+curl -H "Accept-Language: zh-CN" http://localhost:8080/api/v1/invalid
+# {
+#   "code": 404,
+#   "message": "未找到路径",
+#   "details": "..."
+# }
+
+# 英文错误响应（默认）
+curl http://localhost:8080/api/v1/invalid
+# {
+#   "code": 404,
+#   "message": "Path not found",
+#   "details": "..."
+# }
+```
+
+> **安全提示**：`Locale` 派生自用户输入（`Accept-Language` 头），可被伪造，**不得**用于任何认证、授权或安全决策，仅用于内容协商。
+
+更多细节见 [API 参考 — Accept-Language](docs/API_REFERENCE.md#accept-language-header) 与 [架构文档 — i18n 模块](docs/ARCHITECTURE.md#8-i18n-模块位置)。
+
+---
+
+## 🛠️ scripts/run.sh 用法
+
+<div align="center">
+
+### 📦 统一脚本入口（v0.2.0 新增）
+
+</div>
+
+自 v0.2.0 起，所有开发/部署脚本合并为统一入口 `scripts/run.sh`，替代了 v0.1.x 的多个分散脚本（`deploy`、`pre-commit-check`、`redis_test`、`test_api`、`install-pre-commit-hooks` 等），旧脚本已重命名为 `_*_impl.sh` 内部实现，不再直接调用。
+
+**子命令一览：**
+
+| 子命令 | 别名 | 作用 | 对应内部实现 |
+|--------|------|------|--------------|
+| `deploy` | — | 通过 docker-compose 部署 Nebula ID | `_deploy_impl.sh` |
+| `lint` | `pre-commit` | 运行本地 CI 预检（fmt + clippy + test + 安全/文档/覆盖率） | `_pre_commit_impl.sh` |
+| `redis-test` | — | 运行 Redis 集成测试 | `_redis_test_impl.sh` |
+| `api-test` | — | 运行 API 端点测试，可选参数 `server_url` | `_api_test_impl.sh` |
+| `install-hooks` | — | 安装 git pre-commit hooks | `_install_hooks_impl.sh` |
+| `pre-commit` | `lint` | 同 `lint`，运行本地 CI 预检 | `_pre_commit_impl.sh` |
+| `help` | `--help`、`-h` | 显示 Usage 信息 | — |
+
+**使用示例：**
+
+```bash
+# 显示帮助
+./scripts/run.sh help
+
+# 部署（docker-compose 全栈启动）
+./scripts/run.sh deploy
+
+# 本地 CI 预检（提交前必跑）
+./scripts/run.sh pre-commit
+# 或等价的别名
+./scripts/run.sh lint
+
+# Redis 集成测试（需先启动 Redis 监听 6379）
+./scripts/run.sh redis-test
+
+# API 端点测试（默认 http://localhost:8080）
+./scripts/run.sh api-test
+# 指定服务器 URL
+./scripts/run.sh api-test http://localhost:8080
+
+# 安装 git pre-commit hooks
+./scripts/run.sh install-hooks
+```
+
+**GitHub Actions 集成：**
+
+CI 也通过同一入口调用（见 `.github/workflows/ci.yml`、`release.yml`、`health-check.yml`），确保本地与 CI 行为一致。
+
+更多细节见 [部署指南 — scripts/run.sh 子命令](docs/DEPLOYMENT.md#8-scriptsrunsh-子命令)。
 
 ---
 

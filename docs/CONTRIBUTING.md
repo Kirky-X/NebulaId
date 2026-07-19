@@ -274,10 +274,10 @@ git checkout -b docs/update-readme
 ```bash
 # 安装 git hooks（二选一）
 lefthook install              # 推荐：使用 lefthook
-./scripts/install-pre-commit-hooks.sh  # 或使用 pre-commit
+./scripts/run.sh install-hooks  # 或使用 pre-commit
 
 # 运行预提交检查脚本（推荐）
-./scripts/pre-commit-check.sh
+./scripts/run.sh pre-commit
 
 # 或手动执行以下步骤：
 
@@ -465,7 +465,7 @@ cargo tarpaulin --package nebula-id-core --out Html
 - [ ] 未引入新的警告 (Zero Warning)
 - [ ] 变更已通过 cargo clippy
 - [ ] 变更已通过 cargo fmt
-- [ ] 变更已通过 ./scripts/pre-commit-check.sh (包括格式化、静态分析、构建、测试、安全审计、文档、覆盖率)
+- [ ] 变更已通过 ./scripts/run.sh pre-commit (包括格式化、静态分析、构建、测试、安全审计、文档、覆盖率)
 
 ## 相关 Issue
 Closes #123

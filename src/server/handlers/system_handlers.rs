@@ -101,7 +101,10 @@ impl super::ApiHandlers {
         let repo = match self.api_key_repo.as_ref() {
             Some(r) => r.clone(),
             None => {
-                tracing::warn!("Cannot start key rotation task: API key repository not configured");
+                tracing::warn!(
+                    "{}",
+                    t!("log.server.handlers.system_handlers.cannot_start_key_rotation")
+                );
                 return None;
             }
         };
@@ -113,7 +116,10 @@ impl super::ApiHandlers {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        tracing::debug!("Running key rotation check...");
+                        tracing::debug!(
+                            "{}",
+                            t!("log.server.handlers.system_handlers.running_key_rotation_check")
+                        );
 
                         match repo.get_keys_older_than(max_key_age_days).await {
                             Ok(old_keys) => {
@@ -142,7 +148,10 @@ impl super::ApiHandlers {
                         }
                     }
                     _ = shutdown_rx.changed() => {
-                        tracing::info!("Key rotation task shutting down...");
+                        tracing::info!(
+                            "{}",
+                            t!("log.server.handlers.system_handlers.key_rotation_shutting_down")
+                        );
                         break;
                     }
                 }

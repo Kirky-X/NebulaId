@@ -993,7 +993,8 @@ impl ApiKeyRepository for SeaOrmRepository {
                     key_id = %key_id,
                     db_role = %model.role,
                     converted_role = ?role,
-                    "API key role conversion"
+                    "{}",
+                    t!("log.core.database.repository.api_key_role_conversion")
                 );
                 return Ok(Some((model.workspace_id, role)));
             }
@@ -1253,8 +1254,14 @@ impl SegmentRepository for SeaOrmRepository {
                     .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
 
                 debug!(
-                    "Updated segment for {}/{}: current_id={}, max_id={}",
-                    workspace_id, biz_tag, new_max_id, max_id
+                    "{}",
+                    t!(
+                        "log.core.database.repository.segment_updated",
+                        workspace_id = workspace_id,
+                        biz_tag = biz_tag,
+                        current_id = new_max_id,
+                        max_id = max_id
+                    )
                 );
 
                 SegmentInfo {
@@ -1292,8 +1299,14 @@ impl SegmentRepository for SeaOrmRepository {
                     .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
 
                 info!(
-                    "Created new segment for {}/{}: start_id={}, max_id={}",
-                    workspace_id, biz_tag, start_id, max_id
+                    "{}",
+                    t!(
+                        "log.core.database.repository.segment_created",
+                        workspace_id = workspace_id,
+                        biz_tag = biz_tag,
+                        start_id = start_id,
+                        max_id = max_id
+                    )
                 );
 
                 SegmentInfo {
@@ -1374,8 +1387,15 @@ impl SegmentRepository for SeaOrmRepository {
                     .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
 
                 debug!(
-                    "Updated segment for {}/{}/dc{}: current_id={}, max_id={}",
-                    workspace_id, biz_tag, dc_id, new_max_id, max_id
+                    "{}",
+                    t!(
+                        "log.core.database.repository.segment_updated_with_dc",
+                        workspace_id = workspace_id,
+                        biz_tag = biz_tag,
+                        dc_id = dc_id,
+                        current_id = new_max_id,
+                        max_id = max_id
+                    )
                 );
 
                 SegmentInfo {
@@ -1414,8 +1434,15 @@ impl SegmentRepository for SeaOrmRepository {
                     .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
 
                 info!(
-                    "Created new segment for {}/{}/dc{}: start_id={}, max_id={}",
-                    workspace_id, biz_tag, dc_id, start_id, max_id
+                    "{}",
+                    t!(
+                        "log.core.database.repository.segment_created_with_dc",
+                        workspace_id = workspace_id,
+                        biz_tag = biz_tag,
+                        dc_id = dc_id,
+                        start_id = start_id,
+                        max_id = max_id
+                    )
                 );
 
                 SegmentInfo {

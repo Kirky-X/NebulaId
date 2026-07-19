@@ -88,7 +88,7 @@ async fn load_api_keys(
     use nebulaid::core::database::{ApiKeyRole, CreateApiKeyRequest};
     use uuid::Uuid;
 
-    info!("Loading API keys...");
+    info!("{}", t!("log.main.loading_api_keys"));
 
     if let Some(ref repo) = repository {
         // First, create API key from environment variable if configured
@@ -106,7 +106,7 @@ async fn load_api_keys(
 
         // If configured via env or config, create the key (key_id generated internally)
         if let Some(ref secret) = admin_key_secret_from_env {
-            info!("Creating admin API key from environment variable");
+            info!("{}", t!("log.main.creating_admin_api_key_from_env"));
 
             let request = CreateApiKeyRequest {
                 workspace_id: None,
@@ -121,17 +121,20 @@ async fn load_api_keys(
 
             match repo.create_api_key(&request).await {
                 Ok(key) => {
-                    info!("Admin API key created: {}", key.key.key_id);
+                    info!(
+                        "{}",
+                        t!("log.main.admin_api_key_created", key_id = key.key.key_id)
+                    );
                 }
                 Err(e) => {
                     if !e.to_string().contains("duplicate key") {
-                        error!("Failed to create admin API key: {}", e);
+                        error!("{}", t!("log.main.admin_api_key_create_failed", error = e));
                     }
                 }
             }
         } else if let Some(ref keys) = configured_keys {
             if let Some(first_key) = keys.first() {
-                info!("Creating API key from configuration");
+                info!("{}", t!("log.main.creating_api_key_from_config"));
 
                 let role = match first_key.role.to_lowercase().as_str() {
                     "admin" => ApiKeyRole::Admin,
@@ -156,13 +159,20 @@ async fn load_api_keys(
                 match repo.create_api_key(&request).await {
                     Ok(key) => {
                         info!(
-                            "API key created from config: {} (role: {})",
-                            key.key.key_id, first_key.role
+                            "{}",
+                            t!(
+                                "log.main.api_key_created_from_config",
+                                key_id = key.key.key_id,
+                                role = first_key.role
+                            )
                         );
                     }
                     Err(e) => {
                         if !e.to_string().contains("duplicate key") {
-                            warn!("Failed to create API key from config: {}", e);
+                            warn!(
+                                "{}",
+                                t!("log.main.api_key_create_from_config_failed", error = e)
+                            );
                         }
                     }
                 }
@@ -172,8 +182,10 @@ async fn load_api_keys(
             match repo.get_admin_api_key(Uuid::nil()).await {
                 Ok(Some(admin_key)) => {
                     info!(
-                        "Found existing admin API key: {:?} (workspace: {:?})",
-                        admin_key.key_id, admin_key.workspace_id
+                        key_id = ?admin_key.key_id,
+                        workspace_id = ?admin_key.workspace_id,
+                        "{}",
+                        t!("log.main.existing_admin_api_key_found")
                     );
                 }
                 Ok(None) => {
@@ -191,8 +203,11 @@ async fn load_api_keys(
                     match repo.create_api_key(&admin_request).await {
                         Ok(key) => {
                             info!(
-                                "Admin API key created: {} (workspace: None)",
-                                key.key.key_id
+                                "{}",
+                                t!(
+                                    "log.main.admin_api_key_created_no_workspace",
+                                    key_id = key.key.key_id
+                                )
                             );
 
                             let is_production = nebulaid::core::config::is_production();
@@ -214,18 +229,21 @@ async fn load_api_keys(
                                 println!("║  ⚠️  THIS IS THE ONLY TIME THE SECRET WILL BE SHOWN!           ║");
                                 println!("║  Save it securely - you will need it for API authentication.    ║");
                                 println!("╚════════════════════════════════════════════════════════════════════╝\n");
-                                tracing::warn!("Admin API key secret printed to console - ensure it is saved securely");
+                                tracing::warn!("{}", t!("log.main.admin_api_key_secret_printed"));
                             } else {
-                                tracing::warn!("Admin API key generated. Secret NOT printed in production environment.");
+                                tracing::warn!(
+                                    "{}",
+                                    t!("log.main.admin_api_key_generated_no_print")
+                                );
                             }
                         }
                         Err(e) => {
-                            error!("Failed to create admin API key: {}", e);
+                            error!("{}", t!("log.main.admin_api_key_create_failed", error = e));
                         }
                     }
                 }
                 Err(e) => {
-                    error!("Failed to check admin API key: {}", e);
+                    error!("{}", t!("log.main.admin_api_key_check_failed", error = e));
                 }
             }
         }
@@ -245,17 +263,23 @@ async fn load_api_keys(
             };
             match repo.create_api_key(&test_request).await {
                 Ok(key) => {
-                    info!("Created test admin API key: {}", key.key.key_id);
+                    info!(
+                        "{}",
+                        t!(
+                            "log.main.test_admin_api_key_created",
+                            key_id = key.key.key_id
+                        )
+                    );
                 }
                 Err(e) => {
                     if !e.to_string().contains("duplicate key") {
-                        warn!("Failed to create test API key: {}", e);
+                        warn!("{}", t!("log.main.test_api_key_create_failed", error = e));
                     }
                 }
             }
         }
     } else {
-        warn!("No database connection, API keys cannot be stored persistently");
+        warn!("{}", t!("log.main.no_database_connection"));
     }
 }
 
@@ -265,7 +289,7 @@ async fn create_id_generator(
     audit_logger: Arc<AuditLogger>,
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
 ) -> Result<Arc<AlgorithmRouter>> {
-    info!("Initializing ID generators...");
+    info!("{}", t!("log.main.id_generators_initializing"));
 
     let audit_logger_for_core: nebulaid::core::algorithm::DynAuditLogger =
         audit_logger as Arc<dyn nebulaid::core::algorithm::AuditLogger>;
@@ -283,7 +307,7 @@ async fn create_id_generator(
 
     router.initialize().await?;
 
-    info!("ID generators initialized successfully");
+    info!("{}", t!("log.main.id_generators_initialized"));
     Ok(router)
 }
 
@@ -293,7 +317,10 @@ async fn create_id_generator(
     audit_logger: Arc<AuditLogger>,
     _etcd_health_monitor: Option<Arc<()>>,
 ) -> Result<Arc<AlgorithmRouter>> {
-    info!("Initializing ID generators (etcd disabled)...");
+    info!(
+        "{}",
+        t!("log.main.id_generators_initializing_etcd_disabled")
+    );
 
     let audit_logger_for_core: nebulaid::core::algorithm::DynAuditLogger =
         audit_logger as Arc<dyn nebulaid::core::algorithm::AuditLogger>;
@@ -306,7 +333,7 @@ async fn create_id_generator(
 
     router.initialize().await?;
 
-    info!("ID generators initialized successfully");
+    info!("{}", t!("log.main.id_generators_initialized"));
     Ok(router)
 }
 
@@ -329,18 +356,18 @@ async fn start_http_server(
     // 检查是否启用 HTTPS (暂时回退到普通 HTTP，TLS 功能待完善)
     if let Some(ref tls) = tls_manager {
         if tls.is_http_enabled() {
-            info!("HTTPS is enabled but using HTTP fallback for now");
+            info!("{}", t!("log.main.https_enabled_http_fallback"));
         }
     }
 
     // 回退到普通 HTTP
-    info!("Starting HTTP server on {}", addr);
+    info!("{}", t!("log.main.starting_http_server", addr = addr));
     let listener = TcpListener::bind(addr).await?;
 
     axum::serve(listener, router)
         .with_graceful_shutdown(async {
             tokio::signal::ctrl_c().await.ok();
-            info!("Shutting down HTTP server...");
+            info!("{}", t!("log.main.shutting_down_http_server"));
         })
         .await?;
 
@@ -353,21 +380,24 @@ async fn start_grpc_server(
     tls_manager: Option<Arc<TlsManager>>,
 ) -> Result<()> {
     let grpc_addr = SocketAddr::from(([0, 0, 0, 0], config.grpc_port));
-    info!("Starting gRPC server on {}", grpc_addr);
-    info!("Configured gRPC port: {}", config.grpc_port);
+    info!("{}", t!("log.main.starting_grpc_server", addr = grpc_addr));
+    info!(
+        "{}",
+        t!("log.main.configured_grpc_port", port = config.grpc_port)
+    );
 
     let grpc_server = GrpcServer::new(handlers);
 
     let shutdown = async {
         tokio::signal::ctrl_c().await.ok();
-        info!("Shutting down gRPC server...");
+        info!("{}", t!("log.main.shutting_down_grpc_server"));
     };
 
     let mut server_builder = Server::builder();
 
     if let Some(ref tls) = tls_manager {
         if tls.is_grpc_enabled() {
-            info!("gRPC TLS is enabled, using secure connection");
+            info!("{}", t!("log.main.grpc_tls_enabled"));
             if let Some(grpc_tls_config) = tls.grpc_tls_config() {
                 let config = grpc_tls_config.as_ref().clone();
                 server_builder = server_builder.tls_config(config).map_err(|e| {
@@ -426,14 +456,21 @@ async fn main() -> Result<()> {
     // Phase 8 ICU i18n — initialize default locale before any t!() lookup.
     nebulaid::core::i18n::init_i18n("en");
 
-    info!("Starting Nebula ID Generation Service");
-    info!("Version: {}", env!("CARGO_PKG_VERSION"));
+    info!("{}", t!("log.main.starting_service"));
+    info!(
+        "{}",
+        t!("log.main.version", version = env!("CARGO_PKG_VERSION"))
+    );
 
     // Initialize sdforge plugins so inventory-registered routes are linked
     // into the final binary (prevents linker stripping). Must be called
     // before merge_sdforge_routes builds the axum Router.
     let plugin_counts = init_sdforge();
-    info!(routes = plugin_counts.routes, "sdforge plugins initialized");
+    info!(
+        routes = plugin_counts.routes,
+        "{}",
+        t!("log.main.sdforge_plugins_initialized")
+    );
 
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();
@@ -443,20 +480,20 @@ async fn main() -> Result<()> {
         DEFAULT_CONFIG_PATH.to_string()
     };
 
-    info!("Loading config from: {}", config_path);
+    info!("{}", t!("log.main.loading_config", path = config_path));
 
     // Load config from file first, then merge with environment variables
     let mut config = match Config::load_from_file(&config_path) {
         Ok(c) => c,
         Err(e) => {
-            error!("Failed to load config file: {}", e);
+            error!("{}", t!("log.main.config_load_failed", error = e));
             Config::default()
         }
     };
 
     // Apply environment variable overrides
     config.merge(Config::load_from_env().unwrap_or_default());
-    info!("Configuration loaded successfully");
+    info!("{}", t!("log.main.config_loaded"));
 
     let server_config = ServerConfig {
         http_port: config.app.http_port,
@@ -468,31 +505,33 @@ async fn main() -> Result<()> {
     };
 
     info!(
-        "Starting Nebula ID Server on ports: HTTP={}, gRPC={}",
-        server_config.http_port, server_config.grpc_port
+        "{}",
+        t!(
+            "log.main.starting_server_on_ports",
+            http_port = server_config.http_port,
+            grpc_port = server_config.grpc_port
+        )
     );
 
     // Initialize database connection first (needed for API key auth)
-    info!("Connecting to database...");
+    info!("{}", t!("log.main.connecting_to_database"));
     let db_connection = match database::create_connection(&config.database).await {
         Ok(conn) => {
-            info!("Database connected successfully");
+            info!("{}", t!("log.main.database_connected"));
 
             // Run auto migrations to create tables
             if let Err(e) = database::run_migrations(&conn).await {
-                error!("Failed to run database migrations: {}. Application cannot start without required tables.", e);
-                error!("Shutting down...");
+                error!("{}", t!("log.main.migrations_failed", error = e));
+                error!("{}", t!("log.main.shutting_down"));
                 std::process::exit(1);
             }
 
             Some(conn)
         }
         Err(e) => {
-            error!("Failed to connect to database: {}.", e);
-            error!(
-                "Please check your DATABASE_URL environment variable or database configuration."
-            );
-            error!("Shutting down...");
+            error!("{}", t!("log.main.database_connect_failed", error = e));
+            error!("{}", t!("log.main.check_database_url"));
+            error!("{}", t!("log.main.shutting_down"));
             std::process::exit(1);
         }
     };
@@ -502,24 +541,20 @@ async fn main() -> Result<()> {
             conn,
             config.auth.api_key_salt.clone(),
         ));
-        info!("Database repository initialized");
+        info!("{}", t!("log.main.database_repository_initialized"));
         repo
     });
 
-    info!("Auth enabled: {}", config.auth.enabled);
+    info!(
+        "{}",
+        t!("log.main.auth_enabled", enabled = config.auth.enabled)
+    );
 
     // Create API key auth with repository for database-backed storage
     let auth: Arc<ApiKeyAuth> = if let Some(ref repo) = repository {
         Arc::new(ApiKeyAuth::new(repo.clone(), config.auth.enabled))
     } else {
-        error!(
-            "FATAL: API key authentication requires database connection.
-            Nebula ID requires a database for API key storage and validation.
-            Please ensure your configuration has valid database settings:
-            - database.url or database.engine/host/port/database/username/password
-            - database.max_connections should be > 0
-            Shutting down..."
-        );
+        error!("{}", t!("log.main.fatal_api_key_auth_requires_database"));
         std::process::exit(1);
     };
     load_api_keys(&auth, &repository, &config).await;
@@ -533,7 +568,7 @@ async fn main() -> Result<()> {
 
     #[cfg(feature = "etcd")]
     {
-        info!("Initializing etcd cluster health monitor...");
+        info!("{}", t!("log.main.initializing_etcd_health_monitor"));
         let etcd_cache_path = format!("./data/etcd_cache_{}.json", config.app.dc_id);
         let etcd_health_monitor = Arc::new(EtcdClusterHealthMonitor::new(
             config.etcd.clone(),
@@ -541,10 +576,10 @@ async fn main() -> Result<()> {
         ));
 
         if let Err(e) = etcd_health_monitor.load_local_cache().await {
-            warn!("Failed to load etcd local cache: {}", e);
+            warn!("{}", t!("log.main.etcd_local_cache_load_failed", error = e));
         }
 
-        info!("Etcd cluster health monitor initialized");
+        info!("{}", t!("log.main.etcd_health_monitor_initialized"));
 
         let id_generator = create_id_generator(
             &config,
@@ -580,8 +615,8 @@ async fn main() -> Result<()> {
 
         let mut tls_manager = TlsManager::new(config.tls.clone());
         if let Err(e) = tls_manager.initialize().await {
-            error!("Failed to initialize TLS manager: {}", e);
-            info!("TLS will be disabled");
+            error!("{}", t!("log.main.tls_init_failed", error = e));
+            info!("{}", t!("log.main.tls_disabled"));
         }
         let tls_manager = if tls_manager.is_http_enabled() || tls_manager.is_grpc_enabled() {
             Some(Arc::new(tls_manager))
@@ -589,11 +624,11 @@ async fn main() -> Result<()> {
             None
         };
 
-        info!("Starting degradation manager health check task...");
+        info!("{}", t!("log.main.starting_degradation_check"));
         let degradation_manager = id_generator.get_degradation_manager();
         degradation_manager.start_background_check();
 
-        info!("Server initialized, starting HTTP and gRPC servers...");
+        info!("{}", t!("log.main.server_initialized_starting"));
 
         let http_server = tokio::spawn(start_http_server(
             server_config.clone(),
@@ -609,32 +644,65 @@ async fn main() -> Result<()> {
         tokio::select! {
             http_result = http_server => {
                 match http_result {
-                    Ok(Ok(())) => info!("HTTP server stopped"),
+                    Ok(Ok(())) => info!(
+                        "{}",
+                        t!("log.main.http_server_stopped")
+                    ),
                     Ok(Err(e)) => {
-                        error!("HTTP server error: {}", e);
+                        error!(
+                            "{}",
+                            t!(
+                                "log.main.http_server_error",
+                                error = e
+                            )
+                        );
                         return Err(e);
                     }
                     Err(e) => {
-                        error!("HTTP server task panicked: {}", e);
+                        error!(
+                            "{}",
+                            t!(
+                                "log.main.http_server_panic",
+                                error = e
+                            )
+                        );
                         return Err(nebulaid::core::types::CoreError::InternalError(format!("HTTP server panic: {}", e)));
                     }
                 }
             }
             grpc_result = grpc_server => {
                 match grpc_result {
-                    Ok(Ok(())) => info!("gRPC server stopped"),
+                    Ok(Ok(())) => info!(
+                        "{}",
+                        t!("log.main.grpc_server_stopped")
+                    ),
                     Ok(Err(e)) => {
-                        error!("gRPC server error: {}", e);
+                        error!(
+                            "{}",
+                            t!(
+                                "log.main.grpc_server_error",
+                                error = e
+                            )
+                        );
                         return Err(e);
                     }
                     Err(e) => {
-                        error!("gRPC server task panicked: {}", e);
+                        error!(
+                            "{}",
+                            t!(
+                                "log.main.grpc_server_panic",
+                                error = e
+                            )
+                        );
                         return Err(nebulaid::core::types::CoreError::InternalError(format!("gRPC server panic: {}", e)));
                     }
                 }
             }
             _ = shutdown_signal() => {
-                info!("Shutdown signal received");
+                info!(
+                    "{}",
+                    t!("log.main.shutdown_signal_received")
+                );
             }
         }
 
@@ -643,7 +711,7 @@ async fn main() -> Result<()> {
 
     #[cfg(not(feature = "etcd"))]
     {
-        info!("etcd feature disabled, initializing without etcd cluster health monitor");
+        info!("{}", t!("log.main.etcd_disabled"));
 
         let audit_logger_for_core: nebulaid::core::algorithm::DynAuditLogger =
             audit_logger.clone() as Arc<dyn nebulaid::core::algorithm::AuditLogger>;
@@ -679,8 +747,8 @@ async fn main() -> Result<()> {
 
         let mut tls_manager = TlsManager::new(config.tls.clone());
         if let Err(e) = tls_manager.initialize().await {
-            error!("Failed to initialize TLS manager: {}", e);
-            info!("TLS will be disabled");
+            error!("{}", t!("log.main.tls_init_failed", error = e));
+            info!("{}", t!("log.main.tls_disabled"));
         }
         let tls_manager = if tls_manager.is_http_enabled() || tls_manager.is_grpc_enabled() {
             Some(Arc::new(tls_manager))
@@ -688,11 +756,11 @@ async fn main() -> Result<()> {
             None
         };
 
-        info!("Starting degradation manager health check task...");
+        info!("{}", t!("log.main.starting_degradation_check"));
         let degradation_manager = id_generator.get_degradation_manager();
         degradation_manager.start_background_check();
 
-        info!("Server initialized, starting HTTP and gRPC servers...");
+        info!("{}", t!("log.main.server_initialized_starting"));
 
         let http_server = tokio::spawn(start_http_server(
             server_config.clone(),
@@ -708,32 +776,65 @@ async fn main() -> Result<()> {
         tokio::select! {
             http_result = http_server => {
                 match http_result {
-                    Ok(Ok(())) => info!("HTTP server stopped"),
+                    Ok(Ok(())) => info!(
+                        "{}",
+                        t!("log.main.http_server_stopped")
+                    ),
                     Ok(Err(e)) => {
-                        error!("HTTP server error: {}", e);
+                        error!(
+                            "{}",
+                            t!(
+                                "log.main.http_server_error",
+                                error = e
+                            )
+                        );
                         return Err(e);
                     }
                     Err(e) => {
-                        error!("HTTP server task panicked: {}", e);
+                        error!(
+                            "{}",
+                            t!(
+                                "log.main.http_server_panic",
+                                error = e
+                            )
+                        );
                         return Err(nebulaid::core::types::CoreError::InternalError(format!("HTTP server panic: {}", e)));
                     }
                 }
             }
             grpc_result = grpc_server => {
                 match grpc_result {
-                    Ok(Ok(())) => info!("gRPC server stopped"),
+                    Ok(Ok(())) => info!(
+                        "{}",
+                        t!("log.main.grpc_server_stopped")
+                    ),
                     Ok(Err(e)) => {
-                        error!("gRPC server error: {}", e);
+                        error!(
+                            "{}",
+                            t!(
+                                "log.main.grpc_server_error",
+                                error = e
+                            )
+                        );
                         return Err(e);
                     }
                     Err(e) => {
-                        error!("gRPC server task panicked: {}", e);
+                        error!(
+                            "{}",
+                            t!(
+                                "log.main.grpc_server_panic",
+                                error = e
+                            )
+                        );
                         return Err(nebulaid::core::types::CoreError::InternalError(format!("gRPC server panic: {}", e)));
                     }
                 }
             }
             _ = shutdown_signal() => {
-                info!("Shutdown signal received");
+                info!(
+                    "{}",
+                    t!("log.main.shutdown_signal_received")
+                );
             }
         }
 

@@ -26,10 +26,13 @@ impl super::ApiHandlers {
         let start = std::time::Instant::now();
 
         tracing::debug!(
-            "generate request: workspace={}, group={}, biz_tag={}",
-            req.workspace,
-            req.group,
-            req.biz_tag
+            "{}",
+            t!(
+                "log.server.handlers.id_handlers.generate_request",
+                workspace = req.workspace,
+                group = req.group,
+                biz_tag = req.biz_tag
+            )
         );
 
         let result = if let Some(ref alg_str) = req.algorithm {

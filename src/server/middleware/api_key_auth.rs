@@ -57,7 +57,8 @@ impl ApiKeyAuth {
             tracing::warn!(
                 client_ip = %client_ip,
                 failure_count = failures.len(),
-                "Too many authentication failures"
+                "{}",
+                t!("log.server.middleware.api_key_auth.too_many_auth_failures")
             );
             return false;
         }
@@ -136,7 +137,7 @@ impl ApiKeyAuth {
             .unwrap_or("unknown")
             .to_string();
 
-        tracing::debug!(event = "auth_middleware", path = %path, client_ip = %client_ip, "Auth middleware called");
+        tracing::debug!(event = "auth_middleware", path = %path, client_ip = %client_ip, "{}", t!("log.server.middleware.api_key_auth.auth_middleware_called"));
 
         // 如果认证禁用，记录警告日志并设置默认扩展值
         // SECURITY: Even when disabled, we must log the request for audit trail
@@ -146,7 +147,8 @@ impl ApiKeyAuth {
                 path = %path,
                 client_ip = %client_ip,
                 user_agent = %user_agent,
-                "Authentication disabled - allowing request without validation (AUDIT LOGGED)"
+                "{}",
+                t!("log.server.middleware.api_key_auth.auth_disabled_request")
             );
 
             // 设置默认的 workspace_id 和 role 扩展
@@ -161,7 +163,8 @@ impl ApiKeyAuth {
                     event = "audit_auth_disabled",
                     path = %path,
                     client_ip = %client_ip,
-                    "Request processed without authentication"
+                    "{}",
+                    t!("log.server.middleware.api_key_auth.request_processed_without_auth")
                 );
             });
 
@@ -191,7 +194,8 @@ impl ApiKeyAuth {
                                     event = "auth_failure",
                                     reason = "invalid_basic_format",
                                     client_ip = %client_ip,
-                                    "Invalid Basic auth format: no colon separator"
+                                    "{}",
+                                    t!("log.server.middleware.api_key_auth.invalid_basic_format")
                                 );
                                 return self.unauthorized_response(&client_ip);
                             }
@@ -200,7 +204,8 @@ impl ApiKeyAuth {
                                 event = "auth_failure",
                                 reason = "invalid_encoding",
                                 client_ip = %client_ip,
-                                "Invalid Base64 encoding in auth header"
+                                "{}",
+                                t!("log.server.middleware.api_key_auth.invalid_base64_encoding")
                             );
                             return self.unauthorized_response(&client_ip);
                         }
@@ -209,7 +214,8 @@ impl ApiKeyAuth {
                             event = "auth_failure",
                             reason = "base64_decode_failed",
                             client_ip = %client_ip,
-                            "Failed to decode Base64 auth header"
+                            "{}",
+                            t!("log.server.middleware.api_key_auth.base64_decode_failed")
                         );
                         return self.unauthorized_response(&client_ip);
                     }
@@ -222,7 +228,8 @@ impl ApiKeyAuth {
                             event = "auth_failure",
                             reason = "invalid_apikey_format",
                             client_ip = %client_ip,
-                            "Invalid ApiKey format: no colon separator"
+                            "{}",
+                            t!("log.server.middleware.api_key_auth.invalid_apikey_format")
                         );
                         return self.unauthorized_response(&client_ip);
                     }
@@ -231,7 +238,8 @@ impl ApiKeyAuth {
                         event = "auth_failure",
                         reason = "unsupported_format",
                         client_ip = %client_ip,
-                        "Unsupported auth format"
+                        "{}",
+                        t!("log.server.middleware.api_key_auth.unsupported_auth_format")
                     );
                     return self.unauthorized_response(&client_ip);
                 };
@@ -242,7 +250,8 @@ impl ApiKeyAuth {
                         event = "auth_failure",
                         reason = "empty_credentials",
                         client_ip = %client_ip,
-                        "Empty key_id or key_secret"
+                        "{}",
+                        t!("log.server.middleware.api_key_auth.empty_credentials")
                     );
                     return self.unauthorized_response(&client_ip);
                 }
@@ -260,7 +269,8 @@ impl ApiKeyAuth {
                         role = ?role,
                         client_ip = %client_ip,
                         duration_ms = duration,
-                        "Authentication successful"
+                        "{}",
+                        t!("log.server.middleware.api_key_auth.authentication_successful")
                     );
 
                     return next.run(req).await;
@@ -272,7 +282,8 @@ impl ApiKeyAuth {
                         reason = "invalid_credentials",
                         key_id_prefix = %key_id_prefix,
                         client_ip = %client_ip,
-                        "Invalid API key credentials"
+                        "{}",
+                        t!("log.server.middleware.api_key_auth.invalid_credentials")
                     );
                 }
             }
@@ -282,7 +293,8 @@ impl ApiKeyAuth {
                 event = "auth_failure",
                 reason = "missing_auth_header",
                 client_ip = %client_ip,
-                "Missing authorization header"
+                "{}",
+                t!("log.server.middleware.api_key_auth.missing_auth_header")
             );
         }
 
@@ -304,14 +316,15 @@ impl ApiKeyAuth {
 
 pub async fn admin_required_middleware(req: Request<Body>, next: Next) -> Response {
     if let Some(role) = req.extensions().get::<ApiKeyRole>() {
-        tracing::debug!(event = "admin_check", role = ?role, "Checking admin role");
+        tracing::debug!(event = "admin_check", role = ?role, "{}", t!("log.server.middleware.api_key_auth.checking_admin_role"));
         if *role == ApiKeyRole::Admin {
             return next.run(req).await;
         }
     } else {
         tracing::warn!(
             event = "admin_check",
-            "No ApiKeyRole extension found in request"
+            "{}",
+            t!("log.server.middleware.api_key_auth.no_api_key_role_extension")
         );
     }
 

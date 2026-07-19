@@ -60,8 +60,12 @@ pub struct LocalWorkerAllocator {
 impl LocalWorkerAllocator {
     pub fn new(datacenter_id: u8, default_worker_id: u16) -> Self {
         info!(
-            "LocalWorkerAllocator initialized for DC {} with worker_id {}",
-            datacenter_id, default_worker_id
+            "{}",
+            t!(
+                "log.core.coordinator.local.allocator_initialized",
+                datacenter_id = datacenter_id,
+                worker_id = default_worker_id
+            )
         );
         Self {
             worker_id: Arc::new(AtomicU16::new(default_worker_id)),
@@ -76,14 +80,24 @@ impl WorkerIdAllocator for LocalWorkerAllocator {
     async fn allocate(&self) -> std::result::Result<u16, WorkerAllocatorError> {
         let id = self.worker_id.load(Ordering::SeqCst);
         info!(
-            "Allocated local worker_id: {} for DC {}",
-            id, self.datacenter_id
+            "{}",
+            t!(
+                "log.core.coordinator.local.worker_allocated",
+                worker_id = id,
+                datacenter_id = self.datacenter_id
+            )
         );
         Ok(id)
     }
 
     async fn release(&self, worker_id: u16) -> std::result::Result<(), WorkerAllocatorError> {
-        info!("Released local worker_id: {}", worker_id);
+        info!(
+            "{}",
+            t!(
+                "log.core.coordinator.local.worker_released",
+                worker_id = worker_id
+            )
+        );
         Ok(())
     }
 

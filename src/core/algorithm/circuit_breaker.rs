@@ -311,7 +311,10 @@ impl CircuitBreaker {
                 self.consecutive_failures.store(0, Ordering::Relaxed);
                 self.consecutive_successes.store(0, Ordering::Relaxed);
                 self.next_attempt_at.store(0, Ordering::Release);
-                info!("Circuit breaker closed, service recovered");
+                info!(
+                    "{}",
+                    t!("log.core.algorithm.circuit_breaker.closed_service_recovered")
+                );
             }
         }
     }
@@ -369,7 +372,11 @@ impl CircuitBreaker {
         self.next_attempt_at
             .store(next_attempt_nanos, Ordering::Release);
         if prev != STATE_OPEN {
-            error!("Circuit breaker opened, next attempt at {:?}", next_attempt);
+            error!(
+                next_attempt = ?next_attempt,
+                "{}",
+                t!("log.core.algorithm.circuit_breaker.opened_next_attempt")
+            );
         }
     }
 
@@ -378,7 +385,10 @@ impl CircuitBreaker {
         if prev != STATE_HALF_OPEN {
             self.consecutive_successes.store(0, Ordering::Relaxed);
             self.consecutive_failures.store(0, Ordering::Relaxed);
-            info!("Circuit breaker transitioned to half-open");
+            info!(
+                "{}",
+                t!("log.core.algorithm.circuit_breaker.transitioned_to_half_open")
+            );
         }
     }
 
@@ -389,7 +399,10 @@ impl CircuitBreaker {
             self.consecutive_failures.store(0, Ordering::Relaxed);
             self.consecutive_successes.store(0, Ordering::Relaxed);
             self.next_attempt_at.store(0, Ordering::Release);
-            info!("Circuit breaker closed, service recovered");
+            info!(
+                "{}",
+                t!("log.core.algorithm.circuit_breaker.closed_service_recovered")
+            );
         }
     }
 

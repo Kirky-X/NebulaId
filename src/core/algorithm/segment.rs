@@ -112,7 +112,10 @@ impl CpuMonitor {
     #[cfg(not(target_os = "linux"))]
     pub fn start_monitoring(&self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            debug!("CPU monitoring not supported on this platform, using default value");
+            debug!(
+                "{}",
+                t!("log.core.algorithm.segment.cpu_monitoring_not_supported")
+            );
         })
     }
 }
@@ -165,7 +168,13 @@ impl DcHealthState {
         self.consecutive_failures.store(0, Ordering::Relaxed);
         if self.get_status() != DcStatus::Healthy {
             self.set_status(DcStatus::Healthy);
-            info!("DC {} recovered to healthy state", self.dc_id);
+            info!(
+                "{}",
+                t!(
+                    "log.core.algorithm.segment.dc_recovered",
+                    dc_id = self.dc_id
+                )
+            );
         }
     }
 
@@ -176,14 +185,22 @@ impl DcHealthState {
         if consecutive >= 5 {
             self.set_status(DcStatus::Failed);
             warn!(
-                "DC {} marked as failed after {} consecutive failures",
-                self.dc_id, consecutive
+                "{}",
+                t!(
+                    "log.core.algorithm.segment.dc_marked_failed",
+                    dc_id = self.dc_id,
+                    consecutive = consecutive
+                )
             );
         } else if consecutive >= 3 {
             self.set_status(DcStatus::Degraded);
             warn!(
-                "DC {} marked as degraded after {} consecutive failures",
-                self.dc_id, consecutive
+                "{}",
+                t!(
+                    "log.core.algorithm.segment.dc_marked_degraded",
+                    dc_id = self.dc_id,
+                    consecutive = consecutive
+                )
             );
         }
     }
@@ -380,7 +397,10 @@ impl DcFailureDetector {
             loop {
                 tokio::select! {
                     _ = shutdown_rx.changed() => {
-                        info!("Health check task received shutdown signal");
+                        info!(
+                            "{}",
+                            t!("log.core.algorithm.segment.health_check_shutdown_signal")
+                        );
                         break;
                     }
                     _ = sleep(check_interval) => {
@@ -399,7 +419,13 @@ impl DcFailureDetector {
             if state.get_status() == DcStatus::Failed {
                 let last_success = *state.last_success.lock();
                 if now.duration_since(last_success) > self.recovery_timeout {
-                    info!("Attempting recovery for DC {}", state.dc_id);
+                    info!(
+                        "{}",
+                        t!(
+                            "log.core.algorithm.segment.attempting_recovery",
+                            dc_id = state.dc_id
+                        )
+                    );
                     state.set_status(DcStatus::Degraded);
                 }
             }
@@ -824,7 +850,10 @@ impl IdAlgorithm for SegmentAlgorithm {
 
         // Start CPU monitoring if available
         if let Some(ref cpu_monitor) = self.cpu_monitor {
-            info!("Starting CPU monitoring task");
+            info!(
+                "{}",
+                t!("log.core.algorithm.segment.starting_cpu_monitoring")
+            );
             let monitor_task = cpu_monitor.start_monitoring();
             *self.cpu_monitor_task.lock().await = Some(monitor_task);
         }
@@ -1047,10 +1076,13 @@ impl SegmentLoader for DatabaseSegmentLoader {
         let step = self.calculate_step(current_qps);
 
         tracing::debug!(
-            "Loading segment for {} with dynamic step: {} (QPS: {})",
-            ctx.biz_tag,
-            step,
-            current_qps
+            "{}",
+            t!(
+                "log.core.algorithm.segment.loading_segment",
+                biz_tag = ctx.biz_tag,
+                step = step,
+                qps = current_qps
+            )
         );
         let dc_id = self.dc_failure_detector.select_best_dc(self.local_dc_id);
         let dc_state = self.dc_failure_detector.get_dc_state(dc_id);

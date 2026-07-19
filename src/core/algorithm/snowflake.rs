@@ -290,8 +290,12 @@ impl IdAlgorithm for SnowflakeAlgorithm {
         self.worker_id = config.app.worker_id;
 
         info!(
-            "Snowflake algorithm initialized with datacenter_id={}, worker_id={}",
-            self.datacenter_id, self.worker_id
+            "{}",
+            t!(
+                "log.core.algorithm.snowflake.initialized",
+                datacenter_id = self.datacenter_id,
+                worker_id = self.worker_id
+            )
         );
         Ok(())
     }

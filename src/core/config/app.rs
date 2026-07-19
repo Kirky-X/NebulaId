@@ -184,7 +184,10 @@ impl Default for DatabaseConfig {
             .expect("NEBULA_DATABASE_PASSWORD environment variable must be set in production. For development, set this variable or use DATABASE_URL.");
 
         if password == "idgen123" || password.is_empty() {
-            tracing::warn!("Weak or empty database password detected. Please set a strong password using NEBULA_DATABASE_PASSWORD environment variable.");
+            tracing::warn!(
+                "{}",
+                t!("log.core.config.app.weak_database_password_detected")
+            );
         }
 
         Self {

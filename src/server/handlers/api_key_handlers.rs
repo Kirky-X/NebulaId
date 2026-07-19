@@ -72,7 +72,8 @@ impl super::ApiHandlers {
                 tracing::warn!(
                     event = "admin_key_creation",
                     workspace_id = ?workspace_id,
-                    "Creating additional admin key"
+                    "{}",
+                    t!("log.server.handlers.api_key_handlers.creating_additional_admin_key")
                 );
             }
         }

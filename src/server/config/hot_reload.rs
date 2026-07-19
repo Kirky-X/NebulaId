@@ -61,7 +61,13 @@ impl HotReloadConfig {
     {
         // 使用map_err处理可能的锁中毒情况，避免panic
         if let Err(e) = self.reload_callbacks.write() {
-            tracing::error!("Failed to acquire write lock for reload callbacks: {}", e);
+            tracing::error!(
+                "{}",
+                t!(
+                    "log.server.config.hot_reload.write_lock_failed_callbacks",
+                    error = e
+                )
+            );
             return;
         }
         self.reload_callbacks
@@ -75,7 +81,10 @@ impl HotReloadConfig {
         let content = match fs::read_to_string(&config_path).await {
             Ok(c) => c,
             Err(e) => {
-                warn!("Failed to read config file: {}", e);
+                warn!(
+                    "{}",
+                    t!("log.server.config.hot_reload.read_config_failed", error = e)
+                );
                 return Ok(false);
             }
         };
@@ -83,7 +92,13 @@ impl HotReloadConfig {
         let new_config = match toml::from_str::<Config>(&content) {
             Ok(c) => c,
             Err(e) => {
-                error!("Failed to parse config file: {}", e);
+                error!(
+                    "{}",
+                    t!(
+                        "log.server.config.hot_reload.parse_config_failed",
+                        error = e
+                    )
+                );
                 return Ok(false);
             }
         };
@@ -96,7 +111,13 @@ impl HotReloadConfig {
             match self.reload_callbacks.read() {
                 Ok(guard) => guard.iter().cloned().collect(),
                 Err(e) => {
-                    tracing::error!("Failed to acquire read lock for reload callbacks: {}", e);
+                    tracing::error!(
+                        "{}",
+                        t!(
+                            "log.server.config.hot_reload.read_lock_failed_callbacks",
+                            error = e
+                        )
+                    );
                     Vec::new()
                 }
             }
@@ -128,7 +149,13 @@ impl HotReloadConfig {
             }
         }
 
-        info!("Configuration hot-reloaded from {}", config_path);
+        info!(
+            "{}",
+            t!(
+                "log.server.config.hot_reload.config_hot_reloaded",
+                config_path = config_path
+            )
+        );
         Ok(true)
     }
 
@@ -183,7 +210,10 @@ impl HotReloadConfig {
                     last_modified = current_modified;
 
                     if let Err(e) = self.reload_config().await {
-                        error!("Error during config reload: {}", e);
+                        error!(
+                            "{}",
+                            t!("log.server.config.hot_reload.reload_error", error = e)
+                        );
                     }
                 }
             }
@@ -198,7 +228,13 @@ impl HotReloadConfig {
         let callbacks = match self.reload_callbacks.read() {
             Ok(guard) => guard,
             Err(e) => {
-                tracing::error!("Failed to acquire read lock for reload callbacks: {}", e);
+                tracing::error!(
+                    "{}",
+                    t!(
+                        "log.server.config.hot_reload.read_lock_failed_callbacks",
+                        error = e
+                    )
+                );
                 return;
             }
         };
@@ -227,7 +263,10 @@ impl HotReloadConfig {
             }
         }
 
-        info!("Configuration updated programmatically");
+        info!(
+            "{}",
+            t!("log.server.config.hot_reload.config_updated_programmatically")
+        );
     }
 
     pub async fn reload_from_file(&self) -> Result<bool> {
@@ -239,12 +278,25 @@ impl HotReloadConfig {
         let mut map = match self.biz_algorithm_map.write() {
             Ok(map) => map,
             Err(e) => {
-                tracing::error!("Failed to acquire write lock for algorithm map: {}", e);
+                tracing::error!(
+                    "{}",
+                    t!(
+                        "log.server.config.hot_reload.write_lock_failed_algorithm_map",
+                        error = e
+                    )
+                );
                 return;
             }
         };
         map.insert(biz_tag.to_string(), algorithm);
-        info!("Set algorithm for biz_tag '{}' to {:?}", biz_tag, algorithm);
+        info!(
+            algorithm = ?algorithm,
+            "{}",
+            t!(
+                "log.server.config.hot_reload.algorithm_set",
+                biz_tag = biz_tag
+            )
+        );
     }
 
     pub fn get_algorithm(&self, biz_tag: &str) -> Option<AlgorithmType> {
@@ -252,7 +304,13 @@ impl HotReloadConfig {
         let map = match self.biz_algorithm_map.read() {
             Ok(map) => map,
             Err(e) => {
-                tracing::error!("Failed to acquire read lock for algorithm map: {}", e);
+                tracing::error!(
+                    "{}",
+                    t!(
+                        "log.server.config.hot_reload.read_lock_failed_algorithm_map",
+                        error = e
+                    )
+                );
                 return None;
             }
         };

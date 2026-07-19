@@ -217,7 +217,14 @@ impl AlgorithmRouter {
             match builder.build(&self.config).await {
                 Ok(mut algo) => {
                     if let Err(e) = algo.initialize(&self.config).await {
-                        warn!("Failed to initialize algorithm {:?}: {}", alg_type, e);
+                        warn!(
+                            alg_type = ?alg_type,
+                            "{}",
+                            t!(
+                                "log.core.algorithm.router.algorithm_init_failed",
+                                error = e
+                            )
+                        );
                         errors.push((alg_type, e));
                         continue;
                     }
@@ -229,10 +236,21 @@ impl AlgorithmRouter {
                     });
                     self.degradation_manager
                         .register_algorithm(alg_type, alg_arc);
-                    info!("Algorithm {:?} initialized successfully", alg_type);
+                    info!(
+                        alg_type = ?alg_type,
+                        "{}",
+                        t!("log.core.algorithm.router.algorithm_initialized")
+                    );
                 }
                 Err(_e) => {
-                    warn!("Failed to build algorithm {:?}: {}", alg_type, _e);
+                    warn!(
+                        alg_type = ?alg_type,
+                        "{}",
+                        t!(
+                            "log.core.algorithm.router.algorithm_build_failed",
+                            error = _e
+                        )
+                    );
                     errors.push((alg_type, _e));
                 }
             }
@@ -280,9 +298,15 @@ impl AlgorithmRouter {
         group: &str,
         biz_tag: &str,
     ) -> Result<Id> {
-        info!(
-            "AlgorithmRouter::generate_with_algorithm called: algorithm={:?}, workspace={}, group={}, biz_tag={}",
-            algorithm, workspace, group, biz_tag
+        debug!(
+            algorithm = ?algorithm,
+            "{}",
+            t!(
+                "log.core.algorithm.router.generate_with_algorithm_called",
+                workspace = workspace,
+                group = group,
+                biz_tag = biz_tag
+            )
         );
         let ctx = GenerateContext {
             workspace_id: workspace.to_string(),
@@ -320,9 +344,13 @@ impl AlgorithmRouter {
     ) -> Result<Id> {
         let effective_algorithm = algorithm;
 
-        info!(
-            "generate_with_algorithm_internal: requested algorithm={:?}, biz_tag={}",
-            effective_algorithm, ctx.biz_tag
+        debug!(
+            algorithm = ?effective_algorithm,
+            "{}",
+            t!(
+                "log.core.algorithm.router.generate_internal_called",
+                biz_tag = ctx.biz_tag
+            )
         );
 
         // 一次性加载算法表（无锁），后续查找复用，避免循环中多次加锁
@@ -330,29 +358,40 @@ impl AlgorithmRouter {
         let alg_opt = algorithms.get(&effective_algorithm).cloned();
 
         if let Some(alg) = alg_opt {
-            info!(
-                "Found algorithm {:?}, attempting to generate",
-                effective_algorithm
+            debug!(
+                algorithm = ?effective_algorithm,
+                "{}",
+                t!("log.core.algorithm.router.algorithm_found")
             );
             match alg.generate(ctx).await {
                 Ok(id) => {
                     self.degradation_manager
                         .record_generation_result(effective_algorithm, true)
                         .await;
-                    info!(
-                        "Successfully generated ID with algorithm {:?}",
-                        effective_algorithm
+                    debug!(
+                        algorithm = ?effective_algorithm,
+                        "{}",
+                        t!("log.core.algorithm.router.id_generated")
                     );
                     return Ok(id);
                 }
                 Err(e) => {
-                    debug!("Algorithm {} failed: {:?}", effective_algorithm, e);
+                    debug!(
+                        error = ?e,
+                        "{}",
+                        t!(
+                            "log.core.algorithm.router.algorithm_failed",
+                            algorithm = effective_algorithm
+                        )
+                    );
                     self.degradation_manager
                         .record_generation_result(effective_algorithm, false)
                         .await;
                     warn!(
-                        "Algorithm {:?} failed, falling back to fallback chain: {:?}",
-                        effective_algorithm, self.fallback_chain
+                        algorithm = ?effective_algorithm,
+                        fallback_chain = ?self.fallback_chain,
+                        "{}",
+                        t!("log.core.algorithm.router.algorithm_failed_fallback")
                     );
                     for fallback in &self.fallback_chain {
                         if let Some(fallback_alg) = algorithms.get(fallback).cloned() {
@@ -362,8 +401,9 @@ impl AlgorithmRouter {
                                         .record_generation_result(*fallback, true)
                                         .await;
                                     info!(
-                                        "Fell back to algorithm {:?} and successfully generated ID",
-                                        fallback
+                                        fallback = ?fallback,
+                                        "{}",
+                                        t!("log.core.algorithm.router.fell_back_to_algorithm")
                                     );
                                     return Ok(id);
                                 }
@@ -382,8 +422,10 @@ impl AlgorithmRouter {
         }
 
         warn!(
-            "Algorithm {:?} not found in algorithms map, falling back to fallback chain: {:?}",
-            effective_algorithm, self.fallback_chain
+            algorithm = ?effective_algorithm,
+            fallback_chain = ?self.fallback_chain,
+            "{}",
+            t!("log.core.algorithm.router.algorithm_not_found")
         );
 
         for fallback in &self.fallback_chain {
@@ -431,7 +473,14 @@ impl AlgorithmRouter {
                     return Ok(batch);
                 }
                 Err(e) => {
-                    debug!("Algorithm {} batch failed: {:?}", effective_algorithm, e);
+                    debug!(
+                        error = ?e,
+                        "{}",
+                        t!(
+                            "log.core.algorithm.router.algorithm_batch_failed",
+                            algorithm = effective_algorithm
+                        )
+                    );
                     self.degradation_manager
                         .record_generation_result(effective_algorithm, false)
                         .await;
@@ -505,9 +554,12 @@ impl AlgorithmRouter {
         for alg in algs.values() {
             if let Err(e) = alg.shutdown().await {
                 error!(
-                    "Error shutting down algorithm {:?}: {}",
-                    alg.algorithm_type(),
-                    e
+                    algorithm = ?alg.algorithm_type(),
+                    "{}",
+                    t!(
+                        "log.core.algorithm.router.shutdown_error",
+                        error = e
+                    )
                 );
             }
         }

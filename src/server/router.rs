@@ -315,10 +315,13 @@ async fn handle_batch_generate(
     verify_user_role(extensions_role.0)?;
 
     tracing::debug!(
-        "HTTP batch_generate request: workspace={}, group={}, size={:?}",
-        req.workspace,
-        req.group,
-        req.size
+        size = ?req.size,
+        "{}",
+        t!(
+            "log.server.router.batch_generate_request",
+            workspace = req.workspace,
+            group = req.group
+        )
     );
 
     // Validate request parameters
@@ -331,11 +334,17 @@ async fn handle_batch_generate(
         |e: crate::core::types::CoreError| {
             let status_code = match &e {
                 crate::core::types::CoreError::InvalidInput(msg) => {
-                    tracing::warn!("HTTP batch generation failed: {}", msg);
+                    tracing::warn!(
+                        "{}",
+                        t!("log.server.router.batch_generation_failed", message = msg)
+                    );
                     StatusCode::BAD_REQUEST
                 }
                 _ => {
-                    tracing::error!("HTTP batch generation error: {}", e);
+                    tracing::error!(
+                        "{}",
+                        t!("log.server.router.batch_generation_error", error = e)
+                    );
                     StatusCode::INTERNAL_SERVER_ERROR
                 }
             };

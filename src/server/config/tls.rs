@@ -81,10 +81,10 @@ impl TlsManager {
         // Prevent use of insecure TLS versions (TLS 1.0, TLS 1.1)
         match self.config.min_tls_version {
             crate::core::config::TlsVersion::Tls12 => {
-                tracing::info!("TLS 1.2 minimum version configured - acceptable for compatibility");
+                tracing::info!("{}", t!("log.server.config.tls.tls12_min_configured"));
             }
             crate::core::config::TlsVersion::Tls13 => {
-                tracing::info!("TLS 1.3 minimum version configured - recommended for production");
+                tracing::info!("{}", t!("log.server.config.tls.tls13_min_configured"));
             }
         }
 
@@ -181,10 +181,16 @@ impl TlsManager {
             // Log configured TLS version (rustls handles version negotiation automatically)
             match self.config.min_tls_version {
                 crate::core::config::TlsVersion::Tls12 => {
-                    tracing::info!("TLS 1.2+ configured (rustls default minimum)");
+                    tracing::info!(
+                        "{}",
+                        t!("log.server.config.tls.tls12_configured_rustls_default")
+                    );
                 }
                 crate::core::config::TlsVersion::Tls13 => {
-                    tracing::warn!("TLS 1.3 only requested, but rustls auto-negotiates minimum version based on client support");
+                    tracing::warn!(
+                        "{}",
+                        t!("log.server.config.tls.tls13_only_requested_auto_negotiate")
+                    );
                 }
             }
 
@@ -241,7 +247,8 @@ impl TlsManager {
             http_enabled = %self.config.http_enabled,
             grpc_enabled = %self.config.grpc_enabled,
             min_version = %self.config.min_tls_version,
-            "TLS configuration initialized"
+            "{}",
+            t!("log.server.config.tls.tls_initialized")
         );
 
         Ok(())

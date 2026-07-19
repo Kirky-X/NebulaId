@@ -254,10 +254,10 @@ impl EtcdClusterHealthMonitor {
         self.consecutive_failures.store(0, Ordering::Relaxed);
         if self.get_status() != EtcdClusterStatus::Healthy {
             self.set_status(EtcdClusterStatus::Healthy);
-            info!("Etcd cluster recovered to healthy state");
+            info!("{}", t!("log.core.coordinator.etcd.cluster_recovered"));
             if self.is_using_cache() {
                 self.is_using_cache.store(false, Ordering::Relaxed);
-                info!("Switched back to etcd cluster from local cache");
+                info!("{}", t!("log.core.coordinator.etcd.switched_back_to_etcd"));
             }
         }
     }
@@ -270,14 +270,20 @@ impl EtcdClusterHealthMonitor {
             self.set_status(EtcdClusterStatus::Failed);
             self.is_using_cache.store(true, Ordering::Relaxed);
             warn!(
-                "Etcd cluster marked as failed after {} consecutive failures, using local cache",
-                consecutive
+                "{}",
+                t!(
+                    "log.core.coordinator.etcd.cluster_failed",
+                    consecutive = consecutive
+                )
             );
         } else if consecutive >= 3 {
             self.set_status(EtcdClusterStatus::Degraded);
             warn!(
-                "Etcd cluster marked as degraded after {} consecutive failures",
-                consecutive
+                "{}",
+                t!(
+                    "log.core.coordinator.etcd.cluster_degraded",
+                    consecutive = consecutive
+                )
             );
         }
     }
@@ -286,8 +292,11 @@ impl EtcdClusterHealthMonitor {
         let path = Path::new(&self.cache_file_path);
         if !path.exists() {
             info!(
-                "Local cache file not found at {}, will create on first write",
-                self.cache_file_path
+                "{}",
+                t!(
+                    "log.core.coordinator.etcd.cache_file_not_found",
+                    path = self.cache_file_path
+                )
             );
             return Ok(());
         }
@@ -308,7 +317,13 @@ impl EtcdClusterHealthMonitor {
             self.local_cache.write().insert(entry.key.clone(), entry);
         }
 
-        info!("Loaded {} entries from local cache", entry_count);
+        info!(
+            "{}",
+            t!(
+                "log.core.coordinator.etcd.loaded_cache_entries",
+                count = entry_count
+            )
+        );
         Ok(())
     }
 
@@ -325,7 +340,13 @@ impl EtcdClusterHealthMonitor {
                 crate::core::CoreError::InternalError(format!("Failed to write cache file: {}", e))
             })?;
 
-        info!("Saved {} entries to local cache", entries.len());
+        info!(
+            "{}",
+            t!(
+                "log.core.coordinator.etcd.saved_cache_entries",
+                count = entries.len()
+            )
+        );
         Ok(())
     }
 
@@ -368,16 +389,25 @@ impl EtcdClusterHealthMonitor {
             match ping_result {
                 Ok(Ok(())) => {
                     self.record_success().await;
-                    debug!("Etcd cluster health check passed (via injected client)");
+                    debug!(
+                        "{}",
+                        t!("log.core.coordinator.etcd.health_check_passed_injected")
+                    );
                 }
                 Ok(Err(e)) => {
-                    warn!("Etcd cluster health check failed: {}", e);
+                    warn!(
+                        "{}",
+                        t!("log.core.coordinator.etcd.health_check_failed", error = e)
+                    );
                     self.record_failure();
                 }
                 Err(_) => {
                     warn!(
-                        "Etcd cluster health check timed out after {}ms (via injected client)",
-                        self.config.connect_timeout_ms
+                        "{}",
+                        t!(
+                            "log.core.coordinator.etcd.health_check_timeout_injected",
+                            timeout_ms = self.config.connect_timeout_ms
+                        )
                     );
                     self.record_failure();
                 }
@@ -389,7 +419,10 @@ impl EtcdClusterHealthMonitor {
         use etcd_client::Client;
 
         if self.config.endpoints.is_empty() {
-            warn!("No etcd endpoints configured");
+            warn!(
+                "{}",
+                t!("log.core.coordinator.etcd.no_endpoints_configured")
+            );
             return;
         }
 
@@ -405,14 +438,20 @@ impl EtcdClusterHealthMonitor {
         match health_check {
             Ok(Ok(_client)) => {
                 self.record_success().await;
-                debug!("Etcd cluster health check passed");
+                debug!("{}", t!("log.core.coordinator.etcd.health_check_passed"));
             }
             Ok(Err(e)) => {
-                warn!("Etcd cluster health check failed: {}", e);
+                warn!(
+                    "{}",
+                    t!("log.core.coordinator.etcd.health_check_failed", error = e)
+                );
                 self.record_failure();
             }
             Err(_) => {
-                warn!("Etcd cluster health check timeout");
+                warn!(
+                    "{}",
+                    t!("log.core.coordinator.etcd.health_check_timeout_default")
+                );
                 self.record_failure();
             }
         }
@@ -424,7 +463,10 @@ impl EtcdClusterHealthMonitor {
             loop {
                 sleep(interval).await;
                 if let Err(e) = monitor.save_local_cache().await {
-                    error!("Failed to persist local cache: {}", e);
+                    error!(
+                        "{}",
+                        t!("log.core.coordinator.etcd.persist_cache_failed", error = e)
+                    );
                 }
             }
         });
@@ -490,7 +532,13 @@ impl EtcdWorkerAllocator {
             config,
         };
 
-        info!("EtcdWorkerAllocator initialized for DC {}", datacenter_id);
+        info!(
+            "{}",
+            t!(
+                "log.core.coordinator.etcd.allocator_initialized",
+                datacenter_id = datacenter_id
+            )
+        );
         Ok(allocator)
     }
 
@@ -511,7 +559,13 @@ impl EtcdWorkerAllocator {
             .map_err(|e| WorkerAllocatorError::LeaseRenewalFailed(e.to_string()))?;
 
         self.lease_id.store(lease_id, Ordering::SeqCst);
-        info!("Lease granted: {}", lease_id);
+        info!(
+            "{}",
+            t!(
+                "log.core.coordinator.etcd.lease_granted",
+                lease_id = lease_id
+            )
+        );
         Ok(lease_id)
     }
 
@@ -533,7 +587,14 @@ impl EtcdWorkerAllocator {
             Ok(Some(_)) => return Ok(false),
             Ok(None) => {}
             Err(e) => {
-                warn!("kv_get failed for {}: {}, trying next id", path, e);
+                warn!(
+                    "{}",
+                    t!(
+                        "log.core.coordinator.etcd.kv_get_failed",
+                        path = path,
+                        error = e
+                    )
+                );
                 return Ok(false);
             }
         }
@@ -555,12 +616,25 @@ impl EtcdWorkerAllocator {
             match self.try_allocate_id(worker_id, lease_id).await {
                 Ok(true) => {
                     self.allocated_id.store(worker_id, Ordering::SeqCst);
-                    info!("Successfully allocated worker_id: {}", worker_id);
+                    info!(
+                        "{}",
+                        t!(
+                            "log.core.coordinator.etcd.worker_id_allocated",
+                            worker_id = worker_id
+                        )
+                    );
                     return Ok(worker_id);
                 }
                 Ok(false) => continue,
                 Err(e) => {
-                    warn!("Failed to allocate worker_id {}: {}", worker_id, e);
+                    warn!(
+                        "{}",
+                        t!(
+                            "log.core.coordinator.etcd.worker_id_allocate_failed",
+                            worker_id = worker_id,
+                            error = e
+                        )
+                    );
                     continue;
                 }
             }
@@ -579,12 +653,25 @@ impl WorkerIdAllocator for EtcdWorkerAllocator {
     async fn release(&self, worker_id: u16) -> std::result::Result<(), WorkerAllocatorError> {
         let path = self.worker_path(worker_id);
         if let Err(e) = self.client.kv_delete(&path).await {
-            error!("Failed to release worker_id {}: {}", worker_id, e);
+            error!(
+                "{}",
+                t!(
+                    "log.core.coordinator.etcd.worker_id_release_failed",
+                    worker_id = worker_id,
+                    error = e
+                )
+            );
             return Err(WorkerAllocatorError::EtcdError(e.to_string()));
         }
         self.allocated_id.store(0, Ordering::SeqCst);
         self.lease_id.store(0, Ordering::SeqCst);
-        info!("Released worker_id: {}", worker_id);
+        info!(
+            "{}",
+            t!(
+                "log.core.coordinator.etcd.worker_id_released",
+                worker_id = worker_id
+            )
+        );
         Ok(())
     }
 
@@ -620,8 +707,11 @@ impl EtcdDistributedLock {
         lock_path_prefix: String,
     ) -> std::result::Result<Self, LockError> {
         info!(
-            "EtcdDistributedLock initialized with prefix: {}",
-            lock_path_prefix
+            "{}",
+            t!(
+                "log.core.coordinator.etcd.lock_initialized",
+                prefix = lock_path_prefix
+            )
         );
 
         Ok(Self {
@@ -704,8 +794,13 @@ impl DistributedLock for EtcdDistributedLock {
             match self.try_acquire_lock(key, ttl_seconds).await? {
                 Some(lease_id) => {
                     info!(
-                        "Acquired distributed lock for key '{}' (lease: {}, attempt: {})",
-                        key, lease_id, attempt
+                        "{}",
+                        t!(
+                            "log.core.coordinator.etcd.lock_acquired",
+                            key = key,
+                            lease_id = lease_id,
+                            attempt = attempt
+                        )
                     );
 
                     let guard = EtcdLockGuard {
@@ -720,8 +815,13 @@ impl DistributedLock for EtcdDistributedLock {
                 None => {
                     if attempt < MAX_RETRIES - 1 {
                         debug!(
-                            "Lock for key '{}' already held, retrying in {}ms (attempt {})",
-                            key, RETRY_DELAY_MS, attempt
+                            "{}",
+                            t!(
+                                "log.core.coordinator.etcd.lock_already_held_retry",
+                                key = key,
+                                retry_delay_ms = RETRY_DELAY_MS,
+                                attempt = attempt
+                            )
                         );
                         tokio::time::sleep(tokio::time::Duration::from_millis(RETRY_DELAY_MS))
                             .await;
@@ -769,7 +869,8 @@ impl LockGuard for EtcdLockGuard {
             lock_path = %self.lock_path,
             key = %self.key,
             lease_id = self.lease_id,
-            "Released distributed lock"
+            "{}",
+            t!("log.core.coordinator.etcd.lock_released")
         );
 
         Ok(())

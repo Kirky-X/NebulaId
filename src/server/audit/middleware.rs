@@ -102,7 +102,8 @@ impl AuditMiddleware {
                 method = method,
                 status = status_code,
                 duration_ms = duration_ms,
-                "Request audit recorded"
+                "{}",
+                t!("log.server.audit.middleware.request_recorded")
             );
         }
 

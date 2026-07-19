@@ -175,7 +175,10 @@ impl AuditLogger {
         // 持久化到文件
         if let Some(ref path) = self.log_file_path {
             if let Err(e) = self.persist_to_file(&event, path).await {
-                tracing::error!("Failed to persist audit log: {}", e);
+                tracing::error!(
+                    "{}",
+                    t!("log.server.audit.logger.persist_failed", error = e)
+                );
             }
         }
 
@@ -186,7 +189,8 @@ impl AuditLogger {
             action = event.action,
             resource = event.resource,
             result = ?event.result,
-            "Audit event recorded"
+            "{}",
+            t!("log.server.audit.logger.audit_event_recorded")
         );
     }
 

@@ -54,7 +54,8 @@ impl AuthConfig {
         let salt = std::env::var("NEBULA_API_KEY_SALT").unwrap_or_else(|_err| {
             if crate::core::config::is_production() {
                 tracing::error!(
-                    "NEBULA_API_KEY_SALT environment variable not set. This is a critical security issue."
+                    "{}",
+                    t!("log.core.auth.manager.salt_not_set_critical")
                 );
                 panic!(
                     "CRITICAL SECURITY ERROR: NEBULA_API_KEY_SALT environment variable must be set in production. \
@@ -65,17 +66,16 @@ impl AuthConfig {
             }
 
             tracing::warn!(
-                "NEBULA_API_KEY_SALT not set. Using random salt for development. \
-                 This will cause all API keys to be invalidated on restart."
+                "{}",
+                t!("log.core.auth.manager.salt_not_set_dev")
             );
 
             // Generate a cryptographically secure random salt for development only
             let mut salt_bytes = [0u8; 32];
             if let Err(e) = getrandom(&mut salt_bytes) {
                 tracing::warn!(
-                    "Failed to generate secure random salt ({}). Using fallback salt. \
-                     This should not happen in production.",
-                    e
+                    "{}",
+                    t!("log.core.auth.manager.salt_generation_failed", error = e)
                 );
                 // Use a deterministic fallback for environments with limited entropy
                 // This is NOT cryptographically secure - only for development testing

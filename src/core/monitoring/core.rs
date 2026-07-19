@@ -422,7 +422,13 @@ impl AlertEvaluator for DefaultEvaluator {
             }
 
             e => {
-                warn!("Unknown alert expression: {}", e);
+                warn!(
+                    "{}",
+                    t!(
+                        "log.core.monitoring.core.unknown_alert_expression",
+                        expression = e
+                    )
+                );
                 (false, None)
             }
         }
@@ -460,22 +466,64 @@ impl AlertNotificationSender {
                 };
                 match level {
                     tracing::Level::ERROR => {
-                        error!(target: "alerts", "{}: {} - {}", alert.rule_name, alert.severity, alert.message)
+                        error!(
+                            target: "alerts",
+                            "{}",
+                            t!(
+                                "log.core.monitoring.core.alert_critical",
+                                rule_name = alert.rule_name,
+                                severity = alert.severity,
+                                message = alert.message
+                            )
+                        )
                     }
                     tracing::Level::WARN => {
-                        warn!(target: "alerts", "{}: {} - {}", alert.rule_name, alert.severity, alert.message)
+                        warn!(
+                            target: "alerts",
+                            "{}",
+                            t!(
+                                "log.core.monitoring.core.alert_warning",
+                                rule_name = alert.rule_name,
+                                severity = alert.severity,
+                                message = alert.message
+                            )
+                        )
                     }
                     tracing::Level::INFO => {
-                        info!(target: "alerts", "{}: {} - {}", alert.rule_name, alert.severity, alert.message)
+                        info!(
+                            target: "alerts",
+                            "{}",
+                            t!(
+                                "log.core.monitoring.core.alert_info",
+                                rule_name = alert.rule_name,
+                                severity = alert.severity,
+                                message = alert.message
+                            )
+                        )
                     }
                     _ => {
-                        debug!(target: "alerts", "{}: {} - {}", alert.rule_name, alert.severity, alert.message)
+                        debug!(
+                            target: "alerts",
+                            "{}",
+                            t!(
+                                "log.core.monitoring.core.alert_debug",
+                                rule_name = alert.rule_name,
+                                severity = alert.severity,
+                                message = alert.message
+                            )
+                        )
                     }
                 }
             }
 
             ChannelType::Log => {
-                info!(target: "alerts", "Alert: {:?} - {:?}", alert.rule_name, alert.message);
+                info!(
+                    target: "alerts",
+                    rule_name = ?alert.rule_name,
+                    message = ?alert.message,
+                    "{}",
+                    t!("log.core.monitoring.core.alert_log")
+                );
             }
 
             ChannelType::Webhook => {
@@ -518,8 +566,12 @@ impl AlertNotificationSender {
             ChannelType::Email | ChannelType::PagerDuty => {
                 info!(
                     target: "alerts",
-                    "Would send {} notification for alert: {}",
-                    channel.channel_type, alert.rule_name
+                    "{}",
+                    t!(
+                        "log.core.monitoring.core.would_send_notification",
+                        channel_type = channel.channel_type,
+                        rule_name = alert.rule_name
+                    )
                 );
             }
         }
@@ -531,13 +583,26 @@ impl AlertNotificationSender {
 
         match response {
             Ok(resp) if resp.status().is_success() => {
-                debug!("Webhook sent successfully to {}", url);
+                debug!("{}", t!("log.core.monitoring.core.webhook_sent", url = url));
             }
             Ok(resp) => {
-                error!("Webhook returned status: {}", resp.status());
+                error!(
+                    "{}",
+                    t!(
+                        "log.core.monitoring.core.webhook_status_error",
+                        status = resp.status()
+                    )
+                );
             }
             Err(e) => {
-                error!("Failed to send webhook to {}: {}", url, e);
+                error!(
+                    "{}",
+                    t!(
+                        "log.core.monitoring.core.webhook_failed",
+                        url = url,
+                        error = e
+                    )
+                );
             }
         }
     }
@@ -596,18 +661,21 @@ impl AlertManager {
 
     pub async fn start(&mut self) {
         if self.running.swap(true, Ordering::SeqCst) {
-            warn!("AlertManager is already running");
+            warn!(
+                "{}",
+                t!("log.core.monitoring.core.alert_manager_already_running")
+            );
             return;
         }
 
-        info!("AlertManager starting...");
+        info!("{}", t!("log.core.monitoring.core.alert_manager_starting"));
 
         let config_guard = self.config.load();
         self.eval_interval = Duration::from_millis(config_guard.evaluation_interval_ms);
 
         self.run_evaluation_loop().await;
 
-        info!("AlertManager started");
+        info!("{}", t!("log.core.monitoring.core.alert_manager_started"));
     }
 
     async fn run_evaluation_loop(&mut self) {
@@ -619,7 +687,10 @@ impl AlertManager {
                     self.evaluate_all_rules().await;
                 }
                 _ = self.shutdown_rx.recv() => {
-                    info!("AlertManager evaluation loop received shutdown signal");
+                    info!(
+                        "{}",
+                        t!("log.core.monitoring.core.alert_manager_shutdown_signal")
+                    );
                     break;
                 }
             }
@@ -696,7 +767,10 @@ impl AlertManager {
                 self.store_alert_to_history(&alert);
 
                 if let Err(e) = self.alerts_tx.send(alert.clone()) {
-                    error!("Failed to send alert: {}", e);
+                    error!(
+                        "{}",
+                        t!("log.core.monitoring.core.send_alert_failed", error = e)
+                    );
                 }
 
                 self.notification_sender.send(&alert).await;
@@ -706,7 +780,13 @@ impl AlertManager {
                 self.store_alert_to_history(&alert);
 
                 if let Err(e) = self.alerts_tx.send(alert.clone()) {
-                    error!("Failed to send resolved alert: {}", e);
+                    error!(
+                        "{}",
+                        t!(
+                            "log.core.monitoring.core.send_resolved_alert_failed",
+                            error = e
+                        )
+                    );
                 }
 
                 self.notification_sender.send(&alert).await;
@@ -806,9 +886,15 @@ impl AlertManager {
             return;
         }
 
-        info!("AlertManager shutting down...");
+        info!(
+            "{}",
+            t!("log.core.monitoring.core.alert_manager_shutting_down")
+        );
         self.shutdown_rx.close();
-        info!("AlertManager shutdown complete");
+        info!(
+            "{}",
+            t!("log.core.monitoring.core.alert_manager_shutdown_complete")
+        );
     }
 
     pub fn add_rule(&self, rule: AlertRule) {

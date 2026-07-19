@@ -61,7 +61,8 @@ impl Config {
         tracing::debug!(
             event = "config_expanded",
             content_len = content.len(),
-            "Configuration expanded"
+            "{}",
+            t!("log.core.config.app_config.config_expanded")
         );
         if let Some(auth_start) = expanded.find("[auth]") {
             let auth_section = &expanded[auth_start..(auth_start + 100).min(expanded.len())];
@@ -71,8 +72,8 @@ impl Config {
         let config: Config =
             toml::from_str(&expanded).map_err(|e| ConfigError::InvalidValue(e.to_string()))?;
 
-        tracing::debug!(event = "toml_parsed", raw_auth_enabled = %format!("{:?}", config.auth.enabled), "Raw parsed auth enabled");
-        tracing::debug!(event = "config_loaded", auth_enabled = %config.auth.enabled, "Auth configuration loaded");
+        tracing::debug!(event = "toml_parsed", raw_auth_enabled = %format!("{:?}", config.auth.enabled), "{}", t!("log.core.config.app_config.toml_parsed"));
+        tracing::debug!(event = "config_loaded", auth_enabled = %config.auth.enabled, "{}", t!("log.core.config.app_config.config_loaded"));
 
         config.validate()?;
 

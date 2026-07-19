@@ -259,10 +259,21 @@ impl AlgorithmRouter {
                         .insert(alg_type, alg_arc.clone());
                     self.degradation_manager
                         .register_algorithm(alg_type, alg_arc);
-                    info!("Algorithm {:?} initialized successfully", alg_type);
+                    info!(
+                        alg_type = ?alg_type,
+                        "{}",
+                        t!("log.core.algorithm_router.algorithm_initialized")
+                    );
                 }
                 Err(_e) => {
-                    warn!("Failed to build algorithm {:?}: {}", alg_type, _e);
+                    warn!(
+                        alg_type = ?alg_type,
+                        "{}",
+                        t!(
+                            "log.core.algorithm_router.algorithm_build_failed",
+                            error = _e
+                        )
+                    );
                     errors.push((alg_type, _e));
                 }
             }
@@ -279,10 +290,13 @@ impl AlgorithmRouter {
 
     pub async fn generate(&self, ctx: &GenerateContext) -> Result<Id> {
         let algorithm = self.get_algorithm(ctx).await;
-        tracing::info!(
-            "Generating ID for biz_tag='{}' using algorithm='{}'",
-            ctx.biz_tag,
-            algorithm
+        tracing::debug!(
+            "{}",
+            t!(
+                "log.core.algorithm_router.generating_id",
+                biz_tag = ctx.biz_tag,
+                algorithm = algorithm
+            )
         );
         self.generate_with_algorithm(algorithm, ctx).await
     }
@@ -303,9 +317,12 @@ impl AlgorithmRouter {
 
     pub async fn set_algorithm(&self, biz_tag: &str, algorithm: AlgorithmType) {
         tracing::info!(
-            "Setting algorithm for biz_tag='{}' to '{}'",
-            biz_tag,
-            algorithm
+            "{}",
+            t!(
+                "log.core.algorithm_router.setting_algorithm",
+                biz_tag = biz_tag,
+                algorithm = algorithm
+            )
         );
         self.current_algorithm
             .write()
@@ -318,10 +335,13 @@ impl AlgorithmRouter {
         algorithm: AlgorithmType,
         ctx: &GenerateContext,
     ) -> Result<Id> {
-        tracing::info!(
-            "Attempting to generate ID with algorithm='{}' for biz_tag='{}'",
-            algorithm,
-            ctx.biz_tag
+        tracing::debug!(
+            "{}",
+            t!(
+                "log.core.algorithm_router.attempting_generate",
+                algorithm = algorithm,
+                biz_tag = ctx.biz_tag
+            )
         );
         let effective_algorithm = algorithm;
 
@@ -333,15 +353,21 @@ impl AlgorithmRouter {
             .cloned()
         {
             tracing::debug!(
-                "Found algorithm implementation for '{}'",
-                effective_algorithm
+                "{}",
+                t!(
+                    "log.core.algorithm_router.found_algorithm_impl",
+                    algorithm = effective_algorithm
+                )
             );
             match alg.generate(ctx).await {
                 Ok(id) => {
-                    tracing::info!(
-                        "Successfully generated ID using '{}': {}",
-                        effective_algorithm,
-                        id
+                    tracing::debug!(
+                        "{}",
+                        t!(
+                            "log.core.algorithm_router.id_generated_with_value",
+                            algorithm = effective_algorithm,
+                            id = id
+                        )
                     );
                     self.degradation_manager
                         .record_generation_result(effective_algorithm, true)
@@ -349,7 +375,14 @@ impl AlgorithmRouter {
                     return Ok(id);
                 }
                 Err(e) => {
-                    debug!("Algorithm {} failed: {:?}", effective_algorithm, e);
+                    debug!(
+                        error = ?e,
+                        "{}",
+                        t!(
+                            "log.core.algorithm_router.algorithm_failed",
+                            algorithm = effective_algorithm
+                        )
+                    );
                     self.degradation_manager
                         .record_generation_result(effective_algorithm, false)
                         .await;
@@ -425,7 +458,14 @@ impl AlgorithmRouter {
                     return Ok(batch);
                 }
                 Err(e) => {
-                    debug!("Algorithm {} batch failed: {:?}", effective_algorithm, e);
+                    debug!(
+                        error = ?e,
+                        "{}",
+                        t!(
+                            "log.core.algorithm_router.algorithm_batch_failed",
+                            algorithm = effective_algorithm
+                        )
+                    );
                     self.degradation_manager
                         .record_generation_result(effective_algorithm, false)
                         .await;
@@ -501,9 +541,12 @@ impl AlgorithmRouter {
         for alg in algs.values() {
             if let Err(e) = alg.shutdown().await {
                 error!(
-                    "Error shutting down algorithm {:?}: {}",
-                    alg.algorithm_type(),
-                    e
+                    algorithm = ?alg.algorithm_type(),
+                    "{}",
+                    t!(
+                        "log.core.algorithm_router.shutdown_error",
+                        error = e
+                    )
                 );
             }
         }

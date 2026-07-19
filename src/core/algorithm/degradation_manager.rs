@@ -208,20 +208,32 @@ impl AlgorithmHealthState {
         self.circuit_breaker_state
             .store(CIRCUIT_BREAKER_OPEN, Ordering::SeqCst);
         *self.circuit_breaker_opened_at.write() = Some(Instant::now());
-        warn!("Circuit breaker opened for {:?}", self.alg_type);
+        warn!(
+            alg_type = ?self.alg_type,
+            "{}",
+            t!("log.core.algorithm.degradation_manager.circuit_breaker_opened")
+        );
     }
 
     pub fn half_open_circuit_breaker(&self) {
         self.circuit_breaker_state
             .store(CIRCUIT_BREAKER_HALF_OPEN, Ordering::SeqCst);
-        info!("Circuit breaker half-opened for {:?}", self.alg_type);
+        info!(
+            alg_type = ?self.alg_type,
+            "{}",
+            t!("log.core.algorithm.degradation_manager.circuit_breaker_half_opened")
+        );
     }
 
     pub fn close_circuit_breaker(&self) {
         self.circuit_breaker_state
             .store(CIRCUIT_BREAKER_CLOSED, Ordering::SeqCst);
         *self.circuit_breaker_opened_at.write() = None;
-        info!("Circuit breaker closed for {:?}", self.alg_type);
+        info!(
+            alg_type = ?self.alg_type,
+            "{}",
+            t!("log.core.algorithm.degradation_manager.circuit_breaker_closed")
+        );
     }
 
     pub fn can_make_request(&self) -> bool {
@@ -315,17 +327,29 @@ impl DegradationManager {
             new.insert(alg_type, Arc::new(AlgorithmHealthState::new(alg_type)));
             Arc::new(new)
         });
-        debug!("Registered algorithm {:?} for health monitoring", alg_type);
+        debug!(
+            alg_type = ?alg_type,
+            "{}",
+            t!("log.core.algorithm.degradation_manager.algorithm_registered")
+        );
     }
 
     pub fn set_primary_algorithm(&self, alg_type: AlgorithmType) {
         *self.primary_algorithm.write() = alg_type;
-        info!("Primary algorithm set to {:?}", alg_type);
+        info!(
+            alg_type = ?alg_type,
+            "{}",
+            t!("log.core.algorithm.degradation_manager.primary_algorithm_set")
+        );
     }
 
     pub fn set_fallback_chain(&self, chain: Vec<AlgorithmType>) {
         *self.fallback_chain.write() = chain.clone();
-        debug!("Fallback chain configured: {:?}", chain);
+        debug!(
+            chain = ?chain,
+            "{}",
+            t!("log.core.algorithm.degradation_manager.fallback_chain_configured")
+        );
     }
 
     pub async fn record_generation_result(&self, alg_type: AlgorithmType, success: bool) {
@@ -353,16 +377,23 @@ impl DegradationManager {
     async fn trigger_degradation(&self, alg_type: AlgorithmType, state: &AlgorithmHealthState) {
         state.mark_degraded();
         warn!(
-            "Algorithm {:?} degraded due to consecutive failures ({})",
-            alg_type,
-            state.consecutive_failures.load(Ordering::SeqCst)
+            alg_type = ?alg_type,
+            "{}",
+            t!(
+                "log.core.algorithm.degradation_manager.algorithm_degraded",
+                failure_count = state.consecutive_failures.load(Ordering::SeqCst)
+            )
         );
 
         let previous_state = format!("{:?}", DegradationState::Normal);
         let new_state = self.determine_effective_algorithm().await;
         *self.current_state.write() = new_state.clone();
         let current_state_str = format!("{:?}", new_state);
-        info!("Degradation state changed to: {:?}", new_state);
+        info!(
+            new_state = ?new_state,
+            "{}",
+            t!("log.core.algorithm.degradation_manager.degradation_state_changed")
+        );
 
         if let Some(ref logger) = self.audit_logger {
             let failure_count = state.consecutive_failures.load(Ordering::SeqCst);
@@ -387,9 +418,12 @@ impl DegradationManager {
     async fn attempt_recovery(&self, alg_type: AlgorithmType, state: &AlgorithmHealthState) {
         state.mark_recovered();
         info!(
-            "Algorithm {:?} recovered after {} consecutive successes",
-            alg_type,
-            state.consecutive_successes.load(Ordering::SeqCst)
+            alg_type = ?alg_type,
+            "{}",
+            t!(
+                "log.core.algorithm.degradation_manager.algorithm_recovered",
+                success_count = state.consecutive_successes.load(Ordering::SeqCst)
+            )
         );
 
         let previous_state = format!("{:?}", DegradationState::Degraded(alg_type));
@@ -397,7 +431,11 @@ impl DegradationManager {
             let new_state = self.determine_effective_algorithm().await;
             *self.current_state.write() = new_state.clone();
             let current_state_str = format!("{:?}", new_state);
-            info!("Restored to primary algorithm, state: {:?}", new_state);
+            info!(
+                new_state = ?new_state,
+                "{}",
+                t!("log.core.algorithm.degradation_manager.restored_to_primary")
+            );
 
             if let Some(ref logger) = self.audit_logger {
                 let success_count = state.consecutive_successes.load(Ordering::SeqCst);
@@ -436,8 +474,9 @@ impl DegradationManager {
                         } else {
                             health_state.half_open_circuit_breaker();
                             debug!(
-                                "Circuit breaker timeout reached, trying half-open for {:?}",
-                                alg_type
+                                alg_type = ?alg_type,
+                                "{}",
+                                t!("log.core.algorithm.degradation_manager.circuit_breaker_timeout_half_open")
                             );
                         }
                     }
@@ -459,8 +498,12 @@ impl DegradationManager {
                                         state_changed = true;
                                     }
                                     info!(
-                                        "Circuit breaker closed for {:?} after {} successes",
-                                        alg_type, successes
+                                        alg_type = ?alg_type,
+                                        "{}",
+                                        t!(
+                                            "log.core.algorithm.degradation_manager.circuit_breaker_closed_after_successes",
+                                            successes = successes
+                                        )
                                     );
                                 } else {
                                     health_state.record_success();
@@ -469,12 +512,20 @@ impl DegradationManager {
                             HealthStatus::Degraded(_) => {
                                 health_state.record_failure();
                                 health_state.open_circuit_breaker();
-                                info!("Circuit breaker re-opened for {:?}", alg_type);
+                                info!(
+                                    alg_type = ?alg_type,
+                                    "{}",
+                                    t!("log.core.algorithm.degradation_manager.circuit_breaker_reopened")
+                                );
                             }
                             HealthStatus::Unhealthy(_) => {
                                 health_state.record_failure();
                                 health_state.open_circuit_breaker();
-                                info!("Circuit breaker opened for unhealthy {:?}", alg_type);
+                                info!(
+                                    alg_type = ?alg_type,
+                                    "{}",
+                                    t!("log.core.algorithm.degradation_manager.circuit_breaker_opened_unhealthy")
+                                );
                             }
                         }
                         continue;
@@ -491,7 +542,14 @@ impl DegradationManager {
                 };
                 match health {
                     HealthStatus::Unhealthy(reason) => {
-                        warn!("Algorithm {:?} reported unhealthy: {}", alg_type, reason);
+                        warn!(
+                            alg_type = ?alg_type,
+                            "{}",
+                            t!(
+                                "log.core.algorithm.degradation_manager.algorithm_unhealthy",
+                                reason = reason
+                            )
+                        );
                         health_state.record_failure();
                         if self.config.enable_circuit_breaker
                             && health_state.should_degrade(self.config.failure_threshold)
@@ -505,7 +563,14 @@ impl DegradationManager {
                         }
                     }
                     HealthStatus::Degraded(reason) => {
-                        debug!("Algorithm {:?} degraded: {}", alg_type, reason);
+                        debug!(
+                            alg_type = ?alg_type,
+                            "{}",
+                            t!(
+                                "log.core.algorithm.degradation_manager.algorithm_health_degraded",
+                                reason = reason
+                            )
+                        );
                     }
                     HealthStatus::Healthy => {
                         health_state.record_success();
@@ -611,19 +676,33 @@ impl DegradationManager {
                 Arc::new(new)
             });
         }
-        info!("Manual degradation triggered for {:?}", alg_type);
+        info!(
+            alg_type = ?alg_type,
+            "{}",
+            t!("log.core.algorithm.degradation_manager.manual_degradation_triggered")
+        );
     }
 
     pub fn manual_recover(&self, alg_type: AlgorithmType) {
         if let Some(state) = self.health_states.load().get(&alg_type) {
             state.reset();
-            info!("Manual recovery triggered for {:?}", alg_type);
+            info!(
+                alg_type = ?alg_type,
+                "{}",
+                t!("log.core.algorithm.degradation_manager.manual_recovery_triggered")
+            );
         }
     }
 
     pub fn update_config(&mut self, config: DegradationConfig) {
         self.config = config.clone();
-        info!("Degradation config updated: enabled={}", config.enabled);
+        info!(
+            "{}",
+            t!(
+                "log.core.algorithm.degradation_manager.degradation_config_updated",
+                enabled = config.enabled
+            )
+        );
     }
 
     pub fn start_background_check(self: &Arc<Self>) {
@@ -632,7 +711,10 @@ impl DegradationManager {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            warn!("Background health check is already running");
+            warn!(
+                "{}",
+                t!("log.core.algorithm.degradation_manager.background_check_already_running")
+            );
             return;
         }
 
@@ -642,8 +724,9 @@ impl DegradationManager {
         tokio::spawn(async move {
             let mut interval = time::interval(check_interval);
             info!(
-                "Starting background health check with interval {:?}",
-                check_interval
+                interval = ?check_interval,
+                "{}",
+                t!("log.core.algorithm.degradation_manager.starting_background_check")
             );
 
             loop {
@@ -655,12 +738,18 @@ impl DegradationManager {
             }
         });
 
-        info!("Background health check started");
+        info!(
+            "{}",
+            t!("log.core.algorithm.degradation_manager.background_check_started")
+        );
     }
 
     pub fn stop_background_check(&self) {
         self.running.store(false, Ordering::SeqCst);
-        info!("Background health check stopped");
+        info!(
+            "{}",
+            t!("log.core.algorithm.degradation_manager.background_check_stopped")
+        );
     }
 }
 

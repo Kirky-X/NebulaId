@@ -199,8 +199,11 @@ impl RateLimiter {
                     debug!(
                         event = "rate_limiter_cleanup",
                         removed_count = removed_count,
-                        "Cleaned up {} expired rate limiters",
-                        removed_count
+                        "{}",
+                        t!(
+                            "log.server.rate_limit.limiter.cleaned_up_expired_limiters",
+                            removed_count = removed_count
+                        )
                     );
                 }
             }
@@ -246,7 +249,11 @@ impl RateLimiter {
         match limiter.check().await {
             Ok(result) => result,
             Err(e) => {
-                tracing::warn!("Rate limit check error: {:?}", e);
+                tracing::warn!(
+                    error = ?e,
+                    "{}",
+                    t!("log.server.rate_limit.limiter.rate_limit_check_error")
+                );
                 // Fail open - allow request if rate limiter has an error
                 RateLimitResult {
                     allowed: true,
@@ -302,8 +309,11 @@ impl RateLimiter {
             debug!(
                 event = "rate_limiter_cleanup",
                 removed_count = removed_count,
-                "Manually cleaned up {} expired rate limiters",
-                removed_count
+                "{}",
+                t!(
+                    "log.server.rate_limit.limiter.manually_cleaned_up_expired_limiters",
+                    removed_count = removed_count
+                )
             );
         }
 

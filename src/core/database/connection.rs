@@ -85,30 +85,49 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
     }
 
     info!(
-        "Connecting to {} database, URL: {}",
-        config.engine, final_url
+        "{}",
+        t!(
+            "log.core.database.connection.connecting",
+            engine = config.engine,
+            url = final_url
+        )
     );
 
     let db = Database::connect(connect_options)
         .await
         .map_err(CoreError::from)?;
 
-    info!("Database connection established successfully");
+    info!(
+        "{}",
+        t!("log.core.database.connection.established_successfully")
+    );
 
     Ok(db)
 }
 
 /// Auto-create schema and tables for Nebula ID
 pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
-    info!("Running database migrations...");
+    info!("{}", t!("log.core.database.connection.running_migrations"));
 
     // Create schema if not exists (only for PostgreSQL)
     let create_schema_sql = format!(r#"CREATE SCHEMA IF NOT EXISTS {}"#, NEBULA_SCHEMA);
     let stmt = Statement::from_string(DbBackend::Postgres, &create_schema_sql);
     match db.execute(stmt).await {
-        Ok(_) => info!("Schema '{}' created/verified", NEBULA_SCHEMA),
+        Ok(_) => info!(
+            "{}",
+            t!(
+                "log.core.database.connection.schema_created_verified",
+                schema = NEBULA_SCHEMA
+            )
+        ),
         Err(e) => {
-            warn!("Could not create schema (may not be PostgreSQL): {}", e);
+            warn!(
+                "{}",
+                t!(
+                    "log.core.database.connection.schema_create_failed",
+                    error = e
+                )
+            );
         }
     }
 
@@ -217,12 +236,21 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
         match db.execute(stmt).await {
             Ok(_) => {
                 let table_name = sql.split_whitespace().nth(4).unwrap_or("").replace('(', "");
-                info!("Table created/verified: {}", table_name);
+                info!(
+                    "{}",
+                    t!(
+                        "log.core.database.connection.table_created_verified",
+                        table_name = table_name
+                    )
+                );
             }
             Err(e) => {
                 let error_msg = e.to_string();
                 if error_msg.contains("already exists") || error_msg.contains("duplicate") {
-                    info!("Table already exists, skipping");
+                    info!(
+                        "{}",
+                        t!("log.core.database.connection.table_already_exists")
+                    );
                 } else {
                     return Err(CoreError::DatabaseError(format!(
                         "Failed to create table: {}",
@@ -233,7 +261,10 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
         }
     }
 
-    info!("Database migrations completed successfully");
+    info!(
+        "{}",
+        t!("log.core.database.connection.migrations_completed")
+    );
     Ok(())
 }
 

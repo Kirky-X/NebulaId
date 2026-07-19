@@ -355,7 +355,14 @@ pub struct ConnectionPoolMetrics {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CacheMetrics {
     pub status: HealthStatus,
+    /// L15 修复：缓存命中率。`hit_rate = 0.0` 在 `has_cache = false` 时
+    /// 表示「无缓存概念」，不是「命中率 0%」。客户端必须先检查 `has_cache`
+    /// 再决定是否展示 `hit_rate`。
     pub hit_rate: f64,
+    /// ARCH-MED-004 修复：明确表达「当前部署是否有缓存算法」。
+    /// `false` 时 `hit_rate` 字段无意义（恒为 0.0），客户端不应展示。
+    /// `true` 时 `hit_rate` 是所有缓存算法的平均命中率。
+    pub has_cache: bool,
     pub memory_usage_mb: Option<u64>,
     pub key_count: Option<u64>,
 }
@@ -366,7 +373,8 @@ pub struct AlgorithmMetrics {
     pub status: HealthStatus,
     pub total_generated: u64,
     pub total_failed: u64,
-    pub cache_hit_rate: f64,
+    /// L15 修复：`None` 表示该算法无缓存概念，`Some(rate)` 表示真实命中率。
+    pub cache_hit_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]

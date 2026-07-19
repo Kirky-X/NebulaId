@@ -16,9 +16,10 @@ use crate::server::api_version::{api_version_middleware, API_V1};
 use crate::server::audit::{AuditLogger, AuditMiddleware};
 use crate::server::config::{cors, management::ConfigManagementService};
 use crate::server::handlers::helpers::{
-    admin_cannot_perform_response, core_error_to_response, invalid_uuid_response,
-    invalid_workspace_id_response, validation_error_response, workspace_id_required_response,
-    workspace_mismatch_response, workspace_name_not_found_response, workspace_not_found_response,
+    admin_cannot_perform_response, auth_required_response, core_error_to_response,
+    invalid_uuid_response, invalid_workspace_id_response, validation_error_response,
+    workspace_id_required_response, workspace_mismatch_response, workspace_name_not_found_response,
+    workspace_not_found_response,
 };
 use crate::server::handlers::ApiHandlers;
 use crate::server::middleware::locale::Locale;
@@ -63,8 +64,20 @@ pub async fn create_router(
     // Example: ALLOWED_ORIGINS="https://example.com,https://app.example.com"
     let cors = cors::create_env_aware_cors_layer();
 
-    let rate_limit_middleware = RateLimitMiddleware::new(rate_limiter.clone());
-    let audit_middleware = AuditMiddleware::new(audit_logger.clone(), auth.clone(), rate_limiter);
+    // Phase 9 T043 (HIGH H3) — read trusted proxies from the same env
+    // var that `main.rs` uses for `ApiKeyAuth`. Keeping a single source
+    // of truth (env var) avoids plumbing a new parameter through
+    // `create_router` and its 6 call sites. Default: empty list (no
+    // headers trusted).
+    let trusted_proxies: Vec<std::net::IpAddr> = std::env::var("NEBULA_TRUSTED_PROXIES")
+        .ok()
+        .map(|s| s.split(',').filter_map(|p| p.trim().parse().ok()).collect())
+        .unwrap_or_default();
+
+    let rate_limit_middleware = RateLimitMiddleware::new(rate_limiter.clone())
+        .with_trusted_proxies(trusted_proxies.clone());
+    let audit_middleware = AuditMiddleware::new(audit_logger.clone(), auth.clone(), rate_limiter)
+        .with_trusted_proxies(trusted_proxies);
 
     let config_service = handlers.get_config_service();
 
@@ -128,6 +141,15 @@ pub async fn create_router(
                 .delete(handle_delete_biz_tag),
         )
         // Apply auth middleware
+        //
+        // SEC-CRITICAL-001 修复（CWE-1188）—— axum 0.8.x layer 语义：
+        // 后 `.layer()` 的中间件先执行（outer），先 `.layer()` 的后执行
+        // （inner）。因此此处必须先 `anonymous_block_middleware`（inner，
+        // 后执行），再 `auth_middleware_fn`（outer，先执行注入
+        // `ApiKeyRole` 扩展）。这样 `anonymous_block_middleware` 执行时
+        // `ApiKeyRole` 扩展已由 `auth_middleware_fn` 注入，可正确拒绝
+        // Anonymous 角色。前次修复顺序相反，导致中间件完全无效。
+        .layer(axum::middleware::from_fn(anonymous_block_middleware))
         .layer(axum::middleware::from_fn_with_state(
             auth.clone(),
             crate::server::middleware::auth_middleware_fn,
@@ -198,16 +220,83 @@ pub async fn create_router(
 
 // ========== Helper Functions ==========
 
-/// Verify that the request is from a User API key (not Admin).
+/// SEC-CRITICAL-001 修复（CWE-1188）：v1_authenticated_routes 的全局
+/// Anonymous 拒绝中间件。
+///
+/// **背景**：LOW-1 修复在禁用认证时把请求注入 `ApiKeyRole::Anonymous`，
+/// 但 `verify_user_role` 只在 4 个 handler（generate/batch_generate/
+/// create_biz_tag/create_group）中调用，其余 13 个 authenticated
+/// endpoint（含 `POST /config/algorithm`、`DELETE /biz-tags/{id}` 等
+/// 破坏性操作）对 Anonymous 完全开放，违反「Anonymous 无业务权限」契约。
+///
+/// **修复**：在 `v1_authenticated_routes` 的 `auth_middleware_fn` 之后
+/// 叠加本中间件，统一拒绝 Anonymous 角色。这样所有 v1 authenticated
+/// endpoint 都受保护，无需逐个 handler 调用 `verify_user_role`。
+///
+/// **layer 顺序**：本中间件必须作为 inner layer（先 `.layer()`），
+/// `auth_middleware_fn` 作为 outer layer（后 `.layer()`），保证
+/// `auth_middleware_fn` 先执行并注入 `ApiKeyRole` 扩展。详见
+/// `v1_authenticated_routes` 处的注释。
+///
+/// **NEW-LOW-002 修复（规则 12 失败显性化）**：若 `ApiKeyRole` 扩展
+/// 缺失（说明 `auth_middleware_fn` 未执行或未注入），fail-closed 返回
+/// 401 + warn 日志，避免静默放行。
+///
+/// `verify_user_role` 保留用于 handler 内的 Admin 拒绝场景。
+pub async fn anonymous_block_middleware(
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    match req
+        .extensions()
+        .get::<crate::server::middleware::ApiKeyRole>()
+    {
+        Some(role) if *role == crate::server::middleware::ApiKeyRole::Anonymous => {
+            // Locale 由外层 locale_middleware 注入；若未注入则用默认值。
+            let locale = req
+                .extensions()
+                .get::<Locale>()
+                .cloned()
+                .unwrap_or_default();
+            auth_required_response(locale).into_response()
+        }
+        Some(_) => next.run(req).await,
+        None => {
+            // NEW-LOW-002：ApiKeyRole 扩展缺失，fail-closed。
+            tracing::warn!(
+                path = %req.uri().path(),
+                method = %req.method(),
+                "ApiKeyRole extension missing in anonymous_block_middleware; \
+                 auth_middleware_fn may not have run; denying request"
+            );
+            let locale = req
+                .extensions()
+                .get::<Locale>()
+                .cloned()
+                .unwrap_or_default();
+            auth_required_response(locale).into_response()
+        }
+    }
+}
+
+/// Verify that the request is from a User API key (not Admin, not Anonymous).
 ///
 /// Phase 8 T041 — returns a locale-translated error response when the
 /// caller is an Admin key.
+///
+/// LOW-1 修复（CWE-1188）：当认证被禁用时，请求会携带 `ApiKeyRole::Anonymous`
+/// 扩展。此角色无业务权限，必须被拒绝（避免禁用认证时所有端点都开放）。
 fn verify_user_role(
     role: crate::server::middleware::ApiKeyRole,
     locale: Locale,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     if role == crate::server::middleware::ApiKeyRole::Admin {
         return Err(admin_cannot_perform_response(locale));
+    }
+    if role == crate::server::middleware::ApiKeyRole::Anonymous {
+        return Err(auth_required_response(locale));
     }
     Ok(())
 }

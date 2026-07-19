@@ -12,6 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Phase 9 T043 (HIGH H5) — file-level `#![allow(dead_code)]` retained
+//! with explicit justification. `WorkspaceConfigManager` is the
+//! repository-backed implementation of the workspace/group/biz_tag
+//! CRUD surface; production code currently uses `ConfigManager`
+//! (`server/config/management.rs`) which wraps a `SeaOrmRepository`
+//! directly. `WorkspaceConfigManager` is retained because (a) it is
+//! exercised by ~40 unit tests in this file, (b) it is the designated
+//! target for the v0.3.0 config-management consolidation, and (c)
+//! deleting it would discard the test coverage that validates the
+//! repository trait contracts independently of SeaORM. Re-evaluate
+//! after the consolidation task lands.
+
 #![allow(clippy::type_complexity)]
 #![allow(dead_code)]
 

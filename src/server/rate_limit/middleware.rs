@@ -123,30 +123,12 @@ impl RateLimitMiddleware {
 /// Extract client IP from request.
 ///
 /// Considers trusted proxies and X-Forwarded-For header.
+///
+/// Phase 9 T043 (LOW L3) — delegates to the single shared implementation
+/// in `server::middleware::utils` so audit/rate_limit/api_key_auth
+/// middleware all share one source of truth.
 fn get_client_ip(req: &Request<Body>, trusted_proxies: &[IpAddr]) -> Option<String> {
-    // Get direct connection IP
-    let connection_ip = req
-        .extensions()
-        .get::<std::net::SocketAddr>()
-        .map(|addr| addr.ip());
-
-    // Only trust X-Forwarded-For if the request comes from a trusted proxy
-    if let Some(conn_ip) = connection_ip {
-        if trusted_proxies.contains(&conn_ip) {
-            // Trust X-Forwarded-For from trusted proxy
-            if let Some(xff) = req.headers().get("X-Forwarded-For") {
-                if let Ok(xff_str) = xff.to_str() {
-                    // Take the first IP (original client)
-                    if let Some(client_ip) = xff_str.split(',').next() {
-                        return Some(client_ip.trim().to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    // Fallback to direct connection IP
-    connection_ip.map(|ip| ip.to_string())
+    crate::server::middleware::utils::get_client_ip(req, trusted_proxies)
 }
 
 // ============================================================================

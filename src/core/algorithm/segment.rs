@@ -12,6 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Segment 算法模块
+//!
+//! # 当前状态：保留若干 v0.3.0 多数据中心与告警管道预留 API
+//!
+//! 本模块包含若干暂时未被生产路径直接调用的 API：
+//! - `StepCalculator`、`CpuMonitor`、`DatabaseSegmentLoader`、`RepositoryBackedLoader`
+//! - `SegmentAlgorithmBuilder` 及其 builder 方法（`with_loader`、`with_dc_failure_detector`、
+//!   `with_etcd_cluster_health_monitor` 等）
+//! - `FAILURE_THRESHOLD_DEGRADED`、`FAILURE_THRESHOLD_FAILED`、`DEFAULT_QPS_BASELINE` 常量
+//! - `SegmentInfo::{remaining, consumed, set_current}`、`DcFailureDetector::{get_dc_state,
+//!   get_healthy_dcs, select_best_dc}` 等方法
+//!
+//! 保留原因：
+//!
+//! 1. **多数据中心支持预留**：v0.3.0 将启用多数据中心（DC）感知的 segment 分配，
+//!    `DcFailureDetector`、`get_healthy_dcs`、`select_best_dc` 是 DC 选择算法的核心 API。
+//! 2. **动态步长计算**：`StepCalculator` + `CpuMonitor` 用于根据 CPU 负载和 QPS 动态调整
+//!    segment 步长，将在 v0.3.0 性能优化阶段接入。
+//! 3. **数据库 segment loader**：`DatabaseSegmentLoader` 和 `RepositoryBackedLoader` 是
+//!    两种数据库 segment 加载策略，v0.3.0 将根据部署形态选择启用。
+//! 4. **测试覆盖**：以上 API 均有对应单元测试覆盖（约 30+ 测试），删除会丢失测试保护。
+//! 5. **Builder 扩展点**：`SegmentAlgorithmBuilder` 提供依赖注入的扩展点，便于未来
+//!    接入自定义 loader / detector。
+//!
+//! 详见 `specmark/changes/v0.3.0-release/` 中的多数据中心与性能优化设计文档。
 #![allow(dead_code)]
 
 use crate::core::algorithm::{
@@ -112,7 +137,7 @@ impl CpuMonitor {
     #[cfg(not(target_os = "linux"))]
     pub fn start_monitoring(&self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            debug!(
+            tracing::debug!(
                 "{}",
                 t!("log.core.algorithm.segment.cpu_monitoring_not_supported")
             );
@@ -671,6 +696,37 @@ impl SegmentAlgorithm {
         self
     }
 
+    // L13 修复：`initialize` 从 `impl IdAlgorithm for SegmentAlgorithm`
+    // 移到 inherent impl。原 trait method `initialize(&mut self, ...)` 让
+    // trait 不那么对象安全（`Arc<dyn IdAlgorithm>` 共享后无法调用 `&mut self`）。
+    // 现仅在 `AlgorithmBuilder::build` 中通过具体类型调用，初始化完成后
+    // 转为 `Box<dyn IdAlgorithm>` 共享。
+    pub async fn initialize(&mut self, config: &Config) -> Result<()> {
+        self.config = config.algorithm.segment.clone();
+
+        // Start CPU monitoring if available
+        if let Some(ref cpu_monitor) = self.cpu_monitor {
+            info!(
+                "{}",
+                t!("log.core.algorithm.segment.starting_cpu_monitoring")
+            );
+            let monitor_task = cpu_monitor.start_monitoring();
+            *self.cpu_monitor_task.lock().await = Some(monitor_task);
+        }
+
+        let detector = self.dc_failure_detector.clone();
+        let shutdown_rx = self.shutdown_tx.subscribe();
+        let task = tokio::spawn(async move {
+            detector
+                .start_health_check_with_shutdown(Duration::from_secs(60), shutdown_rx)
+                .await;
+        });
+
+        *self.health_check_task.lock().await = Some(task);
+
+        Ok(())
+    }
+
     #[cfg(feature = "etcd")]
     pub fn with_etcd_cluster_health_monitor(
         mut self,
@@ -837,7 +893,8 @@ impl IdAlgorithm for SegmentAlgorithm {
             current_qps: 0,
             p50_latency_us: 0,
             p99_latency_us: 0,
-            cache_hit_rate: hit_rate,
+            // L15 修复：Segment 算法有段缓存，返回真实命中率。
+            cache_hit_rate: Some(hit_rate),
         }
     }
 
@@ -845,31 +902,7 @@ impl IdAlgorithm for SegmentAlgorithm {
         AlgorithmType::Segment
     }
 
-    async fn initialize(&mut self, config: &Config) -> Result<()> {
-        self.config = config.algorithm.segment.clone();
-
-        // Start CPU monitoring if available
-        if let Some(ref cpu_monitor) = self.cpu_monitor {
-            info!(
-                "{}",
-                t!("log.core.algorithm.segment.starting_cpu_monitoring")
-            );
-            let monitor_task = cpu_monitor.start_monitoring();
-            *self.cpu_monitor_task.lock().await = Some(monitor_task);
-        }
-
-        let detector = self.dc_failure_detector.clone();
-        let shutdown_rx = self.shutdown_tx.subscribe();
-        let task = tokio::spawn(async move {
-            detector
-                .start_health_check_with_shutdown(Duration::from_secs(60), shutdown_rx)
-                .await;
-        });
-
-        *self.health_check_task.lock().await = Some(task);
-
-        Ok(())
-    }
+    // L13 修复：`initialize` 已移到 inherent impl（`impl SegmentAlgorithm`）。
 
     async fn shutdown(&self) -> Result<()> {
         // Signal shutdown and wait for health check task to complete
@@ -914,6 +947,80 @@ impl SegmentLoader for DefaultSegmentLoader {
     }
 }
 
+/// QPS 滑动窗口计数器（M6 + F-03 修复）。
+///
+/// **M6 修复**：原实现使用 `static OnceLock<WindowCounter>`，导致多个
+/// `DatabaseSegmentLoader` 实例（不同 biz_tag）共享同一计数器，QPS 统计失真。
+/// 现改为实例字段，每个 loader 独立统计。
+///
+/// **F-03 修复**：原实现 `fetch_add` 与 `store(0)` 之间存在 TOCTOU race，
+/// 线程 A 的计数可能被线程 B 的 reset 丢弃。现用 `std::sync::Mutex` 串行化
+/// reset + record 操作，保证原子性。QPS 统计非热路径，锁开销可接受。
+struct QpsWindow {
+    inner: std::sync::Mutex<QpsWindowInner>,
+}
+
+struct QpsWindowInner {
+    counters: Vec<u64>,
+    start_second: u64,
+}
+
+impl QpsWindow {
+    const WINDOW_SIZE: usize = 60; // 60 秒窗口
+
+    fn new() -> Self {
+        let start_second = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        Self {
+            inner: std::sync::Mutex::new(QpsWindowInner {
+                counters: vec![0u64; Self::WINDOW_SIZE],
+                start_second,
+            }),
+        }
+    }
+
+    /// 记录一次请求并返回当前平均 QPS。
+    ///
+    /// 所有操作在锁内完成，避免 fetch_add 与 reset 之间的 TOCTOU race。
+    fn record_and_get_qps(&self) -> u64 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut inner = self.inner.lock().unwrap();
+        let elapsed = now.saturating_sub(inner.start_second) as usize;
+
+        if elapsed >= Self::WINDOW_SIZE {
+            // 窗口过期：重置所有计数器，新窗口从当前秒开始
+            for c in &mut inner.counters {
+                *c = 0;
+            }
+            inner.start_second = now;
+            inner.counters[0] = 1; // 当前请求计入 slot 0
+            return DEFAULT_QPS_BASELINE;
+        }
+
+        let current_slot = elapsed % Self::WINDOW_SIZE;
+        inner.counters[current_slot] += 1;
+
+        // 计算总请求数和活跃槽位数
+        let total_count: u64 = inner.counters.iter().sum();
+        let active_slots = inner
+            .counters
+            .iter()
+            .rposition(|&c| c > 0)
+            .map(|i| i + 1)
+            .unwrap_or(1);
+
+        let avg_secs = active_slots.max(1) as u64;
+        let qps = total_count / avg_secs;
+        qps.max(DEFAULT_QPS_BASELINE)
+    }
+}
+
 pub struct DatabaseSegmentLoader {
     repository: Arc<dyn SegmentRepository>,
     dc_failure_detector: Arc<DcFailureDetector>,
@@ -928,6 +1035,8 @@ pub struct DatabaseSegmentLoader {
     segment_config: SegmentAlgorithmConfig,
     /// 用于 QPS 计算的原子计数器
     counter: Arc<std::sync::atomic::AtomicU64>,
+    /// QPS 滑动窗口（M6 + F-03：实例字段，避免跨实例共享 + TOCTOU race）
+    qps_window: Arc<QpsWindow>,
 }
 
 impl DatabaseSegmentLoader {
@@ -945,6 +1054,7 @@ impl DatabaseSegmentLoader {
             etcd_cluster_health_monitor: None,
             step_calculator: StepCalculator::default(),
             segment_config: config,
+            qps_window: Arc::new(QpsWindow::new()),
         }
     }
 
@@ -988,79 +1098,16 @@ impl DatabaseSegmentLoader {
     }
 
     /// 获取当前 QPS
-    /// 使用滑动窗口计数器精确计算最近 60 秒的平均 QPS
     ///
-    /// # 优化说明
-    /// - 旧实现：每次调用都计算系统时间，O(1) 但有系统调用开销
-    /// - 新实现：滑动窗口计数器，每秒更新一次，减少时间计算
+    /// 使用滑动窗口计数器精确计算最近 60 秒的平均 QPS。
+    ///
+    /// **M6 + F-03 修复**：原实现使用 `static OnceLock<WindowCounter>`，存在两个问题：
+    /// 1. **M6**：多个 `DatabaseSegmentLoader` 实例共享同一计数器，QPS 统计失真
+    /// 2. **F-03**：`fetch_add` 与 `store(0)` 之间存在 TOCTOU race，计数可能丢失
+    ///
+    /// 现改为使用实例字段 `self.qps_window: Arc<QpsWindow>`，所有操作在 Mutex 内完成。
     fn get_current_qps(&self) -> u64 {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        // 使用滑动窗口计数器优化 QPS 计算
-        const WINDOW_SIZE: usize = 60; // 60 秒窗口
-
-        // 每个槽位记录该秒的请求数
-        struct WindowCounter {
-            counters: Vec<AtomicU64>,
-            start_second: AtomicU64,
-        }
-
-        static WINDOW: std::sync::OnceLock<WindowCounter> = std::sync::OnceLock::new();
-
-        let window = WINDOW.get_or_init(|| {
-            let counters = (0..WINDOW_SIZE).map(|_| AtomicU64::new(0)).collect();
-            WindowCounter {
-                counters,
-                start_second: AtomicU64::new(
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
-                ),
-            }
-        });
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let start_second = window.start_second.load(Ordering::Relaxed);
-        let elapsed = now.saturating_sub(start_second) as usize;
-
-        // 更新当前秒的计数器
-        let current_slot = elapsed % WINDOW_SIZE;
-        window.counters[current_slot].fetch_add(1, Ordering::Relaxed);
-
-        // 如果超过 60 秒，重置所有计数器
-        if elapsed >= WINDOW_SIZE {
-            for counter in &window.counters {
-                counter.store(0, Ordering::Relaxed);
-            }
-            window.start_second.store(now, Ordering::Relaxed);
-            return DEFAULT_QPS_BASELINE;
-        }
-
-        // 计算总请求数和总时间
-        let mut total_count = 0u64;
-        let mut active_slots = 0usize;
-
-        for (i, counter) in window.counters.iter().enumerate() {
-            let count = counter.load(Ordering::Relaxed);
-            total_count += count;
-
-            // 只统计有数据的槽位
-            if count > 0 {
-                active_slots = active_slots.max(i + 1);
-            }
-        }
-
-        // 计算平均 QPS（至少 1 秒）
-        let avg_secs = active_slots.max(1) as u64;
-        let qps = total_count / avg_secs;
-
-        // 使用实际 QPS，但不低于基准值
-        qps.max(DEFAULT_QPS_BASELINE)
+        self.qps_window.record_and_get_qps()
     }
 }
 
@@ -1336,6 +1383,31 @@ impl SegmentAlgorithmBuilder {
             shutdown_tx: Arc::new(shutdown_tx),
             health_check_task: Arc::new(tokio::sync::Mutex::new(None)),
         }
+    }
+}
+
+// ============================================================================
+// ARCH-HIGH-001 修复：SegmentFactory impl 拆分到本文件。
+// 原 impl 位于 traits.rs（违反规则 25），现移到具体类型所属文件。
+// 通过 AlgorithmBuilder 的 pub(crate) 访问器获取依赖。
+// ============================================================================
+#[async_trait]
+impl crate::core::algorithm::AlgorithmFactory for crate::core::algorithm::SegmentFactory {
+    async fn build(
+        &self,
+        builder: &crate::core::algorithm::AlgorithmBuilder,
+        config: &Config,
+    ) -> Result<Box<dyn crate::core::algorithm::IdAlgorithm>> {
+        let mut algo = SegmentAlgorithm::new(config.app.dc_id);
+        #[cfg(feature = "etcd")]
+        if let Some(ref monitor) = builder.etcd_health_monitor() {
+            algo = algo.with_etcd_cluster_health_monitor(monitor.clone());
+        }
+        if let Some(ref cpu_monitor) = builder.cpu_monitor() {
+            algo = algo.with_cpu_monitor(cpu_monitor.clone());
+        }
+        algo.initialize(config).await?;
+        Ok(Box::new(algo))
     }
 }
 

@@ -111,6 +111,10 @@ impl super::ApiHandlers {
 
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
+        // L16 修复：从 `ApiHandlers::key_rotation_grace_period_seconds` 读取，
+        // 原为闭包内硬编码 `const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60`。
+        let grace_period_seconds = self.key_rotation_grace_period_seconds;
+
         let _handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(check_interval);
             loop {
@@ -130,9 +134,8 @@ impl super::ApiHandlers {
                                         age_days = max_key_age_days
                                     );
 
-                                    const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60;
                                     if let Err(e) =
-                                        repo.rotate_api_key(&key.key_id, GRACE_PERIOD_SECONDS).await
+                                        repo.rotate_api_key(&key.key_id, grace_period_seconds).await
                                     {
                                         tracing::error!(
                                             event = "key_rotation_failed",
@@ -161,7 +164,8 @@ impl super::ApiHandlers {
         tracing::info!(
             event = "key_rotation_task_started",
             check_interval_secs = check_interval.as_secs(),
-            max_age_days = max_key_age_days
+            max_age_days = max_key_age_days,
+            grace_period_secs = grace_period_seconds
         );
 
         Some(KeyRotationHandle { shutdown_tx })

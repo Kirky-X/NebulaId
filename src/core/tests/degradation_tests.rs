@@ -105,16 +105,13 @@ impl IdAlgorithm for MockIdAlgorithm {
             current_qps: 0,
             p50_latency_us: 0,
             p99_latency_us: 0,
-            cache_hit_rate: 0.0,
+            // L15 修复：Mock 算法无缓存概念，返回 None。
+            cache_hit_rate: None,
         }
     }
 
     fn algorithm_type(&self) -> AlgorithmType {
         self.alg_type
-    }
-
-    async fn initialize(&mut self, _config: &crate::core::config::Config) -> Result<()> {
-        Ok(())
     }
 
     async fn shutdown(&self) -> Result<()> {

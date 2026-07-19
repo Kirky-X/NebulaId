@@ -12,6 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Phase 9 T043 (HIGH H5) — file-level `#![allow(dead_code)]` retained
+//! with explicit justification. This file hosts both the production
+//! Snowflake algorithm and the (test-only) `UuidV7Algorithm` /
+//! `UuidV4Algorithm` / `UuidMetrics` / `SnowflakeAlgorithmBuilder`
+//! implementations. The Uuid variants are exercised by unit tests
+//! but not registered in the production `AlgorithmBuilder` registry
+//! (production uses the dedicated `uuid_v7.rs` module). They are
+//! retained because (a) the tests validate the IdAlgorithm trait
+//! contract for UUID-style generators, (b) the Builder pattern is
+//! the documented extension point for injecting custom worker-id
+//! allocators, and (c) deleting them would drop ~15 tests.
+//! Re-evaluate at v0.3.0 once the algorithm-registration story
+//! consolidates onto a single registry.
+
 #![allow(dead_code)]
 
 use crate::core::algorithm::{
@@ -80,6 +94,27 @@ impl SnowflakeAlgorithm {
         }
     }
 
+    // L13 修复：`initialize` 从 `impl IdAlgorithm for SnowflakeAlgorithm`
+    // 移到 inherent impl。原 trait method `initialize(&mut self, ...)` 让
+    // trait 不那么对象安全（`Arc<dyn IdAlgorithm>` 共享后无法调用 `&mut self`）。
+    // 现仅在 `AlgorithmBuilder::build` 中通过具体类型调用，初始化完成后
+    // 转为 `Box<dyn IdAlgorithm>` 共享。
+    pub async fn initialize(&mut self, config: &Config) -> Result<()> {
+        self.config = config.algorithm.snowflake.clone();
+        self.datacenter_id = config.app.dc_id;
+        self.worker_id = config.app.worker_id;
+
+        info!(
+            "{}",
+            t!(
+                "log.core.algorithm.snowflake.initialized",
+                datacenter_id = self.datacenter_id,
+                worker_id = self.worker_id
+            )
+        );
+        Ok(())
+    }
+
     fn get_timestamp() -> u64 {
         let now = SystemTime::now()
             .duration_since(epoch_start())
@@ -90,18 +125,16 @@ impl SnowflakeAlgorithm {
 
     /// Wait for the next millisecond timestamp.
     ///
-    /// NOTE: This uses `std::thread::sleep` because:
-    /// 1. This is only called in rare clock drift scenarios
-    /// 2. The sleep duration is minimal (1ms)
-    /// 3. Making this async would require significant refactoring
-    /// 4. Clock drift beyond threshold returns error immediately
+    /// L2 修复：原注释声称使用 `std::thread::sleep`，但实际代码用的是
+    /// `tokio::time::sleep`（async-friendly）。注释已更新以匹配代码。
+    ///
+    /// 此函数仅在时钟回拨罕见场景调用，sleep duration 极短（1ms）。
     async fn wait_for_next_ms(&self, last_ts: u64) -> u64 {
         loop {
             let current = Self::get_timestamp();
             if current > last_ts {
                 return current;
             }
-            // Use tokio::time::sleep for async-friendly waiting
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
     }
@@ -276,7 +309,8 @@ impl IdAlgorithm for SnowflakeAlgorithm {
             current_qps: 0,
             p50_latency_us: 0,
             p99_latency_us: 0,
-            cache_hit_rate: 0.0,
+            // L15 修复：Snowflake/UUID 算法无缓存概念，返回 None。
+            cache_hit_rate: None,
         }
     }
 
@@ -284,21 +318,7 @@ impl IdAlgorithm for SnowflakeAlgorithm {
         AlgorithmType::Snowflake
     }
 
-    async fn initialize(&mut self, config: &Config) -> Result<()> {
-        self.config = config.algorithm.snowflake.clone();
-        self.datacenter_id = config.app.dc_id;
-        self.worker_id = config.app.worker_id;
-
-        info!(
-            "{}",
-            t!(
-                "log.core.algorithm.snowflake.initialized",
-                datacenter_id = self.datacenter_id,
-                worker_id = self.worker_id
-            )
-        );
-        Ok(())
-    }
+    // L13 修复：`initialize` 已移到 inherent impl（`impl SnowflakeAlgorithm`）。
 
     async fn shutdown(&self) -> Result<()> {
         Ok(())
@@ -306,15 +326,17 @@ impl IdAlgorithm for SnowflakeAlgorithm {
 }
 
 pub struct UuidV7Algorithm {
-    metrics: Arc<UuidV7Metrics>,
+    metrics: Arc<UuidMetrics>,
 }
 
-struct UuidV7Metrics {
+// L1 修复：重命名 UuidV7Metrics → UuidMetrics，
+// 因为 UuidV4Algorithm 也复用此结构（命名误导）。
+struct UuidMetrics {
     total_generated: AtomicU64,
     total_failed: AtomicU64,
 }
 
-impl Default for UuidV7Metrics {
+impl Default for UuidMetrics {
     fn default() -> Self {
         Self {
             total_generated: AtomicU64::new(0),
@@ -332,7 +354,7 @@ impl Default for UuidV7Algorithm {
 impl UuidV7Algorithm {
     pub fn new() -> Self {
         Self {
-            metrics: Arc::new(UuidV7Metrics::default()),
+            metrics: Arc::new(UuidMetrics::default()),
         }
     }
 
@@ -378,7 +400,8 @@ impl IdAlgorithm for UuidV7Algorithm {
             current_qps: 0,
             p50_latency_us: 0,
             p99_latency_us: 0,
-            cache_hit_rate: 0.0,
+            // L15 修复：Snowflake/UUID 算法无缓存概念，返回 None。
+            cache_hit_rate: None,
         }
     }
 
@@ -386,9 +409,7 @@ impl IdAlgorithm for UuidV7Algorithm {
         AlgorithmType::UuidV7
     }
 
-    async fn initialize(&mut self, _config: &Config) -> Result<()> {
-        Ok(())
-    }
+    // L13 修复：删除 no-op `initialize`（trait 上已无此方法）。
 
     async fn shutdown(&self) -> Result<()> {
         Ok(())
@@ -396,7 +417,7 @@ impl IdAlgorithm for UuidV7Algorithm {
 }
 
 pub struct UuidV4Algorithm {
-    metrics: Arc<UuidV7Metrics>,
+    metrics: Arc<UuidMetrics>,
 }
 
 impl Default for UuidV4Algorithm {
@@ -408,7 +429,7 @@ impl Default for UuidV4Algorithm {
 impl UuidV4Algorithm {
     pub fn new() -> Self {
         Self {
-            metrics: Arc::new(UuidV7Metrics::default()),
+            metrics: Arc::new(UuidMetrics::default()),
         }
     }
 
@@ -446,7 +467,8 @@ impl IdAlgorithm for UuidV4Algorithm {
             current_qps: 0,
             p50_latency_us: 0,
             p99_latency_us: 0,
-            cache_hit_rate: 0.0,
+            // L15 修复：Snowflake/UUID 算法无缓存概念，返回 None。
+            cache_hit_rate: None,
         }
     }
 
@@ -454,9 +476,7 @@ impl IdAlgorithm for UuidV4Algorithm {
         AlgorithmType::UuidV4
     }
 
-    async fn initialize(&mut self, _config: &Config) -> Result<()> {
-        Ok(())
-    }
+    // L13 修复：删除 no-op `initialize`（trait 上已无此方法）。
 
     async fn shutdown(&self) -> Result<()> {
         Ok(())
@@ -559,6 +579,23 @@ impl SnowflakeAlgorithmBuilder {
         } else {
             SnowflakeAlgorithm::new(datacenter_id, worker_id)
         }
+    }
+}
+
+// ============================================================================
+// ARCH-HIGH-001 修复：SnowflakeFactory impl 拆分到本文件。
+// 原 impl 位于 traits.rs（违反规则 25），现移到具体类型所属文件。
+// ============================================================================
+#[async_trait]
+impl crate::core::algorithm::AlgorithmFactory for crate::core::algorithm::SnowflakeFactory {
+    async fn build(
+        &self,
+        _builder: &crate::core::algorithm::AlgorithmBuilder,
+        config: &Config,
+    ) -> Result<Box<dyn crate::core::algorithm::IdAlgorithm>> {
+        let mut algo = SnowflakeAlgorithm::new(config.app.dc_id, config.app.worker_id);
+        algo.initialize(config).await?;
+        Ok(Box::new(algo))
     }
 }
 
@@ -911,7 +948,8 @@ mod tests {
         assert_eq!(snap.current_qps, 0);
         assert_eq!(snap.p50_latency_us, 0);
         assert_eq!(snap.p99_latency_us, 0);
-        assert_eq!(snap.cache_hit_rate, 0.0);
+        // L15 修复：Snowflake 无缓存，cache_hit_rate 为 None。
+        assert_eq!(snap.cache_hit_rate, None);
     }
 
     /// algorithm_type 应返回 Snowflake。
@@ -1058,13 +1096,6 @@ mod tests {
         );
     }
 
-    /// UuidV7Algorithm::initialize 应返回 Ok(())。
-    #[tokio::test]
-    async fn test_uuid_v7_initialize_returns_ok() {
-        let mut algo = UuidV7Algorithm::new();
-        assert!(algo.initialize(&Config::default()).await.is_ok());
-    }
-
     /// UuidV7Algorithm::shutdown 应返回 Ok(())。
     #[tokio::test]
     async fn test_uuid_v7_shutdown_returns_ok() {
@@ -1126,13 +1157,6 @@ mod tests {
             UuidV4Algorithm::new().algorithm_type(),
             AlgorithmType::UuidV4
         );
-    }
-
-    /// UuidV4Algorithm::initialize 应返回 Ok(())。
-    #[tokio::test]
-    async fn test_uuid_v4_initialize_returns_ok() {
-        let mut algo = UuidV4Algorithm::new();
-        assert!(algo.initialize(&Config::default()).await.is_ok());
     }
 
     /// UuidV4Algorithm::shutdown 应返回 Ok(())。

@@ -59,6 +59,12 @@ impl super::ApiHandlers {
         };
 
         if role == ApiKeyRole::Admin {
+            // Phase 9 T043 (HIGH H8) — reject additional admin keys
+            // instead of merely warning. Combined with the C3 SQL CHECK
+            // fix (admin key must have NULL workspace_id), this enforces
+            // a single global admin key invariant. Previously an
+            // attacker with admin credentials could create a second
+            // admin key as a persistence backdoor.
             let existing_keys = repo
                 .list_api_keys(uuid::Uuid::nil(), Some(1000), Some(0))
                 .await
@@ -70,11 +76,15 @@ impl super::ApiHandlers {
 
             if has_admin {
                 tracing::warn!(
-                    event = "admin_key_creation",
+                    event = "admin_key_creation_blocked",
                     workspace_id = ?workspace_id,
                     "{}",
                     t!("log.server.handlers.api_key_handlers.creating_additional_admin_key")
                 );
+                return Err(CoreError::AuthenticationError(
+                    "An admin API key already exists; creating additional admin keys is forbidden"
+                        .to_string(),
+                ));
             }
         }
 
@@ -241,10 +251,15 @@ impl super::ApiHandlers {
             .as_ref()
             .ok_or_else(|| CoreError::NotFound("API key repository not configured".to_string()))?;
 
-        const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60;
+        // L16 修复：从 `ApiHandlers::key_rotation_grace_period_seconds`
+        // 读取，原为硬编码 `const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60`。
+        // 默认值仍为 7 天（见 `mod.rs::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`），
+        // 可通过 `AuthConfig::key_rotation_grace_period_seconds` +
+        // `ApiHandlers::with_key_rotation_grace_period` 覆盖。
+        let grace_period_seconds = self.key_rotation_grace_period_seconds;
 
         let key_with_secret = repo
-            .rotate_api_key(key_id, GRACE_PERIOD_SECONDS)
+            .rotate_api_key(key_id, grace_period_seconds)
             .await
             .map_err(map_db_error)?;
 

@@ -80,6 +80,12 @@ pub type ApiKeyInfo = ApiKey;
 pub enum ApiKeyRole {
     Admin,
     User,
+    /// LOW-1 修复（CWE-1188）：禁用认证时使用的匿名角色。
+    /// 该角色仅存在于内存中（请求 extensions），不会被持久化到数据库
+    /// （`repository.rs` 的 `create_api_key` 会拒绝 Anonymous）。
+    /// 权限低于 User：只能访问公开端点（health/ready/metrics），
+    /// 其他端点由 `router.rs::verify_user_role` 拒绝。
+    Anonymous,
 }
 
 impl fmt::Display for ApiKeyRole {
@@ -87,6 +93,7 @@ impl fmt::Display for ApiKeyRole {
         match self {
             ApiKeyRole::Admin => write!(f, "admin"),
             ApiKeyRole::User => write!(f, "user"),
+            ApiKeyRole::Anonymous => write!(f, "anonymous"),
         }
     }
 }
@@ -102,6 +109,20 @@ impl From<&str> for ApiKeyRole {
         match s {
             "admin" => ApiKeyRole::Admin,
             "user" => ApiKeyRole::User,
+            // ARCH-LOW-002 修复：`"anonymous"` 不应从数据库反序列化。
+            // Anonymous 是仅运行时存在的角色（禁用认证时注入 extensions），
+            // 不应被持久化。若数据库出现 'anonymous'（运维误操作/迁移脚本
+            // 错误/SQL 注入），归一化为 User 默认值并 log warn，让运维
+            // 在日志中看到问题。原实现接受 'anonymous' 反序列化会让 Anonymous
+            // 通过 ApiKey 传播到 middleware/router，破坏 LOW-1 契约。
+            "anonymous" => {
+                tracing::warn!(
+                    role_value = s,
+                    "database contains 'anonymous' role which should not be persisted, \
+                     normalizing to User"
+                );
+                ApiKeyRole::User
+            }
             _ => ApiKeyRole::User,
         }
     }

@@ -22,16 +22,26 @@ use axum::response::Response;
 use base64::Engine;
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // Re-export ApiKeyRole locally for use in this module
 pub use crate::core::database::ApiKeyRole;
 
+/// Phase 9 T043 (HIGH H6) — hard cap on the number of distinct IPs
+/// tracked in `auth_failures`. When the map reaches this size, the
+/// oldest entries are evicted to bound memory usage. Prevents an
+/// attacker (especially one able to spoof IPs via the now-fixed
+/// `X-Forwarded-For` issue, H3) from OOMing the process by sending
+/// requests from many distinct source IPs.
+const MAX_TRACKED_AUTH_FAILURE_IPS: usize = 10_000;
+
 #[derive(Clone)]
 pub struct ApiKeyAuth {
     pub(crate) repo: Arc<dyn ApiKeyRepository>,
     pub(crate) enabled: bool,
+    trusted_proxies: Vec<IpAddr>,
     auth_failures: Arc<RwLock<HashMap<String, Vec<Instant>>>>,
 }
 
@@ -40,8 +50,20 @@ impl ApiKeyAuth {
         Self {
             repo,
             enabled,
+            trusted_proxies: Vec::new(),
             auth_failures: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Phase 9 T043 (HIGH H3) — set the list of trusted proxy IPs.
+    /// Requests whose direct peer IP appears in this list will have
+    /// their `X-Forwarded-For` / `X-Real-IP` headers honored when
+    /// determining the originating client IP for auth-failure
+    /// tracking. Untrusted peers are identified by their direct
+    /// connection IP, defeating spoofed-header attacks.
+    pub fn with_trusted_proxies(mut self, proxies: Vec<IpAddr>) -> Self {
+        self.trusted_proxies = proxies;
+        self
     }
 
     fn check_auth_failure_rate(&self, client_ip: &str) -> bool {
@@ -52,6 +74,15 @@ impl ApiKeyAuth {
         // 移除 5 分钟前的记录
         failures.retain(|t| now.duration_since(*t) < Duration::from_secs(300));
 
+        // Phase 9 T043 (HIGH H6) — evict empty entries so a long-lived
+        // process does not accumulate one dead `Vec` per unique IP ever
+        // seen. Without this, an attacker rotating IPs can OOM the
+        // process even after the per-IP failure windows expire.
+        if failures.is_empty() {
+            failures_map.remove(client_ip);
+            return true;
+        }
+
         // 如果 5 分钟内失败超过 10 次，则阻止
         if failures.len() >= 10 {
             tracing::warn!(
@@ -61,6 +92,20 @@ impl ApiKeyAuth {
                 t!("log.server.middleware.api_key_auth.too_many_auth_failures")
             );
             return false;
+        }
+
+        // Phase 9 T043 (HIGH H6) — bound the map size. If we are at
+        // capacity, drop the entry we just inserted (it has zero
+        // failures) plus a sweep of any other empty entries. This
+        // favors keeping actively-failing IPs over fresh ones.
+        if failures_map.len() > MAX_TRACKED_AUTH_FAILURE_IPS {
+            failures_map.retain(|_, v| !v.is_empty());
+            if failures_map.len() > MAX_TRACKED_AUTH_FAILURE_IPS {
+                // Still over capacity — clear the map entirely. This
+                // is a last-resort safety valve; under normal load the
+                // per-IP 5-minute window keeps the map small.
+                failures_map.clear();
+            }
         }
 
         true
@@ -83,31 +128,11 @@ impl ApiKeyAuth {
     }
 
     fn get_client_ip(&self, req: &Request<Body>) -> Option<String> {
-        // 尝试从 X-Forwarded-For 获取
-        if let Some(xff) = req.headers().get("x-forwarded-for") {
-            if let Ok(xff_str) = xff.to_str() {
-                if let Some(first_ip) = xff_str.split(',').next() {
-                    let ip = first_ip.trim();
-                    if !ip.is_empty() {
-                        return Some(ip.to_string());
-                    }
-                }
-            }
-        }
-
-        // 尝试从 X-Real-IP 获取
-        if let Some(xri) = req.headers().get("x-real-ip") {
-            if let Ok(xri_str) = xri.to_str() {
-                if !xri_str.is_empty() {
-                    return Some(xri_str.to_string());
-                }
-            }
-        }
-
-        // 尝试从连接信息获取
-        req.extensions()
-            .get::<std::net::SocketAddr>()
-            .map(|addr| addr.ip().to_string())
+        // Phase 9 T043 (HIGH H3) — delegate to the shared, trusted-
+        // proxy-aware implementation. Previously this method blindly
+        // trusted `X-Forwarded-For`, allowing an attacker to forge
+        // the header and bypass per-IP auth-failure rate limiting.
+        crate::server::middleware::utils::get_client_ip(req, &self.trusted_proxies)
     }
 
     pub async fn validate_key(
@@ -153,7 +178,11 @@ impl ApiKeyAuth {
 
             // 设置默认的 workspace_id 和 role 扩展
             req.extensions_mut().insert(None::<uuid::Uuid>);
-            req.extensions_mut().insert(ApiKeyRole::User);
+            // LOW-1 修复（CWE-1188）：禁用认证时不再赋予 User 角色
+            // （User 是真实角色，有生成 ID 等业务权限）。改用 Anonymous，
+            // 权限低于 User，只能访问公开端点（health/ready/metrics），
+            // 其他端点由 `router.rs::verify_user_role` 拒绝。
+            req.extensions_mut().insert(ApiKeyRole::Anonymous);
 
             // 记录审计日志（异步，不阻塞请求）
             tokio::spawn(async move {

@@ -36,12 +36,51 @@ jobs:
             echo "has_npm_token=false" >> $GITHUB_OUTPUT
           fi
 
+  # LOW-4 修复（CWE-1357）：发布前强制安全审查门禁。
+  # 规则 19 要求「发布前强制安全审查」——任何 tag 发布前必须通过
+  # cargo-audit（RustSec advisory-db）+ cargo-deny（许可证/重复依赖/ban）。
+  # 任一失败立即阻断发布流水线，禁止打 tag 后绕过审查。
+  #
+  # SEC-LOW-004 修复（CWE-1357 mutable action tags）：使用 major version
+  # tag（`@v4` / `@stable` / `@v2`）而非 SHA pin。决策权衡：
+  # - SHA pin：安全性最高（防止 action 仓库被攻陷后注入恶意代码），
+  #   但维护成本高（每次升级需手动更新 SHA，且 dependabot 自动升级
+  #   也只是把 SHA 替换为新 SHA，PR 审查负担重）。
+  # - major version tag：GitHub 官方推荐做法，由 action owner 维护
+  #   tag 指向最新 patch release。配合 `.github/dependabot.yml` 的
+  #   `github-actions` ecosystem 配置，自动升级到最新 minor/patch。
+  # - 折中：本流水线使用 major version tag + dependabot 自动升级，
+  #   平衡安全性与可维护性。如未来安全要求升级，可改为 SHA pin。
+  pre-release-audit:
+    name: Pre-release Security Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo audit (--deny warnings)
+        run: cargo audit --deny warnings
+
+      - name: cargo-deny check
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          log-level: warn
+
   # 发布到 crates.io（仅在 CARGO_REGISTRY_TOKEN 存在时执行，无 secret 跳过不报错）
   publish-cargo:
     name: Publish to crates.io
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: check-secrets
+    needs: [check-secrets, pre-release-audit]
     if: needs.check-secrets.outputs.has_cargo_token == 'true'
     permissions:
       id-token: write
@@ -82,6 +121,7 @@ jobs:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    needs: [pre-release-audit]
     strategy:
       fail-fast: false
       matrix:

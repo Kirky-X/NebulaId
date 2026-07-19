@@ -808,6 +808,8 @@ impl DistributedLock for EtcdDistributedLock {
                         key: key.to_string(),
                         lease_id,
                         lock_path: self.lock_path(key),
+                        // L9 修复：初始化为未释放状态，Drop 时检查
+                        released: Arc::new(AtomicBool::new(false)),
                     };
 
                     return Ok(Box::new(guard));
@@ -843,13 +845,19 @@ impl DistributedLock for EtcdDistributedLock {
 
 /// Etcd 锁守卫实现。
 ///
-/// 注意：本守卫**未实现 `Drop`**，不会在 drop 时自动释放锁。调用方必须显式调用
-/// `release()` 撤销 lease；若忘记调用，锁将在 lease TTL 到期后由 etcd 自动回收。
+/// L9 修复：实现 `Drop` trait，在 guard 被 drop 时自动 spawn 一个
+/// 后台 task 撤销 lease 释放锁。若调用方已显式调用 `release()`，
+/// `released` 标志位会阻止 Drop 中的二次释放。若 tokio runtime
+/// 不可用（例如进程关闭阶段），Drop 仅记录 warning 日志，锁会
+/// 在 lease TTL 到期后由 etcd 自动回收。
 pub struct EtcdLockGuard {
     lock: EtcdDistributedLock,
     key: String,
     lease_id: i64,
     lock_path: String,
+    /// L9 修复：标记是否已显式 release，防止 Drop 中的 double-release。
+    /// AtomicBool 无需 &mut self，可在 Drop 中读取。
+    released: Arc<AtomicBool>,
 }
 
 #[async_trait]
@@ -864,6 +872,9 @@ impl LockGuard for EtcdLockGuard {
                 reason: e.to_string(),
             })?;
 
+        // L9 修复：标记已释放，防止 Drop 中二次释放。
+        self.released.store(true, Ordering::SeqCst);
+
         // R-algorithm-003: 输出 lock_path 用于运维诊断 etcd key 路径，同时消除 dead_code 警告。
         info!(
             lock_path = %self.lock_path,
@@ -874,6 +885,57 @@ impl LockGuard for EtcdLockGuard {
         );
 
         Ok(())
+    }
+}
+
+impl Drop for EtcdLockGuard {
+    fn drop(&mut self) {
+        // L9 修复：已显式 release 则跳过，避免 double-release。
+        if self.released.load(Ordering::SeqCst) {
+            return;
+        }
+
+        // L9 修复：未显式 release 时，尝试 spawn 后台 task 异步释放锁。
+        // 这覆盖了调用方忘记显式 release 的场景（如早期 return / panic）。
+        let lock = self.lock.clone();
+        let key = self.key.clone();
+        let lease_id = self.lease_id;
+        let lock_path = self.lock_path.clone();
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    if let Err(e) = lock.client.lease_revoke(lease_id).await {
+                        warn!(
+                            lock_path = %lock_path,
+                            key = %key,
+                            lease_id = lease_id,
+                            error = %e,
+                            "{}",
+                            t!("log.core.coordinator.etcd.lock_drop_release_failed")
+                        );
+                    } else {
+                        debug!(
+                            lock_path = %lock_path,
+                            key = %key,
+                            lease_id = lease_id,
+                            "{}",
+                            t!("log.core.coordinator.etcd.lock_drop_released")
+                        );
+                    }
+                });
+            }
+            Err(_) => {
+                // runtime 不可用（如进程关闭），lease TTL 会自动回收。
+                warn!(
+                    lock_path = %lock_path,
+                    key = %key,
+                    lease_id = lease_id,
+                    "{}",
+                    t!("log.core.coordinator.etcd.lock_drop_no_runtime")
+                );
+            }
+        }
     }
 }
 
@@ -1202,6 +1264,10 @@ mod tests {
         mock.expect_lease_grant().returning(|_| Ok(456));
         mock.expect_txn_check_create_rev_and_put()
             .returning(|_, _, _| Ok(true));
+        // L9 修复后：guard drop 时会 spawn release task 调用 lease_revoke。
+        // 用 `.returning` 不限制 times（0 次或多次），避免 fire-and-forget
+        // task 时序不确定导致 mock 验证失败。
+        mock.expect_lease_revoke().returning(|_| Ok(()));
 
         let lock = EtcdDistributedLock::new(mock_into_client(mock), "/locks/".to_string())
             .await
@@ -1209,7 +1275,7 @@ mod tests {
 
         let result = lock.acquire("key1", 5).await;
         assert!(result.is_ok());
-        // guard 持有但不 release（无 lease_revoke 期望）
+        // guard 持有但不显式 release，drop 时 spawn release task
         let _guard = result.unwrap();
     }
 
@@ -1228,7 +1294,9 @@ mod tests {
             .in_sequence(&mut seq)
             .returning(|_, _, _| Ok(true)); // 第二次成功
 
-        mock.expect_lease_revoke().times(1).returning(|_| Ok(())); // 冲突时撤销
+        // L9 修复后：冲突时撤销 1 次 + guard drop 时可能撤销 1 次。
+        // 用 `.returning` 不限制 times，避免 fire-and-forget task 时序问题。
+        mock.expect_lease_revoke().returning(|_| Ok(()));
 
         let lock = EtcdDistributedLock::new(mock_into_client(mock), "/locks/".to_string())
             .await
@@ -1290,7 +1358,9 @@ mod tests {
     #[tokio::test]
     async fn test_lock_guard_release_succeeds() {
         let mut mock = MockEtcdClientOps::new();
-        mock.expect_lease_revoke().returning(|_| Ok(()));
+        // L9 修复后：显式 release 成功 → released=true → drop 跳过，
+        // 因此 lease_revoke 只会被调用 1 次。使用 `.times(1)` 验证此行为。
+        mock.expect_lease_revoke().times(1).returning(|_| Ok(()));
 
         let lock = EtcdDistributedLock::new(mock_into_client(mock), "/locks/".to_string())
             .await
@@ -1301,15 +1371,20 @@ mod tests {
             key: "test_key".to_string(),
             lease_id: 123,
             lock_path: "/locks/test_key".to_string(),
+            released: Arc::new(AtomicBool::new(false)),
         };
 
         let result = guard.release().await;
         assert!(result.is_ok());
+        // guard 在 test 结束时 drop，released=true → Drop 跳过 lease_revoke
     }
 
     #[tokio::test]
     async fn test_lock_guard_release_fails() {
         let mut mock = MockEtcdClientOps::new();
+        // L9 修复后：显式 release 失败 → released 仍为 false → drop 时
+        // spawn 后台 task 再次调用 lease_revoke。由于 spawn 是
+        // fire-and-forget，时序不确定，用 `.returning` 不限制 times。
         mock.expect_lease_revoke()
             .returning(|_| Err(EtcdError::LeaseInvalid("revoke failed".into())));
 
@@ -1322,6 +1397,7 @@ mod tests {
             key: "test_key".to_string(),
             lease_id: 123,
             lock_path: "/locks/test_key".to_string(),
+            released: Arc::new(AtomicBool::new(false)),
         };
 
         let result = guard.release().await;
@@ -1330,6 +1406,7 @@ mod tests {
             "应返回 ReleaseFailed, 实际: {:?}",
             result
         );
+        // guard drop 时 spawn 后台 task 再次尝试 release（也会失败，仅 log warning）
     }
 
     // ===== EtcdClusterHealthMonitor with injected client tests (5) =====

@@ -43,6 +43,11 @@ pub struct ApiHandlers {
     pub(super) start_time: std::time::Instant,
     pub(super) config_service: Arc<dyn ConfigManagementService>,
     pub(super) api_key_repo: Option<Arc<dyn ApiKeyRepository>>,
+    /// L16 修复：密钥轮换宽限期（秒）。原为 `api_key_handlers.rs` /
+    /// `system_handlers.rs` 中硬编码 `const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60`，
+    /// 现移到 `AuthConfig::key_rotation_grace_period_seconds`，由
+    /// `with_key_rotation_grace_period` builder 方法注入。
+    pub(super) key_rotation_grace_period_seconds: u64,
 }
 
 #[derive(Default)]
@@ -52,7 +57,15 @@ pub struct ApiMetrics {
     pub failed_generations: std::sync::atomic::AtomicU64,
     pub total_ids_generated: std::sync::atomic::AtomicU64,
     pub avg_latency_ms: std::sync::atomic::AtomicU64,
+    // L5 修复：累积总延迟，用于计算真实平均值 avg = total_latency / total_requests
+    pub total_latency_ms: std::sync::atomic::AtomicU64,
 }
+
+/// L16 修复：默认密钥轮换宽限期 = 7 天。
+///
+/// ARCH-MED-002 修复：删除本地 `const`，统一引用
+/// `crate::core::config::auth::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`。
+use crate::core::config::auth::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS;
 
 impl ApiHandlers {
     pub fn new(
@@ -65,6 +78,7 @@ impl ApiHandlers {
             start_time: std::time::Instant::now(),
             config_service,
             api_key_repo: None,
+            key_rotation_grace_period_seconds: DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS,
         }
     }
 
@@ -79,7 +93,41 @@ impl ApiHandlers {
             start_time: std::time::Instant::now(),
             config_service,
             api_key_repo: Some(api_key_repo),
+            key_rotation_grace_period_seconds: DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS,
         }
+    }
+
+    /// L16 修复：注入 `AuthConfig::key_rotation_grace_period_seconds`。
+    /// 未调用时使用默认值 7 天，保持向后兼容。
+    ///
+    /// SEC-LOW-003 修复（CWE-358 信任边界）：对配置值做范围校验。
+    /// - 0：轮换瞬间失败，进行中的请求被拒（业务破坏）
+    /// - 过大（> 30 天）：旧密钥几乎永久有效，密钥泄露窗口无限大
+    ///
+    /// 超出 `[1, 30 * 24 * 60 * 60]` 范围时记录警告并 clamp 到边界值，
+    /// 既不破坏启动流程（fail-open），也让运维在日志中看到问题（规则 12）。
+    pub fn with_key_rotation_grace_period(mut self, seconds: u64) -> Self {
+        const MIN_GRACE_PERIOD_SECONDS: u64 = 1;
+        const MAX_GRACE_PERIOD_SECONDS: u64 = 30 * 24 * 60 * 60; // 30 天
+
+        if seconds < MIN_GRACE_PERIOD_SECONDS {
+            tracing::warn!(
+                requested = seconds,
+                min = MIN_GRACE_PERIOD_SECONDS,
+                "key_rotation_grace_period_seconds below minimum, clamped to 1 second"
+            );
+            self.key_rotation_grace_period_seconds = MIN_GRACE_PERIOD_SECONDS;
+        } else if seconds > MAX_GRACE_PERIOD_SECONDS {
+            tracing::warn!(
+                requested = seconds,
+                max = MAX_GRACE_PERIOD_SECONDS,
+                "key_rotation_grace_period_seconds above maximum, clamped to 30 days"
+            );
+            self.key_rotation_grace_period_seconds = MAX_GRACE_PERIOD_SECONDS;
+        } else {
+            self.key_rotation_grace_period_seconds = seconds;
+        }
+        self
     }
 
     pub fn get_config_service(&self) -> Arc<dyn ConfigManagementService> {
@@ -280,6 +328,7 @@ mod mock_tests {
         CacheMetrics {
             status,
             hit_rate: 0.85,
+            has_cache: true,
             memory_usage_mb: Some(128),
             key_count: Some(1000),
         }
@@ -651,7 +700,7 @@ mod mock_tests {
                 AlgorithmMetricsSnapshot {
                     total_generated: 100,
                     total_failed: 5,
-                    cache_hit_rate: 0.9,
+                    cache_hit_rate: Some(0.9),
                     ..Default::default()
                 },
             )]
@@ -852,6 +901,10 @@ mod mock_tests {
         mock_config
             .expect_list_biz_tags()
             .return_once(move |_, _, _, _| Ok(vec![biz_tag]));
+        // L8 修复后 list_biz_tags 会调用 count_biz_tags 获取真实 total
+        mock_config
+            .expect_count_biz_tags()
+            .return_once(|_, _| Ok(1));
         let handlers = create_mock_handlers(mock_config);
         let result = handlers.list_biz_tags(Some(Uuid::new_v4()), None).await;
         assert!(result.is_ok());
@@ -867,8 +920,12 @@ mod mock_tests {
         mock_config
             .expect_list_biz_tags()
             .return_once(|_, _, _, _| Ok(vec![]));
+        mock_config
+            .expect_count_biz_tags()
+            .return_once(|_, _| Ok(0));
         let handlers = create_mock_handlers(mock_config);
-        let result = handlers.list_biz_tags(None, None).await;
+        // L7 修复：缺失 workspace_id 时返回 InvalidInput，需传 Some(Uuid)
+        let result = handlers.list_biz_tags(Some(Uuid::new_v4()), None).await;
         assert!(result.is_ok());
         let response = result.unwrap();
         assert_eq!(response.total, 0);
@@ -882,11 +939,28 @@ mod mock_tests {
             .expect_list_biz_tags()
             .return_once(|_, _, _, _| Err(CoreError::InternalError("DB error".to_string())));
         let handlers = create_mock_handlers(mock_config);
-        let result = handlers.list_biz_tags(None, None).await;
+        // L7 修复：缺失 workspace_id 时返回 InvalidInput，需传 Some(Uuid)
+        let result = handlers.list_biz_tags(Some(Uuid::new_v4()), None).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             CoreError::InternalError(msg) => assert!(msg.contains("DB error")),
             e => panic!("Expected InternalError, got {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_test_list_biz_tags_missing_workspace() {
+        // L7 修复：缺失 workspace_id 时应返回 InvalidInput，
+        // 避免静默回退到 nil UUID 越权返回其他 workspace 的 BizTag。
+        let mock_config = MockConfigManagementService::new();
+        let handlers = create_mock_handlers(mock_config);
+        let result = handlers.list_biz_tags(None, None).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            CoreError::InvalidInput(msg) => {
+                assert!(msg.contains("workspace_id"), "msg = {}", msg)
+            }
+            e => panic!("Expected InvalidInput, got {:?}", e),
         }
     }
 
@@ -1038,6 +1112,8 @@ mod mock_tests {
 
     #[tokio::test]
     async fn mock_test_list_workspaces_service_error() {
+        // M5 修复后：handler 直接传播 CoreError，不再包装为 DatabaseError。
+        // 测试用 InternalError 模拟服务层错误，期望原样传播。
         let mut mock_config = MockConfigManagementService::new();
         mock_config
             .expect_list_workspaces()
@@ -1046,8 +1122,8 @@ mod mock_tests {
         let result = handlers.list_workspaces().await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            CoreError::DatabaseError(msg) => assert!(msg.contains("DB error")),
-            e => panic!("Expected DatabaseError, got {:?}", e),
+            CoreError::InternalError(msg) => assert!(msg.contains("DB error")),
+            e => panic!("Expected InternalError, got {:?}", e),
         }
     }
 
@@ -1079,6 +1155,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn mock_test_get_workspace_service_error() {
+        // M5 修复后：handler 直接传播 CoreError，不再包装为 DatabaseError。
         let mut mock_config = MockConfigManagementService::new();
         mock_config
             .expect_get_workspace()
@@ -1087,8 +1164,8 @@ mod mock_tests {
         let result = handlers.get_workspace("test-workspace").await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            CoreError::DatabaseError(msg) => assert!(msg.contains("DB error")),
-            e => panic!("Expected DatabaseError, got {:?}", e),
+            CoreError::InternalError(msg) => assert!(msg.contains("DB error")),
+            e => panic!("Expected InternalError, got {:?}", e),
         }
     }
 
@@ -1115,6 +1192,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn mock_test_create_group_service_error() {
+        // M5 修复后：handler 直接传播 CoreError，不再包装为 DatabaseError。
         let mut mock_config = MockConfigManagementService::new();
         mock_config
             .expect_create_group()
@@ -1129,8 +1207,8 @@ mod mock_tests {
         let result = handlers.create_group(req).await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            CoreError::DatabaseError(msg) => assert!(msg.contains("Workspace not found")),
-            e => panic!("Expected DatabaseError, got {:?}", e),
+            CoreError::InternalError(msg) => assert!(msg.contains("Workspace not found")),
+            e => panic!("Expected InternalError, got {:?}", e),
         }
     }
 

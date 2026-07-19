@@ -12,6 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! 降级管理器模块（Degradation Manager）
+//!
+//! # 当前状态：v0.3.0 完整接入告警管道前的预留 API
+//!
+//! 本模块包含若干暂时未被生产路径直接调用的 API：
+//! - `AlgorithmHealthState::{record_request, can_make_request, get_metrics}`
+//! - `AlgorithmMetrics` 结构体
+//! - `default_degradation_config` 函数
+//!
+//! 保留原因：
+//!
+//! 1. **告警管道集成预留**：v0.3.0 启用告警管道后，`record_request` 和 `get_metrics`
+//!    将作为 Prometheus 指标采集入口；`AlgorithmMetrics` 是指标导出的数据结构。
+//! 2. **熔断器与降级联动**：`can_make_request` 是熔断器在 HalfOpen 状态下的探针请求
+//!    判定入口，待 circuit_breaker 接入告警管道后启用。
+//! 3. **测试覆盖**：`default_degradation_config` 被多个单元测试用于快速构造默认配置，
+//!    删除会丢失测试便利性。
+//! 4. **API 完整性**：降级管理器对外应暴露完整的健康状态、指标查询、配置构造能力。
+//!
+//! 详见 `specmark/changes/v0.3.0-release/` 中的告警管道设计文档。
 #![allow(dead_code)]
 
 use crate::core::algorithm::{audit_trait::DynAuditLogger, HealthStatus, IdAlgorithm};
@@ -107,25 +127,10 @@ const CIRCUIT_BREAKER_CLOSED: u8 = 0;
 const CIRCUIT_BREAKER_OPEN: u8 = 1;
 const CIRCUIT_BREAKER_HALF_OPEN: u8 = 2;
 
-impl Clone for AlgorithmHealthState {
-    fn clone(&self) -> Self {
-        Self {
-            alg_type: self.alg_type,
-            consecutive_failures: AtomicU8::new(self.consecutive_failures.load(Ordering::SeqCst)),
-            consecutive_successes: AtomicU8::new(self.consecutive_successes.load(Ordering::SeqCst)),
-            last_failure_time: RwLock::new(*self.last_failure_time.read()),
-            last_success_time: RwLock::new(*self.last_success_time.read()),
-            current_state: AtomicBool::new(self.current_state.load(Ordering::SeqCst)),
-            is_degraded: AtomicBool::new(self.is_degraded.load(Ordering::SeqCst)),
-            circuit_breaker_state: AtomicU8::new(self.circuit_breaker_state.load(Ordering::SeqCst)),
-            circuit_breaker_opened_at: RwLock::new(*self.circuit_breaker_opened_at.read()),
-            total_requests: AtomicU64::new(self.total_requests.load(Ordering::SeqCst)),
-            total_failures: AtomicU64::new(self.total_failures.load(Ordering::SeqCst)),
-            total_successes: AtomicU64::new(self.total_successes.load(Ordering::SeqCst)),
-            last_request_time: RwLock::new(*self.last_request_time.read()),
-        }
-    }
-}
+// M13 修复：删除手动 `impl Clone for AlgorithmHealthState`。
+// 该 Clone 实现逐个 load/store 原子字段，冗长且易错；且全代码库无任何调用方
+// （所有共享都通过 `Arc<AlgorithmHealthState>`，Arc clone 不需要 T: Clone）。
+// 如果未来需要 Clone，应改用 `Arc<AtomicXxx>` 字段 + `#[derive(Clone)]`（共享语义）。
 
 impl AlgorithmHealthState {
     pub fn new(alg_type: AlgorithmType) -> Self {
@@ -299,6 +304,12 @@ pub struct DegradationManager {
     running: AtomicBool,
     last_check: RwLock<Instant>,
     audit_logger: Option<DynAuditLogger>,
+    /// F-02 修复：watch channel 用于优雅关闭后台 task。
+    /// `start_background_check` 创建 sender，task 用 `select!` 监听 receiver；
+    /// `stop_background_check` 发送 `true` 通知 task 退出。
+    shutdown_tx: parking_lot::Mutex<Option<tokio::sync::watch::Sender<bool>>>,
+    /// 后台 task 的 JoinHandle，`stop_background_check` 可 await 它确认 task 已退出。
+    background_task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl DegradationManager {
@@ -313,6 +324,8 @@ impl DegradationManager {
             running: AtomicBool::new(false),
             last_check: RwLock::new(Instant::now()),
             audit_logger,
+            shutdown_tx: parking_lot::Mutex::new(None),
+            background_task: parking_lot::Mutex::new(None),
         }
     }
 
@@ -720,8 +733,9 @@ impl DegradationManager {
 
         let check_interval = Duration::from_millis(self.config.check_interval_ms);
         let manager = self.clone();
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut interval = time::interval(check_interval);
             info!(
                 interval = ?check_interval,
@@ -730,13 +744,30 @@ impl DegradationManager {
             );
 
             loop {
-                interval.tick().await;
-                if !manager.config.enabled {
-                    continue;
+                tokio::select! {
+                    // 优先检查 shutdown 信号
+                    _ = shutdown_rx.changed() => {
+                        if *shutdown_rx.borrow() {
+                            info!(
+                                "{}",
+                                t!("log.core.algorithm.degradation_manager.background_check_shutdown_received")
+                            );
+                            break;
+                        }
+                    }
+                    _ = interval.tick() => {
+                        if !manager.config.enabled {
+                            continue;
+                        }
+                        manager.check_all_health().await;
+                    }
                 }
-                manager.check_all_health().await;
             }
         });
+
+        // 保存 sender 和 handle 以便 stop 时使用（parking_lot::Mutex 安全访问）
+        *self.shutdown_tx.lock() = Some(shutdown_tx);
+        *self.background_task.lock() = Some(handle);
 
         info!(
             "{}",
@@ -744,7 +775,28 @@ impl DegradationManager {
         );
     }
 
-    pub fn stop_background_check(&self) {
+    /// 停止后台健康检查 task。
+    ///
+    /// 发送 shutdown 信号并等待 task 退出（F-02 修复）。
+    /// 与 `system_handlers.rs::start_key_rotation_task` 的模式一致（watch channel）。
+    pub async fn stop_background_check(&self) {
+        // 取出 sender 发送 shutdown 信号
+        let sender_opt = self.shutdown_tx.lock().take();
+
+        if let Some(tx) = sender_opt {
+            let _ = tx.send(true);
+            debug!(
+                "{}",
+                t!("log.core.algorithm.degradation_manager.background_check_shutdown_sent")
+            );
+
+            // 取出 handle 并等待 task 退出
+            let handle_opt = self.background_task.lock().take();
+            if let Some(handle) = handle_opt {
+                let _ = handle.await;
+            }
+        }
+
         self.running.store(false, Ordering::SeqCst);
         info!(
             "{}",

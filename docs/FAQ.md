@@ -645,7 +645,7 @@ use nebula_core::algorithm::UuidV7Impl;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let v7 = UuidV7Impl::new();
     
-    let uuid = UuidV7Impl::generate()?;
+    let uuid = uuid::Uuid::now_v7();
     println!("UUID v7: {}", uuid);
     
     // Convert to Nebula ID

@@ -12,6 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Phase 9 T043 (HIGH H5) — file-level `#![allow(dead_code)]` retained
+//! with explicit justification. The items flagged as dead by the
+//! compiler (`DynamicConfigService`, `DynamicConfigRequest`,
+//! `DynamicConfigResponse`) are constructed only inside this file's
+//! `#[cfg(test)] mod tests` block — production code routes through
+//! `ConfigManager` (`core/config/management.rs`) instead. Deleting
+//! them would drop ~7 unit tests covering the dynamic-config CRUD
+//! boundary. They are retained as the documented dynamic-config
+//! implementation surface; if `ConfigManager` ever needs to delegate
+//! to `DynamicConfigService` in production, the wiring already
+//! exists. Re-evaluate at v0.3.0 once the config-management
+//! consolidation task lands.
+
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};

@@ -320,6 +320,16 @@ pub(crate) fn admin_cannot_perform_response(locale: Locale) -> (StatusCode, Json
     )
 }
 
+/// LOW-1 修复（CWE-1188）：Anonymous 角色（认证禁用时）访问受保护端点的响应。
+/// 返回 401 Unauthorized，明确要求启用认证并提供有效 API key。
+pub(crate) fn auth_required_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>) {
+    let message = translate_with_locale(locale.as_str(), "api.error.auth_required");
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(ErrorResponse::new(401, message)),
+    )
+}
+
 /// Build a 403 response for "Access denied: workspace mismatch".
 pub(crate) fn workspace_mismatch_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>) {
     let message = translate_with_locale(locale.as_str(), "api.error.workspace_mismatch");

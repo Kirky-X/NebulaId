@@ -134,12 +134,16 @@ pub struct AlgorithmRouter {
     cpu_monitor: Option<Arc<crate::core::algorithm::segment::CpuMonitor>>,
     #[cfg(feature = "etcd")]
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
-    #[cfg(not(feature = "etcd"))]
-    etcd_health_monitor: Option<()>,
+    // L12 修复：非 etcd 版本不再持有 `etcd_health_monitor: Option<()>`
+    // 占位字段（类型误导）。`with_etcd_health_monitor` builder 方法也仅在
+    // etcd feature 下存在；非 etcd 版本调用方（main.rs）根本不会调用它。
 }
 
-unsafe impl Send for AlgorithmRouter {}
-unsafe impl Sync for AlgorithmRouter {}
+// L11 修复：删除手动 `unsafe impl Send/Sync`。所有字段（Config /
+// Arc<ArcSwap<T>> / SmallVec / Arc<DegradationManager> /
+// Option<Arc<CpuMonitor>> / Option<Arc<EtcdClusterHealthMonitor>>）
+// 均为 Send + Sync，编译器会自动推导。原 `unsafe impl` 是历史遗留，
+// 掩盖了潜在的非线程安全字段，应删除让编译器做严格检查。
 
 impl AlgorithmRouter {
     pub fn new(config: Config, audit_logger: Option<DynAuditLogger>) -> Self {
@@ -171,6 +175,7 @@ impl AlgorithmRouter {
             current_algorithm: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             degradation_manager,
             cpu_monitor: None,
+            #[cfg(feature = "etcd")]
             etcd_health_monitor: None,
         }
     }
@@ -188,12 +193,9 @@ impl AlgorithmRouter {
         self.etcd_health_monitor = Some(monitor);
         self
     }
-
-    #[cfg(not(feature = "etcd"))]
-    pub fn with_etcd_health_monitor(mut self, _monitor: Arc<()>) -> Self {
-        self.etcd_health_monitor = Some(());
-        self
-    }
+    // L12 修复：删除非 etcd 版本的 `with_etcd_health_monitor(Arc<()>)`。
+    // 原签名接受 `Arc<()>` 但完全忽略参数，类型误导且调用方可能误以为
+    // monitor 被实际使用。非 etcd 版本根本不需要这个 builder 方法。
 
     pub async fn initialize(&self) -> Result<()> {
         let mut errors = Vec::new();
@@ -215,19 +217,12 @@ impl AlgorithmRouter {
             }
 
             match builder.build(&self.config).await {
-                Ok(mut algo) => {
-                    if let Err(e) = algo.initialize(&self.config).await {
-                        warn!(
-                            alg_type = ?alg_type,
-                            "{}",
-                            t!(
-                                "log.core.algorithm.router.algorithm_init_failed",
-                                error = e
-                            )
-                        );
-                        errors.push((alg_type, e));
-                        continue;
-                    }
+                Ok(algo) => {
+                    // L13 修复：删除 `algo.initialize(&self.config).await` 重复调用。
+                    // `AlgorithmBuilder::build` 内部已经调用各算法的 inherent
+                    // `initialize(&mut self, ...)` 完成初始化，返回的
+                    // `Box<dyn IdAlgorithm>` 已就绪。原代码重复初始化且在
+                    // trait object 上调用 `&mut self` 方法（设计气味）。
                     let alg_arc: Arc<dyn IdAlgorithm> = Arc::from(algo);
                     self.algorithms.rcu(|old| {
                         let mut new: HashMap<_, _> = (**old).clone();

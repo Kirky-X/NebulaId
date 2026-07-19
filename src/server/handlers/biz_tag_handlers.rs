@@ -137,10 +137,25 @@ impl super::ApiHandlers {
         workspace_id: Option<uuid::Uuid>,
         group_id: Option<uuid::Uuid>,
     ) -> Result<BizTagListResponse> {
-        let workspace_id = workspace_id.unwrap_or_else(uuid::Uuid::nil);
+        // L7 修复：缺失 workspace_id 时返回 InvalidInput，避免静默回退到
+        // nil UUID 触发 `WHERE workspace_id = '00000000-...'` 查询，
+        // 该查询在底层 SeaORM 中可能意外匹配到 workspace_id 字段为 nil
+        // 的脏数据记录，导致越权返回其他 workspace 的 BizTag。
+        let workspace_id = workspace_id.ok_or_else(|| {
+            CoreError::InvalidInput("workspace_id is required to list biz tags".to_string())
+        })?;
+
         let biz_tags: Vec<crate::core::database::BizTag> = self
             .config_service
             .list_biz_tags(workspace_id, group_id, None, None)
+            .await?;
+
+        // L8 修复：调用 count_biz_tags 获取真实总数，而非用当前页列表长度
+        // 作为 total。原实现 `total = responses.len() as u64` 在分页场景下
+        // 会让前端分页控件显示错误的总数（仅当前页条数）。
+        let total = self
+            .config_service
+            .count_biz_tags(workspace_id, group_id)
             .await?;
 
         let responses: Vec<BizTagResponse> = biz_tags
@@ -162,7 +177,6 @@ impl super::ApiHandlers {
             })
             .collect();
 
-        let total = responses.len() as u64;
         Ok(BizTagListResponse {
             total,
             biz_tags: responses,

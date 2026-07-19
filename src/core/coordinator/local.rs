@@ -22,6 +22,10 @@
 // LocalCacheEntry is shared with the etcd sub-module via `super::LocalCacheEntry`,
 // so it must compile under both feature flags. All other items below are
 // `#[cfg(not(feature = "etcd"))]` and their imports follow the same gate.
+//
+// 例外：`LocalDistributedLock` / `LocalLockGuard` 也在两种 feature 下编译，
+// 因为 etcd 模式下 `main.rs` 需要 `LocalDistributedLock` 作为 etcd 失败时的
+// 进程内 fallback（避免单点故障导致服务完全不可用）。
 use serde::{Deserialize, Serialize};
 
 #[cfg(not(feature = "etcd"))]
@@ -29,11 +33,17 @@ use super::{
     DistributedLock, EtcdClusterStatus, LockError, LockGuard, WorkerAllocatorError,
     WorkerIdAllocator,
 };
+// LocalDistributedLock / LocalLockGuard 在两种 feature 下都需要，故无条件导入。
+use super::{DistributedLock, LockError, LockGuard};
 #[cfg(not(feature = "etcd"))]
+use async_trait::async_trait;
+// LocalDistributedLock 的 impl 需要 async_trait，无条件导入。
 use async_trait::async_trait;
 #[cfg(not(feature = "etcd"))]
 use std::sync::atomic::{AtomicU16, Ordering};
 #[cfg(not(feature = "etcd"))]
+use std::sync::Arc;
+// LocalDistributedLock 需要 Arc，无条件导入。
 use std::sync::Arc;
 #[cfg(not(feature = "etcd"))]
 use tracing::info;
@@ -163,13 +173,14 @@ impl EtcdClusterHealthMonitor {
 
 /// 本地分布式锁实现（无 etcd 时使用）。
 /// 注意：这是一个降级实现，只能在单机环境工作。
-#[cfg(not(feature = "etcd"))]
+///
+/// 在 etcd feature 下也编译：当 `EtcdClientWrapper` 或 `EtcdDistributedLock`
+/// 创建失败时，`main.rs` 用它作为 fallback，避免服务完全不可用。
 #[derive(Clone)]
 pub struct LocalDistributedLock {
     locks: Arc<parking_lot::Mutex<std::collections::HashMap<String, bool>>>,
 }
 
-#[cfg(not(feature = "etcd"))]
 impl LocalDistributedLock {
     pub fn new() -> Self {
         Self {
@@ -193,14 +204,12 @@ impl LocalDistributedLock {
     }
 }
 
-#[cfg(not(feature = "etcd"))]
 impl Default for LocalDistributedLock {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(not(feature = "etcd"))]
 #[async_trait]
 impl DistributedLock for LocalDistributedLock {
     async fn acquire(
@@ -231,13 +240,11 @@ impl DistributedLock for LocalDistributedLock {
 }
 
 /// 本地锁守卫实现。
-#[cfg(not(feature = "etcd"))]
 pub struct LocalLockGuard {
     lock: LocalDistributedLock,
     key: String,
 }
 
-#[cfg(not(feature = "etcd"))]
 #[async_trait]
 impl LockGuard for LocalLockGuard {
     async fn release(&self) -> std::result::Result<(), LockError> {

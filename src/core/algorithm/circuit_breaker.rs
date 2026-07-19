@@ -12,6 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! 熔断器模块（Circuit Breaker）
+//!
+//! # 当前状态：保留为 v0.3.0 告警管道的一部分
+//!
+//! 本模块包含 `CircuitOpenError`、`transition_to_half_open`、`transition_to_closed`、
+//! `state_to_u8` 等暂时未被生产路径直接调用的 API。保留原因：
+//!
+//! 1. **告警管道集成预留**：v0.3.0 将启用告警管道，熔断器需要这些 API 进行状态机转换
+//!    （`transition_to_half_open` / `transition_to_closed`）和错误传播（`CircuitOpenError`）。
+//! 2. **可观测性**：`state_to_u8` 用于 Prometheus 指标导出，将在 monitoring 模块接入时启用。
+//! 3. **API 完整性**：完整的熔断器状态机需要 Open/HalfOpen/Closed 三个状态互转，
+//!    删除这些方法会导致状态机残缺。
+//!
+//! 详见 `specmark/changes/v0.3.0-release/` 中的告警管道设计文档。
 #![allow(dead_code)]
 
 use std::error::Error;

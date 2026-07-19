@@ -15,7 +15,7 @@
 use nebulaid::core::algorithm::AlgorithmRouter;
 use nebulaid::core::config::Config;
 #[cfg(feature = "etcd")]
-use nebulaid::core::coordinator::EtcdClusterHealthMonitor;
+use nebulaid::core::coordinator::{EtcdClientWrapper, EtcdClusterHealthMonitor};
 use nebulaid::core::database::{self, ApiKeyRepository};
 use nebulaid::core::types::Result;
 use nebulaid::server::audit::AuditLogger;
@@ -445,6 +445,22 @@ async fn shutdown_signal() {
     }
 }
 
+/// ARCH-LOW-003 修复：抽取 etcd / non-etcd 分支共用的 ApiHandlers 构造逻辑。
+///
+/// 原代码在两个 cfg 分支重复调用 `ApiHandlers::with_api_key_repository`
+/// + `.with_key_rotation_grace_period`，未来新增 builder 方法需同步改两处
+/// （霰弹手术气味）。本 helper 集中构造逻辑。
+#[allow(clippy::too_many_arguments, clippy::doc_lazy_continuation)]
+fn build_api_handlers(
+    id_generator: Arc<nebulaid::core::algorithm::AlgorithmRouter>,
+    cs: Arc<dyn ConfigManagementService>,
+    repo: Arc<dyn ApiKeyRepository>,
+    grace_period_seconds: u64,
+) -> ApiHandlers {
+    ApiHandlers::with_api_key_repository(id_generator, cs, repo)
+        .with_key_rotation_grace_period(grace_period_seconds)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -536,14 +552,63 @@ async fn main() -> Result<()> {
         }
     };
 
-    let repository: Option<Arc<database::SeaOrmRepository>> = db_connection.map(|conn| {
-        let repo = Arc::new(database::SeaOrmRepository::new(
-            conn,
-            config.auth.api_key_salt.clone(),
-        ));
+    let repository: Option<Arc<database::SeaOrmRepository>> = if let Some(conn) = db_connection {
+        // M8 修复：注入分布式锁，避免 allocate_segment 在无锁降级时产生重复 ID。
+        // 默认构建（无 etcd feature）使用 LocalDistributedLock（进程内互斥）。
+        #[cfg(not(feature = "etcd"))]
+        let lock: std::sync::Arc<
+            dyn nebulaid::core::coordinator::DistributedLock + Send + Sync,
+        > = std::sync::Arc::new(nebulaid::core::coordinator::LocalDistributedLock::new());
+        // etcd feature 构建下，若 etcd 端点已配置，先创建 EtcdClientWrapper，
+        // 再用它构造 EtcdDistributedLock；任一步失败回退到 LocalDistributedLock。
+        #[cfg(feature = "etcd")]
+        let lock: std::sync::Arc<
+            dyn nebulaid::core::coordinator::DistributedLock + Send + Sync,
+        > = if !config.etcd.endpoints.is_empty() {
+            match nebulaid::core::coordinator::EtcdClientWrapper::new(config.etcd.endpoints.clone())
+                .await
+            {
+                Ok(client) => {
+                    let client: std::sync::Arc<dyn nebulaid::core::coordinator::EtcdClientOps> =
+                        std::sync::Arc::new(client);
+                    match nebulaid::core::coordinator::EtcdDistributedLock::new(
+                        client,
+                        "nebulaid-segment-lock".to_string(),
+                    )
+                    .await
+                    {
+                        Ok(etcd_lock) => std::sync::Arc::new(etcd_lock),
+                        Err(_) => {
+                            warn!("Failed to create EtcdDistributedLock, falling back to LocalDistributedLock");
+                            std::sync::Arc::new(
+                                nebulaid::core::coordinator::LocalDistributedLock::new(),
+                            )
+                        }
+                    }
+                }
+                Err(_) => {
+                    warn!(
+                        "Failed to create EtcdClientWrapper, falling back to LocalDistributedLock"
+                    );
+                    std::sync::Arc::new(nebulaid::core::coordinator::LocalDistributedLock::new())
+                }
+            }
+        } else {
+            warn!(
+                "Etcd endpoints not configured, using LocalDistributedLock (single-process only)"
+            );
+            std::sync::Arc::new(nebulaid::core::coordinator::LocalDistributedLock::new())
+        };
+
+        let repo = Arc::new(
+            database::SeaOrmRepository::new(conn, config.auth.api_key_salt.clone())
+                .with_distributed_lock(lock),
+        );
         info!("{}", t!("log.main.database_repository_initialized"));
-        repo
-    });
+        Some(repo)
+    } else {
+        None
+    };
 
     info!(
         "{}",
@@ -551,12 +616,24 @@ async fn main() -> Result<()> {
     );
 
     // Create API key auth with repository for database-backed storage
+    // Phase 9 T043 (HIGH H3) — configure trusted proxies so the auth
+    // middleware only honors `X-Forwarded-For` / `X-Real-IP` when the
+    // direct peer IP is in `NEBULA_TRUSTED_PROXIES`. Default: empty
+    // (no headers trusted, all clients identified by TCP peer IP).
+    let trusted_proxies: Vec<std::net::IpAddr> = std::env::var("NEBULA_TRUSTED_PROXIES")
+        .ok()
+        .map(|s| s.split(',').filter_map(|p| p.trim().parse().ok()).collect())
+        .unwrap_or_default();
     let auth: Arc<ApiKeyAuth> = if let Some(ref repo) = repository {
-        Arc::new(ApiKeyAuth::new(repo.clone(), config.auth.enabled))
+        Arc::new(
+            ApiKeyAuth::new(repo.clone(), config.auth.enabled)
+                .with_trusted_proxies(trusted_proxies.clone()),
+        )
     } else {
         error!("{}", t!("log.main.fatal_api_key_auth_requires_database"));
         std::process::exit(1);
     };
+    let _ = trusted_proxies; // also consumed by router.rs via env var
     load_api_keys(&auth, &repository, &config).await;
 
     // Initialize audit logger and config (used by both etcd and non-etcd modes)
@@ -570,10 +647,36 @@ async fn main() -> Result<()> {
     {
         info!("{}", t!("log.main.initializing_etcd_health_monitor"));
         let etcd_cache_path = format!("./data/etcd_cache_{}.json", config.app.dc_id);
-        let etcd_health_monitor = Arc::new(EtcdClusterHealthMonitor::new(
-            config.etcd.clone(),
-            etcd_cache_path,
-        ));
+
+        // F-01 修复：生产路径注入 EtcdClientWrapper，让 check_etcd_health 走 trait 抽象层。
+        // 尝试建立长连接 client；失败则回退到 new()（每次检查新建 client 的 fallback 路径）。
+        let etcd_health_monitor = if !config.etcd.endpoints.is_empty() {
+            match EtcdClientWrapper::new(config.etcd.endpoints.clone()).await {
+                Ok(client) => {
+                    info!("{}", t!("log.main.etcd_client_wrapper_initialized"));
+                    Arc::new(EtcdClusterHealthMonitor::new_with_client(
+                        config.etcd.clone(),
+                        etcd_cache_path,
+                        Arc::new(client),
+                    ))
+                }
+                Err(e) => {
+                    warn!(
+                        "{}",
+                        t!("log.main.etcd_client_wrapper_init_failed", error = e)
+                    );
+                    Arc::new(EtcdClusterHealthMonitor::new(
+                        config.etcd.clone(),
+                        etcd_cache_path,
+                    ))
+                }
+            }
+        } else {
+            Arc::new(EtcdClusterHealthMonitor::new(
+                config.etcd.clone(),
+                etcd_cache_path,
+            ))
+        };
 
         if let Err(e) = etcd_health_monitor.load_local_cache().await {
             warn!("{}", t!("log.main.etcd_local_cache_load_failed", error = e));
@@ -596,10 +699,11 @@ async fn main() -> Result<()> {
                 repo.clone(),
                 repo.clone(),
             ));
-            let h = Arc::new(ApiHandlers::with_api_key_repository(
+            let h = Arc::new(build_api_handlers(
                 id_generator.clone(),
                 cs.clone(),
                 repo.clone(),
+                config.auth.key_rotation_grace_period_seconds,
             ));
             (h, cs)
         } else {
@@ -728,10 +832,11 @@ async fn main() -> Result<()> {
                 repo.clone(),
                 repo.clone(),
             ));
-            let h = Arc::new(ApiHandlers::with_api_key_repository(
+            let h = Arc::new(build_api_handlers(
                 id_generator.clone(),
                 cs.clone(),
                 repo.clone(),
+                config.auth.key_rotation_grace_period_seconds,
             ));
             (h, cs)
         } else {

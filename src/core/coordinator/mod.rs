@@ -94,7 +94,11 @@ pub use etcd::{
     EtcdClientOps, EtcdClientWrapper, EtcdClusterHealthMonitor, EtcdDistributedLock, EtcdError,
     EtcdLockGuard, EtcdWorkerAllocator,
 };
+// `LocalDistributedLock` / `LocalLockGuard` 在两种 feature 下都 re-export：
+// - `not(etcd)`：作为唯一的分布式锁实现
+// - `etcd`：作为 etcd 失败时的 fallback（main.rs 用）
+// 其他 local 类型（LocalWorkerAllocator 等）仅在 `not(etcd)` 下导出。
 #[cfg(not(feature = "etcd"))]
-pub use local::{
-    EtcdClusterHealthMonitor, LocalDistributedLock, LocalLockGuard, LocalWorkerAllocator,
-};
+pub use local::{EtcdClusterHealthMonitor, LocalWorkerAllocator};
+
+pub use local::{LocalDistributedLock, LocalLockGuard};

@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,  -- Optional: NULL for global admin keys
     key_id VARCHAR(36) NOT NULL UNIQUE,  -- Public key identifier (UUID format)
-    key_secret_hash VARCHAR(64) NOT NULL,  -- SHA-256 hash of key_secret
+    key_secret_hash VARCHAR(255) NOT NULL,  -- Argon2id PHC-format hash of key_secret (CWE-916 fix)
     key_prefix VARCHAR(8) NOT NULL,  -- niad_ for admin, nino_ for user
     role VARCHAR(20) NOT NULL DEFAULT 'user',
     name VARCHAR(255) NOT NULL,

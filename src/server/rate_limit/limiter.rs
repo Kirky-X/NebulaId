@@ -396,15 +396,15 @@ impl ConcurrencyLimiter {
         self.inner.acquire(1).await
     }
 
-    /// Try to acquire a permit without blocking.
-    ///
-    /// Returns Ok(permit) if acquired, Err if limit reached.
-    pub async fn try_acquire(&self) -> Result<tokio::sync::SemaphorePermit<'_>, LimiteronError> {
-        self.inner.allow(1).await?;
-        Err(LimiteronError::LimitError(
-            "try_acquire requires async context - use acquire() with timeout".to_string(),
-        ))
-    }
+    // Phase 9 T043 (HIGH H4) — `try_acquire` removed. The previous
+    // implementation called `self.inner.allow(1).await?` (consuming a
+    // token) and then **unconditionally** returned `Err(...)`, so the
+    // method could never produce a `SemaphorePermit`. No caller in the
+    // codebase used it. Per rule 2 (简洁优先) + rule 12 (失败必须显性化),
+    // a method whose contract lies about its return type must be
+    // deleted, not left as a footgun. If non-blocking permit semantics
+    // are needed in the future, `tokio::sync::Semaphore::try_acquire`
+    // is the right primitive.
 
     /// Get maximum concurrent limit.
     pub fn max_concurrent(&self) -> u64 {

@@ -30,9 +30,6 @@ pub mod coordinator;
 #[cfg(test)]
 mod tests;
 
-// Internal implementation modules (crate-only visibility)
-pub(crate) mod algorithm_router;
-
 // Public API re-exports
 pub use types::*;
 

@@ -112,36 +112,11 @@ impl AuditMiddleware {
 }
 
 fn get_client_ip(req: &Request<Body>, trusted_proxies: &[IpAddr]) -> Option<String> {
-    // Get direct connection IP
-    let connection_ip = req
-        .extensions()
-        .get::<std::net::SocketAddr>()
-        .map(|addr| addr.ip());
-
-    // Only trust headers if the request comes from a trusted proxy
-    if let Some(conn_ip) = connection_ip {
-        if trusted_proxies.contains(&conn_ip) {
-            // First try X-Forwarded-For
-            if let Some(xff) = req.headers().get("x-forwarded-for") {
-                if let Ok(xff_str) = xff.to_str() {
-                    // Take the first IP (original client)
-                    if let Some(client_ip) = xff_str.split(',').next() {
-                        return Some(client_ip.trim().to_string());
-                    }
-                }
-            }
-
-            // Then try X-Real-IP
-            if let Some(xri) = req.headers().get("x-real-ip") {
-                if let Ok(xri_str) = xri.to_str() {
-                    return Some(xri_str.trim().to_string());
-                }
-            }
-        }
-    }
-
-    // Fallback to direct connection IP
-    connection_ip.map(|ip| ip.to_string())
+    // Phase 9 T043 (LOW L3) — delegate to the single shared implementation
+    // in `server::middleware::utils`. Previously this was a duplicate copy
+    // of the same logic; now the audit/rate_limit/api_key_auth middleware
+    // all share one source of truth.
+    crate::server::middleware::utils::get_client_ip(req, trusted_proxies)
 }
 
 #[cfg(test)]

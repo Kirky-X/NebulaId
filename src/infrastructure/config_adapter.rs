@@ -22,6 +22,8 @@ use crate::core::config::{
     LogLevel, LoggingConfig, MonitoringConfig, RateLimitConfig, SegmentAlgorithmConfig,
     SnowflakeAlgorithmConfig, TlsConfig, UuidV7Config,
 };
+// ARCH-MED-002 修复：统一引用 auth 模块的常量，避免默认值重复定义。
+use crate::core::config::auth::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS;
 use confers::interface::{ConfigProvider, ConfigProviderExt};
 use std::sync::Arc;
 
@@ -188,6 +190,12 @@ impl ConfigAdapter {
     /// - `auth.enabled` - Enable authentication
     /// - `auth.cache_ttl_seconds` - Cache TTL
     /// - `auth.api_key_salt` - Salt for API key hashing
+    ///
+    /// Phase 9 T043 (HIGH H1 / tiangang HIGH-1) — `api_key_salt` no
+    /// longer falls back to a hard-coded value. If unset, returns an
+    /// empty string; `AuthManager::from_env()` enforces the
+    /// production-must-set-env rule (panic on missing salt in release
+    /// builds, random salt in dev builds).
     pub fn get_auth_config(&self) -> AuthConfig {
         AuthConfig {
             enabled: self.provider.get_bool("auth.enabled").unwrap_or(true),
@@ -199,7 +207,14 @@ impl ConfigAdapter {
             api_key_salt: self
                 .provider
                 .get_string("auth.api_key_salt")
-                .unwrap_or_else(|| "nebula_default_salt".to_string()),
+                .or_else(|| std::env::var("NEBULA_API_KEY_SALT").ok())
+                .unwrap_or_default(),
+            // L16 修复：从配置读取密钥轮换宽限期，默认 7 天。
+            key_rotation_grace_period_seconds: self
+                .provider
+                .get_int("auth.key_rotation_grace_period_seconds")
+                .map(|v| v as u64)
+                .unwrap_or(DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS),
         }
     }
 
@@ -211,10 +226,21 @@ impl ConfigAdapter {
     /// - `database.min_connections` - Minimum connections
     /// - `database.acquire_timeout_seconds` - Acquisition timeout
     /// - `database.idle_timeout_seconds` - Idle timeout
+    ///
+    /// Phase 9 T043 (HIGH H2 / tiangang MEDIUM-1) — no hard-coded
+    /// production fallback. Dev/test keeps `postgresql://localhost/nebula`
+    /// for convenience; release builds require `DATABASE_URL` /
+    /// `database.url` to be set explicitly (the `AppConfig` validator
+    /// in `core/config/app.rs` rejects empty URLs in production).
     pub fn get_database_config(&self) -> DatabaseConfig {
         let url = self.provider.get_string("database.url").unwrap_or_else(|| {
-            std::env::var("DATABASE_URL")
-                .unwrap_or_else(|_| "postgresql://localhost/nebula".to_string())
+            std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+                if cfg!(debug_assertions) {
+                    "postgresql://localhost/nebula".to_string()
+                } else {
+                    String::new()
+                }
+            })
         });
 
         DatabaseConfig {
@@ -245,16 +271,31 @@ impl ConfigAdapter {
     /// - `etcd.endpoints` - Comma-separated list of endpoints
     /// - `etcd.connect_timeout_ms` - Connection timeout
     /// - `etcd.watch_timeout_ms` - Watch timeout
+    ///
+    /// Phase 9 T043 (HIGH H2) — `localhost:2379` is only used as a
+    /// dev convenience. Release builds return an empty endpoint list
+    /// so misconfiguration fails loudly instead of silently connecting
+    /// to an unauthenticated local etcd.
     pub fn get_etcd_config(&self) -> EtcdConfig {
         let endpoints_str = self
             .provider
             .get_string("etcd.endpoints")
             .unwrap_or_else(|| {
-                std::env::var("ETCD_ENDPOINTS").unwrap_or_else(|_| "localhost:2379".to_string())
+                std::env::var("ETCD_ENDPOINTS").unwrap_or_else(|_| {
+                    if cfg!(debug_assertions) {
+                        "localhost:2379".to_string()
+                    } else {
+                        String::new()
+                    }
+                })
             });
 
         EtcdConfig {
-            endpoints: endpoints_str.split(',').map(String::from).collect(),
+            endpoints: endpoints_str
+                .split(',')
+                .filter(|s| !s.trim().is_empty())
+                .map(String::from)
+                .collect(),
             connect_timeout_ms: self
                 .provider
                 .get_int("etcd.connect_timeout_ms")
@@ -385,10 +426,21 @@ impl ConfigAdapter {
     /// - `redis.pool_size` - Connection pool size
     /// - `redis.key_prefix` - Key prefix for cache entries
     /// - `redis.ttl_seconds` - Default TTL in seconds
+    ///
+    /// Phase 9 T043 (HIGH H2) — `redis://localhost:6379` is dev-only.
+    /// Release builds require `REDIS_URL` / `redis.url` to be set
+    /// explicitly so misconfiguration fails loudly instead of silently
+    /// connecting to an unauthenticated local Redis.
     pub fn get_redis_config(&self) -> crate::core::config::RedisConfig {
         crate::core::config::RedisConfig {
             url: self.provider.get_string("redis.url").unwrap_or_else(|| {
-                std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string())
+                std::env::var("REDIS_URL").unwrap_or_else(|_| {
+                    if cfg!(debug_assertions) {
+                        "redis://localhost:6379".to_string()
+                    } else {
+                        String::new()
+                    }
+                })
             }),
             pool_size: self.provider.get_int("redis.pool_size").unwrap_or(16) as u32,
             key_prefix: self

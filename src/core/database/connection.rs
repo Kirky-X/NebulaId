@@ -23,6 +23,25 @@ use crate::core::types::CoreError;
 /// Schema name for Nebula ID tables
 pub const NEBULA_SCHEMA: &str = "nebula_id";
 
+/// Redact the password component of a database connection URL before
+/// the URL is written to logs or other observability surfaces.
+///
+/// Phase 9 T043 (CRITICAL C1 / tiangang HIGH-2) — `final_url` carries
+/// the plaintext database password (e.g. `postgresql://user:pass@host/db`)
+/// and must never be recorded verbatim. Only `scheme://user@host:port/db`
+/// is emitted; the password is replaced by `***`. If the URL cannot be
+/// parsed by `url::Url`, the entire string is replaced by `<redacted>`
+/// to guarantee no password can leak.
+fn redact_db_url(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(mut parsed) => {
+            let _ = parsed.set_password(Some("***"));
+            parsed.to_string()
+        }
+        Err(_) => "<redacted>".to_string(),
+    }
+}
+
 impl From<DbErr> for CoreError {
     fn from(e: DbErr) -> Self {
         CoreError::DatabaseError(e.to_string())
@@ -89,7 +108,7 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
         t!(
             "log.core.database.connection.connecting",
             engine = config.engine,
-            url = final_url
+            url = redact_db_url(&final_url)
         )
     );
 
@@ -152,7 +171,10 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
             last_used_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            CONSTRAINT check_admin_key CHECK (workspace_id IS NULL AND role = 'admin' OR workspace_id IS NOT NULL)
+            CONSTRAINT check_admin_key CHECK (
+                (workspace_id IS NULL AND role = 'admin')
+                OR (workspace_id IS NOT NULL AND role != 'admin')
+            )
         )
         "#,
             NEBULA_SCHEMA
@@ -252,10 +274,18 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
                         t!("log.core.database.connection.table_already_exists")
                     );
                 } else {
-                    return Err(CoreError::DatabaseError(format!(
-                        "Failed to create table: {}",
-                        error_msg
-                    )));
+                    // MEDIUM-2 修复（CWE-209）：不将 SeaORM 原始错误消息嵌入
+                    // CoreError::DatabaseError（可能含 schema/表名/字段名/SQL 片段）。
+                    // 完整错误通过 tracing::error! 记录到服务端日志，
+                    // 返回给上层的是通用消息（helpers.rs 仍会进一步净化）。
+                    tracing::error!(
+                        event = "db_create_table_failed",
+                        error = %error_msg,
+                        "database table creation failed"
+                    );
+                    return Err(CoreError::DatabaseError(
+                        "Failed to create table (see server logs for details)".to_string(),
+                    ));
                 }
             }
         }

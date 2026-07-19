@@ -12,11 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(dead_code)]
-
 use crate::core::algorithm::traits::{
     AlgorithmMetricsSnapshot, GenerateContext, HealthStatus, IdAlgorithm,
 };
+// ARCH-HIGH-001 修复：AlgorithmFactory impl 需要 Config 参数（即使不用）。
 use crate::core::config::Config;
 use crate::core::types::id::Id;
 use crate::core::types::{AlgorithmType, IdBatch, Result};
@@ -39,11 +38,6 @@ impl UuidMetrics {
     }
 }
 
-#[async_trait]
-pub trait UuidV7Generator: Send + Sync {
-    async fn generate_v7(&self) -> Result<Uuid>;
-}
-
 pub struct UuidV7Impl {
     metrics: Arc<UuidMetrics>,
 }
@@ -53,11 +47,6 @@ impl UuidV7Impl {
         Self {
             metrics: Arc::new(UuidMetrics::new()),
         }
-    }
-
-    pub fn generate() -> Result<Uuid> {
-        let uuid = Uuid::now_v7();
-        Ok(uuid)
     }
 }
 
@@ -103,7 +92,8 @@ impl IdAlgorithm for UuidV7Impl {
             current_qps: 0,
             p50_latency_us: 0,
             p99_latency_us: 0,
-            cache_hit_rate: 0.0,
+            // L15 修复：UUID 算法无缓存概念，返回 None。
+            cache_hit_rate: None,
         }
     }
 
@@ -111,9 +101,7 @@ impl IdAlgorithm for UuidV7Impl {
         AlgorithmType::UuidV7
     }
 
-    async fn initialize(&mut self, _config: &Config) -> Result<()> {
-        Ok(())
-    }
+    // L13 修复：删除 no-op `initialize`（trait 上已无此方法）。
 
     async fn shutdown(&self) -> Result<()> {
         Ok(())
@@ -129,11 +117,6 @@ impl UuidV4Impl {
         Self {
             metrics: Arc::new(UuidMetrics::new()),
         }
-    }
-
-    pub fn generate() -> Result<Uuid> {
-        let uuid = Uuid::new_v4();
-        Ok(uuid)
     }
 }
 
@@ -179,7 +162,8 @@ impl IdAlgorithm for UuidV4Impl {
             current_qps: 0,
             p50_latency_us: 0,
             p99_latency_us: 0,
-            cache_hit_rate: 0.0,
+            // L15 修复：UUID 算法无缓存概念，返回 None。
+            cache_hit_rate: None,
         }
     }
 
@@ -187,9 +171,7 @@ impl IdAlgorithm for UuidV4Impl {
         AlgorithmType::UuidV4
     }
 
-    async fn initialize(&mut self, _config: &Config) -> Result<()> {
-        Ok(())
-    }
+    // L13 修复：删除 no-op `initialize`（trait 上已无此方法）。
 
     async fn shutdown(&self) -> Result<()> {
         Ok(())
@@ -197,86 +179,28 @@ impl IdAlgorithm for UuidV4Impl {
 }
 
 // ============================================================================
-// DI Support - Builder Pattern and with_dependencies
+// ARCH-HIGH-001 修复：UuidV7Factory 和 UuidV4Factory impl 拆分到本文件。
+// 原 impl 位于 traits.rs（违反规则 25），现移到具体类型所属文件。
 // ============================================================================
-
-use confers::interface::ConfigProvider;
-
-impl UuidV7Impl {
-    /// Create a new UuidV7Impl with dependencies injected.
-    ///
-    /// Note: UuidV7Impl doesn't require external dependencies,
-    /// but this method is provided for API consistency.
-    pub fn with_dependencies(_config: &Arc<dyn ConfigProvider>) -> Self {
-        Self::new()
-    }
-
-    /// Create a builder for UuidV7Impl.
-    pub fn builder() -> UuidV7Builder {
-        UuidV7Builder::new()
+#[async_trait]
+impl crate::core::algorithm::AlgorithmFactory for crate::core::algorithm::UuidV7Factory {
+    async fn build(
+        &self,
+        _builder: &crate::core::algorithm::AlgorithmBuilder,
+        _config: &Config,
+    ) -> Result<Box<dyn crate::core::algorithm::IdAlgorithm>> {
+        Ok(Box::new(UuidV7Impl::new()))
     }
 }
 
-/// Builder for UuidV7Impl.
-#[derive(Default)]
-pub struct UuidV7Builder {
-    config: Option<Arc<dyn ConfigProvider>>,
-}
-
-impl UuidV7Builder {
-    /// Create a new builder.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set the configuration provider (optional for UuidV7).
-    pub fn config(mut self, config: Arc<dyn ConfigProvider>) -> Self {
-        self.config = Some(config);
-        self
-    }
-
-    /// Build the UuidV7Impl.
-    pub fn build(self) -> UuidV7Impl {
-        UuidV7Impl::new()
-    }
-}
-
-impl UuidV4Impl {
-    /// Create a new UuidV4Impl with dependencies injected.
-    ///
-    /// Note: UuidV4Impl doesn't require external dependencies,
-    /// but this method is provided for API consistency.
-    pub fn with_dependencies(_config: &Arc<dyn ConfigProvider>) -> Self {
-        Self::new()
-    }
-
-    /// Create a builder for UuidV4Impl.
-    pub fn builder() -> UuidV4Builder {
-        UuidV4Builder::new()
-    }
-}
-
-/// Builder for UuidV4Impl.
-#[derive(Default)]
-pub struct UuidV4Builder {
-    config: Option<Arc<dyn ConfigProvider>>,
-}
-
-impl UuidV4Builder {
-    /// Create a new builder.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set the configuration provider (optional for UuidV4).
-    pub fn config(mut self, config: Arc<dyn ConfigProvider>) -> Self {
-        self.config = Some(config);
-        self
-    }
-
-    /// Build the UuidV4Impl.
-    pub fn build(self) -> UuidV4Impl {
-        UuidV4Impl::new()
+#[async_trait]
+impl crate::core::algorithm::AlgorithmFactory for crate::core::algorithm::UuidV4Factory {
+    async fn build(
+        &self,
+        _builder: &crate::core::algorithm::AlgorithmBuilder,
+        _config: &Config,
+    ) -> Result<Box<dyn crate::core::algorithm::IdAlgorithm>> {
+        Ok(Box::new(UuidV4Impl::new()))
     }
 }
 
@@ -296,7 +220,7 @@ mod tests {
 
     #[test]
     fn test_uuid_v7_format() {
-        let uuid = UuidV7Impl::generate().unwrap();
+        let uuid = Uuid::now_v7();
         let uuid_str = uuid.to_string();
 
         assert_eq!(uuid_str.len(), 36);

@@ -24,6 +24,7 @@ api.error.invalid_uuid_format: "Invalid UUID format"
 api.error.validation_error: "Validation error: %{error}"
 api.error.validation_error_field: "Validation error in field: %{field} (%{rule})"
 api.error.admin_cannot_perform: "Admin API key cannot perform this operation"
+api.error.auth_required: "Authentication required: enable auth and provide a valid API key"
 api.error.workspace_mismatch: "Access denied: workspace mismatch"
 api.error.workspace_name_not_found: "Workspace '%{name}' not found"
 api.error.workspace_not_found: "Workspace not found"
@@ -42,7 +43,9 @@ api.error.configuration_error: "Configuration error"
 api.error.algorithm_error: "ID generation algorithm error"
 api.error.etcd_error: "Etcd service unavailable"
 api.error.io_error: "I/O error"
-api.error.parse_error: "Parse error"
+# Phase 9 T045 (F-04) — `api.error.parse_error` removed: dead key,
+# no `t!("api.error.parse_error")` caller anywhere in src/. CoreError's
+# ParseError variant goes through `error.parse_error` (Display namespace).
 
 # CoreError Display strings (T038)
 error.invalid_id_format: "Invalid ID format: %{value}"
@@ -113,6 +116,8 @@ log.core.algorithm.degradation_manager.background_check_already_running: "Backgr
 log.core.algorithm.degradation_manager.starting_background_check: "Starting background health check"
 log.core.algorithm.degradation_manager.background_check_started: "Background health check started"
 log.core.algorithm.degradation_manager.background_check_stopped: "Background health check stopped"
+log.core.algorithm.degradation_manager.background_check_shutdown_sent: "Background health check shutdown signal sent"
+log.core.algorithm.degradation_manager.background_check_shutdown_received: "Background health check shutdown signal received, exiting task"
 
 # src/core/algorithm/router.rs (active module — AlgorithmRouter used by main.rs)
 # Namespace: log.core.algorithm.router.* (note the dot-separated `algorithm.router`)
@@ -205,6 +210,9 @@ log.core.coordinator.etcd.lock_initialized: "EtcdDistributedLock initialized wit
 log.core.coordinator.etcd.lock_acquired: "Acquired distributed lock for key '%{key}' (lease: %{lease_id}, attempt: %{attempt})"
 log.core.coordinator.etcd.lock_already_held_retry: "Lock for key '%{key}' already held, retrying in %{retry_delay_ms}ms (attempt %{attempt})"
 log.core.coordinator.etcd.lock_released: "Released distributed lock"
+log.core.coordinator.etcd.lock_drop_released: "Auto-released distributed lock on Drop (spawned background task)"
+log.core.coordinator.etcd.lock_drop_release_failed: "Failed to auto-release distributed lock on Drop (lease will expire by TTL): %{error}"
+log.core.coordinator.etcd.lock_drop_no_runtime: "No tokio runtime available during Drop; lock will expire by lease TTL"
 
 # src/core/monitoring/core.rs
 log.core.monitoring.core.unknown_alert_expression: "Unknown alert expression: %{expression}"
@@ -228,7 +236,9 @@ log.core.monitoring.core.alert_manager_shutdown_complete: "AlertManager shutdown
 
 # src/server/audit/logger.rs
 log.server.audit.logger.persist_failed: "Failed to persist audit log: %{error}"
+log.server.audit.logger.path_invalid: "Invalid audit log path: %{error}"
 log.server.audit.logger.audit_event_recorded: "Audit event recorded"
+log.server.audit.logger.event_dropped_no_persistence: "Audit event dropped from in-memory buffer (max_events=%{max_events}). Configure audit_log_path to persist events to file (SOC2/GDPR compliance)."
 
 # src/server/audit/middleware.rs
 log.server.audit.middleware.request_recorded: "Request audit recorded"
@@ -347,6 +357,8 @@ log.main.fatal_api_key_auth_requires_database: "FATAL: API key authentication re
 log.main.initializing_etcd_health_monitor: "Initializing etcd cluster health monitor..."
 log.main.etcd_local_cache_load_failed: "Failed to load etcd local cache: %{error}"
 log.main.etcd_health_monitor_initialized: "Etcd cluster health monitor initialized"
+log.main.etcd_client_wrapper_initialized: "Etcd client wrapper initialized (trait-injected health check path)"
+log.main.etcd_client_wrapper_init_failed: "Failed to initialize etcd client wrapper, falling back to per-check connect: %{error}"
 log.main.tls_init_failed: "Failed to initialize TLS manager: %{error}"
 log.main.tls_disabled: "TLS will be disabled"
 log.main.starting_degradation_check: "Starting degradation manager health check task..."

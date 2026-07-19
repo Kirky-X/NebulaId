@@ -129,6 +129,13 @@ impl super::ApiHandlers {
                 role: match user_key.key.role {
                     crate::core::database::ApiKeyRole::Admin => "admin".to_string(),
                     crate::core::database::ApiKeyRole::User => "user".to_string(),
+                    // LOW-1 修复：Anonymous 不会被持久化到数据库，这里只是穷尽匹配。
+                    // 如果运行到这里说明数据库被外部直接写入了 Anonymous，返回错误标记。
+                    crate::core::database::ApiKeyRole::Anonymous => {
+                        return Err(crate::core::CoreError::InternalError(
+                            "Anonymous role should not be persisted in database".to_string(),
+                        ))
+                    }
                 },
                 rate_limit: user_key.key.rate_limit,
                 enabled: user_key.key.enabled,
@@ -141,37 +148,24 @@ impl super::ApiHandlers {
 
     /// List all Workspaces.
     pub async fn list_workspaces(&self) -> Result<WorkspaceListResponse> {
-        let result =
-            self.config_service.list_workspaces().await.map_err(
-                |e: crate::core::types::CoreError| CoreError::DatabaseError(e.to_string()),
-            )?;
-        Ok(result)
+        // M5 修复：直接传播 CoreError，避免 `e.to_string()` 丢失类型信息
+        // 导致 HTTP 响应全部变成 500。helpers.rs 的错误转换层会根据
+        // CoreError 变体映射到正确的 HTTP 状态码。
+        self.config_service.list_workspaces().await
     }
 
     /// Get Workspace by name.
     pub async fn get_workspace(&self, name: &str) -> Result<Option<WorkspaceResponse>> {
-        let result =
-            self.config_service.get_workspace(name).await.map_err(
-                |e: crate::core::types::CoreError| CoreError::DatabaseError(e.to_string()),
-            )?;
-        Ok(result)
+        self.config_service.get_workspace(name).await
     }
 
     /// Create a new Group.
     pub async fn create_group(&self, req: CreateGroupRequest) -> Result<GroupResponse> {
-        let result =
-            self.config_service.create_group(req).await.map_err(
-                |e: crate::core::types::CoreError| CoreError::DatabaseError(e.to_string()),
-            )?;
-        Ok(result)
+        self.config_service.create_group(req).await
     }
 
     /// List all Groups for a workspace.
     pub async fn list_groups(&self, workspace: &str) -> Result<GroupListResponse> {
-        let result =
-            self.config_service.list_groups(workspace).await.map_err(
-                |e: crate::core::types::CoreError| CoreError::DatabaseError(e.to_string()),
-            )?;
-        Ok(result)
+        self.config_service.list_groups(workspace).await
     }
 }

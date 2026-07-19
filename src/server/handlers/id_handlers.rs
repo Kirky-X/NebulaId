@@ -38,8 +38,15 @@ impl super::ApiHandlers {
             biz_tag = %req.biz_tag,
         );
 
-        let result = if let Some(ref alg_str) = req.algorithm {
-            let algorithm: crate::core::types::AlgorithmType = alg_str.parse()?;
+        // L6 修复：提前 parse algorithm，复用结果避免重复 parse。
+        let parsed_algorithm: Option<crate::core::types::AlgorithmType> =
+            if let Some(ref alg_str) = req.algorithm {
+                Some(alg_str.parse()?)
+            } else {
+                None
+            };
+
+        let result = if let Some(algorithm) = parsed_algorithm {
             self.id_generator
                 .generate_with_algorithm(algorithm, &req.workspace, &req.group, &req.biz_tag)
                 .await
@@ -69,14 +76,21 @@ impl super::ApiHandlers {
             .fetch_add(1, Ordering::SeqCst);
 
         let latency_ms = elapsed.as_millis() as u64;
-        let current_avg = self.metrics.avg_latency_ms.load(Ordering::SeqCst);
-        let new_avg = (current_avg + latency_ms) / 2;
+        // L5 修复：使用累积计数 + 总和的方式计算真实平均值，
+        // 而非 `(current_avg + latency) / 2`（后者对早期偏差敏感且非滑动平均）。
+        // avg = total_latency / total_requests
+        self.metrics
+            .total_latency_ms
+            .fetch_add(latency_ms, Ordering::SeqCst);
+        let total_reqs = self.metrics.total_requests.load(Ordering::SeqCst);
+        let total_latency = self.metrics.total_latency_ms.load(Ordering::SeqCst);
+        let new_avg = total_latency.checked_div(total_reqs).unwrap_or(latency_ms);
         self.metrics.avg_latency_ms.store(new_avg, Ordering::SeqCst);
 
-        let algorithm_name = if let Some(ref alg) = req.algorithm {
-            alg.parse::<crate::core::types::AlgorithmType>()
-                .map(|a| a.to_string())
-                .unwrap_or_else(|_| "segment".to_string())
+        // L6 修复：复用 line 42 的 parse 结果，避免重复 parse。
+        // algorithm_name 优先使用请求指定的算法，否则查询路由表。
+        let algorithm_name = if let Some(parsed) = parsed_algorithm {
+            parsed.to_string()
         } else {
             self.id_generator
                 .get_algorithm_name(&req.workspace, &req.group, &req.biz_tag)
@@ -146,8 +160,13 @@ impl super::ApiHandlers {
             .fetch_add(ids.len() as u64, Ordering::SeqCst);
 
         let latency_ms = elapsed.as_millis() as u64;
-        let current_avg = self.metrics.avg_latency_ms.load(Ordering::SeqCst);
-        let new_avg = (current_avg + latency_ms) / 2;
+        // L5 修复：同 generate，使用累积平均值
+        self.metrics
+            .total_latency_ms
+            .fetch_add(latency_ms, Ordering::SeqCst);
+        let total_reqs = self.metrics.total_requests.load(Ordering::SeqCst);
+        let total_latency = self.metrics.total_latency_ms.load(Ordering::SeqCst);
+        let new_avg = total_latency.checked_div(total_reqs).unwrap_or(latency_ms);
         self.metrics.avg_latency_ms.store(new_avg, Ordering::SeqCst);
 
         Ok(BatchGenerateResponse {

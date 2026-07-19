@@ -686,20 +686,26 @@ impl ConfigManagementService for ConfigManager {
     async fn get_cache_metrics(&self) -> CacheMetrics {
         // Get algorithm metrics for cache hit rate
         let algorithm_metrics = self.algorithm_router.metrics().await;
-        let cache_hit_rate = if !algorithm_metrics.is_empty() {
-            let total_hit_rate: f64 = algorithm_metrics
-                .iter()
-                .map(|(_, m)| m.cache_hit_rate)
-                .sum::<f64>()
-                / algorithm_metrics.len() as f64;
-            total_hit_rate
+        // L15 修复：只统计 `cache_hit_rate = Some(_)` 的算法（即有缓存的算法，
+        // 如 Segment）。原代码把 UUID/Snowflake 的 `0.0` 也纳入平均，导致
+        // 整体缓存命中率被低估（误把"无缓存"当成"命中率 0%"）。
+        //
+        // ARCH-MED-004 修复：用 `has_cache` 显式表达「是否有缓存算法」，
+        // 避免监控面板把 `hit_rate = 0.0` 误读为「缓存性能极差」。
+        let hit_rates: Vec<f64> = algorithm_metrics
+            .iter()
+            .filter_map(|(_, m)| m.cache_hit_rate)
+            .collect();
+        let (has_cache, cache_hit_rate) = if hit_rates.is_empty() {
+            (false, 0.0)
         } else {
-            0.0
+            (true, hit_rates.iter().sum::<f64>() / hit_rates.len() as f64)
         };
 
         CacheMetrics {
             status: crate::server::models::HealthStatus::Healthy,
             hit_rate: cache_hit_rate,
+            has_cache,
             memory_usage_mb: None,
             key_count: None,
         }

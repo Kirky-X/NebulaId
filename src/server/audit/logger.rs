@@ -12,50 +12,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::core::algorithm::{
-    AuditEvent as CoreAuditEvent, AuditEventType as CoreAuditEventType,
-    AuditLogger as CoreAuditLoggerTrait, AuditResult as CoreAuditResult,
-};
+use crate::core::algorithm::{AuditEvent as CoreAuditEvent, AuditLogger as CoreAuditLoggerTrait};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
+use tokio::task::JoinHandle;
 use tracing::info;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AuditEventType {
-    IdGeneration,
-    BatchGeneration,
-    Authentication,
-    ConfigChange,
-    DegradationEvent,
-    RateLimitExceeded,
-    HealthCheck,
-    MetricsAccess,
-    WorkspaceCreated,
-    WorkspaceUpdated,
-    WorkspaceDeleted,
-    GroupCreated,
-    GroupUpdated,
-    GroupDeleted,
-    BizTagCreated,
-    BizTagUpdated,
-    BizTagDeleted,
-    ApiKeyCreated,
-    ApiKeyUpdated,
-    ApiKeyDeleted,
-    ApiKeyRegenerated,
+// M4 修复：复用 core 层的 AuditEventType 和 AuditResult，
+// 消除 server/core 重复定义。pub use 使其成为本模块公共 API。
+pub use crate::core::algorithm::{AuditEventType, AuditResult};
+
+/// 生成审计事件 ID（M1 修复）。
+///
+/// 格式：`(unix_millis << 20) | (counter & 0xFFFFF)`
+/// - 高 44 位：Unix 毫秒时间戳，保证进程重启后 ID 单调递增、不冲突
+/// - 低 20 位：进程内计数器（最多 1M/ms，远超任何审计吞吐）
+///
+/// 这避免了原 `static COUNTER: AtomicU64` 在进程重启后从 0 开始导致 ID 冲突的问题。
+fn next_audit_event_id() -> u64 {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let unix_ms = Utc::now().timestamp_millis() as u64;
+    let c = COUNTER.fetch_add(1, Ordering::SeqCst) & 0xFFFFF;
+    (unix_ms << 20) | c
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AuditResult {
-    Success,
-    Failure,
-    Partial,
-}
+// M4 修复：删除本地 AuditEventType 和 AuditResult 定义，
+// 改用 `crate::core::algorithm::{AuditEventType, AuditResult}`。
+// 这消除了 server/core 重复定义，未来新增事件类型只需修改 core 层一处。
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEvent {
@@ -82,9 +70,8 @@ impl AuditEvent {
         resource: String,
         result: AuditResult,
     ) -> Self {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
         Self {
-            id: COUNTER.fetch_add(1, Ordering::SeqCst),
+            id: next_audit_event_id(),
             timestamp: Utc::now(),
             event_type,
             workspace_id,
@@ -129,6 +116,38 @@ impl AuditEvent {
         self.error_message = Some(error);
         self
     }
+
+    /// LOW-3 修复 + SEC-LOW-001 修复：对 IP 地址进行部分遮蔽。
+    ///
+    /// 使用 `std::net::IpAddr` 解析而非字符串操作，避免 IPv4-mapped IPv6
+    /// 等 boundary case 的脱敏不一致。原 `rfind('.')` / `rfind(':')` 方案
+    /// 对 `::1` 返回 `:x`（不正确）、对 `2001:db8::1` 返回 `2001:db8:x`
+    /// （与注释承诺的 `2001:db8::x` 不符）。
+    fn redact_ip(ip: &str) -> String {
+        match ip.parse::<std::net::IpAddr>() {
+            Ok(std::net::IpAddr::V4(v4)) => {
+                let octets = v4.octets();
+                format!("{}.{}.{}.x", octets[0], octets[1], octets[2])
+            }
+            Ok(std::net::IpAddr::V6(v6)) => {
+                // 保留前 4 段，后面 4 段用 x 替换，避免泄露完整地址。
+                let segs = v6.segments();
+                format!(
+                    "{:x}:{:x}:{:x}:{:x}:x:x:x:x",
+                    segs[0], segs[1], segs[2], segs[3]
+                )
+            }
+            Err(_) => {
+                // 非 IP 格式（可能是 "unknown" 或其他占位符）：保留前 8 字符。
+                let prefix = ip.chars().take(8).collect::<String>();
+                if ip.len() > 8 {
+                    format!("{}...redacted", prefix)
+                } else {
+                    prefix
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -137,7 +156,13 @@ pub struct AuditLogger {
     max_events: usize,
     total_logged: Arc<AtomicU64>,
     total_errors: Arc<AtomicU64>,
-    log_file_path: Option<String>, // 审计日志文件路径
+    /// 文件写入 channel：log 方法只发送事件（非阻塞），独立 task 消费并写文件。
+    /// 解决 H7：避免在 Mutex 持有期间执行文件 I/O。
+    file_tx: Option<mpsc::UnboundedSender<AuditEvent>>,
+    /// 持有 writer task 的 JoinHandle，保持 task 存活。
+    /// Arc 包装以便 Clone 时共享；JoinHandle drop 不会 cancel task（tokio 默认行为），
+    /// task 会在所有 sender drop 后自然退出。
+    _writer_task: Option<Arc<JoinHandle<()>>>,
 }
 
 impl AuditLogger {
@@ -147,37 +172,140 @@ impl AuditLogger {
             max_events,
             total_logged: Arc::new(AtomicU64::new(0)),
             total_errors: Arc::new(AtomicU64::new(0)),
-            log_file_path: None,
+            file_tx: None,
+            _writer_task: None,
         }
     }
 
-    /// 创建支持文件持久化的审计日志记录器
-    pub fn with_file_logging(max_events: usize, log_file_path: String) -> Self {
+    /// 创建支持文件持久化的审计日志记录器。
+    ///
+    /// 启动一个独立的后台 task 消费事件并写文件，`log` 方法只通过 channel
+    /// 发送事件（非阻塞），避免在 Mutex 持有期间执行文件 I/O（H7 修复）。
+    ///
+    /// 必须在 tokio runtime 上下文中调用。
+    ///
+    /// LOW-2 修复（CWE-22 路径遍历）：验证 `log_file_path` 不包含 `..`
+    /// 组件，防止攻击者通过配置注入如 `../../etc/passwd` 路径覆盖系统文件。
+    /// 空路径也被拒绝。
+    pub async fn with_file_logging(max_events: usize, log_file_path: String) -> Self {
+        // LOW-2 修复：路径安全性验证
+        if let Err(e) = Self::validate_log_path(&log_file_path) {
+            tracing::error!(
+                event = "audit_log_path_invalid",
+                path = %log_file_path,
+                error = %e,
+                "{}",
+                t!("log.server.audit.logger.path_invalid", error = e)
+            );
+            // 回退到无文件持久化的内存记录器，避免因路径无效导致启动失败
+            return Self::new(max_events);
+        }
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<AuditEvent>();
+        let total_errors = Arc::new(AtomicU64::new(0));
+        let errors_clone = total_errors.clone();
+        let path_clone = log_file_path.clone();
+
+        let handle = tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                if let Err(e) = Self::write_event_to_file(&event, &path_clone).await {
+                    errors_clone.fetch_add(1, Ordering::SeqCst);
+                    tracing::error!(
+                        "{}",
+                        t!("log.server.audit.logger.persist_failed", error = e)
+                    );
+                }
+            }
+        });
+
         Self {
             events: Arc::new(Mutex::new(VecDeque::with_capacity(max_events + 1))),
             max_events,
             total_logged: Arc::new(AtomicU64::new(0)),
-            total_errors: Arc::new(AtomicU64::new(0)),
-            log_file_path: Some(log_file_path),
+            total_errors,
+            file_tx: Some(tx),
+            _writer_task: Some(Arc::new(handle)),
         }
     }
 
-    pub async fn log(&self, event: AuditEvent) {
-        let mut events = self.events.lock().await;
+    /// LOW-2 修复（CWE-22）：验证审计日志路径安全性。
+    ///
+    /// 拒绝：
+    /// - 空路径
+    /// - 包含 `..` 组件的路径（路径遍历攻击）
+    ///
+    /// 允许：
+    /// - 绝对路径（如 `/var/log/nebulaid/audit.log`）
+    /// - 相对路径（如 `logs/audit.log`）
+    fn validate_log_path(path: &str) -> std::io::Result<()> {
+        use std::path::Component;
 
-        while events.len() >= self.max_events {
-            events.pop_front();
+        if path.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "audit log path is empty",
+            ));
         }
 
-        events.push_back(event.clone());
-        self.total_logged.fetch_add(1, Ordering::SeqCst);
+        let p = std::path::Path::new(path);
+        for comp in p.components() {
+            if matches!(comp, Component::ParentDir) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "audit log path contains '..' component (path traversal risk): {}",
+                        path
+                    ),
+                ));
+            }
+        }
 
-        // 持久化到文件
-        if let Some(ref path) = self.log_file_path {
-            if let Err(e) = self.persist_to_file(&event, path).await {
+        Ok(())
+    }
+
+    pub async fn log(&self, event: AuditEvent) {
+        // 锁内只做内存操作（push/pop），快速释放锁
+        {
+            let mut events = self.events.lock().await;
+            // M14 修复：VecDeque 满时丢弃最旧事件。如果未配置文件持久化，
+            // 丢弃意味着审计事件永久丢失（违反 SOC2/GDPR 合规）。
+            // 此处记录 warning 提示运维人员配置 `audit_log_path`。
+            if events.len() >= self.max_events {
+                let dropped_count = events.len() - self.max_events + 1;
+                for _ in 0..dropped_count {
+                    if let Some(dropped) = events.pop_front() {
+                        if self.file_tx.is_none() {
+                            // 未配置文件持久化：丢弃即永久丢失
+                            tracing::warn!(
+                                event_id = dropped.id,
+                                event_type = ?dropped.event_type,
+                                "{}",
+                                t!(
+                                    "log.server.audit.logger.event_dropped_no_persistence",
+                                    max_events = self.max_events
+                                )
+                            );
+                            self.total_errors.fetch_add(1, Ordering::SeqCst);
+                        }
+                        // 已配置 file_tx 的事件已被异步写入文件，内存丢弃可接受
+                    }
+                }
+            }
+            events.push_back(event.clone());
+            self.total_logged.fetch_add(1, Ordering::SeqCst);
+        }
+
+        // 锁外异步发送到文件 writer channel（非阻塞）
+        if let Some(ref tx) = self.file_tx {
+            if tx.send(event.clone()).is_err() {
+                // channel 关闭（writer task panic 或退出）
+                self.total_errors.fetch_add(1, Ordering::SeqCst);
                 tracing::error!(
                     "{}",
-                    t!("log.server.audit.logger.persist_failed", error = e)
+                    t!(
+                        "log.server.audit.logger.persist_failed",
+                        error = "file writer channel closed"
+                    )
                 );
             }
         }
@@ -194,8 +322,21 @@ impl AuditLogger {
         );
     }
 
-    /// 将审计事件持久化到文件
-    async fn persist_to_file(&self, event: &AuditEvent, path: &str) -> std::io::Result<()> {
+    /// 将单个审计事件写入文件（由 writer task 调用，不在 Mutex 持有期间执行）。
+    ///
+    /// LOW-3 修复（CWE-532）：写入文件前对 PII 字段脱敏。
+    /// - `client_ip`：保留前 3 段（IPv4）或前 4 段（IPv6），末段用 `x` 替换
+    /// - `user_agent`：替换为固定字符串 `UA(redacted)`，避免记录完整 UA
+    /// - `user_id`：保留（API key 标识符，非个人身份信息）
+    ///
+    /// PERF-M1 修复：原实现先 `redact_for_persistence()` 创建完整 AuditEvent
+    /// 深拷贝（6-7 次 String clone + 1 次 Value 深拷贝），再 `to_string`。
+    /// 现直接构建 `serde_json::Value`，仅对需要脱敏的 2 个字段做转换，
+    /// 其余字段通过 `&` 引用序列化（serde 自动处理），避免深拷贝。
+    /// 10k QPS 场景下减少约 1-2 万次/秒的 String 堆分配（注：`json!` 宏
+    /// 仍会克隆 `redacted_client_ip` / `redacted_user_agent`，所以实际
+    /// 节省的是其余字段的深拷贝，量级为 1-2 万次/秒）。
+    async fn write_event_to_file(event: &AuditEvent, path: &str) -> std::io::Result<()> {
         use tokio::fs::OpenOptions;
         use tokio::io::AsyncWriteExt;
 
@@ -205,9 +346,34 @@ impl AuditLogger {
             .open(path)
             .await?;
 
-        let log_line = serde_json::to_string(event)?;
-        file.write_all(log_line.as_bytes()).await?;
-        file.write_all(b"\n").await?;
+        // 仅对需要脱敏的 client_ip / user_agent 做转换，其余字段引用序列化。
+        let redacted_client_ip = event.client_ip.as_deref().map(AuditEvent::redact_ip);
+        let redacted_user_agent = event
+            .user_agent
+            .as_deref()
+            .map(|_| "UA(redacted)".to_string());
+
+        let log_line = serde_json::json!({
+            "id": event.id,
+            "timestamp": event.timestamp,
+            "event_type": event.event_type,
+            "workspace_id": event.workspace_id,
+            "user_id": event.user_id,
+            "action": event.action,
+            "resource": event.resource,
+            "result": event.result,
+            "details": event.details,
+            "client_ip": redacted_client_ip,
+            "user_agent": redacted_user_agent,
+            "duration_ms": event.duration_ms,
+            "error_message": event.error_message,
+        });
+
+        let mut buf = Vec::with_capacity(512);
+        serde_json::to_writer(&mut buf, &log_line)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        buf.push(b'\n');
+        file.write_all(&buf).await?;
         Ok(())
     }
 
@@ -700,29 +866,18 @@ impl AuditLogger {
 #[async_trait]
 impl CoreAuditLoggerTrait for AuditLogger {
     async fn log(&self, event: CoreAuditEvent) {
+        // M4 修复：AuditEventType/AuditResult 已统一为 core 层定义，
+        // 无需 match 转换。CoreAuditEvent.result 可能是 Unknown，
+        // server 端保留该语义（不再强制映射为 Failure，避免信息丢失）。
         let server_event = AuditEvent {
-            id: 0,
+            id: next_audit_event_id(),
             timestamp: event.timestamp,
-            event_type: match event.event_type {
-                CoreAuditEventType::IdGeneration => AuditEventType::IdGeneration,
-                CoreAuditEventType::BatchGeneration => AuditEventType::BatchGeneration,
-                CoreAuditEventType::Authentication => AuditEventType::Authentication,
-                CoreAuditEventType::ConfigChange => AuditEventType::ConfigChange,
-                CoreAuditEventType::DegradationEvent => AuditEventType::DegradationEvent,
-                CoreAuditEventType::RateLimitExceeded => AuditEventType::RateLimitExceeded,
-                CoreAuditEventType::HealthCheck => AuditEventType::HealthCheck,
-                CoreAuditEventType::MetricsAccess => AuditEventType::MetricsAccess,
-            },
+            event_type: event.event_type,
             workspace_id: event.workspace_id,
             user_id: None,
             action: event.action,
             resource: event.resource,
-            result: match event.result {
-                CoreAuditResult::Success => AuditResult::Success,
-                CoreAuditResult::Failure => AuditResult::Failure,
-                CoreAuditResult::Partial => AuditResult::Partial,
-                CoreAuditResult::Unknown => AuditResult::Failure,
-            },
+            result: event.result,
             details: event.details,
             client_ip: None,
             user_agent: None,

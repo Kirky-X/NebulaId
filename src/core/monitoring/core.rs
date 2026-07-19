@@ -12,6 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Phase 9 T043 (HIGH H5) — file-level `#![allow(dead_code)]` retained
+//! with explicit justification. The `MonitoringCore` surface exposes
+//! the full alerting/metrics API (alert state machine, notification
+//! channels, webhook dispatch, etc.) but only a subset is currently
+//! wired into the production `/metrics` handler. The remaining items
+//! are retained because (a) they are exercised by this file's
+//! `#[cfg(test)]` blocks, (b) the alerting pipeline is scheduled for
+//! production enablement in v0.3.0, and (c) deleting them would
+//! discard the alert-state transition tests. Re-evaluate after the
+//! monitoring pipeline is fully integrated.
+
 #![allow(dead_code)]
 
 use crate::core::types::GlobalMetrics;
@@ -578,7 +589,24 @@ impl AlertNotificationSender {
     }
 
     async fn send_webhook(url: &str, payload: &serde_json::Value) {
-        let client = reqwest::Client::new();
+        // MEDIUM-3 修复（CWE-918 SSRF）：验证 webhook URL 防止服务端请求伪造。
+        // 1. 仅允许 http/https scheme
+        // 2. 禁止解析到私有/保留 IP（127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12,
+        //    192.168.0.0/16, 169.254.0.0/16, ::1, fc00::/7）
+        // 3. 禁用重定向（避免重定向到内网）
+        if let Err(reason) = Self::validate_webhook_url(url) {
+            warn!(
+                url = url,
+                reason = reason,
+                "webhook URL rejected (SSRF protection)"
+            );
+            return;
+        }
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         let response = client.post(url).json(payload).send().await;
 
         match response {
@@ -603,6 +631,73 @@ impl AlertNotificationSender {
                         error = e
                     )
                 );
+            }
+        }
+    }
+
+    /// 验证 webhook URL 是否安全（SSRF 防护）。
+    ///
+    /// 返回 `Err(reason)` 表示 URL 不安全，不应发起请求。
+    fn validate_webhook_url(url: &str) -> Result<(), &'static str> {
+        let parsed = url::Url::parse(url).map_err(|_| "invalid URL format")?;
+
+        // 1. 仅允许 http/https scheme
+        match parsed.scheme() {
+            "http" | "https" => {}
+            _ => return Err("non-http(s) scheme not allowed"),
+        }
+
+        // 2. 禁止 userinfo（避免 `http://user:pass@internal/` 形式）
+        if parsed.username() != "" || parsed.password().is_some() {
+            return Err("userinfo in URL not allowed");
+        }
+
+        // 3. 解析 host，检查是否为私有/保留 IP 或 localhost
+        let host = parsed.host_str().ok_or("missing host")?;
+        if Self::is_blocked_host(host) {
+            return Err("host resolves to private/reserved address");
+        }
+
+        Ok(())
+    }
+
+    /// 检查 host 是否为被阻止的目标（localhost / 私有 IP / 链路本地 / 保留地址）。
+    fn is_blocked_host(host: &str) -> bool {
+        // localhost 主机名
+        if host == "localhost" || host.ends_with(".localhost") {
+            return true;
+        }
+
+        // 尝试解析为 IP 地址
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            return Self::is_blocked_ip(&ip);
+        }
+
+        // 非 IP 主机名（域名）— 允许通过，依赖 DNS 解析后的 IP 检查。
+        // 注意：这仍有 DNS rebinding 风险，但完整防护需要在 reqwest 层
+        // 注入 DNS resolver，超出当前修复范围。生产环境建议在出口防火墙
+        // 阻止对私有 IP 的访问。
+        false
+    }
+
+    /// 检查 IP 是否为私有/保留/链路本地地址。
+    fn is_blocked_ip(ip: &std::net::IpAddr) -> bool {
+        match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback()              // 127.0.0.0/8
+                    || v4.is_private()         // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+                    || v4.is_link_local()      // 169.254.0.0/16
+                    || v4.is_unspecified()     // 0.0.0.0
+                    || v4.is_broadcast()       // 255.255.255.255
+                    // 100.64.0.0/10 (CGNAT) — 不在 std::net::Ipv4Addr 方法中，需手动检查
+                    || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback()              // ::1
+                    || v6.is_unspecified()     // ::
+                    || v6.is_multicast()       // ff00::/8
+                    // fc00::/7 (unique local address) — std::net::Ipv6Addr 无直接方法
+                    || (v6.octets()[0] & 0xfe) == 0xfc
             }
         }
     }

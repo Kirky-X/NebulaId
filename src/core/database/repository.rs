@@ -12,20 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(dead_code)]
-
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use rand::{Rng, RngExt};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QuerySelect, Set,
     TransactionTrait,
 };
-use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
 use tracing::{debug, info};
 use uuid::Uuid;
+
+use argon2::password_hash::{rand_core::OsRng, SaltString};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 
 use crate::core::coordinator::{LockError, LockGuard};
 use crate::core::database::api_key_entity::{
@@ -216,18 +214,55 @@ impl SeaOrmRepository {
         }
     }
 
+    /// Inject a distributed lock implementation (M8 fix).
+    ///
+    /// 生产环境必须调用此方法注入分布式锁，否则 `allocate_segment` 会返回
+    /// `ConfigurationError`。默认构建（无 etcd feature）可注入
+    /// `LocalDistributedLock`（进程内互斥），etcd feature 构建可注入
+    /// `EtcdDistributedLock`。
+    pub fn with_distributed_lock(
+        mut self,
+        lock: std::sync::Arc<dyn crate::core::coordinator::DistributedLock + Send + Sync>,
+    ) -> Self {
+        self.distributed_lock = Some(lock);
+        self
+    }
+
     /// Get the underlying database connection for advanced operations
     pub fn get_db_connection(&self) -> &sea_orm::DatabaseConnection {
         &self.db
     }
 
-    /// Hash API key using salt
-    fn hash_key(&self, key_id: &str, key_secret: &str) -> String {
-        let input = format!("{}:{}:{}", self.salt, key_id, key_secret);
-        let mut hasher = Sha256::new();
-        hasher.update(input.as_bytes());
-        let result = hasher.finalize();
-        STANDARD.encode(result)
+    /// Hash API key using Argon2id (replaces SHA256, CWE-916 fix).
+    ///
+    /// 使用 Argon2id（memory-hard, OWASP 2023 推荐）替代 SHA256。
+    /// - `self.salt` 作为 pepper（额外加在 password 前），增加深度防御
+    /// - 每次调用生成独立的 SaltString（PHC 格式内嵌）
+    /// - 返回 PHC 格式字符串（约 96 字符），需 VARCHAR(255) 存储
+    fn hash_key(&self, key_id: &str, key_secret: &str) -> Result<String> {
+        let password = format!("{}|{}:{}", self.salt, key_id, key_secret);
+        let salt = SaltString::generate(&mut OsRng);
+        let argon2 = Argon2::default();
+        let hash = argon2
+            .hash_password(password.as_bytes(), &salt)
+            .map_err(|e| {
+                crate::core::CoreError::InternalError(format!("argon2 hash failed: {}", e))
+            })?;
+        Ok(hash.to_string())
+    }
+
+    /// Verify API key against stored PHC-format hash using Argon2id.
+    ///
+    /// Argon2 的 `verify_password` 内部使用 constant-time 比较，等价于原 `subtle::ConstantTimeEq`。
+    fn verify_key(&self, key_id: &str, key_secret: &str, stored_hash: &str) -> bool {
+        let parsed = match PasswordHash::new(stored_hash) {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        let password = format!("{}|{}:{}", self.salt, key_id, key_secret);
+        Argon2::default()
+            .verify_password(password.as_bytes(), &parsed)
+            .is_ok()
     }
 
     /// 设置分布式锁
@@ -882,6 +917,16 @@ impl ApiKeyRepository for SeaOrmRepository {
         let prefix = match request.role {
             ApiKeyRole::Admin => "niad_",
             ApiKeyRole::User => "nino_",
+            // ARCH-LOW-001 修复 + SEC-MEDIUM-001 修复：fail-fast 拒绝
+            // Anonymous 持久化。原代码返回 "nianon_" 前缀让后续逻辑
+            // "隐式失败"，但实际会成功持久化 Anonymous 密钥。
+            // Anonymous 只在禁用认证时注入 extensions，不应通过 API 创建。
+            // 若调用方误传 Anonymous，立即返回 InvalidInput 防止污染数据库。
+            ApiKeyRole::Anonymous => {
+                return Err(crate::core::types::error::CoreError::InvalidInput(
+                    "Anonymous role cannot be persisted to database".to_string(),
+                ));
+            }
         };
 
         let full_key_id = if let Some(ref kid) = request.key_id {
@@ -898,7 +943,7 @@ impl ApiKeyRepository for SeaOrmRepository {
         // Use provided secret or generate a new one
         let key_secret = request.key_secret.clone().unwrap_or_else(generate_secret);
 
-        let key_secret_hash = self.hash_key(&full_key_id, &key_secret);
+        let key_secret_hash = self.hash_key(&full_key_id, &key_secret)?;
 
         // Calculate expiration: use provided or default to 30 days from now
         let now = chrono::Utc::now();
@@ -980,12 +1025,8 @@ impl ApiKeyRepository for SeaOrmRepository {
                 }
             }
 
-            let expected_hash = self.hash_key(key_id, key_secret);
-            if expected_hash
-                .as_bytes()
-                .ct_eq(model.key_secret_hash.as_bytes())
-                .into()
-            {
+            // Argon2 verify_key 内部使用 constant-time 比较，等价于 subtle::ConstantTimeEq
+            if self.verify_key(key_id, key_secret, &model.key_secret_hash) {
                 let _ = self.update_last_used(model.id).await;
                 let role: ApiKeyRole = model.role.clone().into();
                 tracing::debug!(
@@ -1131,7 +1172,7 @@ impl ApiKeyRepository for SeaOrmRepository {
 
         // 生成新密钥
         let new_secret = generate_secret();
-        let new_secret_hash = self.hash_key(&key_data.key_id, &new_secret);
+        let new_secret_hash = self.hash_key(&key_data.key_id, &new_secret)?;
         let now = chrono::Utc::now().naive_utc();
 
         // 更新数据库
@@ -1210,6 +1251,8 @@ impl SegmentRepository for SeaOrmRepository {
     ) -> Result<SegmentInfo> {
         // 获取分布式锁以防止并发分配冲突
         let lock_key = self.segment_lock_key(workspace_id, biz_tag, None);
+        // M8 修复：未配置分布式锁时禁止静默降级（生产环境会导致重复 ID 分配）。
+        // 测试环境（SQLite 单连接）允许 NoopLockGuard，因为数据库事务本身提供原子性。
         let lock_guard = if let Some(ref lock) = self.distributed_lock {
             lock.acquire(&lock_key, 30).await.map_err(|e| {
                 crate::core::CoreError::InternalError(format!(
@@ -1218,8 +1261,16 @@ impl SegmentRepository for SeaOrmRepository {
                 ))
             })?
         } else {
-            // 如果没有配置分布式锁，使用空守卫
-            Box::new(NoopLockGuard)
+            #[cfg(test)]
+            {
+                Box::new(NoopLockGuard)
+            }
+            #[cfg(not(test))]
+            {
+                return Err(crate::core::CoreError::ConfigurationError(
+                    "Distributed lock not configured for segment allocation".to_string(),
+                ));
+            }
         };
 
         let txn = self
@@ -1239,7 +1290,8 @@ impl SegmentRepository for SeaOrmRepository {
             Some(model) => {
                 let current_id = model.current_id;
                 let max_id = model.max_id;
-                let new_max_id = current_id + step as i64;
+                // M9 修复：使用 saturating_add 防止极端情况下溢出 panic
+                let new_max_id = current_id.saturating_add(step as i64);
 
                 let updated = SegmentActiveModel {
                     id: Set(model.id),
@@ -1278,7 +1330,8 @@ impl SegmentRepository for SeaOrmRepository {
             }
             None => {
                 let start_id = 1i64;
-                let max_id = start_id + step as i64;
+                // M9 修复：saturating_add 防止溢出
+                let max_id = start_id.saturating_add(step as i64);
                 let delta = 1;
 
                 let new_segment = SegmentActiveModel {
@@ -1342,6 +1395,7 @@ impl SegmentRepository for SeaOrmRepository {
     ) -> Result<SegmentInfo> {
         // 获取分布式锁以防止并发分配冲突
         let lock_key = self.segment_lock_key(workspace_id, biz_tag, Some(dc_id));
+        // M8 修复：同 allocate_segment，未配置分布式锁时禁止静默降级。
         let lock_guard = if let Some(ref lock) = self.distributed_lock {
             lock.acquire(&lock_key, 30).await.map_err(|e| {
                 crate::core::CoreError::InternalError(format!(
@@ -1350,8 +1404,16 @@ impl SegmentRepository for SeaOrmRepository {
                 ))
             })?
         } else {
-            // 如果没有配置分布式锁，使用空守卫
-            Box::new(NoopLockGuard)
+            #[cfg(test)]
+            {
+                Box::new(NoopLockGuard)
+            }
+            #[cfg(not(test))]
+            {
+                return Err(crate::core::CoreError::ConfigurationError(
+                    "Distributed lock not configured for segment allocation".to_string(),
+                ));
+            }
         };
 
         let txn = self
@@ -1372,7 +1434,8 @@ impl SegmentRepository for SeaOrmRepository {
             Some(model) => {
                 let current_id = model.current_id;
                 let max_id = model.max_id;
-                let new_max_id = current_id + step as i64;
+                // M9 修复：使用 saturating_add 防止极端情况下溢出 panic
+                let new_max_id = current_id.saturating_add(step as i64);
 
                 let updated = SegmentActiveModel {
                     id: Set(model.id),
@@ -1412,7 +1475,8 @@ impl SegmentRepository for SeaOrmRepository {
             }
             None => {
                 let start_id = (dc_id as i64) * 1000000000000i64 + 1i64;
-                let max_id = start_id + step as i64;
+                // M9 修复：saturating_add 防止溢出
+                let max_id = start_id.saturating_add(step as i64);
                 let delta = 1;
 
                 let new_segment = SegmentActiveModel {
@@ -1601,10 +1665,15 @@ fn generate_secret() -> String {
     secret
 }
 
-/// No-op lock guard for when distributed lock is not configured
-/// Used as a fallback to maintain consistent API without requiring distributed locking
+/// No-op lock guard for testing only (M8 fix).
+///
+/// 仅在 `#[cfg(test)]` 下使用：测试环境用 SQLite 单连接，数据库事务本身
+/// 提供原子性保证，无需分布式锁。生产环境未配置锁时 `allocate_segment`
+/// 会返回 `ConfigurationError`，禁止静默降级。
+#[cfg(test)]
 struct NoopLockGuard;
 
+#[cfg(test)]
 #[async_trait]
 impl LockGuard for NoopLockGuard {
     async fn release(&self) -> std::result::Result<(), LockError> {
@@ -1623,6 +1692,9 @@ mod prefix_tests {
         let prefix = match role {
             ApiKeyRole::Admin => "niad_",
             ApiKeyRole::User => "nino_",
+            // ARCH-LOW-001 修复后，Anonymous 不再返回前缀而是 fail-fast
+            // （生产代码返回 Err）。本测试用 _ 兜底覆盖 Anonymous 分支。
+            _ => "nianon_",
         };
         assert_eq!(prefix, "niad_", "Admin role should use 'niad_' prefix");
     }
@@ -1633,6 +1705,7 @@ mod prefix_tests {
         let prefix = match role {
             ApiKeyRole::Admin => "niad_",
             ApiKeyRole::User => "nino_",
+            _ => "nianon_",
         };
         assert_eq!(prefix, "nino_", "User role should use 'nino_' prefix");
     }

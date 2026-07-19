@@ -59,21 +59,23 @@ impl HotReloadConfig {
     where
         F: Fn(Config) + Send + Sync + 'static,
     {
-        // 使用map_err处理可能的锁中毒情况，避免panic
-        if let Err(e) = self.reload_callbacks.write() {
-            tracing::error!(
-                "{}",
-                t!(
-                    "log.server.config.hot_reload.write_lock_failed_callbacks",
-                    error = e
-                )
-            );
-            return;
-        }
-        self.reload_callbacks
-            .write()
-            .unwrap()
-            .push(Arc::new(callback));
+        // M10 修复：原实现先检查锁中毒再 `write().unwrap()`，逻辑矛盾
+        // （锁中毒时第二次 write 仍会 Err，unwrap 会 panic）。
+        // 改为复用 guard，与 `update_config` (line 228-240) 的正确模式一致。
+        let mut guard = match self.reload_callbacks.write() {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::error!(
+                    "{}",
+                    t!(
+                        "log.server.config.hot_reload.write_lock_failed_callbacks",
+                        error = e
+                    )
+                );
+                return;
+            }
+        };
+        guard.push(Arc::new(callback));
     }
 
     async fn reload_config(&self) -> Result<bool> {

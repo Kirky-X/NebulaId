@@ -18,6 +18,7 @@
 //! in dedicated submodules.
 
 pub mod api_key_auth;
+pub mod locale;
 pub mod size_limit;
 pub(crate) mod utils;
 
@@ -26,3 +27,6 @@ pub use crate::core::database::ApiKeyRole;
 
 // Re-export API key auth components (backward compatibility)
 pub use api_key_auth::{admin_required_middleware, auth_middleware_fn, ApiKeyAuth};
+
+// Re-export locale middleware components (Phase 8 T040)
+pub use locale::{locale_middleware, Locale};

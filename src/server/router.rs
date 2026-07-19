@@ -16,7 +16,7 @@ use crate::server::api_version::{api_version_middleware, API_V1};
 use crate::server::audit::{AuditLogger, AuditMiddleware};
 use crate::server::config::{cors, management::ConfigManagementService};
 use crate::server::handlers::ApiHandlers;
-use crate::server::middleware::ApiKeyAuth;
+use crate::server::middleware::{locale_middleware, ApiKeyAuth};
 use crate::server::models::{
     ApiInfoResponse, ApiKeyListResponse, ApiKeyWithSecretResponse, BatchGenerateRequest,
     BatchGenerateResponse, BizTagListResponse, BizTagResponse, CreateApiKeyRequest,
@@ -181,6 +181,11 @@ pub async fn create_router(
         .layer(axum::Extension(rate_limit_middleware))
         .layer(axum::Extension(audit_middleware))
         .layer(axum::Extension(audit_logger))
+        // Phase 8 T040: locale negotiation — inject Extension<Locale> for
+        // downstream handlers to translate error messages per Accept-Language.
+        // Applied as the outermost middleware so every route (including /health,
+        // /ready, /metrics, and /api/v1/*) can read the negotiated locale.
+        .layer(axum::middleware::from_fn(locale_middleware))
 }
 
 // ========== Helper Functions ==========

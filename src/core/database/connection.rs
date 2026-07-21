@@ -332,6 +332,7 @@ impl DatabaseManager {
 mod tests {
     use super::*;
     use crate::core::config::{DatabaseConfig, DatabaseEngine};
+    use sea_orm::{DatabaseBackend, DbErr, MockDatabase, MockExecResult, RuntimeErr};
 
     #[cfg(feature = "sqlite")]
     #[tokio::test]
@@ -352,5 +353,378 @@ mod tests {
 
         let conn = create_connection(&config).await;
         assert!(conn.is_ok());
+    }
+
+    // ===== redact_db_url (private helper) =====
+
+    #[test]
+    fn test_redact_db_url_masks_password_with_stars() {
+        let url = "postgresql://user:secret@localhost:5432/db";
+        let redacted = redact_db_url(url);
+        assert!(
+            !redacted.contains("secret"),
+            "redacted URL must not contain original password: {redacted}"
+        );
+        assert!(
+            redacted.contains("***"),
+            "redacted URL should contain placeholder, got: {redacted}"
+        );
+    }
+
+    #[test]
+    fn test_redact_db_url_returns_redacted_for_unparseable_input() {
+        let url = "not_a_valid_url";
+        let redacted = redact_db_url(url);
+        assert_eq!(
+            redacted, "<redacted>",
+            "unparseable URL should be fully redacted"
+        );
+    }
+
+    #[test]
+    fn test_redact_db_url_handles_url_without_password() {
+        // set_password(Some("***")) is called even when no password was set,
+        // so the result becomes user:***@host. Verify host is preserved and
+        // no panic occurs.
+        let url = "postgresql://user@localhost:5432/db";
+        let redacted = redact_db_url(url);
+        assert!(
+            redacted.contains("localhost"),
+            "redacted URL should preserve host, got: {redacted}"
+        );
+        assert!(
+            redacted.contains("user"),
+            "redacted URL should preserve username, got: {redacted}"
+        );
+    }
+
+    // ===== From<DbErr> for CoreError =====
+
+    #[test]
+    fn test_from_dberr_produces_database_error_with_original_message() {
+        let db_err = DbErr::Query(RuntimeErr::Internal("query blew up".to_string()));
+        let core_err: CoreError = db_err.into();
+        match core_err {
+            CoreError::DatabaseError(msg) => {
+                assert!(
+                    msg.contains("query blew up"),
+                    "DatabaseError should embed original DbErr text, got: {msg}"
+                );
+            }
+            other => panic!("expected CoreError::DatabaseError, got {other:?}"),
+        }
+    }
+
+    // ===== create_connection validation paths =====
+
+    fn make_pg_config(password: &str, username: &str) -> DatabaseConfig {
+        DatabaseConfig {
+            engine: DatabaseEngine::Postgresql,
+            url: String::new(),
+            host: "localhost".to_string(),
+            port: 5432,
+            username: username.to_string(),
+            password: password.to_string(),
+            database: "test_db".to_string(),
+            max_connections: 10,
+            min_connections: 1,
+            acquire_timeout_seconds: 5,
+            idle_timeout_seconds: 300,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_connection_rejects_empty_password_for_postgres() {
+        let config = make_pg_config("", "user");
+        let result = create_connection(&config).await;
+        match result {
+            Err(CoreError::ConfigurationError(msg)) => {
+                assert!(
+                    msg.contains("password"),
+                    "should mention password, got: {msg}"
+                );
+                assert!(
+                    msg.contains("NEBULA_DATABASE_PASSWORD"),
+                    "should hint env var, got: {msg}"
+                );
+            }
+            other => panic!("expected ConfigurationError for empty password, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_connection_rejects_unsubstituted_placeholder_password() {
+        let config = make_pg_config("${DB_PASSWORD}", "user");
+        let result = create_connection(&config).await;
+        match result {
+            Err(CoreError::ConfigurationError(msg)) => {
+                assert!(
+                    msg.contains("password"),
+                    "should mention password, got: {msg}"
+                );
+            }
+            other => panic!("expected ConfigurationError for ${{...}} password, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_connection_rejects_empty_username_for_postgres() {
+        let config = make_pg_config("real_password", "");
+        let result = create_connection(&config).await;
+        match result {
+            Err(CoreError::ConfigurationError(msg)) => {
+                assert!(
+                    msg.contains("username"),
+                    "should mention username, got: {msg}"
+                );
+            }
+            other => panic!("expected ConfigurationError for empty username, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_connection_skips_validation_when_full_url_provided() {
+        // Full URL bypasses empty-password/username checks. With
+        // min_connections=0, sqlx-postgres creates a lazy pool without
+        // actually establishing a connection, so Database::connect returns
+        // Ok immediately. Either Ok or DatabaseError is acceptable; the
+        // meaningful property is that ConfigurationError is NOT returned.
+        let config = DatabaseConfig {
+            engine: DatabaseEngine::Postgresql,
+            url: "postgresql://user:pass@127.0.0.1:1/db".to_string(),
+            host: String::new(),
+            port: 0,
+            username: String::new(),
+            password: String::new(),
+            database: String::new(),
+            max_connections: 1,
+            min_connections: 0,
+            acquire_timeout_seconds: 1,
+            idle_timeout_seconds: 1,
+        };
+        let result = create_connection(&config).await;
+        match result {
+            Ok(_db) => { /* lazy pool created, success path covered */ }
+            Err(CoreError::DatabaseError(_msg)) => { /* connect failed, error path covered */ }
+            Err(other) => panic!(
+                "expected Ok or DatabaseError (validation should be skipped for full URL), got {other:?}"
+            ),
+        }
+    }
+
+    // ===== DatabaseManager with MockDatabase =====
+
+    #[tokio::test]
+    async fn test_database_manager_new_stores_connection() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let manager = DatabaseManager::new(db);
+        let _conn = manager.get_connection();
+    }
+
+    #[tokio::test]
+    async fn test_database_manager_into_connection_consumes_self() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let manager = DatabaseManager::new(db);
+        let _conn = manager.into_connection();
+    }
+
+    #[tokio::test]
+    async fn test_database_manager_health_check_returns_ok_with_mock() {
+        // ConnectionTrait::ping() issues a SELECT 1 query, which consumes
+        // one exec result from the mock queue.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 0,
+            }])
+            .into_connection();
+        let manager = DatabaseManager::new(db);
+        let result = manager.health_check().await;
+        assert!(
+            result.is_ok(),
+            "health_check should succeed with mock db: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_database_manager_close_returns_ok_and_consumes_self() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let manager = DatabaseManager::new(db);
+        let result = manager.close().await;
+        assert!(result.is_ok(), "close should return Ok: {result:?}");
+    }
+
+    // ===== run_migrations with MockDatabase =====
+
+    fn mock_db_with_n_ok(n: usize) -> sea_orm::DatabaseConnection {
+        let results: Vec<MockExecResult> = (0..n)
+            .map(|_| MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 0,
+            })
+            .collect();
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(results)
+            .into_connection()
+    }
+
+    #[tokio::test]
+    async fn test_run_migrations_succeeds_when_all_executes_succeed() {
+        // 1 schema + 5 tables = 6 successful executes.
+        let db = mock_db_with_n_ok(6);
+        let result = run_migrations(&db).await;
+        assert!(
+            result.is_ok(),
+            "migrations should succeed when all execs succeed: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_migrations_logs_warn_but_continues_when_schema_create_fails() {
+        // Schema create fails (logged as warn), tables still succeed.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
+                "schema creation permission denied".to_string(),
+            ))])
+            .append_exec_results(vec![
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+            ])
+            .into_connection();
+        let result = run_migrations(&db).await;
+        assert!(
+            result.is_ok(),
+            "schema create failure should be logged but not propagate Err: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_migrations_returns_database_error_when_table_create_fails() {
+        // Schema + first table succeed, second table fails with non-"already exists".
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(vec![
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+            ])
+            .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
+                "syntax error near 'FOO'".to_string(),
+            ))])
+            .into_connection();
+        let result = run_migrations(&db).await;
+        match result {
+            Err(CoreError::DatabaseError(msg)) => {
+                assert!(
+                    msg.contains("Failed to create table"),
+                    "should return generic message, got: {msg}"
+                );
+                assert!(
+                    !msg.contains("syntax error"),
+                    "should NOT leak SQL error details (CWE-209), got: {msg}"
+                );
+            }
+            other => panic!("expected DatabaseError for table create failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_migrations_treats_already_exists_as_info_not_error() {
+        // Schema + first table succeed, second table fails with "already exists".
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(vec![
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+            ])
+            .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
+                "relation already exists".to_string(),
+            ))])
+            .append_exec_results(vec![
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+            ])
+            .into_connection();
+        let result = run_migrations(&db).await;
+        assert!(
+            result.is_ok(),
+            "'already exists' should be logged as info, not propagate Err: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_migrations_treats_duplicate_as_info_not_error() {
+        // Schema + 2 tables succeed, third table fails with "duplicate".
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(vec![
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+            ])
+            .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
+                "duplicate table name".to_string(),
+            ))])
+            .append_exec_results(vec![
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+            ])
+            .into_connection();
+        let result = run_migrations(&db).await;
+        assert!(
+            result.is_ok(),
+            "'duplicate' should be logged as info, not propagate Err: {result:?}"
+        );
     }
 }

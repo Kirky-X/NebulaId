@@ -32,7 +32,7 @@ cargo fmt --all -- --check
 cargo fmt --all
 
 # Run Clippy lints
-cargo clippy --lib --bins -- -D warnings -A clippy::derivable-clones -A clippy::redundant-pub-crate
+cargo clippy --lib --bins -- -D warnings
 
 # Run pre-commit checks (format, clippy, build, tests)
 ./scripts/pre-commit-check.sh

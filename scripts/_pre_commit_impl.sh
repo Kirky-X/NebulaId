@@ -136,7 +136,7 @@ fi
 # 2. Clippy Lint 检查
 # ============================================================================
 # Only check lib and bin targets, not tests (tests may have type inference issues that don't affect runtime)
-print_step "运行 Clippy lint 检查" "cargo clippy --lib --bins -- -D warnings -A clippy::derivable-clones -A clippy::redundant-pub-crate"
+print_step "运行 Clippy lint 检查" "cargo clippy --lib --bins -- -D warnings"
 
 if ! check_command cargo-clippy; then
     print_warning "clippy 未安装，跳过 lint 检查"

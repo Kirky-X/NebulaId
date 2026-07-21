@@ -80,14 +80,10 @@ clippy: ## Run clippy lints
 	@echo "Running clippy..."
 	cargo clippy --all -- \
 		-D warnings \
-		-A clippy::derivable-clones \
-		-A clippy::redundant-pub-crate \
 		-A clippy::unnecessary-semicolon
 
 clippy-fix: ## Auto-fix clippy warnings
-	cargo clippy --all --fix -- \
-		-A clippy::derivable-clones \
-		-A clippy::redundant-pub-crate
+	cargo clippy --all --fix
 
 # ========== Documentation ==========
 doc: ## Generate documentation

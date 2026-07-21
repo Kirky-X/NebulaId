@@ -536,6 +536,8 @@ pub struct DoubleBuffer {
     switch_threshold: f64,
     #[allow(dead_code)]
     loader_tx: mpsc::Sender<()>,
+    // diting-perf C2 修复：loading 标记防止多线程并发触发 load_segment
+    loading: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl DoubleBuffer {
@@ -551,9 +553,28 @@ impl DoubleBuffer {
             next,
             switch_threshold,
             loader_tx,
+            loading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
 
         (db, loader_rx)
+    }
+
+    /// diting-perf C2 修复：CAS 标记 loading=true，返回是否抢占成功。
+    /// 成功的线程负责 load_segment；失败的线程应 spin-wait 直到 loading=false。
+    pub fn try_start_loading(&self) -> bool {
+        self.loading
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// diting-perf C2 修复：load_segment 完成（无论成功失败）后必须调用，重置 loading。
+    pub fn finish_loading(&self) {
+        self.loading.store(false, Ordering::Release);
+    }
+
+    /// diting-perf C2 修复：检查是否正在加载。
+    pub fn is_loading(&self) -> bool {
+        self.loading.load(Ordering::Acquire)
     }
 
     pub fn set_current(&self, segment: Arc<AtomicSegment>) {
@@ -787,6 +808,8 @@ impl IdAlgorithm for SegmentAlgorithm {
 
             if let Some((start, _end)) = current.try_consume(1) {
                 self.metrics.total_generated.fetch_add(1, Ordering::Relaxed);
+                // diting-perf C1 修复：cache_hits 递增，cache_hit_rate 才能正确反映命中率
+                self.metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
                 return Ok(Id::from_u128(start.into()));
             }
 
@@ -795,15 +818,29 @@ impl IdAlgorithm for SegmentAlgorithm {
                 if next.is_some() {
                     buffer.swap();
                 } else {
-                    self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
-                    let new_seg = self.segment_loader.load_segment(ctx, 0).await?;
-                    let atomic_seg = Arc::new(AtomicSegment::new(
-                        new_seg.start_id,
-                        new_seg.max_id,
-                        new_seg.step,
-                    ));
-                    buffer.set_next(atomic_seg);
-                    buffer.swap();
+                    // diting-perf C2 修复：CAS 防止多线程同时 load_segment
+                    if buffer.try_start_loading() {
+                        self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
+                        let load_result = self.segment_loader.load_segment(ctx, 0).await;
+                        buffer.finish_loading(); // 无论成功失败都重置 loading
+                        let new_seg = load_result?;
+                        let atomic_seg = Arc::new(AtomicSegment::new(
+                            new_seg.start_id,
+                            new_seg.max_id,
+                            new_seg.step,
+                        ));
+                        buffer.set_next(atomic_seg);
+                        buffer.swap();
+                    } else {
+                        // 另一线程正在加载，spin-wait 直到 loading 释放
+                        while buffer.is_loading() {
+                            std::hint::spin_loop();
+                        }
+                        // loading 释放后 next 可能已被设置，直接 swap；若仍未设置则重试循环
+                        if buffer.get_next().is_some() {
+                            buffer.swap();
+                        }
+                    }
                 }
             }
         }
@@ -2684,14 +2721,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_segment_algorithm_metrics_with_cache_misses_records_qps_zero() {
-        // generate 涓€娆★紙瑙﹀彂 cache miss锛夊悗 metrics 搴斿弽鏄犵姸鎬?
+        // generate 一次（首次触发 cache miss + load_segment，随后 try_consume 命中）后 metrics 应反映状态
         let algo = SegmentAlgorithm::new(0);
         let ctx = sample_ctx();
         let _ = algo.generate(&ctx).await.unwrap();
         let m = algo.metrics();
         assert_eq!(m.total_generated, 1);
-        // cache_misses > 0 鈫?hit_rate = hits/(hits+misses) = 0/1 = 0.0
-        assert_eq!(m.cache_hit_rate, Some(0.0));
+        // diting-perf C1 修复后：cache_hits=1（try_consume 命中），cache_misses=1（load_segment 触发）
+        // hit_rate = hits/(hits+misses) = 1/(1+1) = 0.5
+        assert_eq!(m.cache_hit_rate, Some(0.5));
         assert_eq!(m.current_qps, 0);
         assert_eq!(m.p50_latency_us, 0);
         assert_eq!(m.p99_latency_us, 0);

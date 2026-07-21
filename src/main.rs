@@ -600,6 +600,25 @@ async fn main() -> Result<()> {
             std::sync::Arc::new(nebulaid::core::coordinator::LocalDistributedLock::new())
         };
 
+        // tiangang C1 修复：生产环境强制校验 api_key_salt 非空且非弱默认值。
+        // 规则 12（失败必须显性化）：校验失败时 panic，禁止弱 pepper 静默放行。
+        if nebulaid::core::config::is_production() {
+            let salt = &config.auth.api_key_salt;
+            if salt.is_empty()
+                || salt.len() < 16
+                || salt == "test"
+                || salt == "test-secret-value-12345"
+            {
+                panic!(
+                    "{}",
+                    t!(
+                        "error.main.invalid_api_key_salt_production",
+                        env = "NEBULA_API_KEY_SALT"
+                    )
+                );
+            }
+        }
+
         let repo = Arc::new(
             database::SeaOrmRepository::new(conn, config.auth.api_key_salt.clone())
                 .with_distributed_lock(lock),

@@ -103,7 +103,7 @@ parking_lot = "0.12"
 
 # 数据库
 sea-orm = { version = "1.1", features = ["runtime-tokio-rustls", "with-chrono", "with-uuid", "postgres-array"] }
-sqlx = { version = "0.8", default-features = false, optional = true, features = ["runtime-tokio", "tls-rustls", "uuid", "chrono"] }
+sqlx = { version = "0.9", default-features = false, optional = true, features = ["runtime-tokio", "tls-rustls", "uuid", "chrono"] }
 
 # 日志追踪
 tracing = "0.1"

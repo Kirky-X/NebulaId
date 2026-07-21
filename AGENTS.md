@@ -47,7 +47,7 @@ The project uses both [pre-commit](https://pre-commit.com/) and [lefthook](https
 lefthook install
 
 # Install pre-commit hooks (alternative)
-./scripts/install-pre-commit-hooks.sh
+./scripts/run.sh install-hooks
 
 # Manually run all pre-commit hooks on all files
 pre-commit run --all-files

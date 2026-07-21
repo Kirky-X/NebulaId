@@ -48,6 +48,16 @@ api.error.handlers.api_key_handlers.invalid_role: "Invalid role: %{role}"
 api.error.handlers.api_key_handlers.user_key_already_exists: "User API key already exists for workspace: %{workspace_id}"
 api.success.handlers.api_key_handlers.revoked: "API key %{id} revoked successfully"
 api.error.handlers.helpers.invalid_uuid: "Invalid UUID: %{error}"
+# Phase 8 v0.2.0-final-polish — remaining handler-constructed error/success
+# messages that were previously hardcoded English strings. See i18n audit.
+api.error.handlers.api_key_handlers.admin_key_already_exists: "An admin API key already exists; creating additional admin keys is forbidden"
+api.error.handlers.api_key_handlers.invalid_expires_at_format: "Invalid expires_at format"
+api.error.handlers.api_key_handlers.cannot_revoke_last_admin: "Cannot revoke the last admin key"
+api.error.handlers.api_key_handlers.key_id_empty: "key_id cannot be empty"
+api.error.handlers.biz_tag_handlers.workspace_id_required_list: "workspace_id is required to list biz tags"
+api.error.handlers.biz_tag_handlers.pagination_limit_zero: "Pagination limit cannot be zero"
+api.success.system_handlers.ready: "Ready to serve traffic"
+api.error.system_handlers.not_ready: "Not ready: database or cache unavailable"
 
 # Phase 8 T041 (CRITICAL C-1 / HIGH H-1 fix) — generic 5xx messages.
 # Used by `helpers::core_error_to_response` for internal errors whose

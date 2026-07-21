@@ -48,9 +48,9 @@ impl super::ApiHandlers {
             database: db_healthy,
             cache: cache_healthy,
             message: if ready {
-                "Ready to serve traffic".to_string()
+                t!("api.success.system_handlers.ready").to_string()
             } else {
-                "Not ready: database or cache unavailable".to_string()
+                t!("api.error.system_handlers.not_ready").to_string()
             },
         }
     }

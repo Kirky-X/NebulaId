@@ -46,6 +46,15 @@ api.error.handlers.api_key_handlers.invalid_role: "无效的角色：%{role}"
 api.error.handlers.api_key_handlers.user_key_already_exists: "工作空间 %{workspace_id} 的用户 API 密钥已存在"
 api.success.handlers.api_key_handlers.revoked: "API 密钥 %{id} 已成功吊销"
 api.error.handlers.helpers.invalid_uuid: "无效的 UUID：%{error}"
+# Phase 8 v0.2.0-final-polish —— 此前为硬编码英文字符串的 handler 错误/成功消息。
+api.error.handlers.api_key_handlers.admin_key_already_exists: "已存在管理员 API 密钥；禁止创建额外的管理员密钥"
+api.error.handlers.api_key_handlers.invalid_expires_at_format: "无效的 expires_at 格式"
+api.error.handlers.api_key_handlers.cannot_revoke_last_admin: "无法吊销最后一个管理员密钥"
+api.error.handlers.api_key_handlers.key_id_empty: "key_id 不能为空"
+api.error.handlers.biz_tag_handlers.workspace_id_required_list: "列出 biz tags 时必须提供 workspace_id"
+api.error.handlers.biz_tag_handlers.pagination_limit_zero: "分页 limit 不能为零"
+api.success.system_handlers.ready: "已准备好处理流量"
+api.error.system_handlers.not_ready: "未就绪：数据库或缓存不可用"
 
 # Phase 8 T041（CRITICAL C-1 / HIGH H-1 修复）—— 5xx 通用错误文案。
 # 由 `helpers::core_error_to_response` 用于内部错误响应：底层 `CoreError`

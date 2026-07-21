@@ -42,10 +42,11 @@ impl super::ApiHandlers {
         workspace_id: Option<uuid::Uuid>,
         req: CreateApiKeyRequest,
     ) -> Result<ApiKeyWithSecretResponse> {
-        let repo = self
-            .api_key_repo
-            .as_ref()
-            .ok_or_else(|| CoreError::NotFound("API key repository not configured".to_string()))?;
+        let repo = self.api_key_repo.as_ref().ok_or_else(|| {
+            CoreError::NotFound(
+                t!("api.error.handlers.workspace_handlers.api_key_repo_not_configured").to_string(),
+            )
+        })?;
 
         let role = match req.role.as_deref() {
             Some("admin") => ApiKeyRole::Admin,
@@ -81,15 +82,14 @@ impl super::ApiHandlers {
                     t!("log.server.handlers.api_key_handlers.creating_additional_admin_key")
                 );
                 return Err(CoreError::AuthenticationError(
-                    "An admin API key already exists; creating additional admin keys is forbidden"
-                        .to_string(),
+                    t!("api.error.handlers.api_key_handlers.admin_key_already_exists").to_string(),
                 ));
             }
         }
 
         if role == ApiKeyRole::User {
             let ws_id = workspace_id.ok_or_else(|| {
-                CoreError::InvalidInput("workspace_id is required for user keys".to_string())
+                CoreError::InvalidInput(t!("api.error.workspace_id_required").to_string())
             })?;
 
             let existing_keys = repo
@@ -161,10 +161,11 @@ impl super::ApiHandlers {
         limit: Option<u32>,
         offset: Option<u32>,
     ) -> Result<ApiKeyListResponse> {
-        let repo = self
-            .api_key_repo
-            .as_ref()
-            .ok_or_else(|| CoreError::NotFound("API key repository not configured".to_string()))?;
+        let repo = self.api_key_repo.as_ref().ok_or_else(|| {
+            CoreError::NotFound(
+                t!("api.error.handlers.workspace_handlers.api_key_repo_not_configured").to_string(),
+            )
+        })?;
 
         let keys = repo
             .list_api_keys(workspace_id, limit, offset)
@@ -200,10 +201,11 @@ impl super::ApiHandlers {
 
     /// Revoke (delete) an API Key (admin only).
     pub async fn revoke_api_key(&self, id: uuid::Uuid) -> Result<RevokeApiKeyResponse> {
-        let repo = self
-            .api_key_repo
-            .as_ref()
-            .ok_or_else(|| CoreError::NotFound("API key repository not configured".to_string()))?;
+        let repo = self.api_key_repo.as_ref().ok_or_else(|| {
+            CoreError::NotFound(
+                t!("api.error.handlers.workspace_handlers.api_key_repo_not_configured").to_string(),
+            )
+        })?;
 
         let key_info = repo
             .get_api_key_by_id(&id.to_string())
@@ -244,14 +246,15 @@ impl super::ApiHandlers {
 
         if key_id.is_empty() {
             return Err(CoreError::InvalidInput(
-                "key_id cannot be empty".to_string(),
+                t!("api.error.handlers.api_key_handlers.key_id_empty").to_string(),
             ));
         }
 
-        let repo = self
-            .api_key_repo
-            .as_ref()
-            .ok_or_else(|| CoreError::NotFound("API key repository not configured".to_string()))?;
+        let repo = self.api_key_repo.as_ref().ok_or_else(|| {
+            CoreError::NotFound(
+                t!("api.error.handlers.workspace_handlers.api_key_repo_not_configured").to_string(),
+            )
+        })?;
 
         // L16 修复：从 `ApiHandlers::key_rotation_grace_period_seconds`
         // 读取，原为硬编码 `const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60`。

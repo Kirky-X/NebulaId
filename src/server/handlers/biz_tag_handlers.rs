@@ -143,7 +143,9 @@ impl super::ApiHandlers {
         // 该查询在底层 SeaORM 中可能意外匹配到 workspace_id 字段为 nil
         // 的脏数据记录，导致越权返回其他 workspace 的 BizTag。
         let workspace_id = workspace_id.ok_or_else(|| {
-            CoreError::InvalidInput("workspace_id is required to list biz tags".to_string())
+            CoreError::InvalidInput(
+                t!("api.error.handlers.biz_tag_handlers.workspace_id_required_list").to_string(),
+            )
         })?;
 
         let biz_tags: Vec<crate::core::database::BizTag> = self
@@ -195,7 +197,7 @@ impl super::ApiHandlers {
     ) -> Result<BizTagListResponse> {
         if limit == 0 {
             return Err(CoreError::InvalidInput(
-                "Pagination limit cannot be zero".to_string(),
+                t!("api.error.handlers.biz_tag_handlers.pagination_limit_zero").to_string(),
             ));
         }
 

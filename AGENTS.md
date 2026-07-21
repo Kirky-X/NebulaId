@@ -35,7 +35,7 @@ cargo fmt --all
 cargo clippy --lib --bins -- -D warnings
 
 # Run pre-commit checks (format, clippy, build, tests)
-./scripts/pre-commit-check.sh
+./scripts/run.sh pre-commit
 ```
 
 ## Pre-commit Hooks

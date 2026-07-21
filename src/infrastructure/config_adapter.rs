@@ -293,7 +293,8 @@ impl ConfigAdapter {
         EtcdConfig {
             endpoints: endpoints_str
                 .split(',')
-                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
                 .map(String::from)
                 .collect(),
             connect_timeout_ms: self
@@ -503,6 +504,26 @@ impl std::fmt::Debug for ConfigAdapter {
 mod tests {
     use super::*;
     use confers::types::ConfigValue;
+    use std::sync::Mutex;
+
+    /// Serializes tests that touch environment variables to prevent
+    /// interference between parallel test executions.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Lock `ENV_LOCK`, tolerating a poisoned mutex so that one panicking
+    /// test does not cascade-fail every later env-touching test in this
+    /// module. The lock is still held (exclusive access preserved); we
+    /// just ignore the poison flag.
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn restore_env(key: &str, saved: Option<String>) {
+        match saved {
+            Some(val) => std::env::set_var(key, val),
+            None => std::env::remove_var(key),
+        }
+    }
 
     /// Mock ConfigProvider for testing
     struct MockConfigProvider {
@@ -516,7 +537,6 @@ mod tests {
             }
         }
 
-        #[allow(dead_code)]
         fn with_string(mut self, key: &str, value: &str) -> Self {
             self.values.insert(
                 key.to_string(),
@@ -525,7 +545,6 @@ mod tests {
             self
         }
 
-        #[allow(dead_code)]
         fn with_int(mut self, key: &str, value: i64) -> Self {
             self.values.insert(
                 key.to_string(),
@@ -534,11 +553,18 @@ mod tests {
             self
         }
 
-        #[allow(dead_code)]
         fn with_bool(mut self, key: &str, value: bool) -> Self {
             self.values.insert(
                 key.to_string(),
                 confers::types::AnnotatedValue::from(ConfigValue::bool(value)),
+            );
+            self
+        }
+
+        fn with_float(mut self, key: &str, value: f64) -> Self {
+            self.values.insert(
+                key.to_string(),
+                confers::types::AnnotatedValue::from(ConfigValue::float(value)),
             );
             self
         }
@@ -554,43 +580,33 @@ mod tests {
         }
     }
 
+    // ===== new / provider =====
+
     #[test]
-    fn test_get_segment_config_defaults() {
+    fn test_new_stores_provider() {
+        let provider = Arc::new(MockConfigProvider::new()) as Arc<dyn ConfigProvider>;
+        let adapter = ConfigAdapter::new(Arc::clone(&provider));
+        assert!(Arc::ptr_eq(adapter.provider(), &provider));
+    }
+
+    #[test]
+    fn test_provider_returns_reference_to_same_arc() {
+        let provider =
+            Arc::new(MockConfigProvider::new().with_string("a", "b")) as Arc<dyn ConfigProvider>;
+        let adapter = ConfigAdapter::new(Arc::clone(&provider));
+        let retrieved = adapter.provider();
+        assert!(Arc::ptr_eq(retrieved, &provider));
+        assert_eq!(retrieved.keys(), vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn test_new_with_empty_provider() {
         let provider = Arc::new(MockConfigProvider::new());
         let adapter = ConfigAdapter::new(provider);
-
-        let config = adapter.get_segment_config();
-        assert_eq!(config.base_step, 1000);
-        assert_eq!(config.min_step, 500);
-        assert_eq!(config.max_step, 100000);
+        assert!(adapter.provider().keys().is_empty());
     }
 
-    #[test]
-    fn test_get_segment_config_custom() {
-        let provider = Arc::new(
-            MockConfigProvider::new()
-                .with_int("algorithm.segment.base_step", 2000)
-                .with_int("algorithm.segment.min_step", 1000)
-                .with_int("algorithm.segment.max_step", 200000),
-        );
-        let adapter = ConfigAdapter::new(provider);
-
-        let config = adapter.get_segment_config();
-        assert_eq!(config.base_step, 2000);
-        assert_eq!(config.min_step, 1000);
-        assert_eq!(config.max_step, 200000);
-    }
-
-    #[test]
-    fn test_get_snowflake_config_defaults() {
-        let provider = Arc::new(MockConfigProvider::new());
-        let adapter = ConfigAdapter::new(provider);
-
-        let config = adapter.get_snowflake_config();
-        assert_eq!(config.datacenter_id_bits, 3);
-        assert_eq!(config.worker_id_bits, 8);
-        assert_eq!(config.sequence_bits, 10);
-    }
+    // ===== get_app_config =====
 
     #[test]
     fn test_get_app_config_defaults() {
@@ -601,5 +617,839 @@ mod tests {
         assert_eq!(config.name, "nebula-id");
         assert_eq!(config.host, "0.0.0.0");
         assert_eq!(config.http_port, 8080);
+        assert_eq!(config.grpc_port, 9091);
+        assert_eq!(config.dc_id, 0);
+        assert_eq!(config.worker_id, 0);
+    }
+
+    #[test]
+    fn test_get_app_config_custom() {
+        let provider = Arc::new(
+            MockConfigProvider::new()
+                .with_string("app.name", "custom-app")
+                .with_string("app.host", "127.0.0.1")
+                .with_int("app.http_port", 9000)
+                .with_int("app.grpc_port", 9001)
+                .with_int("app.dc_id", 5)
+                .with_int("app.worker_id", 100),
+        );
+        let adapter = ConfigAdapter::new(provider);
+
+        let config = adapter.get_app_config();
+        assert_eq!(config.name, "custom-app");
+        assert_eq!(config.host, "127.0.0.1");
+        assert_eq!(config.http_port, 9000);
+        assert_eq!(config.grpc_port, 9001);
+        assert_eq!(config.dc_id, 5);
+        assert_eq!(config.worker_id, 100);
+    }
+
+    #[test]
+    fn test_get_app_config_partial_custom() {
+        let provider = Arc::new(
+            MockConfigProvider::new()
+                .with_string("app.name", "partial")
+                .with_int("app.http_port", 7000),
+        );
+        let adapter = ConfigAdapter::new(provider);
+
+        let config = adapter.get_app_config();
+        assert_eq!(config.name, "partial");
+        assert_eq!(config.host, "0.0.0.0");
+        assert_eq!(config.http_port, 7000);
+        assert_eq!(config.grpc_port, 9091);
+        assert_eq!(config.dc_id, 0);
+        assert_eq!(config.worker_id, 0);
+    }
+
+    // ===== get_segment_config =====
+
+    #[test]
+    fn test_get_segment_config_defaults() {
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+
+        let config = adapter.get_segment_config();
+        assert_eq!(config.base_step, 1000);
+        assert_eq!(config.min_step, 500);
+        assert_eq!(config.max_step, 100000);
+        assert!((config.switch_threshold - 0.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_get_segment_config_custom() {
+        let provider = Arc::new(
+            MockConfigProvider::new()
+                .with_int("algorithm.segment.base_step", 2000)
+                .with_int("algorithm.segment.min_step", 1000)
+                .with_int("algorithm.segment.max_step", 200000)
+                .with_float("algorithm.segment.switch_threshold", 0.5),
+        );
+        let adapter = ConfigAdapter::new(provider);
+
+        let config = adapter.get_segment_config();
+        assert_eq!(config.base_step, 2000);
+        assert_eq!(config.min_step, 1000);
+        assert_eq!(config.max_step, 200000);
+        assert!((config.switch_threshold - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_get_segment_config_partial_custom() {
+        let provider =
+            Arc::new(MockConfigProvider::new().with_int("algorithm.segment.base_step", 5000));
+        let adapter = ConfigAdapter::new(provider);
+
+        let config = adapter.get_segment_config();
+        assert_eq!(config.base_step, 5000);
+        assert_eq!(config.min_step, 500);
+        assert_eq!(config.max_step, 100000);
+        assert!((config.switch_threshold - 0.1).abs() < f64::EPSILON);
+    }
+
+    // ===== get_snowflake_config =====
+
+    #[test]
+    fn test_get_snowflake_config_defaults() {
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+
+        let config = adapter.get_snowflake_config();
+        assert_eq!(config.datacenter_id_bits, 3);
+        assert_eq!(config.worker_id_bits, 8);
+        assert_eq!(config.sequence_bits, 10);
+        assert_eq!(config.clock_drift_threshold_ms, 1000);
+    }
+
+    #[test]
+    fn test_get_snowflake_config_custom() {
+        let provider = Arc::new(
+            MockConfigProvider::new()
+                .with_int("algorithm.snowflake.datacenter_id_bits", 5)
+                .with_int("algorithm.snowflake.worker_id_bits", 12)
+                .with_int("algorithm.snowflake.sequence_bits", 14)
+                .with_int("algorithm.snowflake.clock_drift_threshold_ms", 2000),
+        );
+        let adapter = ConfigAdapter::new(provider);
+
+        let config = adapter.get_snowflake_config();
+        assert_eq!(config.datacenter_id_bits, 5);
+        assert_eq!(config.worker_id_bits, 12);
+        assert_eq!(config.sequence_bits, 14);
+        assert_eq!(config.clock_drift_threshold_ms, 2000);
+    }
+
+    #[test]
+    fn test_get_snowflake_config_partial_custom() {
+        let provider =
+            Arc::new(MockConfigProvider::new().with_int("algorithm.snowflake.sequence_bits", 20));
+        let adapter = ConfigAdapter::new(provider);
+
+        let config = adapter.get_snowflake_config();
+        assert_eq!(config.datacenter_id_bits, 3);
+        assert_eq!(config.worker_id_bits, 8);
+        assert_eq!(config.sequence_bits, 20);
+        assert_eq!(config.clock_drift_threshold_ms, 1000);
+    }
+
+    // ===== get_uuid_v7_config =====
+
+    #[test]
+    fn test_get_uuid_v7_config_defaults() {
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_uuid_v7_config();
+        assert!(config.enabled);
+    }
+
+    #[test]
+    fn test_get_uuid_v7_config_disabled() {
+        let provider =
+            Arc::new(MockConfigProvider::new().with_bool("algorithm.uuid_v7.enabled", false));
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_uuid_v7_config();
+        assert!(!config.enabled);
+    }
+
+    // ===== get_algorithm_config =====
+
+    #[test]
+    fn test_get_algorithm_config_defaults() {
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_algorithm_config();
+        assert_eq!(config.default, "segment");
+        assert_eq!(config.segment.base_step, 1000);
+        assert_eq!(config.snowflake.datacenter_id_bits, 3);
+        assert!(config.uuid_v7.enabled);
+    }
+
+    #[test]
+    fn test_get_algorithm_config_custom_default() {
+        let provider =
+            Arc::new(MockConfigProvider::new().with_string("algorithm.default", "snowflake"));
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_algorithm_config();
+        assert_eq!(config.default, "snowflake");
+    }
+
+    // ===== get_auth_config =====
+
+    #[test]
+    fn test_get_auth_config_defaults() {
+        let _guard = lock_env();
+        let saved_salt = std::env::var("NEBULA_API_KEY_SALT").ok();
+        std::env::remove_var("NEBULA_API_KEY_SALT");
+
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_auth_config();
+
+        assert!(config.enabled);
+        assert_eq!(config.cache_ttl_seconds, 300);
+        assert!(config.api_keys.is_empty());
+        assert_eq!(config.api_key_salt, "");
+        assert_eq!(config.key_rotation_grace_period_seconds, 7 * 24 * 60 * 60);
+
+        restore_env("NEBULA_API_KEY_SALT", saved_salt);
+    }
+
+    #[test]
+    fn test_get_auth_config_custom() {
+        let _guard = lock_env();
+        let saved_salt = std::env::var("NEBULA_API_KEY_SALT").ok();
+        std::env::remove_var("NEBULA_API_KEY_SALT");
+
+        let provider = Arc::new(
+            MockConfigProvider::new()
+                .with_bool("auth.enabled", false)
+                .with_int("auth.cache_ttl_seconds", 600)
+                .with_string("auth.api_key_salt", "custom-salt")
+                .with_int("auth.key_rotation_grace_period_seconds", 86400),
+        );
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_auth_config();
+
+        assert!(!config.enabled);
+        assert_eq!(config.cache_ttl_seconds, 600);
+        assert_eq!(config.api_key_salt, "custom-salt");
+        assert_eq!(config.key_rotation_grace_period_seconds, 86400);
+
+        restore_env("NEBULA_API_KEY_SALT", saved_salt);
+    }
+
+    #[test]
+    fn test_get_auth_config_env_fallback_for_salt() {
+        let _guard = lock_env();
+        let saved_salt = std::env::var("NEBULA_API_KEY_SALT").ok();
+        std::env::set_var("NEBULA_API_KEY_SALT", "env-salt");
+
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_auth_config();
+        assert_eq!(config.api_key_salt, "env-salt");
+
+        restore_env("NEBULA_API_KEY_SALT", saved_salt);
+    }
+
+    #[test]
+    fn test_get_auth_config_provider_overrides_env_for_salt() {
+        let _guard = lock_env();
+        let saved_salt = std::env::var("NEBULA_API_KEY_SALT").ok();
+        std::env::set_var("NEBULA_API_KEY_SALT", "env-salt");
+
+        let provider =
+            Arc::new(MockConfigProvider::new().with_string("auth.api_key_salt", "provider-salt"));
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_auth_config();
+        assert_eq!(config.api_key_salt, "provider-salt");
+
+        restore_env("NEBULA_API_KEY_SALT", saved_salt);
+    }
+
+    // ===== get_database_config =====
+
+    #[test]
+    fn test_get_database_config_defaults_debug() {
+        let _guard = lock_env();
+        let saved_url = std::env::var("DATABASE_URL").ok();
+        std::env::remove_var("DATABASE_URL");
+
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_database_config();
+
+        assert_eq!(config.url, "postgresql://localhost/nebula");
+        assert_eq!(config.max_connections, 100);
+        assert_eq!(config.min_connections, 10);
+        assert_eq!(config.acquire_timeout_seconds, 30);
+        assert_eq!(config.idle_timeout_seconds, 300);
+
+        restore_env("DATABASE_URL", saved_url);
+    }
+
+    #[test]
+    fn test_get_database_config_custom() {
+        let _guard = lock_env();
+        let saved_url = std::env::var("DATABASE_URL").ok();
+        std::env::remove_var("DATABASE_URL");
+
+        let provider = Arc::new(
+            MockConfigProvider::new()
+                .with_string("database.url", "postgresql://user:pass@host/db")
+                .with_int("database.max_connections", 50)
+                .with_int("database.min_connections", 5)
+                .with_int("database.acquire_timeout_seconds", 60)
+                .with_int("database.idle_timeout_seconds", 120),
+        );
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_database_config();
+
+        assert_eq!(config.url, "postgresql://user:pass@host/db");
+        assert_eq!(config.max_connections, 50);
+        assert_eq!(config.min_connections, 5);
+        assert_eq!(config.acquire_timeout_seconds, 60);
+        assert_eq!(config.idle_timeout_seconds, 120);
+
+        restore_env("DATABASE_URL", saved_url);
+    }
+
+    #[test]
+    fn test_get_database_config_env_url_fallback() {
+        let _guard = lock_env();
+        let saved_url = std::env::var("DATABASE_URL").ok();
+        std::env::set_var("DATABASE_URL", "postgresql://env-host/env-db");
+
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_database_config();
+        assert_eq!(config.url, "postgresql://env-host/env-db");
+
+        restore_env("DATABASE_URL", saved_url);
+    }
+
+    #[test]
+    fn test_get_database_config_provider_overrides_env() {
+        let _guard = lock_env();
+        let saved_url = std::env::var("DATABASE_URL").ok();
+        std::env::set_var("DATABASE_URL", "postgresql://env-host/env-db");
+
+        let provider = Arc::new(
+            MockConfigProvider::new()
+                .with_string("database.url", "postgresql://provider-host/provider-db"),
+        );
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_database_config();
+        assert_eq!(config.url, "postgresql://provider-host/provider-db");
+
+        restore_env("DATABASE_URL", saved_url);
+    }
+
+    // ===== get_etcd_config =====
+
+    #[test]
+    fn test_get_etcd_config_defaults_debug() {
+        let _guard = lock_env();
+        let saved = std::env::var("ETCD_ENDPOINTS").ok();
+        std::env::remove_var("ETCD_ENDPOINTS");
+
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_etcd_config();
+
+        assert_eq!(config.endpoints, vec!["localhost:2379".to_string()]);
+        assert_eq!(config.connect_timeout_ms, 5000);
+        assert_eq!(config.watch_timeout_ms, 5000);
+
+        restore_env("ETCD_ENDPOINTS", saved);
+    }
+
+    #[test]
+    fn test_get_etcd_config_custom() {
+        let _guard = lock_env();
+        let saved = std::env::var("ETCD_ENDPOINTS").ok();
+        std::env::remove_var("ETCD_ENDPOINTS");
+
+        let provider = Arc::new(
+            MockConfigProvider::new()
+                .with_string("etcd.endpoints", "host1:2379,host2:2379,host3:2379")
+                .with_int("etcd.connect_timeout_ms", 3000)
+                .with_int("etcd.watch_timeout_ms", 7000),
+        );
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_etcd_config();
+
+        assert_eq!(
+            config.endpoints,
+            vec![
+                "host1:2379".to_string(),
+                "host2:2379".to_string(),
+                "host3:2379".to_string(),
+            ]
+        );
+        assert_eq!(config.connect_timeout_ms, 3000);
+        assert_eq!(config.watch_timeout_ms, 7000);
+
+        restore_env("ETCD_ENDPOINTS", saved);
+    }
+
+    #[test]
+    fn test_get_etcd_config_env_fallback() {
+        let _guard = lock_env();
+        let saved = std::env::var("ETCD_ENDPOINTS").ok();
+        std::env::set_var("ETCD_ENDPOINTS", "env-host:2379");
+
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_etcd_config();
+        assert_eq!(config.endpoints, vec!["env-host:2379".to_string()]);
+
+        restore_env("ETCD_ENDPOINTS", saved);
+    }
+
+    #[test]
+    fn test_get_etcd_config_empty_endpoints_string() {
+        let _guard = lock_env();
+        let saved = std::env::var("ETCD_ENDPOINTS").ok();
+        std::env::remove_var("ETCD_ENDPOINTS");
+
+        let provider = Arc::new(MockConfigProvider::new().with_string("etcd.endpoints", ""));
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_etcd_config();
+        assert!(config.endpoints.is_empty());
+
+        restore_env("ETCD_ENDPOINTS", saved);
+    }
+
+    #[test]
+    fn test_get_etcd_config_whitespace_endpoints_are_trimmed() {
+        let _guard = lock_env();
+        let saved = std::env::var("ETCD_ENDPOINTS").ok();
+        std::env::remove_var("ETCD_ENDPOINTS");
+
+        let provider = Arc::new(
+            MockConfigProvider::new()
+                .with_string("etcd.endpoints", "  host1:2379  ,  host2:2379  "),
+        );
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_etcd_config();
+        assert_eq!(
+            config.endpoints,
+            vec!["host1:2379".to_string(), "host2:2379".to_string()]
+        );
+
+        restore_env("ETCD_ENDPOINTS", saved);
+    }
+
+    // ===== get_monitoring_config =====
+
+    #[test]
+    fn test_get_monitoring_config_defaults() {
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_monitoring_config();
+        assert!(config.metrics_enabled);
+        assert_eq!(config.metrics_path, "/metrics");
+        assert!(!config.tracing_enabled);
+        assert_eq!(config.otlp_endpoint, "");
+    }
+
+    #[test]
+    fn test_get_monitoring_config_custom() {
+        let provider = Arc::new(
+            MockConfigProvider::new()
+                .with_bool("monitoring.metrics_enabled", false)
+                .with_string("monitoring.metrics_path", "/custom-metrics")
+                .with_bool("monitoring.tracing_enabled", true)
+                .with_string("monitoring.otlp_endpoint", "http://otel:4317"),
+        );
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_monitoring_config();
+        assert!(!config.metrics_enabled);
+        assert_eq!(config.metrics_path, "/custom-metrics");
+        assert!(config.tracing_enabled);
+        assert_eq!(config.otlp_endpoint, "http://otel:4317");
+    }
+
+    #[test]
+    fn test_get_monitoring_config_partial_custom() {
+        let provider = Arc::new(
+            MockConfigProvider::new().with_string("monitoring.otlp_endpoint", "http://custom:4317"),
+        );
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_monitoring_config();
+        assert!(config.metrics_enabled);
+        assert_eq!(config.metrics_path, "/metrics");
+        assert!(!config.tracing_enabled);
+        assert_eq!(config.otlp_endpoint, "http://custom:4317");
+    }
+
+    // ===== get_logging_config =====
+
+    #[test]
+    fn test_get_logging_config_defaults() {
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_logging_config();
+        assert_eq!(config.level, LogLevel::Info);
+        assert_eq!(config.format, crate::core::config::LogFormat::Json);
+        assert!(config.include_location);
+    }
+
+    #[test]
+    fn test_get_logging_config_custom() {
+        let provider = Arc::new(
+            MockConfigProvider::new()
+                .with_string("logging.level", "debug")
+                .with_string("logging.format", "pretty")
+                .with_bool("logging.include_location", false),
+        );
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_logging_config();
+        assert_eq!(config.level, LogLevel::Debug);
+        assert_eq!(config.format, crate::core::config::LogFormat::Pretty);
+        assert!(!config.include_location);
+    }
+
+    #[test]
+    fn test_get_logging_config_unknown_level_defaults_to_info() {
+        let provider = Arc::new(MockConfigProvider::new().with_string("logging.level", "invalid"));
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_logging_config();
+        assert_eq!(config.level, LogLevel::Info);
+    }
+
+    // ===== get_rate_limit_config =====
+
+    #[test]
+    fn test_get_rate_limit_config_defaults() {
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_rate_limit_config();
+        assert!(config.enabled);
+        assert_eq!(config.default_rps, 10000);
+        assert_eq!(config.burst_size, 100);
+    }
+
+    #[test]
+    fn test_get_rate_limit_config_custom() {
+        let provider = Arc::new(
+            MockConfigProvider::new()
+                .with_bool("rate_limit.enabled", false)
+                .with_int("rate_limit.default_rps", 5000)
+                .with_int("rate_limit.burst_size", 200),
+        );
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_rate_limit_config();
+        assert!(!config.enabled);
+        assert_eq!(config.default_rps, 5000);
+        assert_eq!(config.burst_size, 200);
+    }
+
+    #[test]
+    fn test_get_rate_limit_config_partial_custom() {
+        let provider = Arc::new(MockConfigProvider::new().with_int("rate_limit.burst_size", 500));
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_rate_limit_config();
+        assert!(config.enabled);
+        assert_eq!(config.default_rps, 10000);
+        assert_eq!(config.burst_size, 500);
+    }
+
+    // ===== get_tls_config =====
+
+    #[test]
+    fn test_get_tls_config_defaults() {
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_tls_config();
+        assert!(!config.enabled);
+        assert_eq!(config.cert_path, "");
+        assert_eq!(config.key_path, "");
+        assert_eq!(config.ca_path, None);
+        assert!(!config.http_enabled);
+        assert!(!config.grpc_enabled);
+    }
+
+    #[test]
+    fn test_get_tls_config_custom() {
+        let provider = Arc::new(
+            MockConfigProvider::new()
+                .with_bool("tls.enabled", true)
+                .with_string("tls.cert_path", "/etc/ssl/cert.pem")
+                .with_string("tls.key_path", "/etc/ssl/key.pem")
+                .with_string("tls.ca_path", "/etc/ssl/ca.pem")
+                .with_bool("tls.http_enabled", true)
+                .with_bool("tls.grpc_enabled", true),
+        );
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_tls_config();
+        assert!(config.enabled);
+        assert_eq!(config.cert_path, "/etc/ssl/cert.pem");
+        assert_eq!(config.key_path, "/etc/ssl/key.pem");
+        assert_eq!(config.ca_path, Some("/etc/ssl/ca.pem".to_string()));
+        assert!(config.http_enabled);
+        assert!(config.grpc_enabled);
+    }
+
+    #[test]
+    fn test_get_tls_config_partial_custom() {
+        let provider = Arc::new(
+            MockConfigProvider::new()
+                .with_string("tls.cert_path", "/custom/cert.pem")
+                .with_bool("tls.http_enabled", true),
+        );
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_tls_config();
+        assert!(!config.enabled);
+        assert_eq!(config.cert_path, "/custom/cert.pem");
+        assert_eq!(config.key_path, "");
+        assert_eq!(config.ca_path, None);
+        assert!(config.http_enabled);
+        assert!(!config.grpc_enabled);
+    }
+
+    // ===== get_batch_generate_config =====
+
+    #[test]
+    fn test_get_batch_generate_config_defaults() {
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_batch_generate_config();
+        assert_eq!(config.max_batch_size, 100);
+    }
+
+    #[test]
+    fn test_get_batch_generate_config_custom() {
+        let provider =
+            Arc::new(MockConfigProvider::new().with_int("batch_generate.max_batch_size", 500));
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_batch_generate_config();
+        assert_eq!(config.max_batch_size, 500);
+    }
+
+    // ===== get_redis_config =====
+
+    #[test]
+    fn test_get_redis_config_defaults_debug() {
+        let _guard = lock_env();
+        let saved = std::env::var("REDIS_URL").ok();
+        std::env::remove_var("REDIS_URL");
+
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_redis_config();
+
+        assert_eq!(config.url, "redis://localhost:6379");
+        assert_eq!(config.pool_size, 16);
+        assert_eq!(config.key_prefix, "nebula:id:");
+        assert_eq!(config.ttl_seconds, 600);
+
+        restore_env("REDIS_URL", saved);
+    }
+
+    #[test]
+    fn test_get_redis_config_custom() {
+        let _guard = lock_env();
+        let saved = std::env::var("REDIS_URL").ok();
+        std::env::remove_var("REDIS_URL");
+
+        let provider = Arc::new(
+            MockConfigProvider::new()
+                .with_string("redis.url", "redis://custom:6380")
+                .with_int("redis.pool_size", 32)
+                .with_string("redis.key_prefix", "myapp:")
+                .with_int("redis.ttl_seconds", 1800),
+        );
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_redis_config();
+        assert_eq!(config.url, "redis://custom:6380");
+        assert_eq!(config.pool_size, 32);
+        assert_eq!(config.key_prefix, "myapp:");
+        assert_eq!(config.ttl_seconds, 1800);
+
+        restore_env("REDIS_URL", saved);
+    }
+
+    #[test]
+    fn test_get_redis_config_env_url_fallback() {
+        let _guard = lock_env();
+        let saved = std::env::var("REDIS_URL").ok();
+        std::env::set_var("REDIS_URL", "redis://env-host:6379");
+
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_redis_config();
+        assert_eq!(config.url, "redis://env-host:6379");
+
+        restore_env("REDIS_URL", saved);
+    }
+
+    #[test]
+    fn test_get_redis_config_provider_overrides_env() {
+        let _guard = lock_env();
+        let saved = std::env::var("REDIS_URL").ok();
+        std::env::set_var("REDIS_URL", "redis://env-host:6379");
+
+        let provider =
+            Arc::new(MockConfigProvider::new().with_string("redis.url", "redis://provider:6380"));
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_redis_config();
+        assert_eq!(config.url, "redis://provider:6380");
+
+        restore_env("REDIS_URL", saved);
+    }
+
+    // ===== get_config (composite) =====
+
+    #[test]
+    fn test_get_config_defaults() {
+        let _guard = lock_env();
+        let saved_db = std::env::var("DATABASE_URL").ok();
+        let saved_redis = std::env::var("REDIS_URL").ok();
+        let saved_etcd = std::env::var("ETCD_ENDPOINTS").ok();
+        let saved_salt = std::env::var("NEBULA_API_KEY_SALT").ok();
+        std::env::remove_var("DATABASE_URL");
+        std::env::remove_var("REDIS_URL");
+        std::env::remove_var("ETCD_ENDPOINTS");
+        std::env::remove_var("NEBULA_API_KEY_SALT");
+
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_config();
+
+        assert_eq!(config.app.name, "nebula-id");
+        assert_eq!(config.algorithm.default, "segment");
+        assert!(config.auth.enabled);
+        assert_eq!(config.batch_generate.max_batch_size, 100);
+
+        restore_env("DATABASE_URL", saved_db);
+        restore_env("REDIS_URL", saved_redis);
+        restore_env("ETCD_ENDPOINTS", saved_etcd);
+        restore_env("NEBULA_API_KEY_SALT", saved_salt);
+    }
+
+    #[test]
+    fn test_get_config_assembles_custom_values() {
+        let _guard = lock_env();
+        let saved_db = std::env::var("DATABASE_URL").ok();
+        let saved_redis = std::env::var("REDIS_URL").ok();
+        let saved_etcd = std::env::var("ETCD_ENDPOINTS").ok();
+        let saved_salt = std::env::var("NEBULA_API_KEY_SALT").ok();
+        std::env::remove_var("DATABASE_URL");
+        std::env::remove_var("REDIS_URL");
+        std::env::remove_var("ETCD_ENDPOINTS");
+        std::env::remove_var("NEBULA_API_KEY_SALT");
+
+        let provider = Arc::new(
+            MockConfigProvider::new()
+                .with_string("app.name", "assembled")
+                .with_string("algorithm.default", "snowflake")
+                .with_bool("auth.enabled", false)
+                .with_int("batch_generate.max_batch_size", 250),
+        );
+        let adapter = ConfigAdapter::new(provider);
+        let config = adapter.get_config();
+
+        assert_eq!(config.app.name, "assembled");
+        assert_eq!(config.algorithm.default, "snowflake");
+        assert!(!config.auth.enabled);
+        assert_eq!(config.batch_generate.max_batch_size, 250);
+
+        restore_env("DATABASE_URL", saved_db);
+        restore_env("REDIS_URL", saved_redis);
+        restore_env("ETCD_ENDPOINTS", saved_etcd);
+        restore_env("NEBULA_API_KEY_SALT", saved_salt);
+    }
+
+    // ===== Raw accessors (get_string / get_int / get_bool / get_float) =====
+
+    #[test]
+    fn test_get_string_returns_value_when_present() {
+        let provider = Arc::new(MockConfigProvider::new().with_string("a.b", "hello"));
+        let adapter = ConfigAdapter::new(provider);
+        assert_eq!(adapter.get_string("a.b"), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn test_get_string_returns_none_when_missing() {
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        assert_eq!(adapter.get_string("missing.key"), None);
+    }
+
+    #[test]
+    fn test_get_int_returns_value_when_present() {
+        let provider = Arc::new(MockConfigProvider::new().with_int("n", 42));
+        let adapter = ConfigAdapter::new(provider);
+        assert_eq!(adapter.get_int("n"), Some(42));
+    }
+
+    #[test]
+    fn test_get_int_returns_none_when_missing() {
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        assert_eq!(adapter.get_int("missing"), None);
+    }
+
+    #[test]
+    fn test_get_bool_returns_value_when_present() {
+        let provider = Arc::new(MockConfigProvider::new().with_bool("flag", true));
+        let adapter = ConfigAdapter::new(provider);
+        assert_eq!(adapter.get_bool("flag"), Some(true));
+    }
+
+    #[test]
+    fn test_get_bool_returns_none_when_missing() {
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        assert_eq!(adapter.get_bool("missing"), None);
+    }
+
+    #[test]
+    fn test_get_float_returns_value_when_present() {
+        let provider = Arc::new(MockConfigProvider::new().with_float("f", 1.5));
+        let adapter = ConfigAdapter::new(provider);
+        let val = adapter.get_float("f").expect("value should be present");
+        assert!((val - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_get_float_returns_none_when_missing() {
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        assert_eq!(adapter.get_float("missing"), None);
+    }
+
+    // ===== Debug impl =====
+
+    #[test]
+    fn test_debug_impl_does_not_panic() {
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        let s = format!("{:?}", adapter);
+        assert!(s.contains("ConfigAdapter"));
+        assert!(s.contains("provider"));
+    }
+
+    #[test]
+    fn test_debug_impl_format_matches_expected() {
+        let provider = Arc::new(MockConfigProvider::new());
+        let adapter = ConfigAdapter::new(provider);
+        assert_eq!(
+            format!("{:?}", adapter),
+            "ConfigAdapter { provider: \"Arc<dyn ConfigProvider>\" }"
+        );
+    }
+
+    // ===== Clone derive =====
+
+    #[test]
+    fn test_clone_creates_independent_adapter_sharing_provider() {
+        let provider = Arc::new(MockConfigProvider::new().with_string("k", "v"));
+        let adapter = ConfigAdapter::new(provider);
+        let cloned = adapter.clone();
+        assert!(Arc::ptr_eq(adapter.provider(), cloned.provider()));
+        assert_eq!(cloned.get_string("k"), Some("v".to_string()));
     }
 }

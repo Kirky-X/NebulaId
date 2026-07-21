@@ -231,6 +231,378 @@ impl std::fmt::Debug for DatabaseAdapter {
 
 #[cfg(test)]
 mod tests {
-    // Tests would require a mock ConnectionPool implementation
-    // For now, we rely on integration tests with actual databases
+    use super::*;
+    use async_trait::async_trait;
+    use dbnexus::{DbError, DbResult};
+
+    /// Mock implementation of `ConnectionPool` for unit testing `DatabaseAdapter`.
+    ///
+    /// `Session` cannot be constructed outside `dbnexus` (its fields are private
+    /// and `Session::new` is `pub(crate)`), so `get_session` always returns a
+    /// `DbError::Config` built from the stored message. `DbError` does not
+    /// implement `Clone`, so we store the raw message string and rebuild the
+    /// error on each call. This is sufficient to cover the error-propagation
+    /// paths of `DatabaseAdapter` methods that depend on a session.
+    struct MockConnectionPool {
+        status: PoolStatus,
+        config: DbConfig,
+        session_error_msg: String,
+    }
+
+    impl MockConnectionPool {
+        fn new(status: PoolStatus, config: DbConfig, session_error_msg: String) -> Self {
+            Self {
+                status,
+                config,
+                session_error_msg,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ConnectionPool for MockConnectionPool {
+        async fn get_session(&self, _role: &str) -> DbResult<Session> {
+            // Session::new is pub(crate) in dbnexus, so a mock cannot construct
+            // a real Session. Return a Config error to exercise the
+            // error-propagation paths of DatabaseAdapter.
+            Err(DbError::Config(self.session_error_msg.clone()))
+        }
+
+        fn status(&self) -> PoolStatus {
+            self.status.clone()
+        }
+
+        fn config(&self) -> &DbConfig {
+            &self.config
+        }
+    }
+
+    fn pool_status(active: u32, idle: u32, max_active: u32) -> PoolStatus {
+        PoolStatus {
+            total: active + idle,
+            active,
+            idle,
+            wait_count: 0,
+            max_waiters: 0,
+            borrow_count: 0,
+            max_active,
+        }
+    }
+
+    fn make_adapter(
+        status: PoolStatus,
+        config: DbConfig,
+        session_error_msg: &str,
+    ) -> DatabaseAdapter {
+        let pool: Arc<dyn ConnectionPool> = Arc::new(MockConnectionPool::new(
+            status,
+            config,
+            session_error_msg.to_string(),
+        ));
+        DatabaseAdapter::new(pool)
+    }
+
+    /// Extracts the `DatabaseError` message from a `Result`, panicking with a
+    /// clear diagnostic if the result is `Ok` or holds a different variant.
+    /// `Session` does not implement `Debug`, so we cannot use `unwrap_err`.
+    fn expect_database_error<T>(result: crate::core::types::Result<T>, context: &str) -> String {
+        match result {
+            Err(crate::core::types::CoreError::DatabaseError(msg)) => msg,
+            Err(other) => panic!("{context}: expected DatabaseError, got {other:?}"),
+            Ok(_) => panic!("{context}: expected error but got Ok"),
+        }
+    }
+
+    // ===== new / pool / Clone =====
+
+    #[test]
+    fn test_new_returns_adapter_holding_pool_pointer() {
+        let adapter = make_adapter(
+            pool_status(0, 0, 10),
+            DbConfig::default(),
+            "mock session unavailable",
+        );
+        // pool() returns the same Arc the adapter was built with.
+        let pool_ref = adapter.pool();
+        assert!(
+            Arc::strong_count(pool_ref) >= 1,
+            "pool() should return a reference to the underlying Arc<dyn ConnectionPool>"
+        );
+    }
+
+    #[test]
+    fn test_clone_produces_adapter_sharing_the_same_pool() {
+        let adapter = make_adapter(
+            pool_status(1, 2, 5),
+            DbConfig::default(),
+            "mock session unavailable",
+        );
+        let cloned = adapter.clone();
+        // Both adapters must reference the same underlying pool Arc.
+        assert!(
+            Arc::ptr_eq(adapter.pool(), cloned.pool()),
+            "Clone must share the same underlying ConnectionPool Arc"
+        );
+    }
+
+    // ===== status / config =====
+
+    #[test]
+    fn test_status_reflects_mock_pool_state() {
+        let expected = pool_status(3, 7, 12);
+        let adapter = make_adapter(
+            expected.clone(),
+            DbConfig::default(),
+            "mock session unavailable",
+        );
+        let actual = adapter.status();
+        assert_eq!(actual.active, expected.active);
+        assert_eq!(actual.idle, expected.idle);
+        assert_eq!(actual.total, expected.total);
+        assert_eq!(actual.max_active, expected.max_active);
+    }
+
+    #[test]
+    fn test_config_returns_mock_config_reference() {
+        let config = DbConfig {
+            url: "postgres://mock-host:5432/mock_db".to_string(),
+            max_connections: 42,
+            ..Default::default()
+        };
+        let adapter = make_adapter(
+            pool_status(0, 0, 10),
+            config.clone(),
+            "mock session unavailable",
+        );
+        let returned = adapter.config();
+        assert_eq!(returned.url, config.url);
+        assert_eq!(returned.max_connections, 42);
+    }
+
+    // ===== active_connections / idle_connections / is_at_capacity =====
+
+    #[test]
+    fn test_active_connections_reads_status_active_field() {
+        let adapter = make_adapter(
+            pool_status(5, 3, 10),
+            DbConfig::default(),
+            "mock session unavailable",
+        );
+        assert_eq!(adapter.active_connections(), 5);
+    }
+
+    #[test]
+    fn test_idle_connections_reads_status_idle_field() {
+        let adapter = make_adapter(
+            pool_status(5, 3, 10),
+            DbConfig::default(),
+            "mock session unavailable",
+        );
+        assert_eq!(adapter.idle_connections(), 3);
+    }
+
+    #[test]
+    fn test_is_at_capacity_true_when_active_equals_max() {
+        let adapter = make_adapter(
+            pool_status(10, 0, 10),
+            DbConfig::default(),
+            "mock session unavailable",
+        );
+        assert!(
+            adapter.is_at_capacity(),
+            "active == max_active should be at capacity"
+        );
+    }
+
+    #[test]
+    fn test_is_at_capacity_true_when_active_exceeds_max() {
+        let adapter = make_adapter(
+            pool_status(11, 0, 10),
+            DbConfig::default(),
+            "mock session unavailable",
+        );
+        assert!(
+            adapter.is_at_capacity(),
+            "active > max_active should be at capacity"
+        );
+    }
+
+    #[test]
+    fn test_is_at_capacity_false_when_active_below_max() {
+        let adapter = make_adapter(
+            pool_status(9, 1, 10),
+            DbConfig::default(),
+            "mock session unavailable",
+        );
+        assert!(
+            !adapter.is_at_capacity(),
+            "active < max_active should not be at capacity"
+        );
+    }
+
+    // ===== get_session error propagation =====
+
+    #[tokio::test]
+    async fn test_get_session_propagates_pool_error_as_database_error() {
+        let adapter = make_adapter(pool_status(0, 0, 1), DbConfig::default(), "pool exhausted");
+        let result = adapter.get_session("reader").await;
+        let msg = expect_database_error(result, "get_session should propagate pool error");
+        assert!(
+            msg.contains("pool exhausted"),
+            "error message should embed the underlying DbError, got: {msg}"
+        );
+    }
+
+    // ===== read / write / admin error propagation =====
+
+    #[tokio::test]
+    async fn test_read_propagates_get_session_failure() {
+        let adapter = make_adapter(
+            pool_status(0, 0, 1),
+            DbConfig::default(),
+            "read session denied",
+        );
+        let result = adapter
+            .read(|_session| async { Ok::<_, crate::core::types::CoreError>(1_u32) })
+            .await;
+        let msg = expect_database_error(result, "read should propagate get_session error");
+        assert!(
+            msg.contains("read session denied"),
+            "error message should contain 'read session denied', got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_propagates_get_session_failure() {
+        let adapter = make_adapter(
+            pool_status(0, 0, 1),
+            DbConfig::default(),
+            "write session denied",
+        );
+        let result = adapter
+            .write(|_session| async { Ok::<_, crate::core::types::CoreError>(2_u32) })
+            .await;
+        let msg = expect_database_error(result, "write should propagate get_session error");
+        assert!(
+            msg.contains("write session denied"),
+            "error message should contain 'write session denied', got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_admin_propagates_get_session_failure() {
+        let adapter = make_adapter(
+            pool_status(0, 0, 1),
+            DbConfig::default(),
+            "admin session denied",
+        );
+        let result = adapter
+            .admin(|_session| async { Ok::<_, crate::core::types::CoreError>(3_u32) })
+            .await;
+        let msg = expect_database_error(result, "admin should propagate get_session error");
+        assert!(
+            msg.contains("admin session denied"),
+            "error message should contain 'admin session denied', got: {msg}"
+        );
+    }
+
+    // ===== transaction / write_transaction error propagation =====
+
+    #[tokio::test]
+    async fn test_transaction_propagates_get_session_failure() {
+        let adapter = make_adapter(
+            pool_status(0, 0, 1),
+            DbConfig::default(),
+            "txn session denied",
+        );
+        let result = adapter
+            .transaction("writer", |_session| async {
+                Ok::<_, crate::core::types::CoreError>(4_u32)
+            })
+            .await;
+        let msg = expect_database_error(result, "transaction should propagate get_session error");
+        assert!(
+            msg.contains("txn session denied"),
+            "error message should contain 'txn session denied', got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_transaction_propagates_get_session_failure() {
+        let adapter = make_adapter(
+            pool_status(0, 0, 1),
+            DbConfig::default(),
+            "write txn denied",
+        );
+        let result = adapter
+            .write_transaction(|_session| async { Ok::<_, crate::core::types::CoreError>(5_u32) })
+            .await;
+        let msg = expect_database_error(
+            result,
+            "write_transaction should propagate get_session error",
+        );
+        assert!(
+            msg.contains("write txn denied"),
+            "error message should contain 'write txn denied', got: {msg}"
+        );
+    }
+
+    // ===== health_check error propagation =====
+
+    #[tokio::test]
+    async fn test_health_check_propagates_get_session_failure() {
+        let adapter = make_adapter(
+            pool_status(0, 0, 1),
+            DbConfig::default(),
+            "health session denied",
+        );
+        let result = adapter.health_check().await;
+        let msg = expect_database_error(result, "health_check should propagate get_session error");
+        assert!(
+            msg.contains("health session denied"),
+            "error message should embed the underlying DbError, got: {msg}"
+        );
+    }
+
+    // ===== Debug impl =====
+
+    #[test]
+    fn test_debug_impl_emits_struct_name_and_pool_placeholder() {
+        let adapter = make_adapter(
+            pool_status(0, 0, 1),
+            DbConfig::default(),
+            "mock session unavailable",
+        );
+        let debug_str = format!("{adapter:?}");
+        assert!(
+            debug_str.contains("DatabaseAdapter"),
+            "Debug output should contain struct name, got: {debug_str}"
+        );
+        assert!(
+            debug_str.contains("Arc<dyn ConnectionPool>"),
+            "Debug output should contain pool placeholder, got: {debug_str}"
+        );
+    }
+
+    // ===== permission error variant propagation =====
+
+    #[tokio::test]
+    async fn test_get_session_propagates_permission_error_variant() {
+        // Verify the Permission(String) variant is also stringified into
+        // DatabaseError by the adapter's map_err closure. We cannot construct
+        // DbError::Connection directly because dbnexus 0.4 depends on sea-orm
+        // 2.0 while nebulaid uses sea-orm 1.1, so we cover the Permission
+        // variant instead to confirm multiple DbError variants flow through.
+        let adapter = make_adapter(
+            pool_status(0, 0, 1),
+            DbConfig::default(),
+            "permission denied for admin",
+        );
+        let result = adapter.get_session("admin").await;
+        let msg = expect_database_error(result, "get_session should propagate permission error");
+        assert!(
+            msg.contains("permission denied for admin"),
+            "should embed Permission variant message, got: {msg}"
+        );
+    }
 }

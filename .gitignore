@@ -118,6 +118,23 @@ docs/gh-pages/
 *_SAVE_*
 
 # -----------------------------------------------------------------------------
+# Local Debug / Cargo Output Capture (do not commit)
+# -----------------------------------------------------------------------------
+cargo_*.txt
+check_*.txt
+clippy_*.txt
+test_*.txt
+test_*.out
+grpc_test_out.txt
+segment_diff.txt
+segment_original.rs
+db_tests.patch
+lcov.info
+coverage.txt
+coverage.json
+cov_*.txt
+
+# -----------------------------------------------------------------------------
 # Generated Reports (ignore by default)
 # -----------------------------------------------------------------------------
 *_REPORT.md

@@ -313,6 +313,386 @@ impl std::fmt::Debug for AppContainerBuilder {
 
 #[cfg(test)]
 mod tests {
-    // Tests would require mock implementations
-    // Integration tests should verify full container functionality
+    use super::*;
+    use async_trait::async_trait;
+    use dbnexus::database::pool::PoolStatus;
+    use dbnexus::{DbConfig, DbError, DbResult, Session};
+
+    // ===== Mock ConfigProvider (minimal, mirrors config_adapter.rs pattern) =====
+
+    struct MockConfigProvider {
+        values: std::collections::HashMap<String, confers::types::AnnotatedValue>,
+    }
+
+    impl MockConfigProvider {
+        fn new() -> Self {
+            Self {
+                values: std::collections::HashMap::new(),
+            }
+        }
+    }
+
+    impl ConfigProvider for MockConfigProvider {
+        fn get_raw(&self, key: &str) -> Option<&confers::types::AnnotatedValue> {
+            self.values.get(key)
+        }
+
+        fn keys(&self) -> Vec<String> {
+            self.values.keys().cloned().collect()
+        }
+    }
+
+    // ===== Mock ConnectionPool (mirrors database_adapter.rs pattern) =====
+
+    struct MockConnectionPool {
+        status: PoolStatus,
+        config: DbConfig,
+        session_error_msg: String,
+    }
+
+    impl MockConnectionPool {
+        fn new(status: PoolStatus, config: DbConfig, session_error_msg: String) -> Self {
+            Self {
+                status,
+                config,
+                session_error_msg,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl dbnexus::ConnectionPool for MockConnectionPool {
+        async fn get_session(&self, _role: &str) -> DbResult<Session> {
+            Err(DbError::Config(self.session_error_msg.clone()))
+        }
+
+        fn status(&self) -> PoolStatus {
+            self.status.clone()
+        }
+
+        fn config(&self) -> &DbConfig {
+            &self.config
+        }
+    }
+
+    fn pool_status(active: u32, idle: u32, max_active: u32) -> PoolStatus {
+        PoolStatus {
+            total: active + idle,
+            active,
+            idle,
+            wait_count: 0,
+            max_waiters: 0,
+            borrow_count: 0,
+            max_active,
+        }
+    }
+
+    // ===== Test fixtures =====
+
+    fn make_mock_config() -> Arc<dyn ConfigProvider> {
+        Arc::new(MockConfigProvider::new())
+    }
+
+    fn make_mock_db_pool() -> Arc<dyn dbnexus::ConnectionPool> {
+        Arc::new(MockConnectionPool::new(
+            pool_status(0, 0, 10),
+            DbConfig::default(),
+            "mock session unavailable".to_string(),
+        ))
+    }
+
+    async fn make_test_cache() -> Arc<Cache<String, Vec<u8>>> {
+        let l1 = MokaMemoryBackend::builder().capacity(100).build();
+        let cache: Cache<String, Vec<u8>> = Cache::builder()
+            .backend_arc(Arc::new(l1))
+            .build()
+            .await
+            .expect("cache build should succeed with MokaMemoryBackend");
+        Arc::new(cache)
+    }
+
+    async fn make_container() -> AppContainer {
+        AppContainer::with_dependencies(
+            make_mock_config(),
+            make_test_cache().await,
+            make_mock_db_pool(),
+        )
+    }
+
+    // ===== with_dependencies / accessors =====
+
+    #[tokio::test]
+    async fn test_with_dependencies_stores_all_providers() {
+        let config = make_mock_config();
+        let cache = make_test_cache().await;
+        let db = make_mock_db_pool();
+        let container = AppContainer::with_dependencies(
+            Arc::clone(&config),
+            Arc::clone(&cache),
+            Arc::clone(&db),
+        );
+        assert!(
+            Arc::ptr_eq(container.config(), &config),
+            "config() should return the same Arc"
+        );
+        assert!(
+            Arc::ptr_eq(container.cache(), &cache),
+            "cache() should return the same Arc"
+        );
+        assert!(
+            Arc::ptr_eq(container.database(), &db),
+            "database() should return the same Arc"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cache_adapter_returns_reference_to_cache() {
+        let container = make_container().await;
+        let cache_ref = container.cache_adapter();
+        // Verify the reference is usable (compiles + doesn't panic).
+        let _ = cache_ref;
+    }
+
+    #[tokio::test]
+    async fn test_config_adapter_lazily_initializes_and_is_idempotent() {
+        let container = make_container().await;
+        let adapter1 = container.config_adapter();
+        let adapter2 = container.config_adapter();
+        assert!(
+            std::ptr::eq(adapter1, adapter2),
+            "OnceLock should return the same reference on subsequent calls"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_database_adapter_lazily_initializes_and_is_idempotent() {
+        let container = make_container().await;
+        let adapter1 = container.database_adapter();
+        let adapter2 = container.database_adapter();
+        assert!(
+            std::ptr::eq(adapter1, adapter2),
+            "OnceLock should return the same reference on subsequent calls"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_config_delegates_to_config_adapter() {
+        // With empty MockConfigProvider, ConfigAdapter returns defaults.
+        // Default app.name should be "nebula-id" per config_adapter.rs tests.
+        let container = make_container().await;
+        let config = container.get_config();
+        assert_eq!(
+            config.app.name, "nebula-id",
+            "get_config should return defaults from empty provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_health_check_returns_err_when_db_session_unavailable() {
+        // MockConnectionPool.get_session always returns Err, so
+        // DatabaseAdapter::health_check returns Err, propagated by
+        // AppContainer::health_check.
+        let container = make_container().await;
+        let result = container.health_check().await;
+        match result {
+            Err(CoreError::DatabaseError(msg)) => {
+                assert!(
+                    msg.contains("mock session unavailable"),
+                    "should propagate DB session error, got: {msg}"
+                );
+            }
+            other => panic!("expected DatabaseError from DB session unavailable, got {other:?}"),
+        }
+    }
+
+    // ===== Debug impls =====
+
+    #[tokio::test]
+    async fn test_app_container_debug_emits_struct_name() {
+        let container = make_container().await;
+        let debug = format!("{container:?}");
+        assert!(
+            debug.contains("AppContainer"),
+            "Debug should contain struct name, got: {debug}"
+        );
+        assert!(
+            debug.contains("Arc<dyn ConfigProvider>"),
+            "Debug should contain config field placeholder, got: {debug}"
+        );
+    }
+
+    #[test]
+    fn test_app_container_builder_debug_reports_set_fields() {
+        let builder = AppContainerBuilder::new();
+        let debug = format!("{builder:?}");
+        assert!(
+            debug.contains("AppContainerBuilder"),
+            "Debug should contain builder struct name, got: {debug}"
+        );
+        // No fields set, all should be false
+        assert!(
+            debug.contains("false"),
+            "Debug should report unset fields as false, got: {debug}"
+        );
+    }
+
+    // ===== builder() / build() / try_build() =====
+
+    #[test]
+    fn test_builder_new_returns_default_builder() {
+        let builder = AppContainerBuilder::new();
+        // Try building without any deps - should panic, but we'll use try_build
+        let result = builder.try_build();
+        assert!(result.is_err(), "empty builder should fail try_build");
+    }
+
+    #[tokio::test]
+    async fn test_builder_config_setter_stores_provider() {
+        let cache = make_test_cache().await;
+        let db = make_mock_db_pool();
+        let config = make_mock_config();
+        let container = AppContainer::builder()
+            .config(config)
+            .cache(cache)
+            .database(db)
+            .build();
+        // Verify build succeeded by accessing a field
+        let _ = container.config();
+    }
+
+    #[tokio::test]
+    async fn test_builder_cache_setter_stores_backend() {
+        let config = make_mock_config();
+        let cache = make_test_cache().await;
+        let db = make_mock_db_pool();
+        let container = AppContainer::builder()
+            .cache(cache)
+            .config(config)
+            .database(db)
+            .build();
+        let _ = container.cache();
+    }
+
+    #[tokio::test]
+    async fn test_builder_database_setter_stores_pool() {
+        let config = make_mock_config();
+        let cache = make_test_cache().await;
+        let db = make_mock_db_pool();
+        let container = AppContainer::builder()
+            .database(db)
+            .config(config)
+            .cache(cache)
+            .build();
+        let _ = container.database();
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "config provider is required")]
+    async fn test_builder_build_panics_when_config_missing() {
+        let cache = make_test_cache().await;
+        let db = make_mock_db_pool();
+        let _ = AppContainer::builder().cache(cache).database(db).build();
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "cache backend is required")]
+    async fn test_builder_build_panics_when_cache_missing() {
+        let config = make_mock_config();
+        let db = make_mock_db_pool();
+        let _ = AppContainer::builder().config(config).database(db).build();
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "database connection pool is required")]
+    async fn test_builder_build_panics_when_database_missing() {
+        let config = make_mock_config();
+        let cache = make_test_cache().await;
+        let _ = AppContainer::builder().config(config).cache(cache).build();
+    }
+
+    #[tokio::test]
+    async fn test_builder_try_build_returns_config_error_when_config_missing() {
+        let cache = make_test_cache().await;
+        let db = make_mock_db_pool();
+        let result = AppContainer::builder()
+            .cache(cache)
+            .database(db)
+            .try_build();
+        match result {
+            Err(CoreError::ConfigurationError(msg)) => {
+                assert!(
+                    msg.contains("config provider"),
+                    "should mention config provider, got: {msg}"
+                );
+            }
+            other => panic!("expected ConfigurationError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_builder_try_build_returns_config_error_when_cache_missing() {
+        let config = make_mock_config();
+        let db = make_mock_db_pool();
+        let result = AppContainer::builder()
+            .config(config)
+            .database(db)
+            .try_build();
+        match result {
+            Err(CoreError::ConfigurationError(msg)) => {
+                assert!(msg.contains("cache"), "should mention cache, got: {msg}");
+            }
+            other => panic!("expected ConfigurationError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_builder_try_build_returns_config_error_when_database_missing() {
+        let config = make_mock_config();
+        let cache = make_test_cache().await;
+        let result = AppContainer::builder()
+            .config(config)
+            .cache(cache)
+            .try_build();
+        match result {
+            Err(CoreError::ConfigurationError(msg)) => {
+                assert!(
+                    msg.contains("database"),
+                    "should mention database, got: {msg}"
+                );
+            }
+            other => panic!("expected ConfigurationError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_builder_try_build_succeeds_when_all_deps_provided() {
+        let config = make_mock_config();
+        let cache = make_test_cache().await;
+        let db = make_mock_db_pool();
+        let result = AppContainer::builder()
+            .config(config)
+            .cache(cache)
+            .database(db)
+            .try_build();
+        assert!(
+            result.is_ok(),
+            "try_build should succeed when all deps provided: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_builder_debug_shows_set_fields_after_population() {
+        let config = make_mock_config();
+        let cache = make_test_cache().await;
+        let db = make_mock_db_pool();
+        let builder = AppContainer::builder()
+            .config(config)
+            .cache(cache)
+            .database(db);
+        let debug = format!("{builder:?}");
+        assert!(
+            debug.contains("true"),
+            "Debug should report set fields as true after population, got: {debug}"
+        );
+    }
 }

@@ -850,4 +850,369 @@ max_batch_size = 100
         hot_config.update_config(Config::default());
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
+
+    // ==================================================================
+    // Additional coverage (Phase 2 P0: bring hot_reload.rs to ≥95%)
+    // ==================================================================
+
+    // ----- Helper: write a complete valid TOML config with overrides -----
+
+    /// Write a complete valid TOML config file with the given field
+    /// overrides. Used by the audit-logger and watch tests below to
+    /// avoid repeating the ~80-line TOML boilerplate in each test.
+    fn write_test_config_file(
+        path: &std::path::Path,
+        app_name: &str,
+        http_port: u16,
+        default_rps: u32,
+        burst_size: u32,
+        log_level: &str,
+    ) {
+        let content = format!(
+            r#"[app]
+name = "{app_name}"
+host = "127.0.0.1"
+http_port = {http_port}
+grpc_port = 50051
+dc_id = 1
+worker_id = 1
+
+[database]
+engine = "postgresql"
+url = "postgresql://idgen:${{NEBULA_DATABASE_PASSWORD}}@localhost:5432/idgen"
+host = "localhost"
+port = 5432
+username = "idgen"
+password = "${{NEBULA_DATABASE_PASSWORD}}"
+database = "idgen"
+max_connections = 10
+min_connections = 1
+acquire_timeout_seconds = 5
+idle_timeout_seconds = 300
+
+[etcd]
+endpoints = ["http://localhost:2379"]
+connect_timeout_ms = 5000
+watch_timeout_ms = 5000
+
+[auth]
+enabled = true
+cache_ttl_seconds = 300
+api_keys = []
+
+[algorithm]
+default = "segment"
+
+[algorithm.segment]
+base_step = 1000
+min_step = 500
+max_step = 100000
+switch_threshold = 0.1
+
+[algorithm.snowflake]
+datacenter_id_bits = 3
+worker_id_bits = 8
+sequence_bits = 10
+clock_drift_threshold_ms = 1000
+
+[algorithm.uuid_v7]
+enabled = true
+
+[monitoring]
+metrics_enabled = true
+metrics_path = "/metrics"
+tracing_enabled = true
+otlp_endpoint = ""
+
+[logging]
+level = "{log_level}"
+format = "json"
+include_location = true
+
+[rate_limit]
+enabled = true
+default_rps = {default_rps}
+burst_size = {burst_size}
+
+[tls]
+enabled = false
+cert_path = ""
+key_path = ""
+http_enabled = false
+grpc_enabled = false
+min_tls_version = "tls13"
+alpn_protocols = ["h2", "http/1.1"]
+
+[batch_generate]
+max_batch_size = 100
+"#
+        );
+        std::fs::write(path, content).unwrap();
+    }
+
+    // ----- with_audit_logger builder -----
+
+    /// `with_audit_logger` must store the logger so the HotReloadConfig
+    /// can call `log_config_change` on subsequent updates. We can't
+    /// directly observe the stored `Option<Arc<AuditLogger>>` field, but
+    /// we can verify the builder returns a usable `HotReloadConfig` whose
+    /// other fields (config, callbacks, biz_algorithm_map) are intact.
+    #[tokio::test]
+    async fn test_with_audit_logger_builder_returns_usable_config() {
+        setup_test_env();
+        let logger = Arc::new(crate::server::audit::AuditLogger::new(100));
+        let hot_config = HotReloadConfig::new(Config::default(), "config/config.toml".to_string())
+            .with_audit_logger(logger);
+
+        // Verify the config is still readable and other fields work.
+        assert_eq!(hot_config.get_config().app.name, "nebula-id");
+
+        // Callbacks still fire after with_audit_logger.
+        let counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let c = counter.clone();
+        hot_config.add_reload_callback(move |_| {
+            c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        hot_config.update_config(Config::default());
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // Algorithm map still works.
+        hot_config.set_algorithm("audit-tag", AlgorithmType::Snowflake);
+        assert_eq!(
+            hot_config.get_algorithm("audit-tag").unwrap(),
+            AlgorithmType::Snowflake
+        );
+    }
+
+    // ----- update_config + audit_logger: covers L247-265, L164-199 -----
+
+    /// `update_config` with an audit logger attached and changed fields
+    /// must invoke `detect_config_changes` (covering all 5 field
+    /// comparisons) and construct the audit event. The `let _ =
+    /// logger.log_config_change(...)` call site is executed (covering
+    /// L259-264) but the future is intentionally not awaited (per the
+    /// `#[allow(clippy::let_underscore_future)]` annotation), so
+    /// `total_logged` is NOT incremented on this path. The reload
+    /// path (test below) does await the future.
+    #[tokio::test]
+    async fn test_with_audit_logger_update_config_with_changes_covers_detect() {
+        setup_test_env();
+        let logger = Arc::new(crate::server::audit::AuditLogger::new(100));
+        let hot_config = HotReloadConfig::new(Config::default(), "config/config.toml".to_string())
+            .with_audit_logger(logger.clone());
+
+        let mut new_config = Config::default();
+        // Change all 5 fields exercised by detect_config_changes:
+        new_config.app.name = "audit-update".to_string();
+        new_config.app.http_port = 9999;
+        new_config.rate_limit.default_rps = 5000;
+        new_config.rate_limit.burst_size = 50;
+        new_config.logging.level = crate::core::config::LogLevel::Debug;
+
+        // The update_config call itself exercises the audit-logger branch
+        // and detect_config_changes. It should not panic.
+        hot_config.update_config(new_config);
+
+        // Verify the config update itself took effect.
+        assert_eq!(hot_config.get_config().app.name, "audit-update");
+        assert_eq!(hot_config.get_config().app.http_port, 9999);
+    }
+
+    /// `update_config` with an audit logger attached but identical config
+    /// must NOT construct an audit event (`has_changes` is false). Covers
+    /// the `if has_changes` false branch.
+    #[tokio::test]
+    async fn test_with_audit_logger_update_config_no_changes_skips_audit() {
+        setup_test_env();
+        let logger = Arc::new(crate::server::audit::AuditLogger::new(100));
+        let config = Config::default();
+        let hot_config = HotReloadConfig::new(config.clone(), "config/config.toml".to_string())
+            .with_audit_logger(logger);
+
+        // Same config → no changes → audit branch is skipped.
+        hot_config.update_config(config);
+        // No assertion on total_logged because the audit future is
+        // dropped anyway; we only verify no panic occurs.
+    }
+
+    // ----- reload_from_file + audit_logger: covers L131-151, L164-199 -----
+
+    /// `reload_from_file` with an audit logger attached and a real file
+    /// modification must invoke `log_config_change` and increment
+    /// `total_logged`. Unlike `update_config`, this path awaits the
+    /// audit future (no `let_underscore_future`).
+    #[tokio::test]
+    async fn test_with_audit_logger_reload_from_file_logs_change() {
+        setup_test_env();
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("audit_reload.toml");
+        write_test_config_file(&config_path, "initial", 8080, 10000, 100, "info");
+
+        let logger = Arc::new(crate::server::audit::AuditLogger::new(100));
+        let hot_config = HotReloadConfig::new(
+            Config::load_from_file(config_path.to_str().unwrap()).unwrap(),
+            config_path.to_str().unwrap().to_string(),
+        )
+        .with_audit_logger(logger.clone());
+
+        // Rewrite file with several fields changed.
+        write_test_config_file(&config_path, "reloaded", 9090, 5000, 50, "debug");
+
+        let before = logger.total_logged();
+        let result = hot_config.reload_from_file().await;
+        assert!(result.is_ok());
+        assert!(result.unwrap(), "reload_from_file should report success");
+        let after = logger.total_logged();
+
+        assert_eq!(
+            after,
+            before + 1,
+            "audit logger must record one config-change event on file reload"
+        );
+    }
+
+    // ----- watch: file modification detection (covers L201-221) -----
+
+    /// `watch` must detect a file modification on the configured path
+    /// and trigger `reload_config`. We spawn `watch` with a short
+    /// interval, wait for the first tick (which sets `last_modified`),
+    /// then modify the file and verify the in-memory config was updated
+    /// on a subsequent tick. The task is aborted before the test ends.
+    #[tokio::test]
+    async fn test_watch_detects_file_modification_and_reloads() {
+        setup_test_env();
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("watch_reload.toml");
+        write_test_config_file(&config_path, "before-watch", 8080, 10000, 100, "info");
+
+        let hot_config = Arc::new(HotReloadConfig::new(
+            Config::load_from_file(config_path.to_str().unwrap()).unwrap(),
+            config_path.to_str().unwrap().to_string(),
+        ));
+
+        let hot_config_clone = hot_config.clone();
+        let handle = tokio::spawn(async move {
+            hot_config_clone.watch(50).await;
+        });
+
+        // Wait for the watch task to start and the first tick to complete.
+        // The first tick sets `last_modified = Some(mtime)` and triggers
+        // a reload from the initial file content ("before-watch").
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert_eq!(
+            hot_config.get_config().app.name,
+            "before-watch",
+            "first tick should reload initial config"
+        );
+
+        // Modify the file — change app.name so we can verify reload happened.
+        // Sleep briefly to ensure filesystem mtime advances past the
+        // previous value (Windows NTFS mtime precision ~15ms).
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        write_test_config_file(&config_path, "after-watch", 8080, 10000, 100, "info");
+
+        // Wait for the next tick to detect the mtime change and reload.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        handle.abort();
+        // Yield to let abort propagate.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let config = hot_config.get_config();
+        assert_eq!(
+            config.app.name, "after-watch",
+            "watch should have detected file modification and reloaded config"
+        );
+    }
+
+    /// `watch` must handle a missing config file gracefully (no panic,
+    /// no reload). Covers the `if let Ok(metadata) = ...` false branch
+    /// (L208) — when `fs::metadata` returns `Err`, the inner block is
+    /// skipped entirely.
+    #[tokio::test]
+    async fn test_watch_handles_missing_file_no_reload() {
+        setup_test_env();
+        let hot_config = Arc::new(HotReloadConfig::new(
+            Config::default(),
+            "/nonexistent/path/watch_missing.toml".to_string(),
+        ));
+
+        let hot_config_clone = hot_config.clone();
+        let handle = tokio::spawn(async move {
+            hot_config_clone.watch(50).await;
+        });
+
+        // Wait for a couple of ticks — file is missing, should not panic
+        // and should not change the in-memory config.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        handle.abort();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // Config should still be the default (no reload happened).
+        assert_eq!(
+            hot_config.get_config().app.name,
+            "nebula-id",
+            "watch on missing file must not reload config"
+        );
+    }
+
+    // ----- reload_callbacks lock poisoning: UNREACHABLE in practice -----
+    //
+    // The lock-poisoning error paths in `add_reload_callback` (L67-75),
+    // `reload_config` (L115-123), `update_config` (L232-240),
+    // `set_algorithm` (L282-290), and `get_algorithm` (L308-316) are
+    // defensive code that cannot be triggered in practice:
+    //
+    // - `std::sync::RwLock` is poisoned ONLY when a thread panics while
+    //   holding a WRITE guard. READ guards do NOT poison the lock on
+    //   panic. (See https://doc.rust-lang.org/std/sync/struct.RwLock.html#poisoning)
+    //
+    // - The only WRITE locks on `reload_callbacks` and `biz_algorithm_map`
+    //   are in `add_reload_callback` and `set_algorithm` respectively.
+    //   The code inside those write guards is `guard.push(Arc::new(callback))`
+    //   and `map.insert(biz_tag.to_string(), algorithm)`, neither of which
+    //   can panic (Vec::push and HashMap::insert abort on OOM, not panic).
+    //
+    // - The READ locks in `update_config`, `reload_config`, and
+    //   `get_algorithm` do NOT poison the lock when a callback panics,
+    //   because READ guards don't poison on drop.
+    //
+    // - There is no public API to manually poison an `RwLock` without
+    //   `unsafe`, and `parking_lot::RwLock` (not used here) has no
+    //   poisoning at all.
+    //
+    // These paths are documented as known coverage gaps.
+
+    // ----- watch_config_file: spawnable + abortable (covers L323-339) -----
+
+    /// `watch_config_file` is a free function that constructs a
+    /// `HotReloadConfig` from the given path, adds the callback, and
+    /// enters the `watch` infinite loop. We spawn it and abort before
+    /// the first tick to verify it doesn't panic on startup and that
+    /// the function body executes (covering L323-338).
+    #[tokio::test]
+    async fn test_watch_config_file_is_spawnable_and_abortable() {
+        setup_test_env();
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("wcf_test.toml");
+        write_test_config_file(&config_path, "wcf-test", 8080, 10000, 100, "info");
+
+        let path = config_path.to_str().unwrap().to_string();
+        let handle = tokio::spawn(async move {
+            watch_config_file(path, |_config| {
+                // Callback added inside watch_config_file; may be called
+                // on the first reload if the tick fires before abort.
+            })
+            .await;
+        });
+
+        // Let the function start executing and enter the watch loop.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Abort before the first tick (1000ms interval) completes.
+        handle.abort();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        // If we reach here without panic, the test passes.
+    }
 }

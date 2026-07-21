@@ -167,7 +167,7 @@ limiteron = { version = "0.2", default-features = false, features = ["postgres",
 # with stricter RFC 7231 §5.3.1 conformance + DoS guards). The
 # `i18n!` macro and `t!()` / `_rust_i18n_try_translate` / `replace_patterns`
 # APIs do not require the default features.
-rust-i18n = { version = "3.1", default-features = false }
+rust-i18n = { version = "4.2", default-features = false }
 
 [dev-dependencies]
 mockall = "0.13"

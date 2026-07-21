@@ -84,7 +84,7 @@ futures-util = "0.3"
 # Web 框架
 axum = { version = "0.8", features = ["json", "macros"] }
 tower = { version = "0.5", features = ["full"] }
-tower-http = { version = "0.5", features = ["cors", "compression-gzip", "timeout", "limit", "trace", "set-header"] }
+tower-http = { version = "0.7", features = ["cors", "compression-gzip", "timeout", "limit", "trace", "set-header"] }
 hyper = { version = "1.8", features = ["full"] }
 
 # OpenAPI 文档

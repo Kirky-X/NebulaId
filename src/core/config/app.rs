@@ -144,11 +144,15 @@ pub struct DatabaseConfig {
 
 impl Default for DatabaseConfig {
     fn default() -> Self {
-        // If DATABASE_URL is set, password is embedded in URL, not required separately
-        if std::env::var("DATABASE_URL").is_ok() {
+        // If DATABASE_URL is set, password is embedded in URL, not required separately.
+        // 用 `if let Ok(url) = ...` 模式只读取一次 env var，避免原写法中
+        // `.is_ok()` 检查后 `.unwrap()` 读取之间的 TOCTOU race（与
+        // `load_from_env_database_url` 等设置 DATABASE_URL 的测试并行时
+        // 会 panic）。
+        if let Ok(url) = std::env::var("DATABASE_URL") {
             return Self {
                 engine: DatabaseEngine::Postgresql,
-                url: std::env::var("DATABASE_URL").unwrap(),
+                url,
                 host: "localhost".to_string(),
                 port: 5432,
                 username: "idgen".to_string(),

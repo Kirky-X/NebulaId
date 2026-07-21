@@ -836,6 +836,11 @@ pub fn default_degradation_config() -> DegradationConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::algorithm::{
+        AlgorithmMetricsSnapshot, AuditEvent, AuditEventType, AuditLogger, GenerateContext,
+    };
+    use crate::core::types::Result;
+    use async_trait::async_trait;
 
     #[test]
     fn test_health_state_record_failure() {
@@ -921,5 +926,1198 @@ mod tests {
         );
         assert_eq!(config.failure_threshold, DEFAULT_FAILURE_THRESHOLD);
         assert!(config.auto_recovery);
+    }
+
+    // ===== AlgorithmHealthState 扩展测试 =====
+
+    #[test]
+    fn test_health_state_record_request_success_updates_counters() {
+        let state = AlgorithmHealthState::new(AlgorithmType::Segment);
+        assert_eq!(state.total_requests.load(Ordering::SeqCst), 0);
+        assert_eq!(state.total_successes.load(Ordering::SeqCst), 0);
+        assert_eq!(state.total_failures.load(Ordering::SeqCst), 0);
+        assert!(state.last_request_time.read().is_none());
+
+        state.record_request(true);
+
+        assert_eq!(state.total_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(state.total_successes.load(Ordering::SeqCst), 1);
+        assert_eq!(state.total_failures.load(Ordering::SeqCst), 0);
+        assert!(state.last_request_time.read().is_some());
+    }
+
+    #[test]
+    fn test_health_state_record_request_failure_updates_counters() {
+        let state = AlgorithmHealthState::new(AlgorithmType::Snowflake);
+
+        state.record_request(false);
+
+        assert_eq!(state.total_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(state.total_successes.load(Ordering::SeqCst), 0);
+        assert_eq!(state.total_failures.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_health_state_record_failure_clears_successes_and_sets_time() {
+        let state = AlgorithmHealthState::new(AlgorithmType::Segment);
+        state.record_success();
+        state.record_success();
+        assert_eq!(state.consecutive_successes.load(Ordering::SeqCst), 2);
+        assert!(state.last_failure_time.read().is_none());
+
+        state.record_failure();
+
+        assert_eq!(state.consecutive_successes.load(Ordering::SeqCst), 0);
+        assert_eq!(state.consecutive_failures.load(Ordering::SeqCst), 1);
+        assert!(state.last_failure_time.read().is_some());
+    }
+
+    #[test]
+    fn test_health_state_record_success_clears_failures_and_sets_time() {
+        let state = AlgorithmHealthState::new(AlgorithmType::Segment);
+        state.record_failure();
+        state.record_failure();
+        assert_eq!(state.consecutive_failures.load(Ordering::SeqCst), 2);
+        assert!(state.last_success_time.read().is_none());
+
+        state.record_success();
+
+        assert_eq!(state.consecutive_failures.load(Ordering::SeqCst), 0);
+        assert_eq!(state.consecutive_successes.load(Ordering::SeqCst), 1);
+        assert!(state.last_success_time.read().is_some());
+    }
+
+    #[test]
+    fn test_health_state_mark_degraded_and_recovered_toggle_state() {
+        let state = AlgorithmHealthState::new(AlgorithmType::Segment);
+        assert!(!state.is_degraded.load(Ordering::SeqCst));
+        assert!(state.current_state.load(Ordering::SeqCst));
+
+        state.mark_degraded();
+        assert!(state.is_degraded.load(Ordering::SeqCst));
+        assert!(!state.current_state.load(Ordering::SeqCst));
+
+        state.mark_recovered();
+        assert!(!state.is_degraded.load(Ordering::SeqCst));
+        assert!(state.current_state.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_health_state_open_circuit_breaker_sets_state_and_time() {
+        let state = AlgorithmHealthState::new(AlgorithmType::Segment);
+        assert_eq!(
+            state.get_circuit_breaker_state(),
+            CircuitBreakerState::Closed
+        );
+        assert!(state.circuit_breaker_opened_at.read().is_none());
+
+        state.open_circuit_breaker();
+
+        assert_eq!(state.get_circuit_breaker_state(), CircuitBreakerState::Open);
+        assert!(state.circuit_breaker_opened_at.read().is_some());
+    }
+
+    #[test]
+    fn test_health_state_half_open_circuit_breaker_state() {
+        let state = AlgorithmHealthState::new(AlgorithmType::Segment);
+        state.open_circuit_breaker();
+        assert_eq!(state.get_circuit_breaker_state(), CircuitBreakerState::Open);
+
+        state.half_open_circuit_breaker();
+
+        assert_eq!(
+            state.get_circuit_breaker_state(),
+            CircuitBreakerState::HalfOpen
+        );
+    }
+
+    #[test]
+    fn test_health_state_close_circuit_breaker_clears_opened_at() {
+        let state = AlgorithmHealthState::new(AlgorithmType::Segment);
+        state.open_circuit_breaker();
+        assert!(state.circuit_breaker_opened_at.read().is_some());
+
+        state.close_circuit_breaker();
+
+        assert_eq!(
+            state.get_circuit_breaker_state(),
+            CircuitBreakerState::Closed
+        );
+        assert!(state.circuit_breaker_opened_at.read().is_none());
+    }
+
+    #[test]
+    fn test_health_state_can_make_request_in_all_states() {
+        let state = AlgorithmHealthState::new(AlgorithmType::Segment);
+
+        // Closed: can make request
+        assert!(state.can_make_request());
+
+        state.open_circuit_breaker();
+        // Open: cannot make request
+        assert!(!state.can_make_request());
+
+        state.half_open_circuit_breaker();
+        // HalfOpen: can make probe request
+        assert!(state.can_make_request());
+    }
+
+    #[test]
+    fn test_health_state_is_circuit_open_returns_false_when_closed() {
+        let state = AlgorithmHealthState::new(AlgorithmType::Segment);
+        // Closed 状态：is_circuit_open 永远返回 false
+        assert!(!state.is_circuit_open(60_000));
+        assert!(!state.is_circuit_open(0));
+    }
+
+    #[test]
+    fn test_health_state_is_circuit_open_returns_true_within_timeout() {
+        let state = AlgorithmHealthState::new(AlgorithmType::Segment);
+        state.open_circuit_breaker();
+
+        // 刚打开，timeout 较大，应处于 open 状态
+        assert!(state.is_circuit_open(60_000));
+    }
+
+    #[test]
+    fn test_health_state_is_circuit_open_returns_false_past_timeout() {
+        let state = AlgorithmHealthState::new(AlgorithmType::Segment);
+        state.open_circuit_breaker();
+
+        // timeout 为 0 ms，立刻认为已超过 timeout
+        // 注意：opened_at.elapsed() >= Duration::from_millis(0) 永远成立
+        // 但代码用 < 比较，所以 0 ms 一定会返回 false（已超过 timeout）
+        assert!(!state.is_circuit_open(0));
+    }
+
+    #[test]
+    fn test_health_state_get_metrics_zero_requests_returns_zero_rate() {
+        let state = AlgorithmHealthState::new(AlgorithmType::Segment);
+        let metrics = state.get_metrics();
+
+        assert_eq!(metrics.alg_type, AlgorithmType::Segment);
+        assert_eq!(metrics.total_requests, 0);
+        assert_eq!(metrics.total_successes, 0);
+        assert_eq!(metrics.total_failures, 0);
+        assert_eq!(metrics.success_rate, 0.0);
+        assert_eq!(metrics.circuit_breaker_state, CircuitBreakerState::Closed);
+        assert!(!metrics.is_degraded);
+    }
+
+    #[test]
+    fn test_health_state_get_metrics_with_mixed_requests_computes_rate() {
+        let state = AlgorithmHealthState::new(AlgorithmType::Snowflake);
+        // 3 成功 + 1 失败 = 4 总,success_rate = 75.0
+        state.record_request(true);
+        state.record_request(true);
+        state.record_request(true);
+        state.record_request(false);
+
+        let metrics = state.get_metrics();
+
+        assert_eq!(metrics.total_requests, 4);
+        assert_eq!(metrics.total_successes, 3);
+        assert_eq!(metrics.total_failures, 1);
+        assert!((metrics.success_rate - 75.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_health_state_get_metrics_reflects_circuit_breaker_state() {
+        let state = AlgorithmHealthState::new(AlgorithmType::Segment);
+        state.open_circuit_breaker();
+        state.mark_degraded();
+
+        let metrics = state.get_metrics();
+
+        assert_eq!(metrics.circuit_breaker_state, CircuitBreakerState::Open);
+        assert!(metrics.is_degraded);
+    }
+
+    #[test]
+    fn test_health_state_reset_clears_all_circuit_breaker_state() {
+        let state = AlgorithmHealthState::new(AlgorithmType::Segment);
+        state.record_failure();
+        state.record_failure();
+        state.record_success();
+        state.open_circuit_breaker();
+        state.mark_degraded();
+
+        state.reset();
+
+        assert_eq!(state.consecutive_failures.load(Ordering::SeqCst), 0);
+        assert_eq!(state.consecutive_successes.load(Ordering::SeqCst), 0);
+        assert!(!state.is_degraded.load(Ordering::SeqCst));
+        assert!(state.current_state.load(Ordering::SeqCst));
+        assert_eq!(
+            state.get_circuit_breaker_state(),
+            CircuitBreakerState::Closed
+        );
+        assert!(state.circuit_breaker_opened_at.read().is_none());
+    }
+
+    #[test]
+    fn test_default_degradation_config_function_returns_expected_values() {
+        let config = default_degradation_config();
+
+        assert!(config.enabled);
+        assert_eq!(
+            config.check_interval_ms,
+            DEFAULT_DEGRADATION_CHECK_INTERVAL_MS
+        );
+        assert_eq!(
+            config.recovery_check_interval_ms,
+            DEFAULT_RECOVERY_CHECK_INTERVAL_MS
+        );
+        assert_eq!(config.failure_threshold, DEFAULT_FAILURE_THRESHOLD);
+        assert_eq!(config.recovery_threshold, DEFAULT_RECOVERY_THRESHOLD);
+        assert!(config.auto_recovery);
+        assert_eq!(
+            config.circuit_breaker_timeout_ms,
+            DEFAULT_CIRCUIT_BREAKER_TIMEOUT_MS
+        );
+        assert_eq!(
+            config.half_open_success_threshold,
+            DEFAULT_HALF_OPEN_SUCCESS_THRESHOLD
+        );
+        assert!(config.enable_circuit_breaker);
+        assert_eq!(
+            config.fallback_chain,
+            vec![
+                AlgorithmType::Segment,
+                AlgorithmType::Snowflake,
+                AlgorithmType::UuidV7,
+            ]
+        );
+    }
+
+    // ===== DegradationManager 扩展测试 =====
+
+    fn build_manager_with_thresholds(failure: u8, recovery: u8) -> DegradationManager {
+        let config = DegradationConfig {
+            failure_threshold: failure,
+            recovery_threshold: recovery,
+            ..Default::default()
+        };
+        DegradationManager::new(Some(config), None)
+    }
+
+    #[tokio::test]
+    async fn test_determine_effective_algorithm_returns_normal_when_primary_healthy() {
+        let manager = DegradationManager::new(None, None);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
+
+        // 注册 primary 的 state
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+
+        let state = manager.determine_effective_algorithm().await;
+        assert_eq!(state, DegradationState::Normal);
+    }
+
+    #[tokio::test]
+    async fn test_determine_effective_algorithm_returns_degraded_when_primary_down() {
+        let manager = DegradationManager::new(None, None);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.set_fallback_chain(vec![AlgorithmType::Snowflake, AlgorithmType::UuidV7]);
+
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+        manager.register_algorithm(
+            AlgorithmType::Snowflake,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
+        );
+
+        // 让 primary 进入 degraded
+        manager.manual_degrade(AlgorithmType::Segment);
+
+        let state = manager.determine_effective_algorithm().await;
+        assert_eq!(state, DegradationState::Degraded(AlgorithmType::Snowflake));
+    }
+
+    #[tokio::test]
+    async fn test_determine_effective_algorithm_returns_critical_when_all_down() {
+        let manager = DegradationManager::new(None, None);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.set_fallback_chain(vec![AlgorithmType::Snowflake, AlgorithmType::UuidV7]);
+
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+        manager.register_algorithm(
+            AlgorithmType::Snowflake,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
+        );
+        manager.register_algorithm(
+            AlgorithmType::UuidV7,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::UuidV7)) as Arc<dyn IdAlgorithm>,
+        );
+
+        manager.manual_degrade(AlgorithmType::Segment);
+        manager.manual_degrade(AlgorithmType::Snowflake);
+        manager.manual_degrade(AlgorithmType::UuidV7);
+
+        let state = manager.determine_effective_algorithm().await;
+        assert_eq!(state, DegradationState::Critical);
+    }
+
+    #[tokio::test]
+    async fn test_get_effective_algorithm_returns_primary_when_normal() {
+        let manager = DegradationManager::new(None, None);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+
+        // Normal 状态：返回 primary
+        let alg = manager.get_effective_algorithm().await;
+        assert_eq!(alg, AlgorithmType::Segment);
+    }
+
+    #[tokio::test]
+    async fn test_get_effective_algorithm_returns_degraded_alg_when_degraded() {
+        let manager = DegradationManager::new(None, None);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
+
+        // 手动将 current_state 切换为 Degraded(Snowflake)
+        *manager.current_state.write() = DegradationState::Degraded(AlgorithmType::Snowflake);
+
+        let alg = manager.get_effective_algorithm().await;
+        assert_eq!(alg, AlgorithmType::Snowflake);
+    }
+
+    #[tokio::test]
+    async fn test_get_effective_algorithm_critical_uses_first_available() {
+        let manager = DegradationManager::new(None, None);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.set_fallback_chain(vec![AlgorithmType::Snowflake, AlgorithmType::UuidV7]);
+
+        // 注册 Snowflake，使其 current_state = true（healthy）
+        manager.register_algorithm(
+            AlgorithmType::Snowflake,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
+        );
+
+        *manager.current_state.write() = DegradationState::Critical;
+
+        let alg = manager.get_effective_algorithm().await;
+        // Snowflake 是 fallback chain 中第一个 current_state=true 的算法
+        assert_eq!(alg, AlgorithmType::Snowflake);
+    }
+
+    #[tokio::test]
+    async fn test_get_effective_algorithm_critical_falls_back_to_primary_when_none_healthy() {
+        let manager = DegradationManager::new(None, None);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
+
+        // 注册 Snowflake，但标记为不健康
+        manager.register_algorithm(
+            AlgorithmType::Snowflake,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
+        );
+        // 标记 Snowflake 的 current_state = false
+        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Snowflake) {
+            state.current_state.store(false, Ordering::SeqCst);
+        }
+
+        *manager.current_state.write() = DegradationState::Critical;
+
+        let alg = manager.get_effective_algorithm().await;
+        // 所有 fallback 都不可用 → 返回 primary
+        assert_eq!(alg, AlgorithmType::Segment);
+    }
+
+    #[test]
+    fn test_get_algorithm_state_returns_some_for_registered() {
+        let manager = DegradationManager::new(None, None);
+        manager.register_algorithm(
+            AlgorithmType::Snowflake,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
+        );
+
+        let info = manager.get_algorithm_state(AlgorithmType::Snowflake);
+        assert!(info.is_some());
+        let info = info.unwrap();
+        assert_eq!(info.alg_type, AlgorithmType::Snowflake);
+        assert_eq!(info.consecutive_failures, 0);
+        assert!(!info.is_degraded);
+        assert!(info.is_healthy);
+    }
+
+    #[test]
+    fn test_get_algorithm_state_returns_none_for_unregistered() {
+        let manager = DegradationManager::new(None, None);
+
+        let info = manager.get_algorithm_state(AlgorithmType::UuidV7);
+        assert!(info.is_none());
+    }
+
+    #[test]
+    fn test_update_config_replaces_internal_config() {
+        let mut manager = DegradationManager::new(None, None);
+        let new_config = DegradationConfig {
+            failure_threshold: 99,
+            enabled: false,
+            ..Default::default()
+        };
+
+        manager.update_config(new_config);
+
+        // 通过私有字段无法直接读取，用 record_generation_result 验证：
+        // 注册算法后失败 5 次（原 threshold），不应触发降级（新 threshold=99）
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+        // 此处用 block_on 同步执行
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            for _ in 0..5 {
+                manager
+                    .record_generation_result(AlgorithmType::Segment, false)
+                    .await;
+            }
+        });
+        let info = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
+        // 失败 5 次但未达新 threshold(99) → 未降级
+        assert!(!info.is_degraded);
+        assert_eq!(info.consecutive_failures, 5);
+    }
+
+    #[test]
+    fn test_manual_degrade_on_existing_algorithm_marks_state() {
+        let manager = DegradationManager::new(None, None);
+        manager.register_algorithm(
+            AlgorithmType::Snowflake,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
+        );
+
+        manager.manual_degrade(AlgorithmType::Snowflake);
+
+        let info = manager
+            .get_algorithm_state(AlgorithmType::Snowflake)
+            .unwrap();
+        assert!(info.is_degraded);
+        assert!(!info.is_healthy);
+    }
+
+    #[test]
+    fn test_manual_recover_on_nonexistent_is_no_op() {
+        let manager = DegradationManager::new(None, None);
+        // 未注册 Snowflake → manual_recover 是 no-op，不 panic
+        manager.manual_recover(AlgorithmType::Snowflake);
+
+        // 验证 states 仍为空
+        assert!(manager.get_all_states().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_record_generation_result_unknown_alg_is_no_op() {
+        let manager = DegradationManager::new(None, None);
+        // 未注册 Segment → 不记录结果，不 panic
+        manager
+            .record_generation_result(AlgorithmType::Segment, false)
+            .await;
+
+        assert_eq!(manager.get_current_state(), DegradationState::Normal);
+    }
+
+    #[tokio::test]
+    async fn test_record_generation_result_failure_below_threshold_no_state_change() {
+        let manager = build_manager_with_thresholds(5, 3);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+
+        // 失败 1 次（threshold=5）→ 不降级
+        manager
+            .record_generation_result(AlgorithmType::Segment, false)
+            .await;
+
+        let info = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
+        assert_eq!(info.consecutive_failures, 1);
+        assert!(!info.is_degraded);
+        assert_eq!(manager.get_current_state(), DegradationState::Normal);
+    }
+
+    #[tokio::test]
+    async fn test_record_generation_result_failure_at_threshold_triggers_degradation() {
+        let manager = build_manager_with_thresholds(2, 3);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+        manager.register_algorithm(
+            AlgorithmType::Snowflake,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
+        );
+
+        // 失败 1 次
+        manager
+            .record_generation_result(AlgorithmType::Segment, false)
+            .await;
+        // 失败 2 次 → 触发降级
+        manager
+            .record_generation_result(AlgorithmType::Segment, false)
+            .await;
+
+        let info = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
+        assert!(info.is_degraded);
+        // primary 已降级，且 Snowflake 在 fallback chain 中健康 → 切到 Degraded(Snowflake)
+        assert_eq!(
+            manager.get_current_state(),
+            DegradationState::Degraded(AlgorithmType::Snowflake)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_record_generation_result_success_when_not_degraded_no_recovery() {
+        let manager = build_manager_with_thresholds(5, 3);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+
+        // 未降级时 success → 不触发 recovery
+        manager
+            .record_generation_result(AlgorithmType::Segment, true)
+            .await;
+
+        let info = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
+        assert_eq!(info.consecutive_successes, 1);
+        assert!(!info.is_degraded);
+        assert_eq!(manager.get_current_state(), DegradationState::Normal);
+    }
+
+    #[tokio::test]
+    async fn test_record_generation_result_success_triggers_recovery_for_primary() {
+        let manager = build_manager_with_thresholds(2, 2);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+        manager.register_algorithm(
+            AlgorithmType::Snowflake,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
+        );
+
+        // 先降级 primary
+        manager
+            .record_generation_result(AlgorithmType::Segment, false)
+            .await;
+        manager
+            .record_generation_result(AlgorithmType::Segment, false)
+            .await;
+        assert_eq!(
+            manager.get_current_state(),
+            DegradationState::Degraded(AlgorithmType::Snowflake)
+        );
+
+        // 成功 2 次 → 触发恢复
+        manager
+            .record_generation_result(AlgorithmType::Segment, true)
+            .await;
+        manager
+            .record_generation_result(AlgorithmType::Segment, true)
+            .await;
+
+        // primary 已恢复，状态回到 Normal
+        assert_eq!(manager.get_current_state(), DegradationState::Normal);
+    }
+
+    #[tokio::test]
+    async fn test_record_generation_result_success_triggers_recovery_for_non_primary_no_state_change(
+    ) {
+        let manager = build_manager_with_thresholds(2, 2);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+        manager.register_algorithm(
+            AlgorithmType::Snowflake,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
+        );
+
+        // 手动降级 Snowflake (非 primary)
+        manager.manual_degrade(AlgorithmType::Snowflake);
+        // 把 current_state 强制设为 Degraded(Snowflake)（虽然 primary 还健康，模拟边缘场景）
+        *manager.current_state.write() = DegradationState::Degraded(AlgorithmType::Snowflake);
+
+        // 成功 2 次 → 触发 attempt_recovery，但 alg_type != primary → 不更新 current_state
+        manager
+            .record_generation_result(AlgorithmType::Snowflake, true)
+            .await;
+        manager
+            .record_generation_result(AlgorithmType::Snowflake, true)
+            .await;
+
+        // Snowflake 标记为已恢复
+        let info = manager
+            .get_algorithm_state(AlgorithmType::Snowflake)
+            .unwrap();
+        assert!(!info.is_degraded);
+        // 但 current_state 保持 Degraded(Snowflake) 不变（因为非 primary 分支不更新）
+        assert_eq!(
+            manager.get_current_state(),
+            DegradationState::Degraded(AlgorithmType::Snowflake)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trigger_degradation_invokes_audit_logger() {
+        let logger = Arc::new(CountingAuditLogger::default());
+        let manager = DegradationManager::new(None, Some(logger.clone() as DynAuditLogger));
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+        manager.register_algorithm(
+            AlgorithmType::Snowflake,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
+        );
+
+        // 用 default config (threshold=5)，失败 5 次触发降级
+        for _ in 0..5 {
+            manager
+                .record_generation_result(AlgorithmType::Segment, false)
+                .await;
+        }
+
+        // 验证 audit logger 收到 DegradationEvent
+        let events = logger.events.lock().unwrap();
+        assert!(events
+            .iter()
+            .any(|e| e.event_type == AuditEventType::DegradationEvent));
+    }
+
+    #[tokio::test]
+    async fn test_attempt_recovery_invokes_audit_logger() {
+        let logger = Arc::new(CountingAuditLogger::default());
+        let manager = DegradationManager::new(None, Some(logger.clone() as DynAuditLogger));
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+        manager.register_algorithm(
+            AlgorithmType::Snowflake,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
+        );
+
+        // 降级 primary
+        for _ in 0..5 {
+            manager
+                .record_generation_result(AlgorithmType::Segment, false)
+                .await;
+        }
+        // 恢复 primary（recovery_threshold=10）
+        for _ in 0..10 {
+            manager
+                .record_generation_result(AlgorithmType::Segment, true)
+                .await;
+        }
+
+        let events = logger.events.lock().unwrap();
+        // 至少 2 个 DegradationEvent：降级 + 恢复
+        let degradation_events: Vec<_> = events
+            .iter()
+            .filter(|e| e.event_type == AuditEventType::DegradationEvent)
+            .collect();
+        assert!(degradation_events.len() >= 2);
+    }
+
+    #[tokio::test]
+    async fn test_check_all_health_all_healthy_records_success() {
+        let manager = build_manager_with_thresholds(5, 3);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+
+        manager.check_all_health().await;
+
+        let info = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
+        assert_eq!(info.consecutive_successes, 1);
+        assert!(info.is_healthy);
+        assert_eq!(manager.get_current_state(), DegradationState::Normal);
+    }
+
+    #[tokio::test]
+    async fn test_check_all_health_unhealthy_records_failure_without_degradation() {
+        let manager = build_manager_with_thresholds(5, 3);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        // 注册返回 Unhealthy 的 mock
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockUnhealthyIdAlgorithm::new(
+                AlgorithmType::Segment,
+                HealthStatus::Unhealthy("db down".to_string()),
+            )) as Arc<dyn IdAlgorithm>,
+        );
+
+        manager.check_all_health().await;
+
+        let info = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
+        assert_eq!(info.consecutive_failures, 1);
+        assert!(!info.is_degraded);
+    }
+
+    #[tokio::test]
+    async fn test_check_all_health_unhealthy_at_threshold_triggers_degradation() {
+        let manager = build_manager_with_thresholds(2, 3);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockUnhealthyIdAlgorithm::new(
+                AlgorithmType::Segment,
+                HealthStatus::Unhealthy("db down".to_string()),
+            )) as Arc<dyn IdAlgorithm>,
+        );
+        manager.register_algorithm(
+            AlgorithmType::Snowflake,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
+        );
+
+        // 第一次失败
+        manager.check_all_health().await;
+        // 第二次失败 → 触发降级 + 打开 circuit breaker
+        manager.check_all_health().await;
+
+        let info = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
+        assert!(info.is_degraded);
+        assert_eq!(
+            manager.get_current_state(),
+            DegradationState::Degraded(AlgorithmType::Snowflake)
+        );
+        // circuit breaker 应被打开
+        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
+            assert_eq!(state.get_circuit_breaker_state(), CircuitBreakerState::Open);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_check_all_health_unhealthy_triggers_degradation_without_circuit_breaker() {
+        let config = DegradationConfig {
+            failure_threshold: 2,
+            enable_circuit_breaker: false,
+            ..Default::default()
+        };
+        let manager = DegradationManager::new(Some(config), None);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockUnhealthyIdAlgorithm::new(
+                AlgorithmType::Segment,
+                HealthStatus::Unhealthy("err".to_string()),
+            )) as Arc<dyn IdAlgorithm>,
+        );
+        manager.register_algorithm(
+            AlgorithmType::Snowflake,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
+        );
+
+        manager.check_all_health().await;
+        manager.check_all_health().await;
+
+        let info = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
+        assert!(info.is_degraded);
+        // enable_circuit_breaker=false → 不打开 circuit breaker
+        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
+            assert_eq!(
+                state.get_circuit_breaker_state(),
+                CircuitBreakerState::Closed
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_check_all_health_degraded_status_no_state_change() {
+        let manager = build_manager_with_thresholds(5, 3);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockUnhealthyIdAlgorithm::new(
+                AlgorithmType::Segment,
+                HealthStatus::Degraded("slow".to_string()),
+            )) as Arc<dyn IdAlgorithm>,
+        );
+
+        manager.check_all_health().await;
+
+        // Degraded 状态：仅记录日志，不修改 state
+        let info = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
+        assert!(!info.is_degraded);
+        assert_eq!(info.consecutive_failures, 0);
+        assert_eq!(manager.get_current_state(), DegradationState::Normal);
+    }
+
+    #[tokio::test]
+    async fn test_check_all_health_skips_already_degraded_algorithm() {
+        let manager = build_manager_with_thresholds(5, 3);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockUnhealthyIdAlgorithm::new(
+                AlgorithmType::Segment,
+                HealthStatus::Unhealthy("err".to_string()),
+            )) as Arc<dyn IdAlgorithm>,
+        );
+
+        // 先标记为已降级
+        manager.manual_degrade(AlgorithmType::Segment);
+
+        manager.check_all_health().await;
+
+        // 已降级的算法不会被再次检查（跳过 health_check）
+        let info = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
+        assert!(info.is_degraded);
+        // 不应再增加 consecutive_failures
+        assert_eq!(info.consecutive_failures, 0);
+    }
+
+    #[tokio::test]
+    async fn test_check_all_health_circuit_open_within_timeout_continues() {
+        let manager = build_manager_with_thresholds(5, 3);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+
+        // 打开 circuit breaker
+        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
+            state.open_circuit_breaker();
+        }
+
+        manager.check_all_health().await;
+
+        // 仍在 timeout 内 → 状态保持 Open，未 half_open
+        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
+            assert_eq!(state.get_circuit_breaker_state(), CircuitBreakerState::Open);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_check_all_health_circuit_open_past_timeout_half_opens() {
+        let config = DegradationConfig {
+            failure_threshold: 5,
+            circuit_breaker_timeout_ms: 0, // 立刻超时
+            ..Default::default()
+        };
+        let manager = DegradationManager::new(Some(config), None);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+
+        // 打开 circuit breaker
+        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
+            state.open_circuit_breaker();
+        }
+
+        manager.check_all_health().await;
+
+        // 已超时 → 切换到 HalfOpen
+        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
+            assert_eq!(
+                state.get_circuit_breaker_state(),
+                CircuitBreakerState::HalfOpen
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_check_all_health_half_open_healthy_below_threshold_records_success() {
+        let config = DegradationConfig {
+            failure_threshold: 5,
+            half_open_success_threshold: 5, // 较高阈值
+            ..Default::default()
+        };
+        let manager = DegradationManager::new(Some(config), None);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+
+        // 切到 HalfOpen
+        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
+            state.half_open_circuit_breaker();
+        }
+
+        manager.check_all_health().await;
+
+        // Healthy 但 successes(0) < threshold(5) → 仅记录 success，不关闭 circuit
+        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
+            assert_eq!(
+                state.get_circuit_breaker_state(),
+                CircuitBreakerState::HalfOpen
+            );
+            assert_eq!(state.consecutive_successes.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_check_all_health_half_open_healthy_at_threshold_closes_circuit() {
+        let config = DegradationConfig {
+            failure_threshold: 5,
+            half_open_success_threshold: 2,
+            ..Default::default()
+        };
+        let manager = DegradationManager::new(Some(config), None);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+
+        // 切到 HalfOpen 并预先累积 successes 到阈值
+        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
+            state.half_open_circuit_breaker();
+            state.record_success();
+            state.record_success();
+            // 标记为 degraded 以验证 mark_recovered 被调用
+            state.mark_degraded();
+        }
+
+        manager.check_all_health().await;
+
+        // Healthy 且 successes >= threshold(2) → 关闭 circuit + mark_recovered
+        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
+            assert_eq!(
+                state.get_circuit_breaker_state(),
+                CircuitBreakerState::Closed
+            );
+            assert!(!state.is_degraded.load(Ordering::SeqCst));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_check_all_health_half_open_degraded_reopens_circuit() {
+        let manager = build_manager_with_thresholds(5, 3);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockUnhealthyIdAlgorithm::new(
+                AlgorithmType::Segment,
+                HealthStatus::Degraded("partial".to_string()),
+            )) as Arc<dyn IdAlgorithm>,
+        );
+
+        // 切到 HalfOpen
+        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
+            state.half_open_circuit_breaker();
+        }
+
+        manager.check_all_health().await;
+
+        // HalfOpen + Degraded → 重新打开 circuit breaker
+        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
+            assert_eq!(state.get_circuit_breaker_state(), CircuitBreakerState::Open);
+            assert_eq!(state.consecutive_failures.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_check_all_health_half_open_unhealthy_reopens_circuit() {
+        let manager = build_manager_with_thresholds(5, 3);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockUnhealthyIdAlgorithm::new(
+                AlgorithmType::Segment,
+                HealthStatus::Unhealthy("down".to_string()),
+            )) as Arc<dyn IdAlgorithm>,
+        );
+
+        // 切到 HalfOpen
+        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
+            state.half_open_circuit_breaker();
+        }
+
+        manager.check_all_health().await;
+
+        // HalfOpen + Unhealthy → 重新打开 circuit breaker
+        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
+            assert_eq!(state.get_circuit_breaker_state(), CircuitBreakerState::Open);
+            assert_eq!(state.consecutive_failures.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_start_and_stop_background_check_lifecycle() {
+        let config = DegradationConfig {
+            check_interval_ms: 10,
+            ..Default::default()
+        };
+        let manager = Arc::new(DegradationManager::new(Some(config), None));
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+
+        manager.start_background_check();
+        assert!(manager.running.load(Ordering::SeqCst));
+
+        // 给后台 task 一点时间运行
+        tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+
+        manager.stop_background_check().await;
+        assert!(!manager.running.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn test_start_background_check_already_running_returns_early() {
+        let config = DegradationConfig {
+            check_interval_ms: 1000,
+            ..Default::default()
+        };
+        let manager = Arc::new(DegradationManager::new(Some(config), None));
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+
+        manager.start_background_check();
+        // 再次启动应返回 early（compare_exchange 失败）
+        manager.start_background_check();
+
+        assert!(manager.running.load(Ordering::SeqCst));
+
+        // 清理
+        manager.stop_background_check().await;
+    }
+
+    #[tokio::test]
+    async fn test_stop_background_check_without_start_is_no_op() {
+        let manager = DegradationManager::new(None, None);
+        // 未启动 → stop 是 no-op，不 panic
+        manager.stop_background_check().await;
+        assert!(!manager.running.load(Ordering::SeqCst));
+    }
+
+    // ===== 测试辅助类型 =====
+
+    /// 简单的 IdAlgorithm 实现：返回固定 ID 和健康状态。
+    /// 用手写 mock 而不是 mockall，避免 mockall 在 `&Arc<DegradationManager>`
+    /// 等返回 ref 方法上的限制。
+    struct MockIdAlgorithm {
+        alg_type: AlgorithmType,
+    }
+
+    impl MockIdAlgorithm {
+        fn new(alg_type: AlgorithmType) -> Self {
+            Self { alg_type }
+        }
+    }
+
+    #[async_trait]
+    impl IdAlgorithm for MockIdAlgorithm {
+        async fn generate(&self, _ctx: &GenerateContext) -> Result<crate::core::types::Id> {
+            Ok(crate::core::types::Id::from_u128(1))
+        }
+
+        async fn batch_generate(
+            &self,
+            _ctx: &GenerateContext,
+            size: usize,
+        ) -> Result<crate::core::types::IdBatch> {
+            Ok(crate::core::types::IdBatch {
+                ids: vec![crate::core::types::Id::from_u128(1); size],
+                algorithm: self.alg_type,
+                biz_tag: String::new(),
+                generated_at: chrono::Utc::now(),
+            })
+        }
+
+        fn health_check(&self) -> HealthStatus {
+            HealthStatus::Healthy
+        }
+
+        fn metrics(&self) -> AlgorithmMetricsSnapshot {
+            AlgorithmMetricsSnapshot::default()
+        }
+
+        fn algorithm_type(&self) -> AlgorithmType {
+            self.alg_type
+        }
+
+        async fn shutdown(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 可配置 health_check 返回值的 mock。
+    struct MockUnhealthyIdAlgorithm {
+        alg_type: AlgorithmType,
+        health: HealthStatus,
+    }
+
+    impl MockUnhealthyIdAlgorithm {
+        fn new(alg_type: AlgorithmType, health: HealthStatus) -> Self {
+            Self { alg_type, health }
+        }
+    }
+
+    #[async_trait]
+    impl IdAlgorithm for MockUnhealthyIdAlgorithm {
+        async fn generate(&self, _ctx: &GenerateContext) -> Result<crate::core::types::Id> {
+            Err(crate::core::types::CoreError::InternalError(
+                "mock failure".to_string(),
+            ))
+        }
+
+        async fn batch_generate(
+            &self,
+            _ctx: &GenerateContext,
+            _size: usize,
+        ) -> Result<crate::core::types::IdBatch> {
+            Err(crate::core::types::CoreError::InternalError(
+                "mock failure".to_string(),
+            ))
+        }
+
+        fn health_check(&self) -> HealthStatus {
+            self.health.clone()
+        }
+
+        fn metrics(&self) -> AlgorithmMetricsSnapshot {
+            AlgorithmMetricsSnapshot::default()
+        }
+
+        fn algorithm_type(&self) -> AlgorithmType {
+            self.alg_type
+        }
+
+        async fn shutdown(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 记录所有 audit 事件的 logger，用于验证 audit 调用。
+    #[derive(Default)]
+    struct CountingAuditLogger {
+        events: std::sync::Mutex<Vec<AuditEvent>>,
+    }
+
+    #[async_trait]
+    impl AuditLogger for CountingAuditLogger {
+        async fn log(&self, event: AuditEvent) {
+            self.events.lock().unwrap().push(event);
+        }
     }
 }

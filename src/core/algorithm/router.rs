@@ -565,6 +565,7 @@ impl AlgorithmRouter {
 mod tests {
     use super::*;
     use crate::core::config::Config;
+    use async_trait::async_trait;
 
     #[tokio::test]
     async fn test_algorithm_router_initialize() {
@@ -631,5 +632,889 @@ mod tests {
         let entry = router.current_algorithm.load().get("order").copied();
         assert!(entry.is_some());
         assert_eq!(entry.unwrap(), AlgorithmType::Snowflake);
+    }
+
+    // ============== 测试辅助 Mock 与工具函数 ==============
+
+    /// 健康 Mock：所有方法均成功
+    struct MockHealthyAlgorithm {
+        alg_type: AlgorithmType,
+    }
+
+    #[async_trait]
+    impl IdAlgorithm for MockHealthyAlgorithm {
+        async fn generate(&self, _ctx: &GenerateContext) -> Result<Id> {
+            Ok(Id::from_u128(42))
+        }
+        async fn batch_generate(&self, _ctx: &GenerateContext, size: usize) -> Result<IdBatch> {
+            Ok(IdBatch {
+                ids: vec![Id::from_u128(42); size],
+                algorithm: self.alg_type,
+                biz_tag: String::new(),
+                generated_at: chrono::Utc::now(),
+            })
+        }
+        fn health_check(&self) -> HealthStatus {
+            HealthStatus::Healthy
+        }
+        fn metrics(&self) -> AlgorithmMetricsSnapshot {
+            AlgorithmMetricsSnapshot::default()
+        }
+        fn algorithm_type(&self) -> AlgorithmType {
+            self.alg_type
+        }
+        async fn shutdown(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 可配置 Mock：可单独设置 generate/batch/shutdown 失败，以及健康状态
+    struct MockConfigurableAlgorithm {
+        alg_type: AlgorithmType,
+        fail_generate: bool,
+        fail_batch: bool,
+        fail_shutdown: bool,
+        health_kind: MockHealthKind,
+    }
+
+    #[derive(Clone, Copy)]
+    enum MockHealthKind {
+        Healthy,
+        Degraded,
+        Unhealthy,
+    }
+
+    impl MockConfigurableAlgorithm {
+        fn new(alg_type: AlgorithmType) -> Self {
+            Self {
+                alg_type,
+                fail_generate: false,
+                fail_batch: false,
+                fail_shutdown: false,
+                health_kind: MockHealthKind::Healthy,
+            }
+        }
+        fn with_generate_failure(mut self) -> Self {
+            self.fail_generate = true;
+            self
+        }
+        fn with_batch_failure(mut self) -> Self {
+            self.fail_batch = true;
+            self
+        }
+        fn with_shutdown_failure(mut self) -> Self {
+            self.fail_shutdown = true;
+            self
+        }
+        fn with_health(mut self, kind: MockHealthKind) -> Self {
+            self.health_kind = kind;
+            self
+        }
+    }
+
+    #[async_trait]
+    impl IdAlgorithm for MockConfigurableAlgorithm {
+        async fn generate(&self, _ctx: &GenerateContext) -> Result<Id> {
+            if self.fail_generate {
+                Err(CoreError::InternalError(
+                    "mock generate failure".to_string(),
+                ))
+            } else {
+                Ok(Id::from_u128(42))
+            }
+        }
+        async fn batch_generate(&self, _ctx: &GenerateContext, size: usize) -> Result<IdBatch> {
+            if self.fail_batch {
+                Err(CoreError::InternalError("mock batch failure".to_string()))
+            } else {
+                Ok(IdBatch {
+                    ids: vec![Id::from_u128(42); size],
+                    algorithm: self.alg_type,
+                    biz_tag: String::new(),
+                    generated_at: chrono::Utc::now(),
+                })
+            }
+        }
+        fn health_check(&self) -> HealthStatus {
+            match self.health_kind {
+                MockHealthKind::Healthy => HealthStatus::Healthy,
+                MockHealthKind::Degraded => HealthStatus::Degraded("mock degraded".to_string()),
+                MockHealthKind::Unhealthy => HealthStatus::Unhealthy("mock unhealthy".to_string()),
+            }
+        }
+        fn metrics(&self) -> AlgorithmMetricsSnapshot {
+            AlgorithmMetricsSnapshot::default()
+        }
+        fn algorithm_type(&self) -> AlgorithmType {
+            self.alg_type
+        }
+        async fn shutdown(&self) -> Result<()> {
+            if self.fail_shutdown {
+                Err(CoreError::InternalError(
+                    "mock shutdown failure".to_string(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// 向 router 中插入 mock 算法
+    fn insert_mock(router: &AlgorithmRouter, alg_type: AlgorithmType, mock: Arc<dyn IdAlgorithm>) {
+        router.algorithms.rcu(|old| {
+            let mut new: HashMap<_, _> = (**old).clone();
+            new.insert(alg_type, mock.clone());
+            Arc::new(new)
+        });
+    }
+
+    /// 构造 GenerateContext
+    fn make_ctx(biz_tag: &str) -> GenerateContext {
+        GenerateContext {
+            workspace_id: "ws".to_string(),
+            group_id: "g".to_string(),
+            biz_tag: biz_tag.to_string(),
+            format: crate::core::types::IdFormat::Numeric,
+            prefix: None,
+        }
+    }
+
+    // ============== IdGenerator trait impl 测试 ==============
+
+    #[tokio::test]
+    async fn test_id_generator_generate_trait_method_succeeds() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Segment,
+            }),
+        );
+        let id = IdGenerator::generate(&router, "ws", "g", "bt")
+            .await
+            .unwrap();
+        assert_eq!(id.as_u128(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_id_generator_generate_trait_method_fallback_when_primary_missing() {
+        // 默认算法是 Segment，但 algorithms 中只有 Snowflake — 应回退到 Snowflake
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        let id = IdGenerator::generate(&router, "ws", "g", "bt")
+            .await
+            .unwrap();
+        assert_eq!(id.as_u128(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_id_generator_batch_generate_trait_method_succeeds() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Segment,
+            }),
+        );
+        let ids = IdGenerator::batch_generate(&router, "ws", "g", "bt", 5)
+            .await
+            .unwrap();
+        assert_eq!(ids.len(), 5);
+        assert!(ids.iter().all(|id| id.as_u128() == 42));
+    }
+
+    #[tokio::test]
+    async fn test_id_generator_get_algorithm_name_with_biz_tag_override() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        router
+            .set_algorithm("order".to_string(), AlgorithmType::Snowflake)
+            .await;
+        let name = IdGenerator::get_algorithm_name(&router, "ws", "g", "order")
+            .await
+            .unwrap();
+        // Display 输出小写
+        assert_eq!(name, "snowflake");
+    }
+
+    #[tokio::test]
+    async fn test_id_generator_get_algorithm_name_without_override_returns_default() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        let name = IdGenerator::get_algorithm_name(&router, "ws", "g", "unknown_tag")
+            .await
+            .unwrap();
+        // 默认算法 Segment，Display 输出小写
+        assert_eq!(name, "segment");
+    }
+
+    #[tokio::test]
+    async fn test_id_generator_health_check_empty_algorithms_returns_unhealthy() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        let status = IdGenerator::health_check(&router).await;
+        match status {
+            HealthStatus::Unhealthy(msg) => {
+                assert!(msg.contains("No algorithms available"));
+            }
+            other => panic!("期望 Unhealthy, 实际为 {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_id_generator_health_check_all_healthy_returns_healthy() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        let status = IdGenerator::health_check(&router).await;
+        assert!(matches!(status, HealthStatus::Healthy));
+    }
+
+    #[tokio::test]
+    async fn test_id_generator_health_check_with_unhealthy_returns_unhealthy() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        insert_mock(
+            &router,
+            AlgorithmType::UuidV7,
+            Arc::new(
+                MockConfigurableAlgorithm::new(AlgorithmType::UuidV7)
+                    .with_health(MockHealthKind::Unhealthy),
+            ),
+        );
+        let status = IdGenerator::health_check(&router).await;
+        match status {
+            HealthStatus::Unhealthy(msg) => {
+                assert!(msg.contains("Some algorithms are unhealthy"));
+            }
+            other => panic!("期望 Unhealthy, 实际为 {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_id_generator_health_check_with_only_degraded_returns_degraded() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(
+                MockConfigurableAlgorithm::new(AlgorithmType::Snowflake)
+                    .with_health(MockHealthKind::Degraded),
+            ),
+        );
+        let status = IdGenerator::health_check(&router).await;
+        match status {
+            HealthStatus::Degraded(msg) => {
+                assert!(msg.contains("Some algorithms are degraded"));
+            }
+            other => panic!("期望 Degraded, 实际为 {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_id_generator_get_primary_algorithm_returns_default_debug_format() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        let name = IdGenerator::get_primary_algorithm(&router).await;
+        // Debug 输出 PascalCase
+        assert_eq!(name, "Segment");
+    }
+
+    #[tokio::test]
+    async fn test_id_generator_get_degradation_manager_returns_arc_reference() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        let dm = IdGenerator::get_degradation_manager(&router);
+        // 验证返回的是 Arc<DegradationManager>，且 strong_count >= 1
+        assert!(Arc::strong_count(dm) >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_id_generator_generate_with_algorithm_trait_method_succeeds() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        let id = IdGenerator::generate_with_algorithm(
+            &router,
+            AlgorithmType::Snowflake,
+            "ws",
+            "g",
+            "bt",
+        )
+        .await
+        .unwrap();
+        assert_eq!(id.as_u128(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_id_generator_batch_generate_with_algorithm_trait_method_succeeds() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::UuidV7,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::UuidV7,
+            }),
+        );
+        let ids = IdGenerator::batch_generate_with_algorithm(
+            &router,
+            AlgorithmType::UuidV7,
+            "ws",
+            "g",
+            "bt",
+            3,
+        )
+        .await
+        .unwrap();
+        assert_eq!(ids.len(), 3);
+    }
+
+    // ============== AlgorithmRouter::new 与 builder 测试 ==============
+
+    #[tokio::test]
+    async fn test_new_with_segment_default_builds_full_fallback_chain() {
+        // 默认 Config: default = "segment"
+        let router = AlgorithmRouter::new(Config::default(), None);
+        assert_eq!(
+            router.fallback_chain.to_vec(),
+            vec![
+                AlgorithmType::Snowflake,
+                AlgorithmType::UuidV7,
+                AlgorithmType::UuidV4,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_new_with_snowflake_default_builds_partial_fallback_chain() {
+        let mut config = Config::default();
+        config.algorithm.default = "snowflake".to_string();
+        let router = AlgorithmRouter::new(config, None);
+        assert_eq!(
+            router.fallback_chain.to_vec(),
+            vec![AlgorithmType::UuidV7, AlgorithmType::UuidV4]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_new_with_uuid_v7_default_builds_empty_fallback_chain() {
+        let mut config = Config::default();
+        config.algorithm.default = "uuid_v7".to_string();
+        let router = AlgorithmRouter::new(config, None);
+        assert!(router.fallback_chain.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_with_cpu_monitor_builder_sets_monitor() {
+        let router = AlgorithmRouter::new(Config::default(), None)
+            .with_cpu_monitor(Arc::new(crate::core::algorithm::segment::CpuMonitor::new()));
+        assert!(router.cpu_monitor.is_some());
+    }
+
+    // ============== generate_with_algorithm (inherent) 测试 ==============
+
+    #[tokio::test]
+    async fn test_generate_with_algorithm_inherent_success() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        let id = router
+            .generate_with_algorithm(AlgorithmType::Snowflake, "ws", "g", "bt")
+            .await
+            .unwrap();
+        assert_eq!(id.as_u128(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_algorithm_inherent_unknown_algorithm_falls_back() {
+        // 请求 UuidV4（不在 map），fallback chain = [Snowflake, UuidV7, UuidV4]
+        // Snowflake 在 map 中且成功 → 返回 Ok
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        let id = router
+            .generate_with_algorithm(AlgorithmType::UuidV4, "ws", "g", "bt")
+            .await
+            .unwrap();
+        assert_eq!(id.as_u128(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_generate_with_algorithm_inherent_all_fail_returns_error() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        // 不插入任何算法 → fallback chain 中也无算法 → 返回 "All algorithms failed"
+        let result = router
+            .generate_with_algorithm(AlgorithmType::Snowflake, "ws", "g", "bt")
+            .await;
+        match result {
+            Err(CoreError::InternalError(msg)) => {
+                assert_eq!(msg, "All algorithms failed");
+            }
+            other => panic!("期望 InternalError, 实际为 {:?}", other),
+        }
+    }
+
+    // ============== batch_generate_with_algorithm (inherent) 测试 ==============
+
+    #[tokio::test]
+    async fn test_batch_generate_with_algorithm_inherent_success() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        let batch = router
+            .batch_generate_with_algorithm(AlgorithmType::Snowflake, "ws", "g", "bt", 4)
+            .await
+            .unwrap();
+        assert_eq!(batch.ids.len(), 4);
+        assert_eq!(batch.algorithm, AlgorithmType::Snowflake);
+    }
+
+    #[tokio::test]
+    async fn test_batch_generate_with_algorithm_inherent_unknown_algorithm_falls_back() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        let batch = router
+            .batch_generate_with_algorithm(AlgorithmType::UuidV4, "ws", "g", "bt", 2)
+            .await
+            .unwrap();
+        assert_eq!(batch.ids.len(), 2);
+        // 因 fallback 到 Snowflake，batch.algorithm 应为 Snowflake
+        assert_eq!(batch.algorithm, AlgorithmType::Snowflake);
+    }
+
+    #[tokio::test]
+    async fn test_batch_generate_with_algorithm_inherent_all_fail_returns_error() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        let result = router
+            .batch_generate_with_algorithm(AlgorithmType::Snowflake, "ws", "g", "bt", 4)
+            .await;
+        match result {
+            Err(CoreError::InternalError(msg)) => {
+                assert_eq!(msg, "All algorithms failed");
+            }
+            other => panic!("期望 InternalError, 实际为 {:?}", other),
+        }
+    }
+
+    // ============== generate_with_algorithm_internal fallback 路径测试 ==============
+
+    #[tokio::test]
+    async fn test_generate_internal_primary_succeeds_no_fallback() {
+        // 主算法成功 → 不应触发 fallback
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Segment,
+            }),
+        );
+        // 同时插入 fallback 算法但不应被调用（用失败 mock 验证）
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(
+                MockConfigurableAlgorithm::new(AlgorithmType::Snowflake).with_generate_failure(),
+            ),
+        );
+        let ctx = make_ctx("bt");
+        let id = router.generate(&ctx).await.unwrap();
+        assert_eq!(id.as_u128(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_generate_internal_primary_fails_first_fallback_succeeds() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(
+                MockConfigurableAlgorithm::new(AlgorithmType::Segment).with_generate_failure(),
+            ),
+        );
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        let ctx = make_ctx("bt");
+        let id = router.generate(&ctx).await.unwrap();
+        assert_eq!(id.as_u128(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_generate_internal_primary_fails_all_fallbacks_fail_returns_original_error() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(
+                MockConfigurableAlgorithm::new(AlgorithmType::Segment).with_generate_failure(),
+            ),
+        );
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(
+                MockConfigurableAlgorithm::new(AlgorithmType::Snowflake).with_generate_failure(),
+            ),
+        );
+        insert_mock(
+            &router,
+            AlgorithmType::UuidV7,
+            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::UuidV7).with_generate_failure()),
+        );
+        insert_mock(
+            &router,
+            AlgorithmType::UuidV4,
+            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::UuidV4).with_generate_failure()),
+        );
+        let ctx = make_ctx("bt");
+        let result = router.generate(&ctx).await;
+        // 当主算法失败 + 所有 fallback 失败时，返回主算法的原始错误
+        match result {
+            Err(CoreError::InternalError(msg)) => {
+                assert_eq!(msg, "mock generate failure");
+            }
+            other => panic!("期望 InternalError, 实际为 {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_generate_internal_primary_not_in_map_fallback_succeeds() {
+        // Segment 不在 algorithms 中（map 只有 Snowflake），fallback 应成功
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        let ctx = make_ctx("bt");
+        let id = router.generate(&ctx).await.unwrap();
+        assert_eq!(id.as_u128(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_generate_internal_primary_not_in_map_all_fallbacks_fail() {
+        // Segment 不在 map，fallback chain 中的算法也都不在 map → "All algorithms failed"
+        let router = AlgorithmRouter::new(Config::default(), None);
+        let ctx = make_ctx("bt");
+        let result = router.generate(&ctx).await;
+        match result {
+            Err(CoreError::InternalError(msg)) => {
+                assert_eq!(msg, "All algorithms failed");
+            }
+            other => panic!("期望 InternalError, 实际为 {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_generate_internal_primary_not_in_map_some_fallbacks_missing() {
+        // Segment 不在 map，Snowflake 在 map 但失败，UuidV7 不在 map，UuidV4 成功
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(
+                MockConfigurableAlgorithm::new(AlgorithmType::Snowflake).with_generate_failure(),
+            ),
+        );
+        insert_mock(
+            &router,
+            AlgorithmType::UuidV4,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::UuidV4,
+            }),
+        );
+        let ctx = make_ctx("bt");
+        let id = router.generate(&ctx).await.unwrap();
+        assert_eq!(id.as_u128(), 42);
+    }
+
+    // ============== batch_generate_with_algorithm_internal fallback 路径测试 ==============
+
+    #[tokio::test]
+    async fn test_batch_internal_primary_succeeds_no_fallback() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Segment,
+            }),
+        );
+        let ctx = make_ctx("bt");
+        let batch = router.batch_generate(&ctx, 3).await.unwrap();
+        assert_eq!(batch.ids.len(), 3);
+        assert_eq!(batch.algorithm, AlgorithmType::Segment);
+    }
+
+    #[tokio::test]
+    async fn test_batch_internal_primary_fails_first_fallback_succeeds() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::Segment).with_batch_failure()),
+        );
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        let ctx = make_ctx("bt");
+        let batch = router.batch_generate(&ctx, 5).await.unwrap();
+        assert_eq!(batch.ids.len(), 5);
+        assert_eq!(batch.algorithm, AlgorithmType::Snowflake);
+    }
+
+    #[tokio::test]
+    async fn test_batch_internal_primary_fails_all_fallbacks_fail_returns_original_error() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::Segment).with_batch_failure()),
+        );
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::Snowflake).with_batch_failure()),
+        );
+        insert_mock(
+            &router,
+            AlgorithmType::UuidV7,
+            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::UuidV7).with_batch_failure()),
+        );
+        insert_mock(
+            &router,
+            AlgorithmType::UuidV4,
+            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::UuidV4).with_batch_failure()),
+        );
+        let ctx = make_ctx("bt");
+        let result = router.batch_generate(&ctx, 2).await;
+        match result {
+            Err(CoreError::InternalError(msg)) => {
+                assert_eq!(msg, "mock batch failure");
+            }
+            other => panic!("期望 InternalError, 实际为 {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_batch_internal_primary_not_in_map_fallback_succeeds() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        let ctx = make_ctx("bt");
+        let batch = router.batch_generate(&ctx, 4).await.unwrap();
+        assert_eq!(batch.ids.len(), 4);
+        assert_eq!(batch.algorithm, AlgorithmType::Snowflake);
+    }
+
+    #[tokio::test]
+    async fn test_batch_internal_primary_not_in_map_all_fallbacks_fail() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        let ctx = make_ctx("bt");
+        let result = router.batch_generate(&ctx, 2).await;
+        match result {
+            Err(CoreError::InternalError(msg)) => {
+                assert_eq!(msg, "All algorithms failed");
+            }
+            other => panic!("期望 InternalError, 实际为 {:?}", other),
+        }
+    }
+
+    // ============== health_check (inherent) 测试 ==============
+
+    #[tokio::test]
+    async fn test_health_check_inherent_empty_returns_empty_vec() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        let statuses = router.health_check().await;
+        assert!(statuses.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_health_check_inherent_returns_status_for_each_algorithm() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        insert_mock(
+            &router,
+            AlgorithmType::UuidV7,
+            Arc::new(
+                MockConfigurableAlgorithm::new(AlgorithmType::UuidV7)
+                    .with_health(MockHealthKind::Degraded),
+            ),
+        );
+        let statuses = router.health_check().await;
+        assert_eq!(statuses.len(), 2);
+        let snowflake_status = statuses
+            .iter()
+            .find(|(t, _)| *t == AlgorithmType::Snowflake)
+            .map(|(_, s)| s);
+        assert!(matches!(snowflake_status, Some(HealthStatus::Healthy)));
+        let uuid_v7_status = statuses
+            .iter()
+            .find(|(t, _)| *t == AlgorithmType::UuidV7)
+            .map(|(_, s)| s);
+        assert!(matches!(uuid_v7_status, Some(HealthStatus::Degraded(_))));
+    }
+
+    // ============== metrics (inherent) 测试 ==============
+
+    #[tokio::test]
+    async fn test_metrics_inherent_empty_returns_empty_vec() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        let snapshots = router.metrics().await;
+        assert!(snapshots.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_metrics_inherent_returns_snapshot_for_each_algorithm() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        insert_mock(
+            &router,
+            AlgorithmType::UuidV7,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::UuidV7,
+            }),
+        );
+        let snapshots = router.metrics().await;
+        assert_eq!(snapshots.len(), 2);
+        let algorithm_types: Vec<_> = snapshots.iter().map(|(t, _)| *t).collect();
+        assert!(algorithm_types.contains(&AlgorithmType::Snowflake));
+        assert!(algorithm_types.contains(&AlgorithmType::UuidV7));
+    }
+
+    // ============== get_degradation_manager (inherent) 测试 ==============
+
+    #[tokio::test]
+    async fn test_get_degradation_manager_inherent_returns_reference() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        let dm_ref = router.get_degradation_manager();
+        assert!(Arc::strong_count(dm_ref) >= 1);
+    }
+
+    // ============== check_health_and_update_degradation 测试 ==============
+
+    #[tokio::test]
+    async fn test_check_health_and_update_degradation_does_not_panic_with_no_algorithms() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        // 应当不 panic
+        router.check_health_and_update_degradation().await;
+    }
+
+    // ============== shutdown 测试 ==============
+
+    #[tokio::test]
+    async fn test_shutdown_empty_does_not_panic() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        router.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_with_successful_algorithms_does_not_panic() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        insert_mock(
+            &router,
+            AlgorithmType::UuidV7,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::UuidV7,
+            }),
+        );
+        router.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_with_failing_algorithm_does_not_panic() {
+        // 某个算法 shutdown 失败时，应记录日志但不 panic，继续 shutdown 其他算法
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(
+                MockConfigurableAlgorithm::new(AlgorithmType::Snowflake).with_shutdown_failure(),
+            ),
+        );
+        insert_mock(
+            &router,
+            AlgorithmType::UuidV7,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::UuidV7,
+            }),
+        );
+        router.shutdown().await;
+        // 不 panic 即通过
     }
 }

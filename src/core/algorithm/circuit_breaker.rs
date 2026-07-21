@@ -126,8 +126,17 @@ fn start_instant() -> Instant {
 }
 
 /// 将 Instant 转为 nanos（相对全局起点）
+///
+/// 返回值始终 >= 1：0 保留给"未设置"语义（如 `last_failure_at`
+/// 初始值）。`start_instant()` 是 OnceLock lazy 初始化，首次调用
+/// `instant_to_nanos(Instant::now())` 时 `start_instant` 与传入 Instant
+/// 几乎同时，`duration_since` 在精度限制下可能返回 0。若不强制为 1，
+/// 会让 `window_start = 0`，进而 `nanos_to_instant(0)` 返回 None，
+/// 滑动窗口过期分支永远不进入——这是
+/// `test_on_failure_sliding_window_expiration` 历史 flaky 的真正根因。
 fn instant_to_nanos(i: Instant) -> u64 {
-    i.duration_since(start_instant()).as_nanos() as u64
+    let nanos = i.duration_since(start_instant()).as_nanos() as u64;
+    nanos.max(1)
 }
 
 /// 将 nanos 转为 Instant；0 视为 None
@@ -839,9 +848,20 @@ mod tests {
     }
 
     /// 验证 on_failure 在滑动窗口过期时重置 window_requests / window_failures / window_start。
+    ///
+    /// 历史 flaky 根因：`instant_to_nanos` 在 `start_instant` 首次
+    /// lazy 初始化时可能返回 0（因为 `Instant::now()` 与
+    /// `start_instant` 几乎同时，`duration_since` 在精度限制下返回
+    /// 0），导致 `window_start = 0`，`nanos_to_instant(0)` 返回
+    /// None，过期分支永远不进入。已在 `instant_to_nanos` 修复为
+    /// `nanos.max(1)`。
+    ///
+    /// 仍需 sleep 100ms 的原因：`window_size_seconds=0` 时过期条件是
+    /// `now - window_start > Duration::ZERO`，构造与 on_failure 之间
+    /// 的瞬时操作可能让 `duration_since` 在精度限制下返回 0（Windows
+    /// 上 Instant 精度 1-15ms）。100ms 远大于精度上限，确保稳定 > 0。
     #[tokio::test]
     async fn test_on_failure_sliding_window_expiration() {
-        // window_size_seconds=0 使窗口立即过期
         let config = CircuitBreakerConfig {
             failure_threshold: 100,
             min_requests: 100,
@@ -852,7 +872,8 @@ mod tests {
         // 预填滑动窗口计数
         breaker.window_requests.store(5, Ordering::Relaxed);
         breaker.window_failures.store(3, Ordering::Relaxed);
-        // window_start 已由 new() 设置为构造时刻；window_size_seconds=0 时立即过期
+        // sleep 100ms 让 now - window_start > 0 稳定成立（绕过 Instant 精度）
+        sleep(Duration::from_millis(100)).await;
         breaker.on_failure().await;
         // 过期后 window_requests / window_failures 被 store(0) 重置
         // （fetch_add 发生在重置之前，但重置覆盖为 0）

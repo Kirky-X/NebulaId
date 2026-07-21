@@ -207,6 +207,10 @@ impl crate::core::algorithm::AlgorithmFactory for crate::core::algorithm::UuidV4
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::algorithm::{
+        AlgorithmBuilder, AlgorithmFactory, UuidV4Factory, UuidV7Factory,
+    };
+    use crate::core::config::Config;
 
     #[tokio::test]
     async fn test_uuid_v7_generation() {
@@ -225,5 +229,202 @@ mod tests {
 
         assert_eq!(uuid_str.len(), 36);
         assert_eq!(uuid_str.chars().nth(14).unwrap(), '7');
+    }
+
+    #[test]
+    fn test_uuid_v7_default_is_new_equivalent() {
+        let a = UuidV7Impl::default();
+        let b = UuidV7Impl::new();
+        // Default 与 new 行为等价：初始 metrics 应为 0
+        let ma = a.metrics();
+        let mb = b.metrics();
+        assert_eq!(ma.total_generated, 0);
+        assert_eq!(ma.total_failed, 0);
+        assert_eq!(mb.total_generated, 0);
+        assert_eq!(mb.total_failed, 0);
+        assert_eq!(ma.cache_hit_rate, None);
+        assert_eq!(mb.cache_hit_rate, None);
+    }
+
+    #[tokio::test]
+    async fn test_uuid_v7_batch_generate_empty() {
+        let generator = UuidV7Impl::new();
+        let ctx = GenerateContext::default();
+        let batch = generator.batch_generate(&ctx, 0).await.unwrap();
+        assert_eq!(batch.ids.len(), 0);
+        assert!(batch.ids.is_empty());
+        assert_eq!(batch.algorithm, AlgorithmType::UuidV7);
+    }
+
+    #[tokio::test]
+    async fn test_uuid_v7_batch_generate_with_size() {
+        let generator = UuidV7Impl::new();
+        let ctx = GenerateContext::default();
+        let size = 5;
+        let batch = generator.batch_generate(&ctx, size).await.unwrap();
+
+        assert_eq!(batch.ids.len(), size);
+        assert_eq!(batch.algorithm, AlgorithmType::UuidV7);
+        assert_eq!(batch.biz_tag, "");
+
+        // 每个 ID 必须是合法的 UUID v7（版本 7）
+        let mut seen = std::collections::HashSet::new();
+        for id in &batch.ids {
+            let uuid = id.to_uuid_v7();
+            assert_eq!(uuid.get_version(), Some(uuid::Version::SortRand));
+            assert!(!uuid.is_nil());
+            // 批量生成应产生不同的 UUID
+            assert!(seen.insert(uuid), "duplicate UUID in batch");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_uuid_v7_metrics_increment_after_generate() {
+        let generator = UuidV7Impl::new();
+        let ctx = GenerateContext::default();
+
+        // 初始 0
+        assert_eq!(generator.metrics().total_generated, 0);
+
+        // 单次 generate → +1
+        generator.generate(&ctx).await.unwrap();
+        assert_eq!(generator.metrics().total_generated, 1);
+
+        // batch_generate(3) → +3
+        generator.batch_generate(&ctx, 3).await.unwrap();
+        assert_eq!(generator.metrics().total_generated, 4);
+    }
+
+    #[test]
+    fn test_uuid_v7_health_check_healthy() {
+        let generator = UuidV7Impl::new();
+        let status = generator.health_check();
+        assert!(status.is_healthy());
+        assert_eq!(status, HealthStatus::Healthy);
+    }
+
+    #[test]
+    fn test_uuid_v7_algorithm_type() {
+        let generator = UuidV7Impl::new();
+        assert_eq!(generator.algorithm_type(), AlgorithmType::UuidV7);
+    }
+
+    #[tokio::test]
+    async fn test_uuid_v7_shutdown_succeeds() {
+        let generator = UuidV7Impl::new();
+        let result = generator.shutdown().await;
+        assert!(result.is_ok());
+    }
+
+    // ----- UuidV4Impl -----
+
+    #[tokio::test]
+    async fn test_uuid_v4_generation() {
+        let generator = UuidV4Impl::new();
+        let ctx = GenerateContext::default();
+        let id = generator.generate(&ctx).await.unwrap();
+
+        assert_eq!(id.to_uuid_v7().get_version(), Some(uuid::Version::Random));
+        assert!(!id.to_uuid_v7().is_nil());
+    }
+
+    #[test]
+    fn test_uuid_v4_default_is_new_equivalent() {
+        let a = UuidV4Impl::default();
+        let b = UuidV4Impl::new();
+        let ma = a.metrics();
+        let mb = b.metrics();
+        assert_eq!(ma.total_generated, 0);
+        assert_eq!(ma.total_failed, 0);
+        assert_eq!(mb.total_generated, 0);
+        assert_eq!(mb.total_failed, 0);
+        assert_eq!(ma.cache_hit_rate, None);
+        assert_eq!(mb.cache_hit_rate, None);
+    }
+
+    #[tokio::test]
+    async fn test_uuid_v4_batch_generate_empty() {
+        let generator = UuidV4Impl::new();
+        let ctx = GenerateContext::default();
+        let batch = generator.batch_generate(&ctx, 0).await.unwrap();
+        assert_eq!(batch.ids.len(), 0);
+        assert_eq!(batch.algorithm, AlgorithmType::UuidV4);
+    }
+
+    #[tokio::test]
+    async fn test_uuid_v4_batch_generate_with_size() {
+        let generator = UuidV4Impl::new();
+        let ctx = GenerateContext::default();
+        let size = 5;
+        let batch = generator.batch_generate(&ctx, size).await.unwrap();
+
+        assert_eq!(batch.ids.len(), size);
+        assert_eq!(batch.algorithm, AlgorithmType::UuidV4);
+        assert_eq!(batch.biz_tag, "");
+
+        let mut seen = std::collections::HashSet::new();
+        for id in &batch.ids {
+            let uuid = id.to_uuid_v7();
+            assert_eq!(uuid.get_version(), Some(uuid::Version::Random));
+            assert!(!uuid.is_nil());
+            assert!(seen.insert(uuid), "duplicate UUID in batch");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_uuid_v4_metrics_increment_after_generate() {
+        let generator = UuidV4Impl::new();
+        let ctx = GenerateContext::default();
+
+        assert_eq!(generator.metrics().total_generated, 0);
+
+        generator.generate(&ctx).await.unwrap();
+        assert_eq!(generator.metrics().total_generated, 1);
+
+        generator.batch_generate(&ctx, 3).await.unwrap();
+        assert_eq!(generator.metrics().total_generated, 4);
+    }
+
+    #[test]
+    fn test_uuid_v4_health_check_healthy() {
+        let generator = UuidV4Impl::new();
+        let status = generator.health_check();
+        assert!(status.is_healthy());
+        assert_eq!(status, HealthStatus::Healthy);
+    }
+
+    #[test]
+    fn test_uuid_v4_algorithm_type() {
+        let generator = UuidV4Impl::new();
+        assert_eq!(generator.algorithm_type(), AlgorithmType::UuidV4);
+    }
+
+    #[tokio::test]
+    async fn test_uuid_v4_shutdown_succeeds() {
+        let generator = UuidV4Impl::new();
+        let result = generator.shutdown().await;
+        assert!(result.is_ok());
+    }
+
+    // ----- Factory -----
+
+    #[tokio::test]
+    async fn test_uuid_v7_factory_build_returns_uuid_v7_impl() {
+        let factory = UuidV7Factory;
+        let builder = AlgorithmBuilder::new(AlgorithmType::UuidV7);
+        let config = Config::default();
+        let algo = factory.build(&builder, &config).await.unwrap();
+        assert_eq!(algo.algorithm_type(), AlgorithmType::UuidV7);
+        assert!(algo.health_check().is_healthy());
+    }
+
+    #[tokio::test]
+    async fn test_uuid_v4_factory_build_returns_uuid_v4_impl() {
+        let factory = UuidV4Factory;
+        let builder = AlgorithmBuilder::new(AlgorithmType::UuidV4);
+        let config = Config::default();
+        let algo = factory.build(&builder, &config).await.unwrap();
+        assert_eq!(algo.algorithm_type(), AlgorithmType::UuidV4);
+        assert!(algo.health_check().is_healthy());
     }
 }

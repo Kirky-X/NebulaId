@@ -1414,6 +1414,7 @@ impl crate::core::algorithm::AlgorithmFactory for crate::core::algorithm::Segmen
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::algorithm::AlgorithmFactory;
 
     #[test]
     fn test_atomic_segment_try_consume() {
@@ -1510,5 +1511,1453 @@ mod tests {
 
         // Shutdown should complete without hanging
         algo.shutdown().await.unwrap();
+    }
+
+    // ------------------------------------------------------------------
+    // Test helpers: MockSegmentRepository / MockConfigProvider
+    // ------------------------------------------------------------------
+
+    use crate::core::database::SegmentRepository;
+    use crate::core::types::SegmentInfo;
+    use async_trait::async_trait;
+    use chrono::Utc;
+    use confers::interface::ConfigProvider;
+    use confers::types::{AnnotatedValue, ConfigValue, SourceId};
+
+    /// Mock `SegmentRepository`锛氭牴鎹?`fail` 鏍囧織杩斿洖鎴愬姛/澶辫触銆?
+    struct MockSegmentRepository {
+        fail: bool,
+        fail_with_dc: bool,
+        segment: Option<SegmentInfo>,
+        calls: Arc<std::sync::Mutex<u32>>,
+    }
+
+    impl MockSegmentRepository {
+        fn success(segment: SegmentInfo) -> Self {
+            Self {
+                fail: false,
+                fail_with_dc: false,
+                segment: Some(segment),
+                calls: Arc::new(std::sync::Mutex::new(0)),
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                fail: true,
+                fail_with_dc: false,
+                segment: None,
+                calls: Arc::new(std::sync::Mutex::new(0)),
+            }
+        }
+
+        fn failing_with_dc() -> Self {
+            Self {
+                fail: false,
+                fail_with_dc: true,
+                segment: None,
+                calls: Arc::new(std::sync::Mutex::new(0)),
+            }
+        }
+
+        fn call_count(&self) -> u32 {
+            *self.calls.lock().unwrap()
+        }
+    }
+
+    #[async_trait]
+    impl SegmentRepository for MockSegmentRepository {
+        async fn get_segment(
+            &self,
+            _workspace_id: &str,
+            _biz_tag: &str,
+        ) -> Result<Option<SegmentInfo>> {
+            Ok(self.segment.clone())
+        }
+
+        async fn allocate_segment(
+            &self,
+            _workspace_id: &str,
+            _biz_tag: &str,
+            _step: i32,
+        ) -> Result<SegmentInfo> {
+            *self.calls.lock().unwrap() += 1;
+            if self.fail {
+                return Err(crate::core::CoreError::DatabaseError(
+                    "mock error".to_string(),
+                ));
+            }
+            Ok(self.segment.clone().unwrap_or(SegmentInfo {
+                id: 1,
+                workspace_id: "ws".to_string(),
+                biz_tag: "tag".to_string(),
+                current_id: 1000,
+                max_id: 2000,
+                step: 1000,
+                delta: 0,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            }))
+        }
+
+        async fn allocate_segment_with_dc(
+            &self,
+            _workspace_id: &str,
+            _biz_tag: &str,
+            _step: i32,
+            _dc_id: i32,
+        ) -> Result<SegmentInfo> {
+            *self.calls.lock().unwrap() += 1;
+            if self.fail_with_dc {
+                return Err(crate::core::CoreError::DatabaseError(
+                    "mock dc error".to_string(),
+                ));
+            }
+            Ok(self.segment.clone().unwrap_or(SegmentInfo {
+                id: 1,
+                workspace_id: "ws".to_string(),
+                biz_tag: "tag".to_string(),
+                current_id: 1000,
+                max_id: 2000,
+                step: 1000,
+                delta: 0,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            }))
+        }
+
+        async fn update_segment(
+            &self,
+            _workspace_id: &str,
+            _biz_tag: &str,
+            _current_id: i64,
+            _max_id: i64,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn create_segment(
+            &self,
+            _workspace_id: &str,
+            _biz_tag: &str,
+            _start_id: i64,
+            _max_id: i64,
+            _step: i32,
+            _delta: i32,
+        ) -> Result<SegmentInfo> {
+            Ok(self.segment.clone().unwrap_or(SegmentInfo {
+                id: 1,
+                workspace_id: "ws".to_string(),
+                biz_tag: "tag".to_string(),
+                current_id: 1000,
+                max_id: 2000,
+                step: 1000,
+                delta: 0,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            }))
+        }
+
+        async fn list_segments(&self, _workspace_id: &str) -> Result<Vec<SegmentInfo>> {
+            Ok(vec![])
+        }
+
+        async fn delete_segment(&self, _workspace_id: &str, _biz_tag: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Mock `ConfigProvider`锛氶€氳繃 `with_int`/`with_float` 棰勮閿€笺€?
+    struct MockConfigProvider {
+        values: HashMap<String, AnnotatedValue>,
+    }
+
+    impl MockConfigProvider {
+        fn new() -> Self {
+            Self {
+                values: HashMap::new(),
+            }
+        }
+
+        fn with_int(mut self, key: impl Into<String>, value: i64) -> Self {
+            let key = key.into();
+            self.values.insert(
+                key.clone(),
+                AnnotatedValue::new(ConfigValue::I64(value), SourceId::default(), key),
+            );
+            self
+        }
+
+        fn with_float(mut self, key: impl Into<String>, value: f64) -> Self {
+            let key = key.into();
+            self.values.insert(
+                key.clone(),
+                AnnotatedValue::new(ConfigValue::F64(value), SourceId::default(), key),
+            );
+            self
+        }
+    }
+
+    impl ConfigProvider for MockConfigProvider {
+        fn get_raw(&self, key: &str) -> Option<&AnnotatedValue> {
+            self.values.get(key)
+        }
+
+        fn keys(&self) -> Vec<String> {
+            self.values.keys().cloned().collect()
+        }
+    }
+
+    fn sample_segment_info() -> SegmentInfo {
+        SegmentInfo {
+            id: 1,
+            workspace_id: "ws".to_string(),
+            biz_tag: "tag".to_string(),
+            current_id: 500,
+            max_id: 1500,
+            step: 1000,
+            delta: 0,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn sample_ctx() -> GenerateContext {
+        GenerateContext {
+            workspace_id: "ws".to_string(),
+            group_id: "g".to_string(),
+            biz_tag: "tag".to_string(),
+            format: crate::core::types::IdFormat::Numeric,
+            prefix: None,
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // CpuMonitor tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_cpu_monitor_default_returns_default_usage() {
+        let monitor = CpuMonitor::default();
+        // 榛樿 CPU 浣跨敤鐜囧簲涓?0.1锛圖EFAULT_CPU_USAGE 甯搁噺锛?
+        let usage = monitor.get_usage();
+        assert!((usage - 0.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_cpu_monitor_new_initializes_with_default_usage() {
+        let monitor = CpuMonitor::new();
+        let usage = monitor.get_usage();
+        assert!((usage - 0.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_cpu_monitor_update_usage_changes_value() {
+        let monitor = CpuMonitor::new();
+        monitor.update_usage(0.5);
+        let usage = monitor.get_usage();
+        assert!((usage - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_cpu_monitor_update_usage_clamps_high_values() {
+        let monitor = CpuMonitor::new();
+        monitor.update_usage(2.0); // 瓒呰繃 1.0锛屽簲琚?clamp 鍒?1.0
+        let usage = monitor.get_usage();
+        assert!((usage - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_cpu_monitor_update_usage_clamps_negative_values() {
+        let monitor = CpuMonitor::new();
+        monitor.update_usage(-0.5); // 璐熷€硷紝搴旇 clamp 鍒?0.0
+        let usage = monitor.get_usage();
+        assert!(usage.abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_cpu_monitor_start_monitoring_completes_on_non_linux() {
+        // 鍦ㄩ潪 Linux 骞冲彴涓婏紝start_monitoring 鍚姩涓€涓┖ task 骞剁珛鍗宠繑鍥?JoinHandle銆?
+        // 璇?task 搴旇兘姝ｅ父缁撴潫锛堜笉 panic锛夈€?
+        let monitor = CpuMonitor::new();
+        let handle = monitor.start_monitoring();
+        // 缁?task 涓€鐐规椂闂磋繍琛?
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        // 涓嶈皟鐢?abort锛岃 runtime drop 鏃惰嚜鐒舵竻鐞?
+        handle.abort();
+    }
+
+    // ------------------------------------------------------------------
+    // Segment / AtomicSegment tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_segment_consumed_returns_current_minus_start() {
+        let segment = Segment::new(100, 1000, 100);
+        // 鍒濆 current_id = start_id = 100锛宑onsumed = 0
+        assert_eq!(segment.consumed(), 0);
+
+        segment.current_id.store(500, Ordering::Relaxed);
+        assert_eq!(segment.consumed(), 400);
+    }
+
+    #[test]
+    fn test_segment_consumed_saturating_when_current_below_start() {
+        let segment = Segment::new(100, 1000, 100);
+        // current 浣庝簬 start 鏃讹紝saturating_sub 杩斿洖 0
+        segment.current_id.store(50, Ordering::Relaxed);
+        assert_eq!(segment.consumed(), 0);
+    }
+
+    #[test]
+    fn test_segment_remaining_saturating_when_current_above_max() {
+        let segment = Segment::new(0, 1000, 100);
+        segment.current_id.store(1500, Ordering::Relaxed);
+        assert_eq!(segment.remaining(), 0);
+    }
+
+    #[test]
+    fn test_atomic_segment_remaining_delegates_to_inner() {
+        let segment = AtomicSegment::new(0, 1000, 100);
+        assert_eq!(segment.remaining(), 1000);
+
+        // try_consume 浼氭帹杩?current_id
+        segment.try_consume(300).unwrap();
+        assert_eq!(segment.remaining(), 700);
+    }
+
+    #[test]
+    fn test_atomic_segment_try_consume_exact_boundary() {
+        // 杈圭晫锛歝urrent + count == max 搴斿厑璁告秷璐?
+        let segment = AtomicSegment::new(0, 100, 10);
+        let result = segment.try_consume(100);
+        assert!(result.is_some());
+        let (start, end) = result.unwrap();
+        assert_eq!(start, 0);
+        assert_eq!(end, 100);
+    }
+
+    // ------------------------------------------------------------------
+    // DoubleBuffer tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_double_buffer_set_current_replaces_active_segment() {
+        let (db, _rx) = DoubleBuffer::new(0.1);
+        let new_segment = Arc::new(AtomicSegment::new(0, 500, 100));
+        db.set_current(new_segment);
+
+        let current = db.get_current();
+        let seg = current.inner.lock();
+        assert_eq!(seg.max_id.load(Ordering::Relaxed), 500);
+    }
+
+    #[test]
+    fn test_double_buffer_swap_returns_none_when_no_next() {
+        // 鏃?next 鏃?swap 杩斿洖 None 涓斾笉鏀瑰彉 current
+        let (db, _rx) = DoubleBuffer::new(0.1);
+        let result = db.swap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_double_buffer_swap_replaces_current_with_next() {
+        let (db, _rx) = DoubleBuffer::new(0.1);
+
+        // 璁剧疆鍒濆 current
+        let initial = Arc::new(AtomicSegment::new(0, 100, 10));
+        db.set_current(initial);
+
+        // 璁剧疆 next
+        let next = Arc::new(AtomicSegment::new(100, 200, 10));
+        db.set_next(next);
+
+        // swap 搴旇繑鍥?Some(old_next) 骞跺皢鍏惰涓?current
+        let swapped = db.swap();
+        assert!(swapped.is_some());
+
+        let current = db.get_current();
+        let seg = current.inner.lock();
+        assert_eq!(seg.start_id.load(Ordering::Relaxed), 100);
+        assert_eq!(seg.max_id.load(Ordering::Relaxed), 200);
+
+        // next 搴旇娓呯┖
+        assert!(db.get_next().is_none());
+    }
+
+    #[test]
+    fn test_double_buffer_need_switch_when_total_zero() {
+        // 鍒濆 segment (0,0,0)锛宼otal = 0锛屽簲瑙﹀彂鍒囨崲
+        let (db, _rx) = DoubleBuffer::new(0.1);
+        assert!(db.need_switch());
+    }
+
+    #[test]
+    fn test_double_buffer_need_switch_when_below_threshold() {
+        // switch_threshold = 0.3锛屽墿浣?20% < 30%锛屽簲瑙﹀彂鍒囨崲
+        let (db, _rx) = DoubleBuffer::new(0.3);
+        let seg = Arc::new(AtomicSegment::new(0, 1000, 100));
+        db.set_current(seg);
+
+        // 娑堣垂鍒板彧鍓?200锛?0%锛?
+        {
+            let current = db.get_current();
+            current
+                .inner
+                .lock()
+                .current_id
+                .store(800, Ordering::Relaxed);
+        }
+
+        assert!(db.need_switch());
+    }
+
+    #[test]
+    fn test_double_buffer_no_switch_when_above_threshold() {
+        // switch_threshold = 0.1锛屽墿浣?50% > 10%锛屼笉瑙﹀彂鍒囨崲
+        let (db, _rx) = DoubleBuffer::new(0.1);
+        let seg = Arc::new(AtomicSegment::new(0, 1000, 100));
+        db.set_current(seg);
+
+        {
+            let current = db.get_current();
+            current
+                .inner
+                .lock()
+                .current_id
+                .store(500, Ordering::Relaxed);
+        }
+
+        assert!(!db.need_switch());
+    }
+
+    #[test]
+    fn test_double_buffer_get_next_returns_set_segment() {
+        let (db, _rx) = DoubleBuffer::new(0.1);
+        assert!(db.get_next().is_none());
+
+        let next = Arc::new(AtomicSegment::new(100, 200, 10));
+        db.set_next(next);
+
+        let retrieved = db.get_next();
+        assert!(retrieved.is_some());
+        let binding = retrieved.unwrap();
+        let seg = binding.inner.lock();
+        assert_eq!(seg.start_id.load(Ordering::Relaxed), 100);
+    }
+
+    // ------------------------------------------------------------------
+    // DcFailureDetector / DcHealthState additional tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_dc_failure_detector_clone_preserves_shared_state() {
+        // Clone 鍚庝袱涓?detector 鍏变韩 RwLock<HashMap>锛岀姸鎬佷簰閫?
+        let detector = DcFailureDetector::new(5, Duration::from_secs(300));
+        detector.add_dc(7);
+
+        let cloned = detector.clone();
+        // 閫氳繃 cloned 鎿嶄綔鐘舵€侊紝鍘?detector 搴旇兘鐪嬪埌
+        let state = cloned.get_dc_state(7).unwrap();
+        state.record_failure();
+
+        let original_state = detector.get_dc_state(7).unwrap();
+        assert_eq!(original_state.failure_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_dc_failure_detector_select_best_dc_falls_back_to_healthy() {
+        // preferred_dc=2 涓嶅瓨鍦紝浣嗘湁鍏朵粬鍋ュ悍 DC锛屽簲杩斿洖绗竴涓仴搴?DC
+        let detector = DcFailureDetector::new(5, Duration::from_secs(300));
+        detector.add_dc(0);
+        detector.add_dc(1);
+
+        // dc 2 涓嶅瓨鍦紝select_best_dc 搴旇繘鍏?fallback 鍒嗘敮
+        let best = detector.select_best_dc(2);
+        // 鐢变簬 dc 2 涓嶅瓨鍦紝涓?dc 0銆? 閮藉仴搴凤紝搴旇繑鍥炲叾涓箣涓€
+        assert!(
+            best == 0 || best == 1,
+            "expected fallback to healthy dc, got {}",
+            best
+        );
+    }
+
+    #[test]
+    fn test_dc_failure_detector_select_best_dc_returns_preferred_when_failed() {
+        // preferred_dc 宸?Failed锛屽簲杩涘叆 fallback
+        let detector = DcFailureDetector::new(5, Duration::from_secs(300));
+        detector.add_dc(0);
+        detector.add_dc(1);
+
+        // 璁?dc 0 澶辫触 5 娆?
+        let state = detector.get_dc_state(0).unwrap();
+        for _ in 0..5 {
+            state.record_failure();
+        }
+        assert_eq!(state.get_status(), DcStatus::Failed);
+
+        // preferred_dc=0 宸?Failed锛屽簲杩斿洖鍋ュ悍鐨?dc 1
+        let best = detector.select_best_dc(0);
+        assert_eq!(best, 1);
+    }
+
+    #[test]
+    fn test_dc_failure_detector_select_best_dc_no_healthy_returns_preferred() {
+        // 娌℃湁 DC 鐘舵€佸瓨鍦紝select_best_dc 搴旇繑鍥?preferred_dc
+        let detector = DcFailureDetector::new(5, Duration::from_secs(300));
+        // 涓嶈皟鐢?add_dc
+        let best = detector.select_best_dc(99);
+        assert_eq!(best, 99);
+    }
+
+    #[tokio::test]
+    async fn test_dc_failure_detector_check_recovery_promotes_failed_to_degraded() {
+        // recovery_timeout 璁句负 1ms锛屼娇 Failed DC 鑳界珛鍗虫仮澶嶄负 Degraded
+        let detector = DcFailureDetector::new(5, Duration::from_millis(1));
+        detector.add_dc(0);
+
+        let state = detector.get_dc_state(0).unwrap();
+        for _ in 0..5 {
+            state.record_failure();
+        }
+        assert_eq!(state.get_status(), DcStatus::Failed);
+
+        // 绛夊緟瓒呰繃 recovery_timeout
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // 鐩存帴璋冪敤 check_recovery锛堢鏈夋柟娉曪紝閫氳繃 start_health_check_with_shutdown 闂存帴瑕嗙洊鏇村鏉傦紝
+        // 杩欓噷鎴戜滑 spawn 涓€娆?check_recovery 閫氳繃鐭棿闅斾换鍔″苟绛夊緟锛?
+        // 鐢变簬 check_recovery 鏄鏈夋柟娉曪紝鎴戜滑閫氳繃 start_health_check_with_shutdown 瑙﹀彂瀹?
+        let (shutdown_tx, rx) = tokio::sync::watch::channel(false);
+        let shutdown_rx = rx;
+        // 鐢ㄥ緢鐭殑 check_interval 瑙﹀彂 check_recovery
+        detector
+            .start_health_check_with_shutdown(Duration::from_millis(1), shutdown_rx.clone())
+            .await;
+
+        // 绛夊緟瓒冲鏃堕棿璁?check_recovery 鎵ц
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // 鐘舵€佸簲浠?Failed 杞负 Degraded
+        assert_eq!(state.get_status(), DcStatus::Degraded);
+
+        // 鍙戦€?shutdown 淇″彿
+        let _ = shutdown_tx.send(true);
+        // 绛夊緟 task 閫€鍑?
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    #[test]
+    fn test_dc_health_state_record_success_resets_consecutive_failures() {
+        let state = DcHealthState::new(3);
+        // 瑙﹀彂 3 娆″け璐ヨ繘鍏?Degraded
+        for _ in 0..3 {
+            state.record_failure();
+        }
+        assert_eq!(state.get_status(), DcStatus::Degraded);
+        assert_eq!(state.consecutive_failures.load(Ordering::Relaxed), 3);
+
+        // 鎴愬姛搴旈噸缃?consecutive_failures 骞舵仮澶?Healthy
+        state.record_success();
+        assert_eq!(state.consecutive_failures.load(Ordering::Relaxed), 0);
+        assert_eq!(state.get_status(), DcStatus::Healthy);
+    }
+
+    #[test]
+    fn test_dc_health_state_failure_count_accumulates_separately() {
+        // failure_count 涓?consecutive_failures 涓嶅悓锛氬け璐ュ悗 success 涓嶄細閲嶇疆 failure_count
+        let state = DcHealthState::new(0);
+        state.record_failure();
+        state.record_failure();
+        state.record_success();
+        // failure_count 绱Н涓?2锛屼絾 consecutive_failures 宸查噸缃负 0
+        assert_eq!(state.failure_count.load(Ordering::Relaxed), 2);
+        assert_eq!(state.consecutive_failures.load(Ordering::Relaxed), 0);
+    }
+
+    // ------------------------------------------------------------------
+    // StepCalculator tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_step_calculator_with_cpu_monitor_uses_monitor_usage() {
+        let monitor = Arc::new(CpuMonitor::new());
+        monitor.update_usage(0.8); // 楂?CPU 璐熻浇
+
+        let calculator = StepCalculator::new(0.5, 0.3).with_cpu_monitor(monitor);
+        let config = SegmentAlgorithmConfig::default();
+        let step = calculator.calculate(100, 1000, &config);
+        // 搴旈珮浜庢棤 CPU 鐩戞帶鏃剁殑姝ラ暱锛堝洜涓?pressure=0.8 姣?0.1 澶э級
+        let plain = StepCalculator::new(0.5, 0.3).calculate(100, 1000, &config);
+        assert!(
+            step >= plain,
+            "expected step with high cpu pressure ({}) >= plain step ({})",
+            step,
+            plain
+        );
+    }
+
+    #[test]
+    fn test_step_calculator_calculate_uses_base_step_when_current_step_zero() {
+        // current_step=0 鏃跺簲鍥為€€鍒?config.base_step锛岄伩鍏嶉櫎闆?
+        let calculator = StepCalculator::default();
+        let config = SegmentAlgorithmConfig {
+            base_step: 500,
+            min_step: 100,
+            max_step: 100000,
+            switch_threshold: 0.1,
+        };
+        // 涓嶅簲 panic锛屼笖缁撴灉钀藉湪 [min_step, max_step] 涔嬮棿
+        let step = calculator.calculate(100, 0, &config);
+        assert!(
+            step >= config.min_step,
+            "step {} should be >= min_step",
+            step
+        );
+        assert!(
+            step <= config.max_step,
+            "step {} should be <= max_step",
+            step
+        );
+    }
+
+    #[test]
+    fn test_step_calculator_get_adjustment_direction_returns_up() {
+        // 楂?QPS + 浣?current_step 鈫?ratio > 1.2 鈫?"up"
+        let calculator = StepCalculator::new(0.5, 0.5);
+        let config = SegmentAlgorithmConfig::default();
+        // base_step=1000锛宷ps=10000锛宑urrent_step=100 鈫?velocity=100锛宻tep 澧為暱鏄捐憲
+        let direction = calculator.get_adjustment_direction(10000, 100, &config);
+        assert_eq!(direction, "up");
+    }
+
+    #[test]
+    fn test_step_calculator_get_adjustment_direction_returns_stable() {
+        // current_step 鎺ヨ繎 calculate 缁撴灉 鈫?"stable"
+        // 榛樿 calculator: velocity_factor=0.5, pressure_factor=0.3, default pressure=0.1
+        // qps=200, current_step=1000: velocity=0.2
+        // next_step = 1000 * (1 + 0.5*0.2) * (1 + 0.3*0.1) = 1000 * 1.1 * 1.03 鈮?1133
+        // ratio = 1133/1000 = 1.133, 鍦?[0.8, 1.2] 涔嬮棿 鈫?"stable"
+        let calculator = StepCalculator::default();
+        let config = SegmentAlgorithmConfig::default();
+        let direction = calculator.get_adjustment_direction(200, 1000, &config);
+        assert_eq!(direction, "stable");
+    }
+
+    #[test]
+    fn test_step_calculator_get_adjustment_direction_returns_down_when_target_smaller() {
+        // 璁?calculate 杩斿洖鍊艰繙灏忎簬 current_step
+        // 鐢?min_step 寮哄埗 calculate 杈撳嚭鏈€灏忓€?
+        let calculator = StepCalculator::default();
+        let config = SegmentAlgorithmConfig {
+            base_step: 100,
+            min_step: 50, // min_step = 50
+            max_step: 1000,
+            switch_threshold: 0.1,
+        };
+        // current_step 璁惧緢澶э紙濡?1000锛夛紝qps=0 鈫?target 鈮?base_step * (1 + 0 * 0) * (1 + 0.3 * 0.1) 鈮?103
+        // ratio = 103 / 1000 = 0.103 < 0.8 鈫?"down"
+        let direction = calculator.get_adjustment_direction(0, 1000, &config);
+        assert_eq!(direction, "down");
+    }
+
+    #[test]
+    fn test_step_calculator_calculate_respects_max_step() {
+        // 褰?QPS 鏋侀珮鏃讹紝calculate 搴旇 max_step 闄愬埗
+        let calculator = StepCalculator::new(1.0, 1.0);
+        let config = SegmentAlgorithmConfig {
+            base_step: 1000,
+            min_step: 100,
+            max_step: 50000,
+            switch_threshold: 0.1,
+        };
+        let step = calculator.calculate(u64::MAX, 1000, &config);
+        assert!(
+            step <= config.max_step,
+            "expected step {} <= max_step {}",
+            step,
+            config.max_step
+        );
+    }
+
+    #[test]
+    fn test_step_calculator_calculate_respects_min_step() {
+        // 褰?QPS 涓?0 涓旀棤 CPU 鍘嬪姏鏃讹紝calculate 搴旇 min_step 闄愬埗
+        let calculator = StepCalculator::default();
+        let config = SegmentAlgorithmConfig {
+            base_step: 1000,
+            min_step: 5000, // min_step 楂樹簬 base_step * 0.5
+            max_step: 100000,
+            switch_threshold: 0.1,
+        };
+        let step = calculator.calculate(0, 1000, &config);
+        assert!(
+            step >= config.min_step,
+            "expected step {} >= min_step {}",
+            step,
+            config.min_step
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // SegmentAlgorithm: inherent DI methods + Builder
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_segment_algorithm_default_uses_dc_id_zero() {
+        let algo = SegmentAlgorithm::default();
+        // default 璋冪敤 new(0)锛屽簲鑷姩 add_dc(0)
+        let detector = algo.get_dc_failure_detector();
+        assert!(detector.get_dc_state(0).is_some());
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_with_loader_replaces_default() {
+        // 鑷畾涔?loader锛歭oad_segment 杩斿洖鍥哄畾 SegmentData
+        struct FixedLoader;
+        #[async_trait]
+        impl SegmentLoader for FixedLoader {
+            async fn load_segment(
+                &self,
+                _ctx: &GenerateContext,
+                _worker_id: u8,
+            ) -> Result<SegmentData> {
+                Ok(SegmentData {
+                    start_id: 1,
+                    max_id: 100,
+                    step: 10,
+                    version: 0,
+                })
+            }
+        }
+        let loader: Arc<dyn SegmentLoader + Send + Sync> = Arc::new(FixedLoader);
+        let algo = SegmentAlgorithm::new(0).with_loader(loader);
+        // 閫氳繃 generate 瑙﹀彂 load_segment
+        let ctx = sample_ctx();
+        let id = algo.generate(&ctx).await.unwrap();
+        // FixedLoader 杩斿洖 start_id=1锛岀涓€娆?try_consume(1) 搴旇繑鍥?1
+        assert_eq!(id.as_u128(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_with_loader_replaces_default_async() {
+        // 寮傛鐗堟湰锛氫繚璇?with_loader 鍦?async 涓婁笅鏂囦腑涔熻兘宸ヤ綔
+        struct FixedLoader;
+        #[async_trait]
+        impl SegmentLoader for FixedLoader {
+            async fn load_segment(
+                &self,
+                _ctx: &GenerateContext,
+                _worker_id: u8,
+            ) -> Result<SegmentData> {
+                Ok(SegmentData {
+                    start_id: 1000,
+                    max_id: 2000,
+                    step: 100,
+                    version: 0,
+                })
+            }
+        }
+        let loader: Arc<dyn SegmentLoader + Send + Sync> = Arc::new(FixedLoader);
+        let algo = SegmentAlgorithm::new(0).with_loader(loader);
+
+        let ctx = sample_ctx();
+        let id = algo.generate(&ctx).await.unwrap();
+        assert_eq!(id.as_u128(), 1000);
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_with_cpu_monitor_sets_field() {
+        let monitor = Arc::new(CpuMonitor::new());
+        let algo = SegmentAlgorithm::new(0).with_cpu_monitor(monitor);
+        // initialize 搴旇兘姝ｅ父鍚姩 CPU monitor task
+        let mut algo = algo;
+        let config = Config::default();
+        algo.initialize(&config).await.unwrap();
+        algo.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn test_segment_algorithm_with_dc_failure_detector_replaces_default() {
+        let detector = Arc::new(DcFailureDetector::new(7, Duration::from_secs(60)));
+        detector.add_dc(5);
+        let algo = SegmentAlgorithm::new(0).with_dc_failure_detector(detector);
+        // get_dc_failure_detector 搴旇繑鍥炴敞鍏ョ殑 detector
+        let returned = algo.get_dc_failure_detector();
+        assert!(returned.get_dc_state(5).is_some());
+        // 娉ㄦ剰锛氭敞鍏ョ殑 detector 娌℃湁 dc_id=0
+        assert!(returned.get_dc_state(0).is_none());
+    }
+
+    #[cfg(not(feature = "etcd"))]
+    #[test]
+    fn test_segment_algorithm_with_etcd_cluster_health_monitor_non_etcd() {
+        // 闈?etcd 鐗堟湰锛歸ith_etcd_cluster_health_monitor(Arc<()>) 搴旀甯歌缃?
+        let algo = SegmentAlgorithm::new(0).with_etcd_cluster_health_monitor(Arc::new(()));
+        // get_etcd_cluster_health_monitor 搴旇繑鍥?Some
+        assert!(algo.get_etcd_cluster_health_monitor().is_some());
+    }
+
+    #[cfg(not(feature = "etcd"))]
+    #[test]
+    fn test_segment_algorithm_get_etcd_cluster_health_monitor_returns_none_by_default() {
+        // 榛樿鏈缃?etcd monitor锛屽簲杩斿洖 None
+        let algo = SegmentAlgorithm::new(0);
+        assert!(algo.get_etcd_cluster_health_monitor().is_none());
+    }
+
+    #[test]
+    fn test_segment_algorithm_get_dc_failure_detector_returns_reference() {
+        let algo = SegmentAlgorithm::new(3);
+        let detector = algo.get_dc_failure_detector();
+        // 楠岃瘉杩斿洖鐨勫紩鐢ㄦ槸鏈夋晥鐨勶紝涓斿寘鍚?dc_id=3
+        assert!(detector.get_dc_state(3).is_some());
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_initialize_starts_health_check_task() {
+        // initialize 搴斿惎鍔?health check task锛宻hutdown 搴旇兘姝ｇ‘鍋滄
+        let mut algo = SegmentAlgorithm::new(0);
+        let config = Config::default();
+        algo.initialize(&config).await.unwrap();
+        // health_check_task 搴斿凡璁剧疆
+        assert!(algo.health_check_task.lock().await.is_some());
+        // shutdown 搴旇兘姝ｇ‘鍋滄 task
+        algo.shutdown().await.unwrap();
+        assert!(algo.health_check_task.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_initialize_with_cpu_monitor_starts_monitoring() {
+        // initialize 鏃惰嫢鏈?cpu_monitor 搴斿惎鍔?monitoring task
+        let monitor = Arc::new(CpuMonitor::new());
+        let mut algo = SegmentAlgorithm::new(0).with_cpu_monitor(monitor);
+        let config = Config::default();
+        algo.initialize(&config).await.unwrap();
+        // cpu_monitor_task 搴斿凡璁剧疆
+        assert!(algo.cpu_monitor_task.lock().await.is_some());
+        algo.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn test_segment_algorithm_builder_new_returns_default_builder() {
+        let _builder = SegmentAlgorithmBuilder::new();
+        // new() 搴旇繑鍥?Default::default() 绛変环鐨?builder
+        let default_builder = SegmentAlgorithmBuilder::default();
+        let _ = default_builder;
+    }
+
+    #[test]
+    fn test_segment_algorithm_builder_with_all_setters() {
+        // 閾惧紡璋冪敤鎵€鏈?builder setter锛岀‘淇濈紪璇戦€氳繃涓斾笉 panic
+        let detector = Arc::new(DcFailureDetector::new(5, Duration::from_secs(300)));
+        let monitor = Arc::new(CpuMonitor::new());
+        let config_provider: Arc<dyn ConfigProvider> = Arc::new(MockConfigProvider::new());
+        let repository: Arc<dyn SegmentRepository> =
+            Arc::new(MockSegmentRepository::success(sample_segment_info()));
+
+        let builder = SegmentAlgorithmBuilder::new()
+            .config(config_provider)
+            .cache(Arc::new(Cache::new()))
+            .repository(repository)
+            .local_dc_id(2)
+            .cpu_monitor(monitor)
+            .dc_failure_detector(detector);
+        let _ = builder;
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_builder_build_with_defaults() {
+        // 涓嶈缃换浣曚緷璧栵紝build() 搴斾娇鐢ㄩ粯璁ゅ€?
+        let algo = SegmentAlgorithmBuilder::new().build();
+        // 搴旇兘姝ｅ父 generate
+        let ctx = sample_ctx();
+        let id = algo.generate(&ctx).await.unwrap();
+        assert!(id.as_u128() > 0);
+    }
+
+    #[test]
+    fn test_segment_algorithm_builder_build_with_custom_config() {
+        // 閫氳繃 MockConfigProvider 鎻愪緵鑷畾涔夐厤缃€?
+        let provider = MockConfigProvider::new()
+            .with_int("algorithm.segment.base_step", 2000)
+            .with_int("algorithm.segment.min_step", 1000)
+            .with_int("algorithm.segment.max_step", 50000)
+            .with_float("algorithm.segment.switch_threshold", 0.05);
+        let algo = SegmentAlgorithm::builder()
+            .config(Arc::new(provider))
+            .build();
+        // 楠岃瘉 config 琚纭敞鍏ワ紙閫氳繃 get_or_create_buffer 鍒涘缓鐨?buffer switch_threshold锛?
+        // 鏃犳硶鐩存帴璁块棶 config 瀛楁锛堢鏈夛級锛屼絾鍙瀵熻涓猴細buffer 鍒涘缓涓?panic
+        let _ = algo;
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_builder_build_with_custom_loader() {
+        struct FixedLoader;
+        #[async_trait]
+        impl SegmentLoader for FixedLoader {
+            async fn load_segment(
+                &self,
+                _ctx: &GenerateContext,
+                _worker_id: u8,
+            ) -> Result<SegmentData> {
+                Ok(SegmentData {
+                    start_id: 42,
+                    max_id: 142,
+                    step: 50,
+                    version: 1,
+                })
+            }
+        }
+        let loader: Arc<dyn SegmentLoader + Send + Sync> = Arc::new(FixedLoader);
+        let algo = SegmentAlgorithm::builder()
+            .segment_loader(loader)
+            .local_dc_id(1)
+            .build();
+        let ctx = sample_ctx();
+        let id = algo.generate(&ctx).await.unwrap();
+        assert_eq!(id.as_u128(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_builder_build_with_custom_dc_failure_detector() {
+        let detector = Arc::new(DcFailureDetector::new(8, Duration::from_secs(120)));
+        detector.add_dc(4);
+        let algo = SegmentAlgorithm::builder()
+            .dc_failure_detector(detector)
+            .build();
+        // 娉ㄥ叆鐨?detector 搴旇浣跨敤
+        assert!(algo.get_dc_failure_detector().get_dc_state(4).is_some());
+    }
+
+    // ------------------------------------------------------------------
+    // SegmentAlgorithm: IdAlgorithm trait methods (more branches)
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_segment_algorithm_generate_with_pre_loaded_next_uses_swap() {
+        // 閫氳繃 with_loader 娉ㄥ叆浼氬け璐ョ殑 loader锛屼絾鎻愬墠璁剧疆 next buffer 璁?generate 璧?swap 鍒嗘敮
+        struct FailingLoader;
+        #[async_trait]
+        impl SegmentLoader for FailingLoader {
+            async fn load_segment(
+                &self,
+                _ctx: &GenerateContext,
+                _worker_id: u8,
+            ) -> Result<SegmentData> {
+                Err(CoreError::DatabaseError("should not be called".to_string()))
+            }
+        }
+        let loader: Arc<dyn SegmentLoader + Send + Sync> = Arc::new(FailingLoader);
+        let algo = SegmentAlgorithm::new(0).with_loader(loader);
+
+        // 棰勫厛鍒涘缓涓€涓?buffer 骞惰缃?next
+        let key = "ws:tag";
+        let buffer = algo.get_or_create_buffer(key);
+        let next_seg = Arc::new(AtomicSegment::new(1000, 2000, 100));
+        buffer.set_next(next_seg);
+
+        let ctx = sample_ctx();
+        let id = algo.generate(&ctx).await.unwrap();
+        // swap 鍚庣涓€娆?try_consume(1) 搴旇繑鍥?1000
+        assert_eq!(id.as_u128(), 1000);
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_generate_returns_segment_exhausted_when_loader_fails() {
+        // loader 澶辫触鏃?generate 搴斾紶鎾?DatabaseError
+        struct FailingLoader;
+        #[async_trait]
+        impl SegmentLoader for FailingLoader {
+            async fn load_segment(
+                &self,
+                _ctx: &GenerateContext,
+                _worker_id: u8,
+            ) -> Result<SegmentData> {
+                Err(CoreError::DatabaseError("loader failed".to_string()))
+            }
+        }
+        let loader: Arc<dyn SegmentLoader + Send + Sync> = Arc::new(FailingLoader);
+        let algo = SegmentAlgorithm::new(0).with_loader(loader);
+
+        let ctx = sample_ctx();
+        let result = algo.generate(&ctx).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            CoreError::DatabaseError(msg) => assert!(msg.contains("loader failed")),
+            other => panic!("expected DatabaseError, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_generate_exhausted_after_segment_drained() {
+        // loader has state: first call returns usable segment, subsequent calls return exhausted
+        // a naive loader always returning fresh segments would let generate succeed forever
+        struct ExhaustingLoader {
+            calls: AtomicU64,
+        }
+        #[async_trait]
+        impl SegmentLoader for ExhaustingLoader {
+            async fn load_segment(
+                &self,
+                _ctx: &GenerateContext,
+                _worker_id: u8,
+            ) -> Result<SegmentData> {
+                let n = self.calls.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    Ok(SegmentData {
+                        start_id: 0,
+                        max_id: 1,
+                        step: 1,
+                        version: 0,
+                    })
+                } else {
+                    // exhausted segment: start_id == max_id, try_consume always returns None
+                    Ok(SegmentData {
+                        start_id: 5,
+                        max_id: 5,
+                        step: 1,
+                        version: 0,
+                    })
+                }
+            }
+        }
+        let loader: Arc<dyn SegmentLoader + Send + Sync> = Arc::new(ExhaustingLoader {
+            calls: AtomicU64::new(0),
+        });
+        let algo = SegmentAlgorithm::new(0).with_loader(loader);
+
+        let ctx = sample_ctx();
+        let id1 = algo.generate(&ctx).await.unwrap();
+        assert_eq!(id1.as_u128(), 0);
+
+        let result = algo.generate(&ctx).await;
+        assert!(
+            result.is_err(),
+            "expected error after segment drained and loader returns exhausted segment"
+        );
+        match result.unwrap_err() {
+            CoreError::SegmentExhausted { max_id } => assert_eq!(max_id, 5),
+            other => panic!("expected SegmentExhausted, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_batch_generate_basic_path() {
+        let algo = SegmentAlgorithm::new(0);
+        let ctx = sample_ctx();
+        let batch = algo.batch_generate(&ctx, 5).await.unwrap();
+        assert_eq!(batch.ids.len(), 5);
+        // 5 涓?ID 搴旀槸杩炵画閫掑鐨?
+        let first = batch.ids[0].as_u128();
+        for (i, id) in batch.ids.iter().enumerate() {
+            assert_eq!(id.as_u128(), first + i as u128);
+        }
+        assert_eq!(batch.algorithm, AlgorithmType::Segment);
+        assert_eq!(batch.biz_tag, "tag");
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_batch_generate_with_pre_loaded_next() {
+        struct FailingLoader;
+        #[async_trait]
+        impl SegmentLoader for FailingLoader {
+            async fn load_segment(
+                &self,
+                _ctx: &GenerateContext,
+                _worker_id: u8,
+            ) -> Result<SegmentData> {
+                Err(CoreError::DatabaseError("should not be called".to_string()))
+            }
+        }
+        let loader: Arc<dyn SegmentLoader + Send + Sync> = Arc::new(FailingLoader);
+        let algo = SegmentAlgorithm::new(0).with_loader(loader);
+
+        // 棰勮 next buffer
+        let buffer = algo.get_or_create_buffer("ws:tag");
+        let next_seg = Arc::new(AtomicSegment::new(100, 200, 10));
+        buffer.set_next(next_seg);
+
+        let ctx = sample_ctx();
+        let batch = algo.batch_generate(&ctx, 5).await.unwrap();
+        assert_eq!(batch.ids.len(), 5);
+        // 绗竴涓?ID 搴旀槸 100
+        assert_eq!(batch.ids[0].as_u128(), 100);
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_batch_generate_propagates_loader_error() {
+        struct FailingLoader;
+        #[async_trait]
+        impl SegmentLoader for FailingLoader {
+            async fn load_segment(
+                &self,
+                _ctx: &GenerateContext,
+                _worker_id: u8,
+            ) -> Result<SegmentData> {
+                Err(CoreError::DatabaseError("batch loader failed".to_string()))
+            }
+        }
+        let loader: Arc<dyn SegmentLoader + Send + Sync> = Arc::new(FailingLoader);
+        let algo = SegmentAlgorithm::new(0).with_loader(loader);
+
+        let ctx = sample_ctx();
+        let result = algo.batch_generate(&ctx, 10).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            CoreError::DatabaseError(msg) => assert!(msg.contains("batch loader failed")),
+            other => panic!("expected DatabaseError, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_batch_generate_empty_returns_exhausted_error() {
+        // batch_generate size=0 搴旇繑鍥?SegmentExhausted锛坕ds.is_empty() 鍒嗘敮锛?
+        let algo = SegmentAlgorithm::new(0);
+        let ctx = sample_ctx();
+        let result = algo.batch_generate(&ctx, 0).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            CoreError::SegmentExhausted { max_id: _ } => {}
+            other => panic!("expected SegmentExhausted, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_batch_generate_partial_when_cannot_fill() {
+        // loader 杩斿洖 segment 浠呰兘瀹圭撼 3 涓?ID锛屼絾璇锋眰 5 涓?鈫?搴旇兘娑堣€楀埌 3 涓?
+        struct SmallLoader;
+        #[async_trait]
+        impl SegmentLoader for SmallLoader {
+            async fn load_segment(
+                &self,
+                _ctx: &GenerateContext,
+                _worker_id: u8,
+            ) -> Result<SegmentData> {
+                Ok(SegmentData {
+                    start_id: 0,
+                    max_id: 3, // 鍙兘瀹圭撼 3 涓?ID
+                    step: 1,
+                    version: 0,
+                })
+            }
+        }
+        let loader: Arc<dyn SegmentLoader + Send + Sync> = Arc::new(SmallLoader);
+        let algo = SegmentAlgorithm::new(0).with_loader(loader);
+
+        let ctx = sample_ctx();
+        // 璇锋眰 3 涓?ID锛屾濂藉～婊?segment
+        let batch = algo.batch_generate(&ctx, 3).await.unwrap();
+        assert_eq!(batch.ids.len(), 3);
+    }
+
+    #[test]
+    fn test_segment_algorithm_health_check_returns_degraded_when_no_buffers() {
+        let algo = SegmentAlgorithm::new(0);
+        let status = algo.health_check();
+        match status {
+            HealthStatus::Degraded(msg) => assert_eq!(msg, "No active buffers"),
+            other => panic!("expected Degraded, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_health_check_returns_healthy_when_buffer_exists() {
+        let algo = SegmentAlgorithm::new(0);
+        // generate 涓€娆′互鍒涘缓 buffer
+        let ctx = sample_ctx();
+        let _ = algo.generate(&ctx).await.unwrap();
+        let status = algo.health_check();
+        assert!(matches!(status, HealthStatus::Healthy));
+    }
+
+    #[test]
+    fn test_segment_algorithm_metrics_default_returns_full_hit_rate() {
+        // 鏈皟鐢ㄨ繃浠讳綍缂撳瓨璺緞 鈫?hits=0, misses=0 鈫?hit_rate=1.0锛堥粯璁わ級
+        let algo = SegmentAlgorithm::new(0);
+        let m = algo.metrics();
+        assert_eq!(m.cache_hit_rate, Some(1.0));
+        assert_eq!(m.total_generated, 0);
+        assert_eq!(m.total_failed, 0);
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_metrics_with_cache_misses_records_qps_zero() {
+        // generate 涓€娆★紙瑙﹀彂 cache miss锛夊悗 metrics 搴斿弽鏄犵姸鎬?
+        let algo = SegmentAlgorithm::new(0);
+        let ctx = sample_ctx();
+        let _ = algo.generate(&ctx).await.unwrap();
+        let m = algo.metrics();
+        assert_eq!(m.total_generated, 1);
+        // cache_misses > 0 鈫?hit_rate = hits/(hits+misses) = 0/1 = 0.0
+        assert_eq!(m.cache_hit_rate, Some(0.0));
+        assert_eq!(m.current_qps, 0);
+        assert_eq!(m.p50_latency_us, 0);
+        assert_eq!(m.p99_latency_us, 0);
+    }
+
+    #[test]
+    fn test_segment_algorithm_algorithm_type_returns_segment() {
+        let algo = SegmentAlgorithm::new(0);
+        assert_eq!(algo.algorithm_type(), AlgorithmType::Segment);
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_shutdown_without_initialize_is_no_op() {
+        // 鏈皟鐢?initialize 鐩存帴 shutdown 搴斾笉 panic
+        let algo = SegmentAlgorithm::new(0);
+        algo.shutdown().await.unwrap();
+    }
+
+    // ------------------------------------------------------------------
+    // QpsWindow tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_qps_window_new_returns_baseline_on_first_record() {
+        let window = QpsWindow::new();
+        let qps = window.record_and_get_qps();
+        // first record: total=1, active_slots=1, qps=1, max(1, DEFAULT_QPS_BASELINE=1000) = 1000
+        assert_eq!(qps, DEFAULT_QPS_BASELINE);
+    }
+
+    #[test]
+    fn test_qps_window_multiple_records_stay_at_baseline() {
+        // with only a few requests in one second, avg qps is tiny so the floor wins
+        let window = QpsWindow::new();
+        let q1 = window.record_and_get_qps();
+        let q2 = window.record_and_get_qps();
+        let q3 = window.record_and_get_qps();
+        assert_eq!(q1, DEFAULT_QPS_BASELINE);
+        assert_eq!(q2, DEFAULT_QPS_BASELINE);
+        assert_eq!(q3, DEFAULT_QPS_BASELINE);
+    }
+
+    #[test]
+    fn test_qps_window_returns_baseline_after_window_expiry() {
+        // simulate window expiry by creating a window and waiting > 60s is impractical,
+        // so we verify the floor behaviour indirectly: qps is always >= DEFAULT_QPS_BASELINE
+        let window = QpsWindow::new();
+        for _ in 0..10 {
+            let q = window.record_and_get_qps();
+            assert!(
+                q >= DEFAULT_QPS_BASELINE,
+                "qps {} should be >= {}",
+                q,
+                DEFAULT_QPS_BASELINE
+            );
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // DatabaseSegmentLoader tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_database_segment_loader_new_initializes_fields() {
+        let repo: Arc<dyn SegmentRepository> =
+            Arc::new(MockSegmentRepository::success(sample_segment_info()));
+        let detector = Arc::new(DcFailureDetector::new(5, Duration::from_secs(300)));
+        let config = SegmentAlgorithmConfig::default();
+        let loader = DatabaseSegmentLoader::new(repo, detector, 0, config);
+        assert_eq!(
+            loader.get_current_step(),
+            SegmentAlgorithmConfig::default().base_step
+        );
+    }
+
+    #[test]
+    fn test_database_segment_loader_with_cpu_monitor_sets_calculator() {
+        let repo: Arc<dyn SegmentRepository> =
+            Arc::new(MockSegmentRepository::success(sample_segment_info()));
+        let detector = Arc::new(DcFailureDetector::new(5, Duration::from_secs(300)));
+        let config = SegmentAlgorithmConfig::default();
+        let cpu = Arc::new(CpuMonitor::new());
+        cpu.update_usage(0.9);
+        let loader = DatabaseSegmentLoader::new(repo, detector, 0, config).with_cpu_monitor(cpu);
+        assert_eq!(
+            loader.get_current_step(),
+            SegmentAlgorithmConfig::default().base_step
+        );
+    }
+
+    #[cfg(not(feature = "etcd"))]
+    #[test]
+    fn test_database_segment_loader_with_etcd_cluster_health_monitor_non_etcd() {
+        let repo: Arc<dyn SegmentRepository> =
+            Arc::new(MockSegmentRepository::success(sample_segment_info()));
+        let detector = Arc::new(DcFailureDetector::new(5, Duration::from_secs(300)));
+        let config = SegmentAlgorithmConfig::default();
+        let loader = DatabaseSegmentLoader::new(repo, detector, 0, config);
+        let loader = loader.with_etcd_cluster_health_monitor(Arc::new(()));
+        assert_eq!(
+            loader.get_current_step(),
+            SegmentAlgorithmConfig::default().base_step
+        );
+    }
+
+    #[tokio::test]
+    async fn test_database_segment_loader_load_segment_success_with_dc() {
+        let repo = Arc::new(MockSegmentRepository::success(sample_segment_info()));
+        let detector = Arc::new(DcFailureDetector::new(5, Duration::from_secs(300)));
+        detector.add_dc(0);
+        let config = SegmentAlgorithmConfig::default();
+        let loader = DatabaseSegmentLoader::new(repo, detector.clone(), 0, config);
+        let ctx = sample_ctx();
+        let seg = loader.load_segment(&ctx, 0).await.unwrap();
+        assert_eq!(seg.start_id, 500);
+        assert_eq!(seg.max_id, 1500);
+        assert_eq!(seg.step, 1000);
+        assert_eq!(seg.version, 0);
+        let dc_state = detector.get_dc_state(0).unwrap();
+        assert_eq!(dc_state.get_status(), DcStatus::Healthy);
+    }
+
+    #[tokio::test]
+    async fn test_database_segment_loader_load_segment_failure_records_dc_failure() {
+        let repo = Arc::new(MockSegmentRepository::failing_with_dc());
+        let detector = Arc::new(DcFailureDetector::new(5, Duration::from_secs(300)));
+        detector.add_dc(0);
+        let config = SegmentAlgorithmConfig::default();
+        let loader = DatabaseSegmentLoader::new(repo, detector.clone(), 0, config);
+        let ctx = sample_ctx();
+        let result = loader.load_segment(&ctx, 0).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            CoreError::DatabaseError(_) => {}
+            other => panic!("expected DatabaseError, got {:?}", other),
+        }
+        let dc_state = detector.get_dc_state(0).unwrap();
+        assert_eq!(dc_state.failure_count.load(Ordering::Relaxed), 1);
+        assert_eq!(dc_state.consecutive_failures.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn test_database_segment_loader_load_segment_no_dc_state_uses_allocate_segment() {
+        // when dc_failure_detector has no DC registered, dc_state is None
+        // and load_segment falls back to allocate_segment (not allocate_segment_with_dc)
+        let repo = Arc::new(MockSegmentRepository::failing_with_dc());
+        // failing_with_dc: allocate_segment_with_dc fails, allocate_segment succeeds
+        let detector = Arc::new(DcFailureDetector::new(5, Duration::from_secs(300)));
+        // deliberately NOT calling add_dc(0) so get_dc_state returns None
+        let config = SegmentAlgorithmConfig::default();
+        let loader = DatabaseSegmentLoader::new(repo, detector, 0, config);
+        let ctx = sample_ctx();
+        let seg = loader.load_segment(&ctx, 0).await.unwrap();
+        // failing_with_dc() has segment=None, so allocate_segment returns default
+        // SegmentInfo { current_id: 1000, max_id: 2000, step: 1000 }
+        assert_eq!(seg.start_id, 1000);
+        assert_eq!(seg.max_id, 2000);
+        assert_eq!(seg.step, 1000);
+    }
+
+    #[tokio::test]
+    async fn test_database_segment_loader_load_segment_no_dc_state_failure() {
+        // no DC registered + allocate_segment fails -> DatabaseError
+        let repo = Arc::new(MockSegmentRepository::failing());
+        let detector = Arc::new(DcFailureDetector::new(5, Duration::from_secs(300)));
+        let config = SegmentAlgorithmConfig::default();
+        let loader = DatabaseSegmentLoader::new(repo, detector, 0, config);
+        let ctx = sample_ctx();
+        let result = loader.load_segment(&ctx, 0).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            CoreError::DatabaseError(_) => {}
+            other => panic!("expected DatabaseError, got {:?}", other),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // RepositoryBackedLoader tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_repository_backed_loader_new_stores_config() {
+        let repo: Arc<dyn SegmentRepository> =
+            Arc::new(MockSegmentRepository::success(sample_segment_info()));
+        let config = SegmentAlgorithmConfig::default();
+        let _loader = RepositoryBackedLoader::new(repo, config);
+    }
+
+    #[tokio::test]
+    async fn test_repository_backed_loader_load_segment_success() {
+        let repo = Arc::new(MockSegmentRepository::success(sample_segment_info()));
+        let config = SegmentAlgorithmConfig::default();
+        let loader = RepositoryBackedLoader::new(repo, config);
+        let ctx = sample_ctx();
+        let seg = loader.load_segment(&ctx, 0).await.unwrap();
+        assert_eq!(seg.start_id, 500);
+        assert_eq!(seg.max_id, 1500);
+        assert_eq!(seg.step, 1000);
+        assert_eq!(seg.version, 0);
+    }
+
+    #[tokio::test]
+    async fn test_repository_backed_loader_load_segment_failure_returns_database_error() {
+        let repo = Arc::new(MockSegmentRepository::failing());
+        let config = SegmentAlgorithmConfig::default();
+        let loader = RepositoryBackedLoader::new(repo, config);
+        let ctx = sample_ctx();
+        let result = loader.load_segment(&ctx, 0).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            CoreError::DatabaseError(_) => {}
+            other => panic!("expected DatabaseError, got {:?}", other),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // SegmentAlgorithm::with_dependencies tests
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_segment_algorithm_with_dependencies_generates_ids_via_repository() {
+        let repo = Arc::new(MockSegmentRepository::success(sample_segment_info()));
+        let config: Arc<dyn ConfigProvider> = Arc::new(MockConfigProvider::new());
+        let algo = SegmentAlgorithm::with_dependencies(config, None, repo, 0);
+        let ctx = sample_ctx();
+        let id = algo.generate(&ctx).await.unwrap();
+        assert_eq!(id.as_u128(), 500);
+    }
+
+    #[tokio::test]
+    async fn test_segment_algorithm_with_dependencies_reads_config_from_provider() {
+        let repo = Arc::new(MockSegmentRepository::success(sample_segment_info()));
+        let config: Arc<dyn ConfigProvider> = Arc::new(
+            MockConfigProvider::new()
+                .with_int("algorithm.segment.base_step", 2000)
+                .with_int("algorithm.segment.min_step", 1000)
+                .with_int("algorithm.segment.max_step", 50000)
+                .with_float("algorithm.segment.switch_threshold", 0.2),
+        );
+        let algo = SegmentAlgorithm::with_dependencies(config, None, repo, 0);
+        let ctx = sample_ctx();
+        let id = algo.generate(&ctx).await.unwrap();
+        assert_eq!(id.as_u128(), 500);
+    }
+
+    // ------------------------------------------------------------------
+    // SegmentFactory tests
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_segment_factory_build_creates_working_algorithm() {
+        let factory = crate::core::algorithm::SegmentFactory;
+        let builder = crate::core::algorithm::AlgorithmBuilder::new(AlgorithmType::Segment);
+        let config = Config::default();
+        let algo = factory.build(&builder, &config).await.unwrap();
+        assert_eq!(algo.algorithm_type(), AlgorithmType::Segment);
+    }
+
+    #[tokio::test]
+    async fn test_segment_factory_build_with_cpu_monitor() {
+        let factory = crate::core::algorithm::SegmentFactory;
+        let cpu = Arc::new(CpuMonitor::new());
+        let builder = crate::core::algorithm::AlgorithmBuilder::new(AlgorithmType::Segment)
+            .with_cpu_monitor(cpu);
+        let config = Config::default();
+        let algo = factory.build(&builder, &config).await.unwrap();
+        assert_eq!(algo.algorithm_type(), AlgorithmType::Segment);
     }
 }

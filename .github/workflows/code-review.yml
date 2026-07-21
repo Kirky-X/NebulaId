@@ -41,23 +41,33 @@ jobs:
           shared-key: "nebula-review"
           cache-targets: false
 
+      - name: Detect code review tool
+        id: detect-tool
+        run: |
+          if cargo metadata --no-deps --format-version 1 | \
+             grep -q '"name":"nebula-code-review"'; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "nebula-code-review package found in workspace"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "nebula-code-review package not found in workspace - skipping agent-based review"
+          fi
+
       - name: Build code review tool
-        run: cargo build --release -p nebula-code-review 2>/dev/null || echo "Skipping - nebula-code-review not found"
+        if: steps.detect-tool.outputs.exists == 'true'
+        run: cargo build --release -p nebula-code-review
 
       - name: Run Full Code Review
         id: full-review
+        if: steps.detect-tool.outputs.exists == 'true' && success()
         run: |
-          if [ -f "./target/release/nebula-code-review" ]; then
-            echo "=== Full Code Review ==="
-            ./target/release/nebula-code-review --format markdown --output review-report.md
-            cat review-report.md
-          else
-            echo "=== Code Review Tool Not Available ==="
-            echo "Skipping agent-based review (nebula-code-review binary not found)"
-          fi
+          echo "=== Full Code Review ==="
+          ./target/release/nebula-code-review --format markdown --output review-report.md
+          cat review-report.md
+          echo "status=completed" >> $GITHUB_OUTPUT
 
       - name: Upload Review Report
-        if: steps.full-review.outputs.status != 'skipped' && always()
+        if: steps.full-review.outputs.status == 'completed' && always()
         uses: actions/upload-artifact@v4
         with:
           name: code-review-report
@@ -65,7 +75,7 @@ jobs:
           retention-days: 7
 
       - name: Check Critical Issues
-        if: steps.full-review.outputs.status != 'skipped' && always()
+        if: steps.full-review.outputs.status == 'completed' && always()
         run: |
           if [ -f "review-report.md" ]; then
             CRITICAL_COUNT=$(grep -c "Critical" review-report.md || echo "0")
@@ -75,5 +85,6 @@ jobs:
             fi
             echo "No critical issues found"
           else
-            echo "No review report to check"
+            echo "::error::Review report not generated despite tool being available"
+            exit 1
           fi

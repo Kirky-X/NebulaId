@@ -629,10 +629,11 @@ pub struct SegmentAlgorithm {
     dc_failure_detector: Arc<DcFailureDetector>,
     #[allow(dead_code)]
     local_dc_id: u8,
+    // L12 对齐修复：非 etcd 版本不再持有 `etcd_cluster_health_monitor: Option<()>`
+    // 占位字段（与 AlgorithmBuilder / AlgorithmRouter 一致）。`with_etcd_cluster_health_monitor`
+    // builder 方法仅在 etcd feature 下存在；非 etcd 版本根本不会调用它。
     #[cfg(feature = "etcd")]
     etcd_cluster_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
-    #[cfg(not(feature = "etcd"))]
-    etcd_cluster_health_monitor: Option<()>,
     /// CPU monitor for dynamic step calculation
     cpu_monitor: Option<Arc<CpuMonitor>>,
     /// CPU monitor task handle
@@ -694,6 +695,7 @@ impl SegmentAlgorithm {
             segment_loader: Arc::new(DefaultSegmentLoader::default()),
             dc_failure_detector,
             local_dc_id,
+            #[cfg(feature = "etcd")]
             etcd_cluster_health_monitor: None,
             cpu_monitor: None,
             cpu_monitor_task: Arc::new(tokio::sync::Mutex::new(None)),
@@ -756,22 +758,16 @@ impl SegmentAlgorithm {
         self.etcd_cluster_health_monitor = Some(monitor);
         self
     }
-
-    #[cfg(not(feature = "etcd"))]
-    pub fn with_etcd_cluster_health_monitor(mut self, _monitor: Arc<()>) -> Self {
-        self.etcd_cluster_health_monitor = Some(());
-        self
-    }
+    // L12 对齐修复：删除非 etcd 版本的 `with_etcd_cluster_health_monitor(Arc<()>)`。
+    // 原签名接受 `Arc<()>` 但完全忽略参数，类型误导且调用方可能误以为
+    // monitor 被实际使用。非 etcd 版本根本不需要这个 builder 方法。
 
     #[cfg(feature = "etcd")]
     pub fn get_etcd_cluster_health_monitor(&self) -> Option<&Arc<EtcdClusterHealthMonitor>> {
         self.etcd_cluster_health_monitor.as_ref()
     }
-
-    #[cfg(not(feature = "etcd"))]
-    pub fn get_etcd_cluster_health_monitor(&self) -> Option<&()> {
-        self.etcd_cluster_health_monitor.as_ref()
-    }
+    // L12 对齐修复：删除非 etcd 版本的 `get_etcd_cluster_health_monitor() -> Option<&()>`。
+    // 非 etcd 版本字段不存在，getter 也无意义。
 
     pub fn get_dc_failure_detector(&self) -> &Arc<DcFailureDetector> {
         &self.dc_failure_detector
@@ -1062,10 +1058,10 @@ pub struct DatabaseSegmentLoader {
     repository: Arc<dyn SegmentRepository>,
     dc_failure_detector: Arc<DcFailureDetector>,
     local_dc_id: u8,
+    // L12 对齐修复：非 etcd 版本不再持有 `etcd_cluster_health_monitor: Option<()>`
+    // 占位字段（与 AlgorithmBuilder / AlgorithmRouter 一致）。
     #[cfg(feature = "etcd")]
     etcd_cluster_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
-    #[cfg(not(feature = "etcd"))]
-    etcd_cluster_health_monitor: Option<()>,
     /// 动态步长计算器
     step_calculator: StepCalculator,
     /// Segment 算法配置
@@ -1088,6 +1084,7 @@ impl DatabaseSegmentLoader {
             counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             dc_failure_detector,
             local_dc_id,
+            #[cfg(feature = "etcd")]
             etcd_cluster_health_monitor: None,
             step_calculator: StepCalculator::default(),
             segment_config: config,
@@ -1108,12 +1105,9 @@ impl DatabaseSegmentLoader {
         self.etcd_cluster_health_monitor = Some(monitor);
         self
     }
-
-    #[cfg(not(feature = "etcd"))]
-    pub fn with_etcd_cluster_health_monitor(mut self, _monitor: Arc<()>) -> Self {
-        self.etcd_cluster_health_monitor = Some(());
-        self
-    }
+    // L12 对齐修复：删除非 etcd 版本的 `with_etcd_cluster_health_monitor(Arc<()>)`。
+    // 原 Signature 接受 `Arc<()>` 但完全忽略参数，类型误导且调用方可能误以为
+    // monitor 被实际使用。非 etcd 版本根本不需要这个 builder 方法。
 
     /// 动态计算步长
     ///
@@ -1263,6 +1257,7 @@ impl SegmentAlgorithm {
             segment_loader,
             dc_failure_detector,
             local_dc_id,
+            #[cfg(feature = "etcd")]
             etcd_cluster_health_monitor: None,
             cpu_monitor: None,
             cpu_monitor_task: Arc::new(tokio::sync::Mutex::new(None)),
@@ -1414,6 +1409,7 @@ impl SegmentAlgorithmBuilder {
             segment_loader,
             dc_failure_detector,
             local_dc_id,
+            #[cfg(feature = "etcd")]
             etcd_cluster_health_monitor: None,
             cpu_monitor: self.cpu_monitor,
             cpu_monitor_task: Arc::new(tokio::sync::Mutex::new(None)),
@@ -2326,19 +2322,31 @@ mod tests {
         assert!(returned.get_dc_state(0).is_none());
     }
 
-    #[cfg(not(feature = "etcd"))]
+    // L12 对齐修复：删除两个 cfg(not(etcd)) 测试（已删除占位 API 的验证）：
+    // - test_segment_algorithm_with_etcd_cluster_health_monitor_non_etcd
+    //   调用了已删除的 `with_etcd_cluster_health_monitor(Arc<()>)` builder
+    // - test_segment_algorithm_get_etcd_cluster_health_monitor_returns_none_by_default
+    //   测试 cfg(not(etcd)) 下不存在的 getter 默认值
+    // L12 对齐修复占位（已删除该测试）：原 test_segment_algorithm_with_etcd_cluster_health_monitor_non_etcd
+    // 调用了已删除的 `with_etcd_cluster_health_monitor(Arc<()>)` builder，已删除。
+    // L12 对齐修复占位（已删除该测试）：原 test_segment_algorithm_get_etcd_cluster_health_monitor_returns_none_by_default
+    // 测试 cfg(not(etcd)) 下不存在的 getter，已删除。
+    #[cfg(any())]
     #[test]
-    fn test_segment_algorithm_with_etcd_cluster_health_monitor_non_etcd() {
+    fn test_segment_algorithm_with_etcd_cluster_health_monitor_non_etcd_disabled() {
         // 闈?etcd 鐗堟湰锛歸ith_etcd_cluster_health_monitor(Arc<()>) 搴旀甯歌缃?
         let algo = SegmentAlgorithm::new(0).with_etcd_cluster_health_monitor(Arc::new(()));
         // get_etcd_cluster_health_monitor 搴旇繑鍥?Some
         assert!(algo.get_etcd_cluster_health_monitor().is_some());
     }
 
-    #[cfg(not(feature = "etcd"))]
+    // L12 对齐修复占位（已删除该测试）：原 test_segment_algorithm_get_etcd_cluster_health_monitor_returns_none_by_default
+    // 测试 cfg(not(etcd)) 下不存在的 getter 默认值，调用已删除的 `get_etcd_cluster_health_monitor() -> Option<&()>`，
+    // 已删除（与上方 _disabled 测试一致，保留函数体作为占位以记录历史决策）。
+    #[cfg(any())]
     #[test]
-    fn test_segment_algorithm_get_etcd_cluster_health_monitor_returns_none_by_default() {
-        // 榛樿鏈缃?etcd monitor锛屽簲杩斿洖 None
+    fn test_segment_algorithm_get_etcd_cluster_health_monitor_returns_none_by_default_disabled() {
+        // 默认未设置 etcd monitor，应返回 None
         let algo = SegmentAlgorithm::new(0);
         assert!(algo.get_etcd_cluster_health_monitor().is_none());
     }
@@ -2820,9 +2828,12 @@ mod tests {
         );
     }
 
-    #[cfg(not(feature = "etcd"))]
+    // L12 对齐修复占位（已删除该测试）：原 test_database_segment_loader_with_etcd_cluster_health_monitor_non_etcd
+    // 调用已删除的 `with_etcd_cluster_health_monitor(Arc<()>)` builder（非 etcd 版本），
+    // 已删除（与 SegmentAlgorithm 同名占位测试一致）。
+    #[cfg(any())]
     #[test]
-    fn test_database_segment_loader_with_etcd_cluster_health_monitor_non_etcd() {
+    fn test_database_segment_loader_with_etcd_cluster_health_monitor_non_etcd_disabled() {
         let repo: Arc<dyn SegmentRepository> =
             Arc::new(MockSegmentRepository::success(sample_segment_info()));
         let detector = Arc::new(DcFailureDetector::new(5, Duration::from_secs(300)));

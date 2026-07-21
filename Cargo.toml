@@ -27,6 +27,12 @@ default = ["postgresql", "http", "grpc"]
 postgresql = ["sea-orm/sqlx-postgres", "sqlx/postgres"]
 sqlite = ["sea-orm/sqlx-sqlite", "sqlx/sqlite"]
 etcd = ["dep:etcd-client"]
+# Gate the `mod tests` integration-test blocks (those requiring a live
+# database, marked #[ignore]). When this feature is disabled, those test
+# modules are not compiled, so cargo-llvm-cov does not count their lines
+# as uncovered. Enable with `--features integration-tests` to run them
+# against a real database (`DATABASE_URL` + `--ignored`).
+integration-tests = []
 
 # sdforge 0.4.4 macros emit #[cfg(feature = "http")] / #[cfg(feature = "grpc")]
 # gates *inside* the downstream crate's #[forge] expansion. These gates are

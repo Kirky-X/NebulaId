@@ -226,3 +226,216 @@ impl Default for EtcdConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ----- DatabaseEngine Display -----
+
+    #[test]
+    fn test_database_engine_display_postgresql() {
+        assert_eq!(DatabaseEngine::Postgresql.to_string(), "postgresql");
+    }
+
+    #[test]
+    fn test_database_engine_display_postgres_alias() {
+        // Postgres 是 PostgreSQL 的别名，Display 输出应与 Postgresql 一致
+        assert_eq!(DatabaseEngine::Postgres.to_string(), "postgresql");
+    }
+
+    #[test]
+    fn test_database_engine_display_mysql() {
+        assert_eq!(DatabaseEngine::Mysql.to_string(), "mysql");
+    }
+
+    #[test]
+    fn test_database_engine_display_sqlite() {
+        assert_eq!(DatabaseEngine::Sqlite.to_string(), "sqlite");
+    }
+
+    // ----- DatabaseEngine From<&str> -----
+
+    #[test]
+    fn test_database_engine_from_str_postgresql() {
+        let e: DatabaseEngine = "postgresql".into();
+        assert_eq!(e, DatabaseEngine::Postgresql);
+    }
+
+    #[test]
+    fn test_database_engine_from_str_postgres() {
+        let e: DatabaseEngine = "postgres".into();
+        assert_eq!(e, DatabaseEngine::Postgresql);
+    }
+
+    #[test]
+    fn test_database_engine_from_str_mysql() {
+        let e: DatabaseEngine = "mysql".into();
+        assert_eq!(e, DatabaseEngine::Mysql);
+    }
+
+    #[test]
+    fn test_database_engine_from_str_sqlite() {
+        let e: DatabaseEngine = "sqlite".into();
+        assert_eq!(e, DatabaseEngine::Sqlite);
+    }
+
+    #[test]
+    fn test_database_engine_from_str_unknown_falls_back_to_postgresql() {
+        // 未知字符串应回退到 PostgreSQL（默认值，不报错）
+        let e: DatabaseEngine = "redis".into();
+        assert_eq!(e, DatabaseEngine::Postgresql);
+    }
+
+    #[test]
+    fn test_database_engine_from_str_case_insensitive() {
+        // 大小写不敏感：MySQL/MYSQL/POSTGRESQL 都应被识别
+        let e: DatabaseEngine = "MySQL".into();
+        assert_eq!(e, DatabaseEngine::Mysql);
+
+        let e: DatabaseEngine = "POSTGRESQL".into();
+        assert_eq!(e, DatabaseEngine::Postgresql);
+
+        let e: DatabaseEngine = "SQLite".into();
+        assert_eq!(e, DatabaseEngine::Sqlite);
+    }
+
+    // ----- DatabaseEngine From<String> -----
+
+    #[test]
+    fn test_database_engine_from_string_postgresql() {
+        let e: DatabaseEngine = String::from("postgresql").into();
+        assert_eq!(e, DatabaseEngine::Postgresql);
+    }
+
+    #[test]
+    fn test_database_engine_from_string_mysql() {
+        let e: DatabaseEngine = String::from("mysql").into();
+        assert_eq!(e, DatabaseEngine::Mysql);
+    }
+
+    #[test]
+    fn test_database_engine_from_string_unknown_falls_back() {
+        let e: DatabaseEngine = String::from("unknown-db").into();
+        assert_eq!(e, DatabaseEngine::Postgresql);
+    }
+
+    // ----- AppConfig Default + http_addr / grpc_addr -----
+
+    #[test]
+    fn test_app_config_default_values() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.name, "nebula-id");
+        assert_eq!(cfg.host, "0.0.0.0");
+        assert_eq!(cfg.http_port, 8080);
+        assert_eq!(cfg.grpc_port, 9091);
+        assert_eq!(cfg.dc_id, 0);
+        assert_eq!(cfg.worker_id, 0);
+    }
+
+    #[test]
+    fn test_app_config_http_addr_success() {
+        let cfg = AppConfig::default();
+        let addr = cfg.http_addr().expect("default http_addr should parse");
+        assert_eq!(addr.port(), 8080);
+        assert_eq!(addr.ip().to_string(), "0.0.0.0");
+    }
+
+    #[test]
+    fn test_app_config_grpc_addr_success() {
+        let cfg = AppConfig::default();
+        let addr = cfg.grpc_addr().expect("default grpc_addr should parse");
+        assert_eq!(addr.port(), 9091);
+        assert_eq!(addr.ip().to_string(), "0.0.0.0");
+    }
+
+    #[test]
+    fn test_app_config_http_addr_invalid_host_returns_error() {
+        // 不合法的 host（带空格）→ 解析失败
+        let cfg = AppConfig {
+            host: "not a valid host".to_string(),
+            ..Default::default()
+        };
+        let result = cfg.http_addr();
+        let err = result.expect_err("invalid host should yield parse error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Invalid HTTP address"),
+            "error message should mention HTTP address, got: {msg}"
+        );
+        assert!(msg.contains("not a valid host"));
+        assert!(msg.contains("8080"));
+    }
+
+    #[test]
+    fn test_app_config_grpc_addr_invalid_host_returns_error() {
+        let cfg = AppConfig {
+            host: "not a valid host".to_string(),
+            ..Default::default()
+        };
+        let result = cfg.grpc_addr();
+        let err = result.expect_err("invalid host should yield parse error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Invalid gRPC address"),
+            "error message should mention gRPC address, got: {msg}"
+        );
+        assert!(msg.contains("not a valid host"));
+        assert!(msg.contains("9091"));
+    }
+
+    #[test]
+    fn test_app_config_http_addr_custom_port() {
+        // 自定义端口应正确解析
+        let cfg = AppConfig {
+            host: "127.0.0.1".to_string(),
+            http_port: 12345,
+            ..Default::default()
+        };
+        let addr = cfg.http_addr().unwrap();
+        assert_eq!(addr.port(), 12345);
+        assert_eq!(addr.ip().to_string(), "127.0.0.1");
+    }
+
+    #[test]
+    fn test_app_config_grpc_addr_custom_port() {
+        let cfg = AppConfig {
+            host: "127.0.0.1".to_string(),
+            grpc_port: 54321,
+            ..Default::default()
+        };
+        let addr = cfg.grpc_addr().unwrap();
+        assert_eq!(addr.port(), 54321);
+        assert_eq!(addr.ip().to_string(), "127.0.0.1");
+    }
+
+    // ----- EtcdConfig Default -----
+
+    #[test]
+    fn test_etcd_config_default_values() {
+        let cfg = EtcdConfig::default();
+        assert_eq!(cfg.endpoints, vec!["etcd:2379".to_string()]);
+        assert_eq!(cfg.connect_timeout_ms, 5000);
+        assert_eq!(cfg.watch_timeout_ms, 5000);
+    }
+
+    // ----- DatabaseConfig::default 在测试模式下应进入 sqlite 分支 -----
+
+    #[test]
+    fn test_database_config_default_in_test_mode_uses_sqlite() {
+        // cfg!(test) 为 true 时，应进入 in-memory sqlite 分支
+        let cfg = DatabaseConfig::default();
+        assert_eq!(cfg.engine, DatabaseEngine::Sqlite);
+        assert_eq!(cfg.url, "sqlite::memory:");
+        assert_eq!(cfg.max_connections, 10);
+        assert_eq!(cfg.min_connections, 1);
+        assert_eq!(cfg.acquire_timeout_seconds, 30);
+        assert_eq!(cfg.idle_timeout_seconds, 300);
+        // 测试模式下 host/port/username/password/database 均为空
+        assert!(cfg.host.is_empty());
+        assert_eq!(cfg.port, 0);
+        assert!(cfg.username.is_empty());
+        assert!(cfg.password.is_empty());
+        assert!(cfg.database.is_empty());
+    }
+}

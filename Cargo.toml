@@ -96,7 +96,7 @@ tonic-prost = "0.14"
 prost = "0.14"
 
 # 分布式协调
-etcd-client = { version = "0.17", optional = true }
+etcd-client = { version = "0.19", optional = true }
 
 # 缓存与存储
 parking_lot = "0.12"

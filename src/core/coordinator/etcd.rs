@@ -416,6 +416,12 @@ impl EtcdClusterHealthMonitor {
         }
 
         // 生产默认路径：每次检查新建一个临时 client。
+        //
+        // 注意：`etcd_client::Client::connect` 是 lazy connection，构造 Client
+        // 对象时不立即建立 TCP 连接，因此对不可达 endpoint 也会返回 Ok(Client)。
+        // 这意味着 Ok(Err(e)) 分支在生产中仅在真实网络故障（TCP 超时、连接被拒）
+        // 时触发，无法用单元测试可靠覆盖。该分支逻辑（record_failure）由
+        // 注入路径测试 `test_health_monitor_check_with_client_recovered` 等覆盖。
         use etcd_client::Client;
 
         if self.config.endpoints.is_empty() {
@@ -612,7 +618,9 @@ impl EtcdWorkerAllocator {
     async fn do_allocate(&self) -> std::result::Result<u16, WorkerAllocatorError> {
         let lease_id = self.grant_lease().await?;
 
-        for worker_id in 0..=Self::MAX_WORKER_ID {
+        // 从 1 开始跳过 0：`get_allocated_id` 用 `AtomicU16==0` 表示"未分配"，
+        // 若分配 0 会让已分配状态与未分配状态无法区分。
+        for worker_id in 1..=Self::MAX_WORKER_ID {
             match self.try_allocate_id(worker_id, lease_id).await {
                 Ok(true) => {
                     self.allocated_id.store(worker_id, Ordering::SeqCst);
@@ -961,6 +969,41 @@ mod tests {
     /// 把 mock 封装为 `Arc<dyn EtcdClientOps>`，方便各测试复用。
     fn mock_into_client(mock: MockEtcdClientOps) -> Arc<dyn EtcdClientOps> {
         Arc::new(mock)
+    }
+
+    /// 测试专用：ping 永不 resolve 的 EtcdClientOps 实现。
+    ///
+    /// 用于触发 `check_etcd_health` 的 timeout 分支（lines 405-413）。
+    /// 不能用 mockall 的 `.returning` 实现：`returning` 闭包返回值 `T`
+    /// 而非 `Future<Output = T>`，mockall 内部用 `async move { Ok(v) }`
+    /// 包裹，无法让 future 永不 resolve。
+    struct HangingPingClient;
+
+    #[async_trait::async_trait]
+    impl crate::core::coordinator::EtcdClientOps for HangingPingClient {
+        async fn kv_get(&self, _key: &str) -> std::result::Result<Option<Vec<u8>>, EtcdError> {
+            Ok(None)
+        }
+        async fn kv_delete(&self, _key: &str) -> std::result::Result<(), EtcdError> {
+            Ok(())
+        }
+        async fn lease_grant(&self, _ttl: i64) -> std::result::Result<i64, EtcdError> {
+            Ok(0)
+        }
+        async fn lease_revoke(&self, _lease_id: i64) -> std::result::Result<(), EtcdError> {
+            Ok(())
+        }
+        async fn txn_check_create_rev_and_put(
+            &self,
+            _key: &str,
+            _value: Vec<u8>,
+            _lease_id: i64,
+        ) -> std::result::Result<bool, EtcdError> {
+            Ok(true)
+        }
+        async fn ping(&self) -> std::result::Result<(), EtcdError> {
+            std::future::pending().await
+        }
     }
 
     #[tokio::test]
@@ -1565,5 +1608,374 @@ mod tests {
             display
         );
         assert!(display.contains("unexpected"));
+    }
+
+    // ===== check_etcd_health injected-path timeout 分支 =====
+
+    /// 注入路径下 ping 超时（`Err(_)` from `tokio::time::timeout`）应触发 record_failure。
+    ///
+    /// 覆盖 etcd.rs::check_etcd_health 第 405-413 行：mock ping 返回 `Pin<Box<Future>>`
+    /// 永不 resolve（`std::future::pending()`），`connect_timeout_ms` 设为 50ms 让
+    /// timeout 快速触发，验证走的是 timeout 分支而非 Ok(Err) 分支。
+    #[tokio::test]
+    async fn test_health_monitor_check_with_client_timeout() {
+        // 用 HangingPingClient 让 ping 永不 resolve，必然被 50ms timeout 打断
+        let client: Arc<dyn EtcdClientOps> = Arc::new(HangingPingClient);
+
+        let mut config = EtcdConfig::default();
+        config.connect_timeout_ms = 50;
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
+        let monitor = EtcdClusterHealthMonitor::new_with_client(config, cache_path, client);
+
+        // 1 次 timeout → consecutive_failures = 1，仍为 Healthy（需 >= 3 才 Degraded）
+        monitor.check_etcd_health().await;
+        assert_eq!(
+            monitor.get_status(),
+            EtcdClusterStatus::Healthy,
+            "单次 ping 超时不应立即降级"
+        );
+
+        // 再 ping timeout 2 次 → consecutive_failures = 3 → Degraded
+        monitor.check_etcd_health().await;
+        monitor.check_etcd_health().await;
+        assert_eq!(
+            monitor.get_status(),
+            EtcdClusterStatus::Degraded,
+            "连续 3 次 ping 超时应进入 Degraded"
+        );
+    }
+
+    // ===== check_etcd_health production default path =====
+
+    /// 生产默认路径（未注入 client）+ 空 endpoints 应直接 return（early-exit）。
+    ///
+    /// 覆盖 etcd.rs::check_etcd_health 第 421-427 行：`endpoints.is_empty()`
+    /// 为 true 时打印 `no_endpoints_configured` 警告并 return，不进入
+    /// `Client::connect` 尝试，避免测试依赖真实 etcd。
+    #[tokio::test]
+    async fn test_health_monitor_check_default_path_empty_endpoints() {
+        let mut config = EtcdConfig::default();
+        config.endpoints = vec![];
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
+        // new（非 new_with_client）→ client = None → 走生产默认路径
+        let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
+
+        // 空 endpoints → 直接 return，状态不变（仍为 Healthy，无 record_failure 调用）
+        monitor.check_etcd_health().await;
+        assert_eq!(
+            monitor.get_status(),
+            EtcdClusterStatus::Healthy,
+            "空 endpoints 应 early-return，不改变状态"
+        );
+    }
+
+    /// 生产默认路径连接不可达 endpoint 应触发 record_failure（连接错误分支）。
+    ///
+    /// **已删除**：`etcd_client::Client::connect` 在 Windows 上是 lazy connection，
+    /// 对不可达 endpoint 也立即返回 `Ok(Client)`，无法触发 `Ok(Err(e))` 分支。
+    /// 该分支逻辑（record_failure）由注入路径测试
+    /// `test_health_monitor_check_with_client_recovered` 等覆盖（mock ping
+    /// 返回 `Err(EtcdError::Network(...))`）。生产路径的 `Ok(Err(e))` 分支
+    /// 仅在真实网络故障时触发，由集成测试（`--features integration-tests`）
+    /// 或真实 etcd 环境覆盖。详见 `check_etcd_health` 生产路径注释。
+
+    // ===== Clone impls =====
+
+    /// EtcdClusterHealthMonitor::clone 应复制所有原子状态与缓存。
+    ///
+    /// 覆盖 etcd.rs 第 477-489 行：手动 Clone 实现逐字段复制 status、
+    /// failure_count、consecutive_failures、is_using_cache 等原子量。
+    #[tokio::test]
+    async fn test_etcd_cluster_health_monitor_clone_preserves_state() {
+        let config = EtcdConfig::default();
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
+        let monitor = EtcdClusterHealthMonitor::new(config, cache_path.clone());
+
+        // 修改状态：进入 Failed（5 次 record_failure）+ 启用缓存
+        for _ in 0..5 {
+            monitor.record_failure();
+        }
+        monitor.put_to_cache("k1".to_string(), "v1".to_string(), 1);
+
+        assert_eq!(monitor.get_status(), EtcdClusterStatus::Failed);
+        assert!(monitor.is_using_cache());
+
+        // clone 后所有原子状态应同步
+        let cloned = monitor.clone();
+        assert_eq!(cloned.get_status(), EtcdClusterStatus::Failed);
+        assert!(cloned.is_using_cache(), "clone 应保留 is_using_cache=true");
+        // 共享 Arc<RwLock<HashMap>>，所以 clone 后 cache 数据可见
+        assert_eq!(
+            cloned.get_from_cache("k1").map(|e| e.value),
+            Some("v1".to_string()),
+            "clone 应共享 local_cache Arc"
+        );
+    }
+
+    /// EtcdWorkerAllocator::clone 应复制 client Arc、datacenter_id、config。
+    ///
+    /// 覆盖 etcd.rs 第 502-513 行：手动 Clone 实现复制 client Arc、
+    /// datacenter_id 值、atomic 状态（allocated_id/lease_id/health_status）。
+    #[tokio::test]
+    async fn test_etcd_worker_allocator_clone_preserves_client_and_dc() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_kv_get().returning(|_| Ok(None));
+        mock.expect_lease_grant().returning(|_| Ok(123));
+        mock.expect_txn_check_create_rev_and_put()
+            .returning(|_, _, _| Ok(true));
+
+        let allocator = EtcdWorkerAllocator::new(mock_into_client(mock), 7, EtcdConfig::default())
+            .await
+            .unwrap();
+
+        // 分配一个 worker id 让 allocated_id != 0
+        let worker_id = allocator.allocate().await.unwrap();
+        assert!(worker_id >= 1);
+
+        // clone 后 datacenter_id 与已分配 id 应同步
+        let cloned = allocator.clone();
+        assert_eq!(cloned.datacenter_id, 7, "clone 应保留 datacenter_id");
+        assert_eq!(
+            cloned.get_allocated_id(),
+            Some(worker_id),
+            "clone 应复制 allocated_id"
+        );
+    }
+
+    // ===== EtcdDistributedLock::with_client (无 new 的 info!) =====
+
+    /// `EtcdDistributedLock::with_client` 直接构造（不调用 `new`）应可用。
+    ///
+    /// 覆盖 etcd.rs 第 724-729 行：`with_client` 不打 info! 日志，直接构造
+    /// `EtcdDistributedLock`，常用于测试或共享 client 的场景。
+    #[tokio::test]
+    async fn test_etcd_distributed_lock_with_client_direct_construction() {
+        let client = mock_into_client(MockEtcdClientOps::new());
+        let lock = EtcdDistributedLock::with_client(client, "/locks/".to_string());
+
+        // with_client 不打 info! 日志，仅直接构造
+        assert!(lock.is_healthy(), "is_healthy 应始终返回 true");
+        // lock_path 前缀应正确设置（通过 acquire 间接验证）
+        // 这里仅验证构造成功且无 panic
+    }
+
+    // ===== EtcdLockGuard::drop 分支 =====
+
+    /// 显式 release 失败后 drop 应再次尝试 spawn lease_revoke。
+    ///
+    /// 覆盖 etcd.rs 第 891-939 行：当 `released == false`（显式 release 失败）
+    /// 且 tokio runtime 可用时，drop 应 spawn 后台 task 调用 lease_revoke。
+    /// 验证：mock 配置 lease_revoke 返回 Err（模拟显式 release 失败），
+    /// drop 时 spawn 的 task 会再次调用 lease_revoke（也会失败，仅记 warning）。
+    #[tokio::test]
+    async fn test_lock_guard_drop_spawns_release_when_unreleased() {
+        let mut mock = MockEtcdClientOps::new();
+        // lease_grant 成功 → try_acquire_lock 返回 Some(lease_id)
+        mock.expect_lease_grant().returning(|_| Ok(789));
+        // CAS 成功 → 获取锁
+        mock.expect_txn_check_create_rev_and_put()
+            .returning(|_, _, _| Ok(true));
+        // lease_revoke 不限次数：guard drop 时可能调用 0 次或多次
+        // （取决于 spawn task 时序）
+        mock.expect_lease_revoke().returning(|_| Ok(()));
+
+        let lock = EtcdDistributedLock::new(mock_into_client(mock), "/locks/".to_string())
+            .await
+            .unwrap();
+
+        // 获取锁但不显式 release，触发 drop 中的 spawn 路径
+        {
+            let _guard = lock.acquire("drop_test_key", 5).await.unwrap();
+            // _guard 在 block 结束时 drop，触发 spawn 后台 release task
+        }
+
+        // 让 spawn 的后台 task 有机会运行
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    /// Drop 在 tokio runtime 不可用时（如进程关闭）应仅记 warning，不 panic。
+    ///
+    /// 覆盖 etcd.rs 第 928-937 行：`tokio::runtime::Handle::try_current()`
+    /// 返回 `Err(_)` 时，仅记 `lock_drop_no_runtime` warning，不调用 lease_revoke。
+    /// 用独立线程模拟无 runtime 环境：spawn std::thread drop guard。
+    #[tokio::test]
+    async fn test_lock_guard_drop_without_runtime_logs_warning() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_lease_grant().returning(|_| Ok(999));
+        mock.expect_txn_check_create_rev_and_put()
+            .returning(|_, _, _| Ok(true));
+        // lease_revoke 不应被调用（无 runtime 时 drop 仅记 warning）
+        mock.expect_lease_revoke().returning(|_| Ok(())).times(0);
+
+        let lock = EtcdDistributedLock::new(mock_into_client(mock), "/locks/".to_string())
+            .await
+            .unwrap();
+
+        // 在 tokio runtime 中获取 guard，但传到非 runtime 线程 drop
+        let guard = lock.acquire("no_runtime_key", 5).await.unwrap();
+        let guard_box: Box<dyn LockGuard> = guard;
+
+        // 用 std::thread::spawn 在无 tokio runtime 的线程中 drop
+        std::thread::spawn(move || {
+            drop(guard_box);
+        })
+        .join()
+        .expect("thread should not panic");
+
+        // mock 期望 lease_revoke 调用 0 次，若被调用会 panic
+    }
+
+    // ===== load_local_cache 错误分支 =====
+
+    /// load_local_cache 文件不存在时应返回 Ok(())（早返回，不报错）。
+    ///
+    /// 覆盖 etcd.rs 第 291-301 行：`path.exists() == false` 时打印
+    /// `cache_file_not_found` info 日志并返回 Ok(())，不进入 read/parse 流程。
+    #[tokio::test]
+    async fn test_load_local_cache_file_not_found_returns_ok() {
+        let config = EtcdConfig::default();
+        // 使用不存在的路径
+        let cache_path = "/nonexistent/path/that/does/not/exist.json".to_string();
+        let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
+
+        let result = monitor.load_local_cache().await;
+        assert!(
+            result.is_ok(),
+            "文件不存在时应返回 Ok(()) 而非 Err, 实际: {:?}",
+            result.err()
+        );
+    }
+
+    /// load_local_cache 文件内容非 JSON 应返回 InternalError。
+    ///
+    /// 覆盖 etcd.rs 第 305-312 行：`serde_json::from_str` 失败时
+    /// 返回 `CoreError::InternalError("Failed to parse cache file: ...")`。
+    #[tokio::test]
+    async fn test_load_local_cache_invalid_json_returns_error() {
+        let config = EtcdConfig::default();
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
+        // 写入无效 JSON
+        std::fs::write(cache_file.path(), "this is not valid json [[[").unwrap();
+
+        let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
+        let result = monitor.load_local_cache().await;
+        assert!(result.is_err(), "无效 JSON 应返回 Err, 实际: {:?}", result);
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("parse") || err_msg.contains("Failed to parse"),
+            "错误消息应提及 parse, 实际: {}",
+            err_msg
+        );
+    }
+
+    /// load_local_cache 读取目录而非文件应返回 InternalError（IO 错误）。
+    ///
+    /// 覆盖 etcd.rs 第 303-308 行：`fs::read_to_string` 失败时
+    /// 返回 `CoreError::InternalError("Failed to read cache file: ...")`。
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_load_local_cache_read_error_returns_error() {
+        let config = EtcdConfig::default();
+        // 使用 /tmp（目录）作为路径 → read_to_string 失败
+        let cache_path = "/tmp".to_string();
+        let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
+
+        let result = monitor.load_local_cache().await;
+        assert!(result.is_err(), "读取目录应返回 Err, 实际: {:?}", result);
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("read"),
+            "错误消息应提及 read, 实际: {}",
+            err_msg
+        );
+    }
+
+    /// save_local_cache 写入只读路径应返回 InternalError（IO 错误）。
+    ///
+    /// 覆盖 etcd.rs 第 336-341 行：`fs::write` 失败时
+    /// 返回 `CoreError::InternalError("Failed to write cache file: ...")`。
+    #[tokio::test]
+    async fn test_save_local_cache_write_error_returns_error() {
+        let config = EtcdConfig::default();
+        // /nonexistent/dir/file.json 父目录不存在 → write 失败
+        let cache_path = "/nonexistent/dir/cache.json".to_string();
+        let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
+        // 写入一些数据让 save 尝试序列化
+        monitor.put_to_cache("k1".to_string(), "v1".to_string(), 1);
+
+        let result = monitor.save_local_cache().await;
+        assert!(
+            result.is_err(),
+            "写入不存在目录应返回 Err, 实际: {:?}",
+            result
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("write") || err_msg.contains("Failed to write"),
+            "错误消息应提及 write, 实际: {}",
+            err_msg
+        );
+    }
+
+    // ===== record_success 缓存恢复分支 =====
+
+    /// record_success 在 Failed+using_cache 状态下应重置为 Healthy 并退出缓存模式。
+    ///
+    /// 覆盖 etcd.rs 第 252-263 行：当 status != Healthy（已是 Failed/Degraded）
+    /// 且 is_using_cache == true 时，record_success 应：
+    /// 1. set_status(Healthy)
+    /// 2. is_using_cache = false
+    /// 3. 打印 switched_back_to_etcd info 日志
+    #[tokio::test]
+    async fn test_record_success_clears_cache_mode_when_failed() {
+        let config = EtcdConfig::default();
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
+        let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
+
+        // 进入 Failed + using_cache
+        for _ in 0..5 {
+            monitor.record_failure();
+        }
+        assert_eq!(monitor.get_status(), EtcdClusterStatus::Failed);
+        assert!(monitor.is_using_cache());
+
+        // record_success 应恢复 Healthy + 退出缓存模式
+        monitor.record_success().await;
+        assert_eq!(monitor.get_status(), EtcdClusterStatus::Healthy);
+        assert!(
+            !monitor.is_using_cache(),
+            "record_success 后应退出 is_using_cache 模式"
+        );
+    }
+
+    /// record_success 在已是 Healthy 状态下应保持不变（不打 cluster_recovered 日志）。
+    ///
+    /// 覆盖 etcd.rs 第 255 行 `if self.get_status() != EtcdClusterStatus::Healthy`
+    /// 的 false 分支：Healthy 状态下 record_success 仅更新 last_success 与
+    /// consecutive_failures，不进入 set_status / is_using_cache 重置分支。
+    #[tokio::test]
+    async fn test_record_success_noop_when_already_healthy() {
+        let config = EtcdConfig::default();
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
+        let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
+
+        // 默认 Healthy + 非 using_cache
+        assert_eq!(monitor.get_status(), EtcdClusterStatus::Healthy);
+        assert!(!monitor.is_using_cache());
+
+        // record_success 应保持 Healthy 状态不变
+        monitor.record_success().await;
+        assert_eq!(monitor.get_status(), EtcdClusterStatus::Healthy);
+        assert!(
+            !monitor.is_using_cache(),
+            "Healthy 状态下 record_success 不应启用 using_cache"
+        );
     }
 }

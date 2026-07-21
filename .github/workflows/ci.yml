@@ -131,9 +131,9 @@ jobs:
       - name: Run Tests with Coverage
         run: |
           if [ "${{ matrix.feature }}" = "default" ]; then
-            cargo llvm-cov --package ${{ env.PKG }} --fail-under-lines 50 --lcov --output-path lcov.info
+            cargo llvm-cov --package ${{ env.PKG }} --fail-under-lines 95 --lcov --output-path lcov.info
           else
-            cargo llvm-cov --package ${{ env.PKG }} --features ${{ matrix.feature }} --fail-under-lines 50 --lcov --output-path lcov.info
+            cargo llvm-cov --package ${{ env.PKG }} --features ${{ matrix.feature }} --fail-under-lines 95 --lcov --output-path lcov.info
           fi
 
       - name: Upload Coverage Report

@@ -275,6 +275,11 @@ impl CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// 串行化所有调用 `rust_i18n::set_locale` 的测试，避免并行 set_locale
+    /// 竞态导致 `to_string()`（依赖全局 locale）读到被其他测试改写的值。
+    static LOCALE_LOCK: Mutex<()> = Mutex::new(());
 
     /// Verify CoreError Display impl delegates to `t!()` lookups.
     /// Covers all 24 variants under "en" (default) locale, plus a
@@ -285,6 +290,7 @@ mod tests {
     /// the default locale.
     #[test]
     fn test_core_error_display_i18n() {
+        let _locale_lock = LOCALE_LOCK.lock().unwrap();
         // --- English locale (default) ---
         rust_i18n::set_locale("en");
 
@@ -413,6 +419,7 @@ mod tests {
     /// without mutating global locale state (Phase 8 T041).
     #[test]
     fn test_to_localized_string_per_locale() {
+        let _locale_lock = LOCALE_LOCK.lock().unwrap();
         // Pin global locale to en to detect any accidental state coupling.
         rust_i18n::set_locale("en");
 
@@ -434,6 +441,7 @@ mod tests {
     /// empty string). Exercises named-arg and no-arg variants too.
     #[test]
     fn test_to_localized_string_all_variants_en() {
+        let _locale_lock = LOCALE_LOCK.lock().unwrap();
         rust_i18n::set_locale("en");
 
         assert_eq!(
@@ -537,6 +545,7 @@ mod tests {
     /// unsupported locales (fr, ja, de, xx-XX).
     #[test]
     fn test_to_localized_string_unsupported_locale_falls_back_to_default() {
+        let _locale_lock = LOCALE_LOCK.lock().unwrap();
         let _g = LocaleGuard::new();
         rust_i18n::set_locale("en");
 
@@ -586,6 +595,7 @@ mod tests {
     /// both arg shapes.
     #[test]
     fn test_to_localized_string_ja_falls_back_to_en() {
+        let _locale_lock = LOCALE_LOCK.lock().unwrap();
         let _g = LocaleGuard::new();
         rust_i18n::set_locale("en");
 

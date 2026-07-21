@@ -139,7 +139,7 @@ GitHub Actions workflows are located in `.github/workflows/`:
 Use the local CI script before committing:
 
 ```bash
-./scripts/pre-commit-check.sh
+./scripts/run.sh pre-commit
 ```
 
 This runs the same checks as the CI pipeline locally.

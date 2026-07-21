@@ -285,3 +285,263 @@ impl NebulaIdService for GrpcServer {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::algorithm::AlgorithmRouter;
+    use crate::core::config::Config;
+    use crate::server::config::management::{ConfigManagementService, ConfigManager};
+    use crate::server::config::HotReloadConfig;
+    use crate::server::handlers::mock_generator::MockIdGenerator;
+    use std::sync::Arc;
+
+    /// Build a GrpcServer wired to a MockIdGenerator + ConfigManager.
+    fn create_test_grpc_server() -> GrpcServer {
+        let config = Config::default();
+        let hot_config = Arc::new(HotReloadConfig::new(
+            config.clone(),
+            "config/config.toml".to_string(),
+        ));
+        let algorithm_router = Arc::new(AlgorithmRouter::new(config, None));
+        let config_service: Arc<dyn ConfigManagementService> =
+            Arc::new(ConfigManager::new(hot_config, algorithm_router));
+        let id_generator: Arc<dyn crate::core::algorithm::IdGenerator> =
+            Arc::new(MockIdGenerator::new());
+        let handlers = Arc::new(ApiHandlers::new(id_generator, config_service));
+        GrpcServer::new(handlers)
+    }
+
+    // ===== GrpcServer::new =====
+
+    #[test]
+    fn test_grpc_server_new() {
+        let server = create_test_grpc_server();
+        // Smoke test: server can be constructed without panic.
+        let _ = server;
+    }
+
+    // ===== generate =====
+
+    #[tokio::test]
+    async fn test_generate_success() {
+        let server = create_test_grpc_server();
+        let req = Request::new(GrpcGenerateRequest {
+            namespace: "test-ns".to_string(),
+            tag: "test-tag".to_string(),
+            metadata: Default::default(),
+        });
+        let resp = server.generate(req).await;
+        assert!(resp.is_ok(), "generate should succeed: {:?}", resp);
+        let inner = resp.unwrap().into_inner();
+        assert!(!inner.id.is_empty());
+        assert_eq!(inner.algorithm, "segment");
+        assert_eq!(inner.sequence, 0);
+        assert_eq!(inner.worker_id, 0);
+    }
+
+    #[tokio::test]
+    async fn test_generate_empty_namespace_returns_internal_error() {
+        // MockIdGenerator returns InvalidInput when workspace is empty.
+        let server = create_test_grpc_server();
+        let req = Request::new(GrpcGenerateRequest {
+            namespace: String::new(),
+            tag: "test-tag".to_string(),
+            metadata: Default::default(),
+        });
+        let resp = server.generate(req).await;
+        assert!(resp.is_err());
+        let err = resp.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Internal);
+    }
+
+    #[tokio::test]
+    async fn test_generate_maps_namespace_and_tag() {
+        // Verify that `namespace` is mapped to `workspace` and `tag` is mapped
+        // to both `group` and `biz_tag` (per the handler's GenerateRequest
+        // construction).
+        let server = create_test_grpc_server();
+        let req = Request::new(GrpcGenerateRequest {
+            namespace: "mapped-ns".to_string(),
+            tag: "mapped-tag".to_string(),
+            metadata: Default::default(),
+        });
+        let resp = server.generate(req).await.unwrap().into_inner();
+        // ID should be non-empty (MockIdGenerator generates u128 IDs).
+        assert!(!resp.id.is_empty());
+    }
+
+    // ===== batch_generate =====
+
+    #[tokio::test]
+    async fn test_batch_generate_success() {
+        let server = create_test_grpc_server();
+        let req = Request::new(GrpcBatchGenerateRequest {
+            namespace: "test-ns".to_string(),
+            tag: "test-tag".to_string(),
+            count: 5,
+            metadata: Default::default(),
+        });
+        let resp = server.batch_generate(req).await;
+        assert!(resp.is_ok(), "batch_generate should succeed: {:?}", resp);
+        let inner = resp.unwrap().into_inner();
+        assert_eq!(inner.ids.len(), 5);
+        for id in &inner.ids {
+            assert!(!id.id.is_empty());
+            assert_eq!(id.algorithm, "segment");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_batch_generate_count_one_boundary() {
+        // Lower boundary: count=1 should succeed.
+        let server = create_test_grpc_server();
+        let req = Request::new(GrpcBatchGenerateRequest {
+            namespace: "test-ns".to_string(),
+            tag: "test-tag".to_string(),
+            count: 1,
+            metadata: Default::default(),
+        });
+        let resp = server.batch_generate(req).await.unwrap().into_inner();
+        assert_eq!(resp.ids.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_batch_generate_count_100_boundary() {
+        // Upper boundary: count=100 should succeed.
+        let server = create_test_grpc_server();
+        let req = Request::new(GrpcBatchGenerateRequest {
+            namespace: "test-ns".to_string(),
+            tag: "test-tag".to_string(),
+            count: 100,
+            metadata: Default::default(),
+        });
+        let resp = server.batch_generate(req).await.unwrap().into_inner();
+        assert_eq!(resp.ids.len(), 100);
+    }
+
+    #[tokio::test]
+    async fn test_batch_generate_zero_count_returns_invalid_argument() {
+        let server = create_test_grpc_server();
+        let req = Request::new(GrpcBatchGenerateRequest {
+            namespace: "test-ns".to_string(),
+            tag: "test-tag".to_string(),
+            count: 0,
+            metadata: Default::default(),
+        });
+        let err = server.batch_generate(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("zero"));
+    }
+
+    #[tokio::test]
+    async fn test_batch_generate_exceeds_max_101_returns_invalid_argument() {
+        let server = create_test_grpc_server();
+        let req = Request::new(GrpcBatchGenerateRequest {
+            namespace: "test-ns".to_string(),
+            tag: "test-tag".to_string(),
+            count: 101,
+            metadata: Default::default(),
+        });
+        let err = server.batch_generate(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("exceeds maximum"));
+    }
+
+    #[tokio::test]
+    async fn test_batch_generate_huge_count_returns_invalid_argument() {
+        let server = create_test_grpc_server();
+        let req = Request::new(GrpcBatchGenerateRequest {
+            namespace: "test-ns".to_string(),
+            tag: "test-tag".to_string(),
+            count: 1000,
+            metadata: Default::default(),
+        });
+        let err = server.batch_generate(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn test_batch_generate_empty_namespace_returns_internal_error() {
+        let server = create_test_grpc_server();
+        let req = Request::new(GrpcBatchGenerateRequest {
+            namespace: String::new(),
+            tag: "test-tag".to_string(),
+            count: 5,
+            metadata: Default::default(),
+        });
+        let err = server.batch_generate(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Internal);
+    }
+
+    #[tokio::test]
+    async fn test_batch_generate_maps_namespace_and_tag() {
+        // Verify namespace→workspace and tag→group/biz_tag mapping by
+        // observing that a valid request succeeds (MockIdGenerator returns
+        // Err only when workspace is empty).
+        let server = create_test_grpc_server();
+        let req = Request::new(GrpcBatchGenerateRequest {
+            namespace: "mapped-ns".to_string(),
+            tag: "mapped-tag".to_string(),
+            count: 3,
+            metadata: Default::default(),
+        });
+        let resp = server.batch_generate(req).await.unwrap().into_inner();
+        assert_eq!(resp.ids.len(), 3);
+        for id in &resp.ids {
+            assert!(!id.id.is_empty());
+        }
+    }
+
+    // ===== parse =====
+
+    #[tokio::test]
+    async fn test_parse_valid_numeric_id() {
+        let server = create_test_grpc_server();
+        let req = Request::new(GrpcParseRequest {
+            id: "12345".to_string(),
+        });
+        let resp = server.parse(req).await;
+        assert!(resp.is_ok(), "parse should succeed: {:?}", resp);
+        let inner = resp.unwrap().into_inner();
+        assert_eq!(inner.id, "12345");
+        // metadata should contain timestamp, datacenter_id, worker_id, etc.
+        assert!(inner.metadata.contains_key("timestamp"));
+        assert!(inner.metadata.contains_key("algorithm"));
+    }
+
+    #[tokio::test]
+    async fn test_parse_invalid_id_returns_invalid_argument() {
+        let server = create_test_grpc_server();
+        let req = Request::new(GrpcParseRequest {
+            id: "not-a-valid-id".to_string(),
+        });
+        let err = server.parse(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn test_parse_empty_id_returns_invalid_argument() {
+        let server = create_test_grpc_server();
+        let req = Request::new(GrpcParseRequest { id: String::new() });
+        let err = server.parse(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    // ===== health_check =====
+
+    #[tokio::test]
+    async fn test_health_check_returns_serving() {
+        // MockIdGenerator.health_check() returns Healthy, so the gRPC
+        // health check should report Serving.
+        let server = create_test_grpc_server();
+        let req = Request::new(HealthCheckRequest {
+            service: String::new(),
+        });
+        let resp = server.health_check(req).await.unwrap().into_inner();
+        assert_eq!(
+            resp.status,
+            v1::health_check_response::ServingStatus::Serving as i32
+        );
+    }
+}

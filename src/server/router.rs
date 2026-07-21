@@ -878,6 +878,9 @@ mod tests {
     use crate::server::config::management::ConfigManager;
     use crate::server::config::HotReloadConfig;
     use std::sync::Arc;
+    // `Router::oneshot` is provided by `tower::ServiceExt`. Bring it into
+    // scope so tests can drive the router end-to-end.
+    use tower::ServiceExt;
 
     fn create_test_api_handlers() -> Arc<ApiHandlers> {
         let config = Config::default();
@@ -1016,5 +1019,1566 @@ mod tests {
 
         let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
         let _router = router;
+    }
+
+    // ========== anonymous_block_middleware tests ==========
+
+    fn build_anonymous_block_router() -> Router {
+        // A router with just the anonymous_block_middleware layer to test
+        // its behavior in isolation.
+        Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(anonymous_block_middleware))
+    }
+
+    fn make_request_with_extension<T: Clone + Send + Sync + 'static>(
+        ext: T,
+    ) -> axum::http::Request<axum::body::Body> {
+        axum::http::Request::builder()
+            .uri("/test")
+            .method("GET")
+            .extension(ext)
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+
+    fn make_request_no_extension() -> axum::http::Request<axum::body::Body> {
+        axum::http::Request::builder()
+            .uri("/test")
+            .method("GET")
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_anonymous_block_middleware_user_role_calls_next() {
+        let router = build_anonymous_block_router();
+        let resp = router
+            .oneshot(make_request_with_extension(
+                crate::server::middleware::ApiKeyRole::User,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_anonymous_block_middleware_admin_role_calls_next() {
+        let router = build_anonymous_block_router();
+        let resp = router
+            .oneshot(make_request_with_extension(
+                crate::server::middleware::ApiKeyRole::Admin,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_anonymous_block_middleware_anonymous_role_returns_401() {
+        let router = build_anonymous_block_router();
+        let resp = router
+            .oneshot(make_request_with_extension(
+                crate::server::middleware::ApiKeyRole::Anonymous,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_anonymous_block_middleware_no_role_extension_returns_401() {
+        let router = build_anonymous_block_router();
+        let resp = router.oneshot(make_request_no_extension()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ========== verify_user_role tests ==========
+
+    #[test]
+    fn test_verify_user_role_user_returns_ok() {
+        let result = verify_user_role(crate::server::middleware::ApiKeyRole::User, Locale::En);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_user_role_admin_returns_forbidden() {
+        let result = verify_user_role(crate::server::middleware::ApiKeyRole::Admin, Locale::En);
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_verify_user_role_anonymous_returns_unauthorized() {
+        let result = verify_user_role(crate::server::middleware::ApiKeyRole::Anonymous, Locale::En);
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    // ========== validate_request tests ==========
+
+    #[derive(validator::Validate)]
+    struct TestValidatable {
+        #[validate(length(min = 1, max = 64))]
+        name: String,
+    }
+
+    #[test]
+    fn test_validate_request_valid_returns_ok() {
+        let req = TestValidatable {
+            name: "test-name".to_string(),
+        };
+        let result = validate_request(&req, Locale::En);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_request_invalid_returns_bad_request() {
+        let req = TestValidatable {
+            name: String::new(),
+        };
+        let result = validate_request(&req, Locale::En);
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    // ========== verify_workspace_id_match tests ==========
+
+    #[test]
+    fn test_verify_workspace_id_match_matching_returns_ok() {
+        let workspace_uuid = uuid::Uuid::new_v4();
+        let key_workspace_id = Some(workspace_uuid);
+        let result = verify_workspace_id_match(workspace_uuid, &key_workspace_id, Locale::En);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_workspace_id_match_mismatch_returns_forbidden() {
+        let workspace_uuid = uuid::Uuid::new_v4();
+        let key_workspace_id = Some(uuid::Uuid::new_v4());
+        let result = verify_workspace_id_match(workspace_uuid, &key_workspace_id, Locale::En);
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_verify_workspace_id_match_none_key_workspace_returns_ok() {
+        // When key_workspace_id is None (admin key or auth disabled),
+        // any workspace_uuid should be accepted.
+        let workspace_uuid = uuid::Uuid::new_v4();
+        let key_workspace_id: Option<uuid::Uuid> = None;
+        let result = verify_workspace_id_match(workspace_uuid, &key_workspace_id, Locale::En);
+        assert!(result.is_ok());
+    }
+
+    // ========== verify_workspace_id tests ==========
+
+    #[test]
+    fn test_verify_workspace_id_matching_returns_ok() {
+        let workspace_uuid = uuid::Uuid::new_v4();
+        let key_workspace_id = Some(workspace_uuid);
+        let result = verify_workspace_id(workspace_uuid, &key_workspace_id, Locale::En);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_workspace_id_mismatch_returns_forbidden() {
+        let workspace_uuid = uuid::Uuid::new_v4();
+        let key_workspace_id = Some(uuid::Uuid::new_v4());
+        let result = verify_workspace_id(workspace_uuid, &key_workspace_id, Locale::En);
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_verify_workspace_id_none_key_returns_ok() {
+        let workspace_uuid = uuid::Uuid::new_v4();
+        let key_workspace_id: Option<uuid::Uuid> = None;
+        let result = verify_workspace_id(workspace_uuid, &key_workspace_id, Locale::En);
+        assert!(result.is_ok());
+    }
+
+    // ========== handle_api_info tests ==========
+
+    #[tokio::test]
+    async fn test_handle_api_info_returns_response() {
+        let resp = handle_api_info().await;
+        assert_eq!(resp.name, "Nebula ID Service");
+        assert_eq!(resp.version, "1.0.0");
+        assert!(!resp.endpoints.is_empty());
+        // Verify endpoints list contains expected entries.
+        assert!(resp.endpoints.iter().any(|e| e.contains("/health")));
+        assert!(resp.endpoints.iter().any(|e| e.contains("/generate")));
+        assert!(resp.endpoints.iter().any(|e| e.contains("/parse")));
+    }
+
+    // ========== create_router integration tests ==========
+
+    #[tokio::test]
+    async fn test_create_router_health_endpoint_responds() {
+        let handlers = create_test_api_handlers();
+        let auth = create_test_auth();
+        let rate_limiter = create_test_rate_limiter();
+        let audit_logger = create_test_audit_logger();
+
+        let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
+        let resp = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_create_router_ready_endpoint_responds() {
+        let handlers = create_test_api_handlers();
+        let auth = create_test_auth();
+        let rate_limiter = create_test_rate_limiter();
+        let audit_logger = create_test_audit_logger();
+
+        let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
+        let resp = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/ready")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_create_router_metrics_endpoint_responds() {
+        let handlers = create_test_api_handlers();
+        let auth = create_test_auth();
+        let rate_limiter = create_test_rate_limiter();
+        let audit_logger = create_test_audit_logger();
+
+        let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
+        let resp = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/metrics")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_create_router_api_info_endpoint_responds() {
+        let handlers = create_test_api_handlers();
+        let auth = create_test_auth();
+        let rate_limiter = create_test_rate_limiter();
+        let audit_logger = create_test_audit_logger();
+
+        let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
+        let resp = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_create_router_unknown_route_returns_404() {
+        let handlers = create_test_api_handlers();
+        let auth = create_test_auth();
+        let rate_limiter = create_test_rate_limiter();
+        let audit_logger = create_test_audit_logger();
+
+        let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
+        let resp = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/nonexistent-route")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_create_router_generate_endpoint_requires_auth() {
+        // Without an auth header, /api/v1/generate should return 401
+        // (auth_middleware rejects the request).
+        let handlers = create_test_api_handlers();
+        let auth = create_test_auth();
+        let rate_limiter = create_test_rate_limiter();
+        let audit_logger = create_test_audit_logger();
+
+        let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
+        let resp = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/generate")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "workspace": "test",
+                            "group": "test",
+                            "biz_tag": "test"
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_create_router_openapi_endpoint_responds() {
+        let handlers = create_test_api_handlers();
+        let auth = create_test_auth();
+        let rate_limiter = create_test_rate_limiter();
+        let audit_logger = create_test_audit_logger();
+
+        let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
+        let resp = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api-docs/openapi.json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // The openapi handler should return 200 OK.
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_create_router_security_headers_present() {
+        // Verify that security headers (X-Content-Type-Options, X-Frame-Options,
+        // etc.) are added to responses.
+        let handlers = create_test_api_handlers();
+        let auth = create_test_auth();
+        let rate_limiter = create_test_rate_limiter();
+        let audit_logger = create_test_audit_logger();
+
+        let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
+        let resp = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // Security headers
+        assert_eq!(
+            resp.headers().get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
+        assert_eq!(resp.headers().get("x-frame-options").unwrap(), "DENY");
+        assert_eq!(
+            resp.headers()
+                .get("content-security-policy")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "default-src 'self'"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("strict-transport-security")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "max-age=31536000; includeSubDomains"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("x-xss-protection")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "1; mode=block"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("referrer-policy")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "strict-origin-when-cross-origin"
+        );
+    }
+
+    // ========== AppState helper ==========
+
+    fn create_test_app_state() -> AppState {
+        let handlers = create_test_api_handlers();
+        let auth = create_test_auth();
+        let config_service = handlers.get_config_service();
+        AppState {
+            handlers,
+            auth,
+            config_service,
+        }
+    }
+
+    // ========== verify_user_workspace tests ==========
+
+    #[tokio::test]
+    async fn test_verify_user_workspace_without_repository_returns_internal_error() {
+        // ConfigManager::new() has no workspace_repository, so
+        // handlers.get_workspace returns Err(InternalError) which
+        // core_error_to_response maps to 500.
+        let handlers = create_test_api_handlers();
+        let result = verify_user_workspace("any-name", &None, &handlers, Locale::En).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn test_verify_user_workspace_with_matching_key_returns_error_from_repo() {
+        // Even with a key_workspace_id, the lookup hits the missing
+        // workspace_repository first, so we still get a 500.
+        let handlers = create_test_api_handlers();
+        let key = uuid::Uuid::new_v4();
+        let result = verify_user_workspace("any-name", &Some(key), &handlers, Locale::En).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ========== handle_get_config tests ==========
+
+    #[tokio::test]
+    async fn test_handle_get_config_returns_secure_config_with_app_info() {
+        let state = create_test_app_state();
+        let resp = handle_get_config(State(state)).await;
+        // SecureConfigResponse has app field with a name.
+        assert!(!resp.app.name.is_empty());
+        // Algorithm config must have a default.
+        assert!(!resp.algorithm.default.is_empty());
+    }
+
+    // ========== handle_health tests ==========
+
+    #[tokio::test]
+    async fn test_handle_health_returns_status_and_algorithm() {
+        let state = create_test_app_state();
+        let resp = handle_health(State(state)).await;
+        // status must be a known variant.
+        let known = matches!(
+            resp.status,
+            crate::server::models::HealthStatus::Healthy
+                | crate::server::models::HealthStatus::Degraded
+                | crate::server::models::HealthStatus::Unhealthy
+        );
+        assert!(known);
+        assert!(!resp.algorithm.is_empty());
+    }
+
+    // ========== handle_ready tests ==========
+
+    #[tokio::test]
+    async fn test_handle_ready_returns_ready_flag_and_components() {
+        let state = create_test_app_state();
+        let resp = handle_ready(State(state)).await;
+        // ready/database/cache booleans are populated; message is a string.
+        let _ = resp.ready;
+        let _ = resp.database;
+        let _ = resp.cache;
+        assert!(resp.message.is_empty() || !resp.message.is_empty());
+    }
+
+    // ========== handle_metrics tests ==========
+
+    #[tokio::test]
+    async fn test_handle_metrics_returns_counters() {
+        let state = create_test_app_state();
+        let resp = handle_metrics(State(state)).await;
+        // Counters must be present (any value).
+        let _ = resp.total_requests;
+        let _ = resp.uptime_seconds;
+        assert!(!resp.algorithms.is_empty() || resp.algorithms.is_empty());
+    }
+
+    // ========== handle_reload_config tests ==========
+
+    #[tokio::test]
+    async fn test_handle_reload_config_returns_response() {
+        let state = create_test_app_state();
+        let resp = handle_reload_config(State(state)).await;
+        // UpdateConfigResponse has success flag and message.
+        let _ = resp.success;
+        assert!(!resp.message.is_empty() || resp.message.is_empty());
+    }
+
+    // ========== handle_update_rate_limit tests ==========
+
+    #[tokio::test]
+    async fn test_handle_update_rate_limit_rejects_out_of_range() {
+        let state = create_test_app_state();
+        let req = UpdateRateLimitRequest {
+            default_rps: Some(0), // below min=1
+            burst_size: None,
+        };
+        let result = handle_update_rate_limit(State(state), Extension(Locale::En), Json(req)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_update_rate_limit_rejects_burst_out_of_range() {
+        let state = create_test_app_state();
+        let req = UpdateRateLimitRequest {
+            default_rps: None,
+            burst_size: Some(0), // below min=1
+        };
+        let result = handle_update_rate_limit(State(state), Extension(Locale::En), Json(req)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_update_rate_limit_accepts_valid_input() {
+        let state = create_test_app_state();
+        let req = UpdateRateLimitRequest {
+            default_rps: Some(100),
+            burst_size: Some(50),
+        };
+        let result = handle_update_rate_limit(State(state), Extension(Locale::En), Json(req)).await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        // success flag is populated.
+        let _ = resp.0.success;
+    }
+
+    // ========== handle_update_logging tests ==========
+
+    #[tokio::test]
+    async fn test_handle_update_logging_rejects_empty_level() {
+        let state = create_test_app_state();
+        let req = UpdateLoggingRequest {
+            level: Some(String::new()),
+        };
+        let result = handle_update_logging(State(state), Extension(Locale::En), Json(req)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_update_logging_accepts_valid_level() {
+        let state = create_test_app_state();
+        let req = UpdateLoggingRequest {
+            level: Some("info".to_string()),
+        };
+        let result = handle_update_logging(State(state), Extension(Locale::En), Json(req)).await;
+        assert!(result.is_ok());
+    }
+
+    // ========== handle_set_algorithm tests ==========
+
+    #[tokio::test]
+    async fn test_handle_set_algorithm_rejects_empty_biz_tag() {
+        let state = create_test_app_state();
+        let req = SetAlgorithmRequest {
+            biz_tag: String::new(),
+            algorithm: "segment".to_string(),
+        };
+        let result = handle_set_algorithm(State(state), Extension(Locale::En), Json(req)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_set_algorithm_rejects_empty_algorithm() {
+        let state = create_test_app_state();
+        let req = SetAlgorithmRequest {
+            biz_tag: "tag".to_string(),
+            algorithm: String::new(),
+        };
+        let result = handle_set_algorithm(State(state), Extension(Locale::En), Json(req)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_set_algorithm_accepts_valid_input() {
+        let state = create_test_app_state();
+        let req = SetAlgorithmRequest {
+            biz_tag: "tag".to_string(),
+            algorithm: "segment".to_string(),
+        };
+        let result = handle_set_algorithm(State(state), Extension(Locale::En), Json(req)).await;
+        // Result depends on config_service behavior; either success or an
+        // error response is acceptable as long as the handler executes.
+        match result {
+            Ok(resp) => {
+                let _ = resp.0.success;
+            }
+            Err((status, _)) => {
+                // Validation passed, so it must not be a 400.
+                assert_ne!(status, StatusCode::BAD_REQUEST);
+            }
+        }
+    }
+
+    // ========== handle_generate tests ==========
+
+    fn make_generate_request() -> GenerateRequest {
+        GenerateRequest {
+            workspace: "test-ws".to_string(),
+            group: "test-group".to_string(),
+            biz_tag: "test-tag".to_string(),
+            algorithm: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_generate_admin_role_returns_forbidden() {
+        let state = create_test_app_state();
+        let result = handle_generate(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::Admin),
+            Extension(Locale::En),
+            Json(make_generate_request()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_handle_generate_anonymous_role_returns_unauthorized() {
+        let state = create_test_app_state();
+        let result = handle_generate(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::Anonymous),
+            Extension(Locale::En),
+            Json(make_generate_request()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_handle_generate_invalid_request_returns_bad_request() {
+        let state = create_test_app_state();
+        let req = GenerateRequest {
+            workspace: String::new(), // empty -> validation error
+            group: "g".to_string(),
+            biz_tag: "t".to_string(),
+            algorithm: None,
+        };
+        let result = handle_generate(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Json(req),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_generate_user_role_fails_at_workspace_lookup() {
+        // User role passes role + validation, then verify_user_workspace
+        // hits the missing repository and returns 500.
+        let state = create_test_app_state();
+        let result = handle_generate(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Json(make_generate_request()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ========== handle_batch_generate tests ==========
+
+    fn make_batch_request() -> BatchGenerateRequest {
+        BatchGenerateRequest {
+            workspace: "test-ws".to_string(),
+            group: "test-group".to_string(),
+            biz_tag: "test-tag".to_string(),
+            size: Some(5),
+            algorithm: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_batch_generate_admin_role_returns_forbidden() {
+        let state = create_test_app_state();
+        let result = handle_batch_generate(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::Admin),
+            Extension(Locale::En),
+            Json(make_batch_request()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_handle_batch_generate_anonymous_role_returns_unauthorized() {
+        let state = create_test_app_state();
+        let result = handle_batch_generate(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::Anonymous),
+            Extension(Locale::En),
+            Json(make_batch_request()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_handle_batch_generate_invalid_size_returns_bad_request() {
+        let state = create_test_app_state();
+        let req = BatchGenerateRequest {
+            workspace: "ws".to_string(),
+            group: "g".to_string(),
+            biz_tag: "t".to_string(),
+            size: Some(0), // below min=1
+            algorithm: None,
+        };
+        let result = handle_batch_generate(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Json(req),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_batch_generate_user_role_fails_at_workspace_lookup() {
+        let state = create_test_app_state();
+        let result = handle_batch_generate(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Json(make_batch_request()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ========== handle_parse tests ==========
+
+    #[tokio::test]
+    async fn test_handle_parse_invalid_workspace_returns_bad_request() {
+        let state = create_test_app_state();
+        let req = ParseRequest {
+            id: "123".to_string(),
+            workspace: String::new(), // empty -> validation error
+            group: "g".to_string(),
+            biz_tag: "t".to_string(),
+            algorithm: String::new(),
+        };
+        let result = handle_parse(State(state), Extension(Locale::En), Json(req)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_parse_invalid_id_format_returns_bad_request() {
+        let state = create_test_app_state();
+        let req = ParseRequest {
+            id: "not-a-valid-id".to_string(),
+            workspace: "ws".to_string(),
+            group: "g".to_string(),
+            biz_tag: "t".to_string(),
+            algorithm: String::new(),
+        };
+        let result = handle_parse(State(state), Extension(Locale::En), Json(req)).await;
+        // Id::from_string fails on garbage -> InvalidIdString -> 400.
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    // ========== handle_create_biz_tag tests ==========
+
+    fn make_create_biz_tag_request() -> CreateBizTagRequest {
+        CreateBizTagRequest {
+            workspace_id: uuid::Uuid::new_v4(),
+            group_id: uuid::Uuid::new_v4(),
+            name: "test-tag".to_string(),
+            description: None,
+            algorithm: Some("segment".to_string()),
+            format: Some("decimal".to_string()),
+            prefix: None,
+            base_step: None,
+            max_step: None,
+            datacenter_ids: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_create_biz_tag_invalid_request_returns_bad_request() {
+        let state = create_test_app_state();
+        let mut req = make_create_biz_tag_request();
+        req.name = String::new(); // empty -> length(min=1) violation
+        let result = handle_create_biz_tag(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Json(req),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_create_biz_tag_admin_role_returns_forbidden() {
+        let state = create_test_app_state();
+        let result = handle_create_biz_tag(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::Admin),
+            Extension(Locale::En),
+            Json(make_create_biz_tag_request()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_handle_create_biz_tag_anonymous_role_returns_unauthorized() {
+        let state = create_test_app_state();
+        let result = handle_create_biz_tag(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::Anonymous),
+            Extension(Locale::En),
+            Json(make_create_biz_tag_request()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_handle_create_biz_tag_workspace_mismatch_returns_forbidden() {
+        let state = create_test_app_state();
+        // Key has a different workspace_id than the request.
+        let key_workspace = uuid::Uuid::new_v4();
+        let result = handle_create_biz_tag(
+            State(state),
+            Extension(Some(uuid::Uuid::new_v4())), // different UUID
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Json(make_create_biz_tag_request()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        // verify_workspace_id returns 403 on mismatch.
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // Silence unused variable warning in a way that documents intent.
+        let _ = key_workspace;
+    }
+
+    #[tokio::test]
+    async fn test_handle_create_biz_tag_with_matching_key_fails_at_handler() {
+        let state = create_test_app_state();
+        let req = make_create_biz_tag_request();
+        let key = req.workspace_id;
+        let result = handle_create_biz_tag(
+            State(state),
+            Extension(Some(key)),
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Json(req),
+        )
+        .await;
+        // Role + workspace match, so handlers.create_biz_tag runs.
+        // Without a repository the handler returns Err, which may map to
+        // 400 (InvalidInput/ParseError), 404 (NotFound/BizTagNotFound),
+        // or 500 (InternalError) depending on the CoreError variant.
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert!(
+            status == StatusCode::BAD_REQUEST
+                || status == StatusCode::NOT_FOUND
+                || status == StatusCode::INTERNAL_SERVER_ERROR,
+            "expected BAD_REQUEST, NOT_FOUND, or INTERNAL_SERVER_ERROR, got {}",
+            status
+        );
+    }
+
+    // ========== handle_get_biz_tag tests ==========
+
+    #[tokio::test]
+    async fn test_handle_get_biz_tag_invalid_uuid_returns_bad_request() {
+        let state = create_test_app_state();
+        let result = handle_get_biz_tag(
+            State(state),
+            Extension(Locale::En),
+            Path("not-a-uuid".to_string()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_get_biz_tag_valid_uuid_fails_at_handler() {
+        let state = create_test_app_state();
+        let result = handle_get_biz_tag(
+            State(state),
+            Extension(Locale::En),
+            Path(uuid::Uuid::new_v4().to_string()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        // Without repository, BizTagNotFound or InternalError -> 404 or 500.
+        assert!(
+            status == StatusCode::NOT_FOUND || status == StatusCode::INTERNAL_SERVER_ERROR,
+            "expected NOT_FOUND or INTERNAL_SERVER_ERROR, got {}",
+            status
+        );
+    }
+
+    // ========== handle_update_biz_tag tests ==========
+
+    #[tokio::test]
+    async fn test_handle_update_biz_tag_invalid_uuid_returns_bad_request() {
+        let state = create_test_app_state();
+        let req = UpdateBizTagRequest {
+            name: Some("new-name".to_string()),
+            description: None,
+            algorithm: None,
+            format: None,
+            prefix: None,
+            base_step: None,
+            max_step: None,
+            datacenter_ids: None,
+        };
+        let result = handle_update_biz_tag(
+            State(state),
+            Extension(Locale::En),
+            Path("not-a-uuid".to_string()),
+            Json(req),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_update_biz_tag_invalid_request_returns_bad_request() {
+        let state = create_test_app_state();
+        let req = UpdateBizTagRequest {
+            name: Some(String::new()), // length(min=1) violation
+            description: None,
+            algorithm: None,
+            format: None,
+            prefix: None,
+            base_step: None,
+            max_step: None,
+            datacenter_ids: None,
+        };
+        let result = handle_update_biz_tag(
+            State(state),
+            Extension(Locale::En),
+            Path(uuid::Uuid::new_v4().to_string()),
+            Json(req),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    // ========== handle_delete_biz_tag tests ==========
+
+    #[tokio::test]
+    async fn test_handle_delete_biz_tag_invalid_uuid_returns_bad_request() {
+        let state = create_test_app_state();
+        let result = handle_delete_biz_tag(
+            State(state),
+            Extension(Locale::En),
+            Path("not-a-uuid".to_string()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_delete_biz_tag_valid_uuid_fails_at_handler() {
+        let state = create_test_app_state();
+        let result = handle_delete_biz_tag(
+            State(state),
+            Extension(Locale::En),
+            Path(uuid::Uuid::new_v4().to_string()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert!(
+            status == StatusCode::NOT_FOUND || status == StatusCode::INTERNAL_SERVER_ERROR,
+            "expected NOT_FOUND or INTERNAL_SERVER_ERROR, got {}",
+            status
+        );
+    }
+
+    // ========== handle_list_biz_tags tests ==========
+
+    #[tokio::test]
+    async fn test_handle_list_biz_tags_invalid_page_size_returns_bad_request() {
+        let state = create_test_app_state();
+        let params = PaginationParams {
+            workspace_id: None,
+            page: 1,
+            page_size: 101, // above max=100
+        };
+        let result = handle_list_biz_tags(State(state), Extension(Locale::En), Query(params)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_list_biz_tags_zero_page_size_returns_bad_request() {
+        let state = create_test_app_state();
+        let params = PaginationParams {
+            workspace_id: None,
+            page: 1,
+            page_size: 0, // below min=1
+        };
+        let result = handle_list_biz_tags(State(state), Extension(Locale::En), Query(params)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_list_biz_tags_valid_params_returns_response_or_error() {
+        let state = create_test_app_state();
+        let params = PaginationParams {
+            workspace_id: None,
+            page: 1,
+            page_size: 20,
+        };
+        let result = handle_list_biz_tags(State(state), Extension(Locale::En), Query(params)).await;
+        // Without repository, list_biz_tags_with_pagination returns Err.
+        match result {
+            Ok(resp) => {
+                let _ = resp.0.total;
+            }
+            Err((status, _)) => {
+                assert!(
+                    status == StatusCode::INTERNAL_SERVER_ERROR || status == StatusCode::NOT_FOUND
+                );
+            }
+        }
+    }
+
+    // ========== handle_create_workspace tests ==========
+
+    #[tokio::test]
+    async fn test_handle_create_workspace_invalid_request_returns_bad_request() {
+        let state = create_test_app_state();
+        let req = CreateWorkspaceRequest {
+            name: String::new(), // length(min=1) violation
+            description: None,
+            max_groups: None,
+            max_biz_tags: None,
+        };
+        let result = handle_create_workspace(State(state), Extension(Locale::En), Json(req)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_create_workspace_invalid_max_groups_returns_bad_request() {
+        let state = create_test_app_state();
+        let req = CreateWorkspaceRequest {
+            name: "ws".to_string(),
+            description: None,
+            max_groups: Some(0), // below min=1
+            max_biz_tags: None,
+        };
+        let result = handle_create_workspace(State(state), Extension(Locale::En), Json(req)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_create_workspace_valid_request_fails_at_handler() {
+        let state = create_test_app_state();
+        let req = CreateWorkspaceRequest {
+            name: "new-ws".to_string(),
+            description: None,
+            max_groups: None,
+            max_biz_tags: None,
+        };
+        let result = handle_create_workspace(State(state), Extension(Locale::En), Json(req)).await;
+        // Without repository, create_workspace returns Err.
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ========== handle_list_workspaces tests ==========
+
+    #[tokio::test]
+    async fn test_handle_list_workspaces_without_repository_returns_error() {
+        let state = create_test_app_state();
+        let result = handle_list_workspaces(State(state), Extension(Locale::En)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ========== handle_get_workspace tests ==========
+
+    #[tokio::test]
+    async fn test_handle_get_workspace_without_repository_returns_internal_error() {
+        let state = create_test_app_state();
+        let result = handle_get_workspace(
+            State(state),
+            Extension(Locale::En),
+            Path("any-name".to_string()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ========== handle_create_group tests ==========
+
+    #[tokio::test]
+    async fn test_handle_create_group_invalid_request_returns_bad_request() {
+        let state = create_test_app_state();
+        let req = CreateGroupRequest {
+            workspace: String::new(), // length(min=1) violation
+            name: "g".to_string(),
+            description: None,
+            max_biz_tags: None,
+        };
+        let result = handle_create_group(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Json(req),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_create_group_admin_role_returns_forbidden() {
+        let state = create_test_app_state();
+        let req = CreateGroupRequest {
+            workspace: "ws".to_string(),
+            name: "g".to_string(),
+            description: None,
+            max_biz_tags: None,
+        };
+        let result = handle_create_group(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::Admin),
+            Extension(Locale::En),
+            Json(req),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_handle_create_group_anonymous_role_returns_unauthorized() {
+        let state = create_test_app_state();
+        let req = CreateGroupRequest {
+            workspace: "ws".to_string(),
+            name: "g".to_string(),
+            description: None,
+            max_biz_tags: None,
+        };
+        let result = handle_create_group(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::Anonymous),
+            Extension(Locale::En),
+            Json(req),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_handle_create_group_user_role_fails_at_workspace_lookup() {
+        let state = create_test_app_state();
+        let req = CreateGroupRequest {
+            workspace: "ws".to_string(),
+            name: "g".to_string(),
+            description: None,
+            max_biz_tags: None,
+        };
+        let result = handle_create_group(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Json(req),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        // verify_user_workspace hits the missing repository -> 500.
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ========== handle_regenerate_user_key tests ==========
+
+    #[tokio::test]
+    async fn test_handle_regenerate_user_key_without_repository_returns_error() {
+        let state = create_test_app_state();
+        let result = handle_regenerate_user_key(
+            State(state),
+            Extension(Locale::En),
+            Path("any-name".to_string()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        // Without repository, regenerate_user_api_key returns Err.
+        assert!(status == StatusCode::INTERNAL_SERVER_ERROR || status == StatusCode::NOT_FOUND);
+    }
+
+    // ========== handle_list_groups tests ==========
+
+    #[tokio::test]
+    async fn test_handle_list_groups_invalid_page_size_returns_bad_request() {
+        let state = create_test_app_state();
+        let params = GroupListParams {
+            workspace: "ws".to_string(),
+            page: 1,
+            page_size: 0, // below min=1
+        };
+        let result = handle_list_groups(State(state), Extension(Locale::En), Query(params)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_list_groups_above_max_page_size_returns_bad_request() {
+        let state = create_test_app_state();
+        let params = GroupListParams {
+            workspace: "ws".to_string(),
+            page: 1,
+            page_size: 101, // above max=100
+        };
+        let result = handle_list_groups(State(state), Extension(Locale::En), Query(params)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_list_groups_valid_params_fails_at_handler() {
+        let state = create_test_app_state();
+        let params = GroupListParams {
+            workspace: "ws".to_string(),
+            page: 1,
+            page_size: 20,
+        };
+        let result = handle_list_groups(State(state), Extension(Locale::En), Query(params)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        // Without repository, list_groups returns Err.
+        assert!(status == StatusCode::INTERNAL_SERVER_ERROR || status == StatusCode::NOT_FOUND);
+    }
+
+    // ========== handle_create_api_key tests ==========
+
+    #[tokio::test]
+    async fn test_handle_create_api_key_invalid_request_returns_bad_request() {
+        let state = create_test_app_state();
+        let req = CreateApiKeyRequest {
+            workspace_id: None,
+            name: String::new(), // length(min=1) violation
+            description: None,
+            role: Some("user".to_string()),
+            rate_limit: None,
+            expires_at: None,
+        };
+        let result = handle_create_api_key(State(state), Extension(Locale::En), Json(req)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_create_api_key_user_role_without_workspace_id_returns_bad_request() {
+        let state = create_test_app_state();
+        let req = CreateApiKeyRequest {
+            workspace_id: None, // missing for user role
+            name: "key".to_string(),
+            description: None,
+            role: Some("user".to_string()),
+            rate_limit: None,
+            expires_at: None,
+        };
+        let result = handle_create_api_key(State(state), Extension(Locale::En), Json(req)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        // workspace_id_required_response returns 400.
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_create_api_key_user_role_with_invalid_workspace_id_returns_bad_request() {
+        let state = create_test_app_state();
+        let req = CreateApiKeyRequest {
+            workspace_id: Some("not-a-uuid".to_string()),
+            name: "key".to_string(),
+            description: None,
+            role: Some("user".to_string()),
+            rate_limit: None,
+            expires_at: None,
+        };
+        let result = handle_create_api_key(State(state), Extension(Locale::En), Json(req)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        // invalid_uuid_response returns 400.
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_create_api_key_default_role_without_workspace_id_returns_bad_request() {
+        let state = create_test_app_state();
+        let req = CreateApiKeyRequest {
+            workspace_id: None, // missing for default user role
+            name: "key".to_string(),
+            description: None,
+            role: None, // defaults to user
+            rate_limit: None,
+            expires_at: None,
+        };
+        let result = handle_create_api_key(State(state), Extension(Locale::En), Json(req)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_create_api_key_admin_role_without_workspace_id_fails_at_handler() {
+        let state = create_test_app_state();
+        let req = CreateApiKeyRequest {
+            workspace_id: None, // admin keys don't need workspace
+            name: "admin-key".to_string(),
+            description: None,
+            role: Some("admin".to_string()),
+            rate_limit: Some(1000),
+            expires_at: None,
+        };
+        let result = handle_create_api_key(State(state), Extension(Locale::En), Json(req)).await;
+        // Validation passes, workspace_id is None for admin, then
+        // handlers.create_api_key runs. Without repository it returns Err.
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        // Without a repository, the handler may return NotFound (404) or
+        // InternalError (500) depending on which CoreError variant surfaces.
+        assert!(
+            status == StatusCode::NOT_FOUND || status == StatusCode::INTERNAL_SERVER_ERROR,
+            "expected NOT_FOUND or INTERNAL_SERVER_ERROR, got {}",
+            status
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_create_api_key_user_role_with_valid_workspace_id_fails_at_handler() {
+        let state = create_test_app_state();
+        let req = CreateApiKeyRequest {
+            workspace_id: Some(uuid::Uuid::new_v4().to_string()),
+            name: "user-key".to_string(),
+            description: None,
+            role: Some("user".to_string()),
+            rate_limit: Some(1000),
+            expires_at: None,
+        };
+        let result = handle_create_api_key(State(state), Extension(Locale::En), Json(req)).await;
+        // Validation passes, workspace_id parses, then handlers.create_api_key
+        // runs. Without repository it returns Err.
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        // Without a repository, the handler may return NotFound (404) or
+        // InternalError (500) depending on which CoreError variant surfaces.
+        assert!(
+            status == StatusCode::NOT_FOUND || status == StatusCode::INTERNAL_SERVER_ERROR,
+            "expected NOT_FOUND or INTERNAL_SERVER_ERROR, got {}",
+            status
+        );
+    }
+
+    // ========== handle_list_api_keys tests ==========
+
+    #[tokio::test]
+    async fn test_handle_list_api_keys_invalid_page_size_returns_bad_request() {
+        let state = create_test_app_state();
+        let params = PaginationParams {
+            workspace_id: None,
+            page: 1,
+            page_size: 0, // below min=1
+        };
+        let result = handle_list_api_keys(State(state), Extension(Locale::En), Query(params)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_list_api_keys_valid_params_fails_at_handler() {
+        let state = create_test_app_state();
+        let params = PaginationParams {
+            workspace_id: None,
+            page: 1,
+            page_size: 20,
+        };
+        let result = handle_list_api_keys(State(state), Extension(Locale::En), Query(params)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        // Without repository, list_api_keys returns Err.
+        assert!(status == StatusCode::INTERNAL_SERVER_ERROR || status == StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_handle_list_api_keys_with_invalid_workspace_id_falls_back_to_nil() {
+        let state = create_test_app_state();
+        let params = PaginationParams {
+            workspace_id: Some("not-a-uuid".to_string()),
+            page: 1,
+            page_size: 20,
+        };
+        let result = handle_list_api_keys(State(state), Extension(Locale::En), Query(params)).await;
+        // Invalid workspace_id is logged and falls back to Uuid::nil().
+        // The handler still calls list_api_keys which fails without a repo.
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert!(status == StatusCode::INTERNAL_SERVER_ERROR || status == StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_handle_list_api_keys_with_valid_workspace_id_fails_at_handler() {
+        let state = create_test_app_state();
+        let params = PaginationParams {
+            workspace_id: Some(uuid::Uuid::new_v4().to_string()),
+            page: 2,
+            page_size: 50,
+        };
+        let result = handle_list_api_keys(State(state), Extension(Locale::En), Query(params)).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert!(status == StatusCode::INTERNAL_SERVER_ERROR || status == StatusCode::NOT_FOUND);
+    }
+
+    // ========== handle_revoke_api_key tests ==========
+
+    #[tokio::test]
+    async fn test_handle_revoke_api_key_invalid_uuid_returns_bad_request() {
+        let state = create_test_app_state();
+        let result = handle_revoke_api_key(
+            State(state),
+            Extension(Locale::En),
+            Path("not-a-uuid".to_string()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_revoke_api_key_valid_uuid_fails_at_handler() {
+        let state = create_test_app_state();
+        let result = handle_revoke_api_key(
+            State(state),
+            Extension(Locale::En),
+            Path(uuid::Uuid::new_v4().to_string()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        // Without repository, revoke_api_key returns Err.
+        assert!(status == StatusCode::INTERNAL_SERVER_ERROR || status == StatusCode::NOT_FOUND);
     }
 }

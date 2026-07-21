@@ -382,7 +382,13 @@ mod tests {
     };
     use crate::core::types::Result;
     use async_trait::async_trait;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::middleware::from_fn_with_state;
+    use axum::routing::get;
+    use axum::Router;
     use sha2::Digest;
+    use tower::ServiceExt;
     use uuid::Uuid;
 
     #[derive(Clone)]
@@ -527,5 +533,404 @@ mod tests {
         // Test non-existent key
         let result = auth.validate_key("non-existent", "secret").await;
         assert!(result.is_none());
+    }
+
+    // ========== Helper functions for middleware tests ==========
+
+    fn make_mock_repo() -> MockApiKeyRepo {
+        let mut mock_keys = std::collections::HashMap::new();
+        mock_keys.insert(
+            "user-key".to_string(),
+            (MockApiKeyRepo::hash_secret("user-secret"), ApiKeyRole::User),
+        );
+        mock_keys.insert(
+            "admin-key".to_string(),
+            (
+                MockApiKeyRepo::hash_secret("admin-secret"),
+                ApiKeyRole::Admin,
+            ),
+        );
+        MockApiKeyRepo { keys: mock_keys }
+    }
+
+    fn build_test_router(auth: Arc<ApiKeyAuth>) -> Router {
+        Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(from_fn_with_state(auth, auth_middleware_fn))
+    }
+
+    fn basic_auth_header(key_id: &str, key_secret: &str) -> String {
+        let credentials = format!("{}:{}", key_id, key_secret);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(credentials);
+        format!("Basic {}", encoded)
+    }
+
+    fn api_key_header(key_id: &str, key_secret: &str) -> String {
+        format!("ApiKey {}:{}", key_id, key_secret)
+    }
+
+    fn make_request(auth_header: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder().uri("/test").method("GET");
+        if let Some(value) = auth_header {
+            builder = builder.header("authorization", value);
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    // ========== Constructor tests ==========
+
+    #[test]
+    fn test_api_key_auth_new_enabled() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = ApiKeyAuth::new(repo, true);
+        assert!(auth.enabled);
+    }
+
+    #[test]
+    fn test_api_key_auth_new_disabled() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = ApiKeyAuth::new(repo, false);
+        assert!(!auth.enabled);
+    }
+
+    #[test]
+    fn test_api_key_auth_with_trusted_proxies_does_not_panic() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let proxies = vec!["127.0.0.1".parse().unwrap()];
+        let auth = ApiKeyAuth::new(repo, true).with_trusted_proxies(proxies);
+        assert!(auth.enabled);
+    }
+
+    // ========== auth_middleware tests ==========
+
+    #[tokio::test]
+    async fn test_auth_middleware_disabled_calls_next() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, false));
+        let router = build_test_router(auth);
+        let resp = router.oneshot(make_request(None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_enabled_no_auth_header_returns_401() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let router = build_test_router(auth);
+        let resp = router.oneshot(make_request(None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_basic_valid_user_calls_next() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let router = build_test_router(auth);
+        let header = basic_auth_header("user-key", "user-secret");
+        let resp = router.oneshot(make_request(Some(&header))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_basic_valid_admin_calls_next() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let router = build_test_router(auth);
+        let header = basic_auth_header("admin-key", "admin-secret");
+        let resp = router.oneshot(make_request(Some(&header))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_basic_invalid_credentials_returns_401() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let router = build_test_router(auth);
+        let header = basic_auth_header("user-key", "wrong-secret");
+        let resp = router.oneshot(make_request(Some(&header))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_basic_invalid_base64_returns_401() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let router = build_test_router(auth);
+        // "Basic !!!" is not valid base64.
+        let resp = router
+            .oneshot(make_request(Some("Basic !!!not-base64!!!")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_basic_no_colon_returns_401() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let router = build_test_router(auth);
+        // Encode a string without a colon.
+        let encoded = base64::engine::general_purpose::STANDARD.encode("nocolonstring");
+        let header = format!("Basic {}", encoded);
+        let resp = router.oneshot(make_request(Some(&header))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_basic_empty_key_id_returns_401() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let router = build_test_router(auth);
+        let header = basic_auth_header("", "user-secret");
+        let resp = router.oneshot(make_request(Some(&header))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_basic_empty_key_secret_returns_401() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let router = build_test_router(auth);
+        let header = basic_auth_header("user-key", "");
+        let resp = router.oneshot(make_request(Some(&header))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_api_key_valid_calls_next() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let router = build_test_router(auth);
+        let header = api_key_header("user-key", "user-secret");
+        let resp = router.oneshot(make_request(Some(&header))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_api_key_no_colon_returns_401() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let router = build_test_router(auth);
+        let header = "ApiKey nocolonstring".to_string();
+        let resp = router.oneshot(make_request(Some(&header))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_unsupported_format_returns_401() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let router = build_test_router(auth);
+        let resp = router
+            .oneshot(make_request(Some("Bearer some-token")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_too_many_failures_returns_429() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let router = build_test_router(auth);
+        // Send 10 invalid requests to trip the rate limiter (>= 10 failures
+        // in 5 minutes triggers 429).
+        let bad_header = basic_auth_header("user-key", "wrong");
+        for _ in 0..10 {
+            let _ = router
+                .clone()
+                .oneshot(make_request(Some(&bad_header)))
+                .await
+                .unwrap();
+        }
+        // 11th request should get 429.
+        let resp = router
+            .oneshot(make_request(Some(&bad_header)))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_empty_authorization_value_returns_401() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let router = build_test_router(auth);
+        // Empty authorization header value: header is present but empty.
+        let resp = router.oneshot(make_request(Some(""))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ========== admin_required_middleware tests ==========
+
+    fn build_admin_router() -> Router {
+        // Build a router that applies both auth middleware and admin_required
+        // middleware. We inject the role extension manually for the admin
+        // tests since we want to isolate the admin check.
+        Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(admin_required_middleware))
+    }
+
+    fn make_request_with_role(role: ApiKeyRole) -> Request<Body> {
+        let mut builder = Request::builder().uri("/test").method("GET");
+        builder = builder.extension(role);
+        builder.body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_admin_required_admin_role_calls_next() {
+        let router = build_admin_router();
+        let resp = router
+            .oneshot(make_request_with_role(ApiKeyRole::Admin))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_admin_required_user_role_returns_403() {
+        let router = build_admin_router();
+        let resp = router
+            .oneshot(make_request_with_role(ApiKeyRole::User))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_admin_required_no_role_extension_returns_403() {
+        let router = build_admin_router();
+        // No role extension injected.
+        let resp = router.oneshot(make_request(None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_admin_required_anonymous_role_returns_403() {
+        let router = build_admin_router();
+        let resp = router
+            .oneshot(make_request_with_role(ApiKeyRole::Anonymous))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ========== Role extension injection tests ==========
+
+    fn build_role_check_router(auth: Arc<ApiKeyAuth>) -> Router {
+        // A router that returns the injected role as text so tests can
+        // observe which role was injected by auth_middleware.
+        Router::new()
+            .route(
+                "/test",
+                get(|request: Request<Body>| async move {
+                    if let Some(role) = request.extensions().get::<ApiKeyRole>() {
+                        format!("{:?}", role)
+                    } else {
+                        "no-role".to_string()
+                    }
+                }),
+            )
+            .layer(from_fn_with_state(auth, auth_middleware_fn))
+    }
+
+    async fn read_body_to_string(body: Body) -> String {
+        // Use axum's built-in `to_bytes` (axum 0.8) instead of http_body_util,
+        // which is not in the project's dev-dependencies.
+        let bytes = axum::body::to_bytes(body, usize::MAX)
+            .await
+            .expect("failed to read response body");
+        String::from_utf8(bytes.to_vec()).expect("response body is not valid UTF-8")
+    }
+
+    #[tokio::test]
+    async fn test_auth_disabled_injects_anonymous_role() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, false));
+        let router = build_role_check_router(auth);
+        let resp = router.oneshot(make_request(None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = read_body_to_string(resp.into_body()).await;
+        assert_eq!(body, "Anonymous");
+    }
+
+    #[tokio::test]
+    async fn test_auth_valid_basic_injects_user_role() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let router = build_role_check_router(auth);
+        let header = basic_auth_header("user-key", "user-secret");
+        let resp = router.oneshot(make_request(Some(&header))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = read_body_to_string(resp.into_body()).await;
+        assert_eq!(body, "User");
+    }
+
+    #[tokio::test]
+    async fn test_auth_valid_basic_admin_injects_admin_role() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let router = build_role_check_router(auth);
+        let header = basic_auth_header("admin-key", "admin-secret");
+        let resp = router.oneshot(make_request(Some(&header))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = read_body_to_string(resp.into_body()).await;
+        assert_eq!(body, "Admin");
+    }
+
+    #[tokio::test]
+    async fn test_auth_valid_api_key_injects_user_role() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let router = build_role_check_router(auth);
+        let header = api_key_header("user-key", "user-secret");
+        let resp = router.oneshot(make_request(Some(&header))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = read_body_to_string(resp.into_body()).await;
+        assert_eq!(body, "User");
+    }
+
+    // ========== validate_key tests ==========
+
+    #[tokio::test]
+    async fn test_validate_key_empty_key_id_returns_none() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = ApiKeyAuth::new(repo, true);
+        let result = auth.validate_key("", "user-secret").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_validate_key_empty_key_secret_returns_none() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = ApiKeyAuth::new(repo, true);
+        let result = auth.validate_key("user-key", "").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_validate_key_admin_returns_none_workspace_id() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = ApiKeyAuth::new(repo, true);
+        let result = auth.validate_key("admin-key", "admin-secret").await;
+        assert!(result.is_some());
+        let (workspace_id, role) = result.unwrap();
+        assert_eq!(role, ApiKeyRole::Admin);
+        // Admin keys are global (workspace_id = None).
+        assert!(workspace_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_validate_key_user_returns_some_workspace_id() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = ApiKeyAuth::new(repo, true);
+        let result = auth.validate_key("user-key", "user-secret").await;
+        assert!(result.is_some());
+        let (workspace_id, role) = result.unwrap();
+        assert_eq!(role, ApiKeyRole::User);
+        // User keys are bound to a workspace (Some(Uuid::nil()) per mock).
+        assert!(workspace_id.is_some());
+        assert_eq!(workspace_id.unwrap(), Uuid::nil());
     }
 }

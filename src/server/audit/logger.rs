@@ -1037,4 +1037,1438 @@ mod tests {
             Some("Invalid API key".to_string())
         );
     }
+
+    // ========== redact_ip branch coverage ==========
+
+    #[test]
+    fn test_redact_ip_ipv4_masks_last_octet() {
+        let redacted = AuditEvent::redact_ip("192.168.1.100");
+        assert_eq!(redacted, "192.168.1.x");
+    }
+
+    #[test]
+    fn test_redact_ip_ipv4_loopback() {
+        let redacted = AuditEvent::redact_ip("127.0.0.1");
+        assert_eq!(redacted, "127.0.0.x");
+    }
+
+    #[test]
+    fn test_redact_ip_ipv6_keeps_first_four_segments() {
+        let redacted = AuditEvent::redact_ip("2001:db8:85a3:8d3:1319:8a2e:370a:7348");
+        assert_eq!(redacted, "2001:db8:85a3:8d3:x:x:x:x");
+    }
+
+    #[test]
+    fn test_redact_ip_ipv6_loopback() {
+        let redacted = AuditEvent::redact_ip("::1");
+        // ::1 parses as IPv6 with all-zero segments except last
+        assert!(redacted.ends_with(":x:x:x:x"));
+        assert!(redacted.starts_with("0:0:0:0"));
+    }
+
+    #[test]
+    fn test_redact_ip_short_non_ip_kept_as_is() {
+        // <= 8 chars non-IP: returned as-is (prefix)
+        let redacted = AuditEvent::redact_ip("unknown");
+        assert_eq!(redacted, "unknown");
+    }
+
+    #[test]
+    fn test_redact_ip_long_non_ip_truncated_with_redacted_suffix() {
+        // > 8 chars non-IP: first 8 chars + "...redacted"
+        let redacted = AuditEvent::redact_ip("very-long-hostname.example.com");
+        assert_eq!(redacted, "very-lon...redacted");
+    }
+
+    #[test]
+    fn test_redact_ip_empty_string() {
+        // Empty string: not a valid IP, prefix is empty, len <= 8 → empty string
+        let redacted = AuditEvent::redact_ip("");
+        assert_eq!(redacted, "");
+    }
+
+    // ========== Builder methods coverage ==========
+
+    #[test]
+    fn test_with_user_agent_sets_user_agent() {
+        let event = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            None,
+            "act".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        )
+        .with_user_agent("Mozilla/5.0".to_string());
+
+        assert_eq!(event.user_agent.as_deref(), Some("Mozilla/5.0"));
+    }
+
+    #[test]
+    fn test_with_user_id_sets_user_id() {
+        let event = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            None,
+            "act".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        )
+        .with_user_id("user-42".to_string());
+
+        assert_eq!(event.user_id.as_deref(), Some("user-42"));
+    }
+
+    #[test]
+    fn test_with_error_sets_error_message() {
+        let event = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            None,
+            "act".to_string(),
+            "res".to_string(),
+            AuditResult::Failure,
+        )
+        .with_error("boom".to_string());
+
+        assert_eq!(event.error_message.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn test_audit_event_full_builder_chain() {
+        let event = AuditEvent::new(
+            AuditEventType::ConfigChange,
+            Some("ws".to_string()),
+            "act".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        )
+        .with_details(serde_json::json!({"k": "v"}))
+        .with_client_ip("10.0.0.1".to_string())
+        .with_user_agent("UA/1".to_string())
+        .with_user_id("u1".to_string())
+        .with_duration(42)
+        .with_error("err".to_string());
+
+        assert_eq!(event.event_type, AuditEventType::ConfigChange);
+        assert_eq!(event.workspace_id.as_deref(), Some("ws"));
+        assert_eq!(event.user_id.as_deref(), Some("u1"));
+        assert_eq!(event.client_ip.as_deref(), Some("10.0.0.1"));
+        assert_eq!(event.user_agent.as_deref(), Some("UA/1"));
+        assert_eq!(event.duration_ms, 42);
+        assert_eq!(event.error_message.as_deref(), Some("err"));
+        assert!(event.details.is_some());
+    }
+
+    // ========== validate_log_path branch coverage ==========
+
+    #[test]
+    fn test_validate_log_path_empty_rejected() {
+        let result = AuditLogger::validate_log_path("");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_validate_log_path_whitespace_only_rejected() {
+        let result = AuditLogger::validate_log_path("   ");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_validate_log_path_traversal_rejected() {
+        let result = AuditLogger::validate_log_path("../../etc/passwd");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_validate_log_path_traversal_in_middle_rejected() {
+        let result = AuditLogger::validate_log_path("logs/../audit.log");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_validate_log_path_relative_accepted() {
+        let result = AuditLogger::validate_log_path("logs/audit.log");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_log_path_absolute_accepted() {
+        // Use a platform-agnostic absolute path check
+        let path = if cfg!(windows) {
+            "C:\\logs\\audit.log"
+        } else {
+            "/var/log/nebulaid/audit.log"
+        };
+        let result = AuditLogger::validate_log_path(path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_log_path_filename_only_accepted() {
+        let result = AuditLogger::validate_log_path("audit.log");
+        assert!(result.is_ok());
+    }
+
+    // ========== Utility methods coverage ==========
+
+    #[tokio::test]
+    async fn test_total_errors_starts_at_zero() {
+        let logger = AuditLogger::new(10);
+        assert_eq!(logger.total_errors(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_clear_empties_events() {
+        let logger = AuditLogger::new(10);
+        for i in 0..5 {
+            let event = AuditEvent::new(
+                AuditEventType::IdGeneration,
+                Some("ws".to_string()),
+                format!("act-{i}"),
+                "res".to_string(),
+                AuditResult::Success,
+            );
+            logger.log(event).await;
+        }
+        assert_eq!(logger.total_logged(), 5);
+        assert_eq!(logger.get_recent_events(100).await.len(), 5);
+
+        logger.clear().await;
+
+        // clear only empties the events buffer; total_logged counter unchanged
+        assert_eq!(logger.get_recent_events(100).await.len(), 0);
+        assert_eq!(logger.total_logged(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_get_recent_events_limit_zero_returns_empty() {
+        let logger = AuditLogger::new(10);
+        let event = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            None,
+            "act".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        );
+        logger.log(event).await;
+
+        let recent = logger.get_recent_events(0).await;
+        assert!(recent.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_recent_events_returns_newest_first() {
+        let logger = AuditLogger::new(10);
+        for i in 0..3 {
+            let event = AuditEvent::new(
+                AuditEventType::IdGeneration,
+                None,
+                format!("act-{i}"),
+                "res".to_string(),
+                AuditResult::Success,
+            );
+            logger.log(event).await;
+        }
+
+        let recent = logger.get_recent_events(2).await;
+        assert_eq!(recent.len(), 2);
+        // Newest first: act-2 was logged last, so it's first in the result
+        assert_eq!(recent[0].action, "act-2");
+        assert_eq!(recent[1].action, "act-1");
+    }
+
+    #[tokio::test]
+    async fn test_get_events_by_workspace_no_match_returns_empty() {
+        let logger = AuditLogger::new(10);
+        let event = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            Some("ws-1".to_string()),
+            "act".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        );
+        logger.log(event).await;
+
+        let events = logger.get_events_by_workspace("nonexistent").await;
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_events_by_workspace_filters_none_workspace() {
+        let logger = AuditLogger::new(10);
+        // Event with no workspace_id
+        let event = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            None,
+            "act".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        );
+        logger.log(event).await;
+
+        let events = logger.get_events_by_workspace("any").await;
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_events_by_type_no_match_returns_empty() {
+        let logger = AuditLogger::new(10);
+        let event = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            None,
+            "act".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        );
+        logger.log(event).await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::Authentication)
+            .await;
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_next_audit_event_id_generates_unique_ids() {
+        let id1 = next_audit_event_id();
+        let id2 = next_audit_event_id();
+        let id3 = next_audit_event_id();
+        assert_ne!(id1, id2);
+        assert_ne!(id2, id3);
+        assert_ne!(id1, id3);
+    }
+
+    #[test]
+    fn test_next_audit_event_id_uses_high_44_bits_for_timestamp() {
+        // Low 20 bits are counter; high 44 bits should be >= some recent unix_ms
+        let id = next_audit_event_id();
+        let high_44 = id >> 20;
+        // Unix millis for 2024-01-01 is around 1704067200000
+        assert!(high_44 >= 1704067200000);
+    }
+
+    #[test]
+    fn test_audit_event_new_defaults() {
+        let event = AuditEvent::new(
+            AuditEventType::HealthCheck,
+            Some("ws".to_string()),
+            "act".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        );
+        assert_eq!(event.event_type, AuditEventType::HealthCheck);
+        assert_eq!(event.workspace_id.as_deref(), Some("ws"));
+        assert!(event.user_id.is_none());
+        assert!(event.details.is_none());
+        assert!(event.client_ip.is_none());
+        assert!(event.user_agent.is_none());
+        assert_eq!(event.duration_ms, 0);
+        assert!(event.error_message.is_none());
+    }
+
+    // ========== log_batch_generation coverage ==========
+
+    #[tokio::test]
+    async fn test_log_batch_generation_success_with_client_ip() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_batch_generation(
+                "ws-1".to_string(),
+                "tag-1".to_string(),
+                100,
+                Some("10.0.0.1".to_string()),
+                25,
+                true,
+                None,
+            )
+            .await;
+
+        assert_eq!(logger.total_logged(), 1);
+        let events = logger
+            .get_events_by_type(AuditEventType::BatchGeneration)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].result, AuditResult::Success);
+        assert_eq!(events[0].action, "batch_generate_ids");
+        assert!(events[0].resource.contains("tag-1"));
+        assert!(events[0].resource.contains("100"));
+        assert_eq!(events[0].client_ip.as_deref(), Some("10.0.0.1"));
+        assert_eq!(events[0].duration_ms, 25);
+        assert!(events[0].error_message.is_none());
+        // Verify details payload
+        let details = events[0].details.as_ref().expect("details should be set");
+        assert_eq!(details["batch_size"], 100);
+        assert_eq!(details["biz_tag"], "tag-1");
+    }
+
+    #[tokio::test]
+    async fn test_log_batch_generation_failure_with_error_message() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_batch_generation(
+                "ws-1".to_string(),
+                "tag-1".to_string(),
+                50,
+                None,
+                10,
+                false,
+                Some("database unavailable".to_string()),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::BatchGeneration)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].result, AuditResult::Failure);
+        assert_eq!(events[0].client_ip.as_deref(), Some(""));
+        assert_eq!(
+            events[0].error_message.as_deref(),
+            Some("database unavailable")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_log_batch_generation_success_no_error_no_client_ip() {
+        // Covers: success=true branch, error_message=None branch, client_ip=None → unwrap_or_default
+        let logger = AuditLogger::new(10);
+        logger
+            .log_batch_generation(
+                "ws-2".to_string(),
+                "tag-2".to_string(),
+                1,
+                None,
+                0,
+                true,
+                None,
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::BatchGeneration)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].result, AuditResult::Success);
+        assert!(events[0].error_message.is_none());
+    }
+
+    // ========== log_config_change coverage ==========
+
+    #[tokio::test]
+    async fn test_log_config_change_with_workspace() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_config_change(
+                Some("ws-1".to_string()),
+                "update_rate_limit".to_string(),
+                "biz_tag".to_string(),
+                serde_json::json!({"tag": "t1", "old": 100, "new": 200}),
+            )
+            .await;
+
+        assert_eq!(logger.total_logged(), 1);
+        let events = logger
+            .get_events_by_type(AuditEventType::ConfigChange)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "update_rate_limit");
+        assert_eq!(events[0].resource, "config:biz_tag");
+        assert_eq!(events[0].result, AuditResult::Success);
+        assert_eq!(events[0].workspace_id.as_deref(), Some("ws-1"));
+        assert!(events[0].details.is_some());
+        assert_eq!(events[0].details.as_ref().unwrap()["new"], 200);
+    }
+
+    #[tokio::test]
+    async fn test_log_config_change_without_workspace() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_config_change(
+                None,
+                "global_update".to_string(),
+                "system".to_string(),
+                serde_json::json!({"key": "value"}),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::ConfigChange)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert!(events[0].workspace_id.is_none());
+        assert_eq!(events[0].resource, "config:system");
+    }
+
+    // ========== log_degradation_event coverage ==========
+
+    #[tokio::test]
+    async fn test_log_degradation_event_critical_state_is_failure() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_degradation_event(
+                Some("ws-1".to_string()),
+                "circuit_breaker_open".to_string(),
+                "snowflake".to_string(),
+                "Normal".to_string(),
+                "Critical".to_string(),
+                serde_json::json!({"consecutive_failures": 5}),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::DegradationEvent)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].result, AuditResult::Failure);
+        assert_eq!(events[0].resource, "algorithm:snowflake");
+        let details = events[0].details.as_ref().unwrap();
+        assert_eq!(details["previous_state"], "Normal");
+        assert_eq!(details["current_state"], "Critical");
+        assert_eq!(details["algorithm_type"], "snowflake");
+    }
+
+    #[tokio::test]
+    async fn test_log_degradation_event_non_critical_state_is_partial() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_degradation_event(
+                None,
+                "degraded_mode".to_string(),
+                "segment".to_string(),
+                "Normal".to_string(),
+                "Degraded".to_string(),
+                serde_json::json!({}),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::DegradationEvent)
+            .await;
+        assert_eq!(events.len(), 1);
+        // Non-Critical → Partial (per server-side rule; core layer maps Normal→Success,
+        // but server logger only special-cases "Critical")
+        assert_eq!(events[0].result, AuditResult::Partial);
+    }
+
+    #[tokio::test]
+    async fn test_log_degradation_event_normal_state_is_partial() {
+        // Server-side log_degradation_event only checks == "Critical"; everything else → Partial.
+        let logger = AuditLogger::new(10);
+        logger
+            .log_degradation_event(
+                Some("ws-1".to_string()),
+                "recovered".to_string(),
+                "uuid_v7".to_string(),
+                "Critical".to_string(),
+                "Normal".to_string(),
+                serde_json::json!({"recovered_at": "2026-07-20"}),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::DegradationEvent)
+            .await;
+        assert_eq!(events[0].result, AuditResult::Partial);
+    }
+
+    // ========== log_rate_limit_exceeded coverage ==========
+
+    #[tokio::test]
+    async fn test_log_rate_limit_exceeded_with_workspace() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_rate_limit_exceeded(
+                Some("ws-1".to_string()),
+                "203.0.113.5".to_string(),
+                "/api/v1/ids/generate".to_string(),
+            )
+            .await;
+
+        assert_eq!(logger.total_logged(), 1);
+        let events = logger
+            .get_events_by_type(AuditEventType::RateLimitExceeded)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].result, AuditResult::Failure);
+        assert_eq!(events[0].action, "rate_limit_exceeded");
+        assert_eq!(events[0].resource, "/api/v1/ids/generate");
+        assert_eq!(events[0].workspace_id.as_deref(), Some("ws-1"));
+        assert_eq!(events[0].client_ip.as_deref(), Some("203.0.113.5"));
+        assert_eq!(
+            events[0].error_message.as_deref(),
+            Some("Rate limit exceeded")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_log_rate_limit_exceeded_without_workspace() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_rate_limit_exceeded(
+                None,
+                "198.51.100.7".to_string(),
+                "/api/v1/batch".to_string(),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::RateLimitExceeded)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert!(events[0].workspace_id.is_none());
+    }
+
+    // ========== log_id_generation additional branches ==========
+
+    #[tokio::test]
+    async fn test_log_id_generation_failure_with_error() {
+        // Covers: success=false branch, error_message=Some branch, client_ip=None branch
+        let logger = AuditLogger::new(10);
+        logger
+            .log_id_generation(
+                "ws-fail".to_string(),
+                "tag-fail".to_string(),
+                "".to_string(),
+                "segment".to_string(),
+                None,
+                100,
+                false,
+                Some("segment exhausted".to_string()),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::IdGeneration)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].result, AuditResult::Failure);
+        assert_eq!(events[0].client_ip.as_deref(), Some(""));
+        assert_eq!(
+            events[0].error_message.as_deref(),
+            Some("segment exhausted")
+        );
+        assert_eq!(events[0].duration_ms, 100);
+        let details = events[0].details.as_ref().unwrap();
+        assert_eq!(details["algorithm"], "segment");
+    }
+
+    // ========== log_workspace_* coverage ==========
+
+    #[tokio::test]
+    async fn test_log_workspace_created_with_user_and_ip() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_workspace_created(
+                "ws-1".to_string(),
+                "My Workspace".to_string(),
+                Some("user-1".to_string()),
+                Some("10.0.0.1".to_string()),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::WorkspaceCreated)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "create_workspace");
+        assert_eq!(events[0].resource, "workspace:My Workspace");
+        assert_eq!(events[0].result, AuditResult::Success);
+        assert_eq!(events[0].workspace_id.as_deref(), Some("ws-1"));
+        assert_eq!(events[0].user_id.as_deref(), Some("user-1"));
+        assert_eq!(events[0].client_ip.as_deref(), Some("10.0.0.1"));
+    }
+
+    #[tokio::test]
+    async fn test_log_workspace_created_without_user_and_ip() {
+        // Covers: user_id=None → unwrap_or_default, client_ip=None → unwrap_or_default
+        let logger = AuditLogger::new(10);
+        logger
+            .log_workspace_created("ws-2".to_string(), "Empty".to_string(), None, None)
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::WorkspaceCreated)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].user_id.as_deref(), Some(""));
+        assert_eq!(events[0].client_ip.as_deref(), Some(""));
+    }
+
+    #[tokio::test]
+    async fn test_log_workspace_updated() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_workspace_updated(
+                "ws-1".to_string(),
+                "Updated Name".to_string(),
+                Some("user-2".to_string()),
+                Some("10.0.0.2".to_string()),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::WorkspaceUpdated)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "update_workspace");
+        assert_eq!(events[0].resource, "workspace:Updated Name");
+        assert_eq!(events[0].result, AuditResult::Success);
+    }
+
+    #[tokio::test]
+    async fn test_log_workspace_deleted() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_workspace_deleted(
+                "ws-del".to_string(),
+                "Deleted".to_string(),
+                Some("admin".to_string()),
+                Some("10.0.0.3".to_string()),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::WorkspaceDeleted)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "delete_workspace");
+        assert_eq!(events[0].resource, "workspace:Deleted");
+        assert_eq!(events[0].result, AuditResult::Success);
+    }
+
+    // ========== log_group_* coverage ==========
+
+    #[tokio::test]
+    async fn test_log_group_created() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_group_created(
+                "ws-1".to_string(),
+                "grp-1".to_string(),
+                "Engineering".to_string(),
+                Some("user-1".to_string()),
+                Some("10.0.0.1".to_string()),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::GroupCreated)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "create_group");
+        assert_eq!(events[0].resource, "group:grp-1:Engineering");
+        assert_eq!(events[0].result, AuditResult::Success);
+        assert_eq!(events[0].workspace_id.as_deref(), Some("ws-1"));
+        assert_eq!(events[0].user_id.as_deref(), Some("user-1"));
+    }
+
+    #[tokio::test]
+    async fn test_log_group_updated() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_group_updated(
+                "ws-1".to_string(),
+                "grp-1".to_string(),
+                "Engineering Renamed".to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::GroupUpdated)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "update_group");
+        assert_eq!(events[0].resource, "group:grp-1:Engineering Renamed");
+        // None → unwrap_or_default → empty string
+        assert_eq!(events[0].user_id.as_deref(), Some(""));
+        assert_eq!(events[0].client_ip.as_deref(), Some(""));
+    }
+
+    #[tokio::test]
+    async fn test_log_group_deleted() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_group_deleted(
+                "ws-1".to_string(),
+                "grp-del".to_string(),
+                "Removed".to_string(),
+                Some("admin".to_string()),
+                Some("10.0.0.9".to_string()),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::GroupDeleted)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "delete_group");
+        assert_eq!(events[0].resource, "group:grp-del:Removed");
+    }
+
+    // ========== log_biz_tag_* coverage ==========
+
+    #[tokio::test]
+    async fn test_log_biz_tag_created() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_biz_tag_created(
+                "ws-1".to_string(),
+                "tag-1".to_string(),
+                "Order IDs".to_string(),
+                Some("user-1".to_string()),
+                Some("10.0.0.1".to_string()),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::BizTagCreated)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "create_biz_tag");
+        assert_eq!(events[0].resource, "biz_tag:tag-1:Order IDs");
+        assert_eq!(events[0].result, AuditResult::Success);
+    }
+
+    #[tokio::test]
+    async fn test_log_biz_tag_updated() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_biz_tag_updated(
+                "ws-1".to_string(),
+                "tag-1".to_string(),
+                "Order IDs v2".to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::BizTagUpdated)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "update_biz_tag");
+        assert_eq!(events[0].resource, "biz_tag:tag-1:Order IDs v2");
+    }
+
+    #[tokio::test]
+    async fn test_log_biz_tag_deleted() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_biz_tag_deleted(
+                "ws-1".to_string(),
+                "tag-del".to_string(),
+                "Removed".to_string(),
+                Some("admin".to_string()),
+                Some("10.0.0.9".to_string()),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::BizTagDeleted)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "delete_biz_tag");
+        assert_eq!(events[0].resource, "biz_tag:tag-del:Removed");
+    }
+
+    // ========== log_api_key_* coverage ==========
+
+    #[tokio::test]
+    async fn test_log_api_key_created_with_workspace() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_api_key_created(
+                Some("ws-1".to_string()),
+                "key-1".to_string(),
+                "admin".to_string(),
+                Some("user-1".to_string()),
+                Some("10.0.0.1".to_string()),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::ApiKeyCreated)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "create_api_key");
+        assert_eq!(events[0].resource, "api_key:key-1:admin");
+        assert_eq!(events[0].result, AuditResult::Success);
+        assert_eq!(events[0].workspace_id.as_deref(), Some("ws-1"));
+    }
+
+    #[tokio::test]
+    async fn test_log_api_key_created_without_workspace() {
+        // Admin keys can have workspace_id = None
+        let logger = AuditLogger::new(10);
+        logger
+            .log_api_key_created(
+                None,
+                "admin-key".to_string(),
+                "admin".to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::ApiKeyCreated)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert!(events[0].workspace_id.is_none());
+        assert_eq!(events[0].user_id.as_deref(), Some(""));
+        assert_eq!(events[0].client_ip.as_deref(), Some(""));
+    }
+
+    #[tokio::test]
+    async fn test_log_api_key_updated() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_api_key_updated(
+                Some("ws-1".to_string()),
+                "key-1".to_string(),
+                "user".to_string(),
+                Some("user-1".to_string()),
+                Some("10.0.0.2".to_string()),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::ApiKeyUpdated)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "update_api_key");
+        assert_eq!(events[0].resource, "api_key:key-1:user");
+    }
+
+    #[tokio::test]
+    async fn test_log_api_key_deleted() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_api_key_deleted(
+                None,
+                "key-del".to_string(),
+                "admin".to_string(),
+                Some("admin".to_string()),
+                Some("10.0.0.9".to_string()),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::ApiKeyDeleted)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "delete_api_key");
+        assert_eq!(events[0].resource, "api_key:key-del:admin");
+        assert!(events[0].workspace_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_log_api_key_regenerated() {
+        let logger = AuditLogger::new(10);
+        logger
+            .log_api_key_regenerated(
+                "ws-1".to_string(),
+                "key-1".to_string(),
+                "user".to_string(),
+                Some("user-1".to_string()),
+                Some("10.0.0.3".to_string()),
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::ApiKeyRegenerated)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "regenerate_api_key");
+        assert_eq!(events[0].resource, "api_key:key-1:user");
+        assert_eq!(events[0].result, AuditResult::Success);
+        assert_eq!(events[0].workspace_id.as_deref(), Some("ws-1"));
+    }
+
+    #[tokio::test]
+    async fn test_log_api_key_regenerated_without_user_and_ip() {
+        // Covers: user_id=None, client_ip=None branches
+        let logger = AuditLogger::new(10);
+        logger
+            .log_api_key_regenerated(
+                "ws-2".to_string(),
+                "key-2".to_string(),
+                "admin".to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let events = logger
+            .get_events_by_type(AuditEventType::ApiKeyRegenerated)
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].user_id.as_deref(), Some(""));
+        assert_eq!(events[0].client_ip.as_deref(), Some(""));
+    }
+
+    // ========== with_file_logging coverage ==========
+
+    #[tokio::test]
+    async fn test_with_file_logging_empty_path_falls_back_to_memory_logger() {
+        // Invalid path → validate_log_path fails → fall back to new(max_events)
+        let logger = AuditLogger::with_file_logging(100, "".to_string()).await;
+        // Fall-back logger has no file_tx
+        assert_eq!(logger.total_logged(), 0);
+        assert_eq!(logger.total_errors(), 0);
+        // Verify it still works as a memory logger
+        let event = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            None,
+            "act".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        );
+        logger.log(event).await;
+        assert_eq!(logger.total_logged(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_with_file_logging_traversal_path_falls_back_to_memory_logger() {
+        let logger = AuditLogger::with_file_logging(100, "../../etc/passwd".to_string()).await;
+        // Should fall back — no file persistence, but logger still functional
+        assert_eq!(logger.total_errors(), 0);
+        let event = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            None,
+            "act".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        );
+        logger.log(event).await;
+        assert_eq!(logger.total_logged(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_with_file_logging_valid_path_persists_events() {
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let log_path = tmp.path().join("audit.log");
+        let path_str = log_path.to_str().expect("path is utf-8").to_string();
+
+        let logger = AuditLogger::with_file_logging(100, path_str.clone()).await;
+        let event = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            Some("ws-1".to_string()),
+            "generate_id".to_string(),
+            "biz_tag:test".to_string(),
+            AuditResult::Success,
+        )
+        .with_client_ip("192.168.1.100".to_string())
+        .with_user_agent("Mozilla/5.0".to_string())
+        .with_duration(15);
+
+        logger.log(event).await;
+
+        // Give the writer task time to flush
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Read file and verify content
+        let content = tokio::fs::read_to_string(&log_path)
+            .await
+            .expect("file should exist");
+        assert!(!content.is_empty());
+        // Each event is one JSON line
+        let lines: Vec<&str> = content.trim().lines().collect();
+        assert_eq!(lines.len(), 1);
+
+        let parsed: serde_json::Value = serde_json::from_str(lines[0]).expect("valid JSON");
+        assert_eq!(parsed["action"], "generate_id");
+        assert_eq!(parsed["workspace_id"], "ws-1");
+        assert_eq!(parsed["duration_ms"], 15);
+        // PII redaction: client_ip last octet masked
+        assert_eq!(parsed["client_ip"], "192.168.1.x");
+        // user_agent replaced with fixed string
+        assert_eq!(parsed["user_agent"], "UA(redacted)");
+    }
+
+    #[tokio::test]
+    async fn test_with_file_logging_persists_multiple_events() {
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let log_path = tmp.path().join("multi.log");
+        let path_str = log_path.to_str().expect("path is utf-8").to_string();
+
+        let logger = AuditLogger::with_file_logging(100, path_str.clone()).await;
+        for i in 0..5 {
+            let event = AuditEvent::new(
+                AuditEventType::IdGeneration,
+                Some("ws-batch".to_string()),
+                format!("act-{i}"),
+                "res".to_string(),
+                AuditResult::Success,
+            );
+            logger.log(event).await;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        let content = tokio::fs::read_to_string(&log_path)
+            .await
+            .expect("file should exist");
+        let lines: Vec<&str> = content.trim().lines().collect();
+        assert_eq!(lines.len(), 5);
+        // Verify each line is valid JSON
+        for line in &lines {
+            let parsed: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
+            assert_eq!(parsed["workspace_id"], "ws-batch");
+        }
+        assert_eq!(logger.total_logged(), 5);
+        assert_eq!(logger.total_errors(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_with_file_logging_write_failure_increments_errors() {
+        // Use a path where the parent directory doesn't exist — write_event_to_file
+        // will fail with "No such file or directory", and the writer task increments
+        // total_errors.
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let nonexistent = tmp.path().join("nonexistent_subdir").join("audit.log");
+        let path_str = nonexistent.to_str().expect("path is utf-8").to_string();
+
+        let logger = AuditLogger::with_file_logging(100, path_str).await;
+        let event = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            None,
+            "act".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        );
+        logger.log(event).await;
+
+        // Wait for writer task to attempt and fail
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert_eq!(logger.total_errors(), 1);
+    }
+
+    // ========== write_event_to_file direct tests ==========
+
+    #[tokio::test]
+    async fn test_write_event_to_file_invalid_path_returns_err() {
+        let event = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            None,
+            "act".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        );
+        // Path to a directory that doesn't exist
+        let result = AuditLogger::write_event_to_file(&event, "/nonexistent_dir/audit.log").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_write_event_to_file_success_writes_json_line() {
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let log_path = tmp.path().join("direct.log");
+        let path_str = log_path.to_str().expect("path is utf-8").to_string();
+
+        let event = AuditEvent::new(
+            AuditEventType::Authentication,
+            Some("ws-1".to_string()),
+            "login".to_string(),
+            "auth".to_string(),
+            AuditResult::Success,
+        )
+        .with_client_ip("10.20.30.40".to_string())
+        .with_user_agent("curl/8.0".to_string())
+        .with_user_id("user-99".to_string())
+        .with_duration(5)
+        .with_error("no error".to_string());
+
+        AuditLogger::write_event_to_file(&event, &path_str)
+            .await
+            .expect("write should succeed");
+
+        let content = std::fs::read_to_string(&log_path).expect("file should exist");
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).expect("valid JSON");
+        assert_eq!(parsed["action"], "login");
+        assert_eq!(parsed["event_type"], "Authentication");
+        assert_eq!(parsed["user_id"], "user-99");
+        assert_eq!(parsed["error_message"], "no error");
+        assert_eq!(parsed["duration_ms"], 5);
+        // PII redaction
+        assert_eq!(parsed["client_ip"], "10.20.30.x");
+        assert_eq!(parsed["user_agent"], "UA(redacted)");
+    }
+
+    #[tokio::test]
+    async fn test_write_event_to_file_appends_to_existing() {
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let log_path = tmp.path().join("append.log");
+        let path_str = log_path.to_str().expect("path is utf-8").to_string();
+
+        for i in 0..3 {
+            let event = AuditEvent::new(
+                AuditEventType::IdGeneration,
+                None,
+                format!("act-{i}"),
+                "res".to_string(),
+                AuditResult::Success,
+            );
+            AuditLogger::write_event_to_file(&event, &path_str)
+                .await
+                .expect("write should succeed");
+        }
+
+        let content = std::fs::read_to_string(&log_path).expect("file should exist");
+        let lines: Vec<&str> = content.trim().lines().collect();
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_write_event_to_file_redacts_ipv6() {
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let log_path = tmp.path().join("ipv6.log");
+        let path_str = log_path.to_str().expect("path is utf-8").to_string();
+
+        let event = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            None,
+            "act".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        )
+        .with_client_ip("2001:db8::1".to_string())
+        .with_user_agent("UA".to_string());
+
+        AuditLogger::write_event_to_file(&event, &path_str)
+            .await
+            .expect("write should succeed");
+
+        let content = std::fs::read_to_string(&log_path).expect("file should exist");
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).expect("valid JSON");
+        // IPv6: first 4 segments kept, rest masked
+        let ip = parsed["client_ip"].as_str().expect("client_ip is string");
+        assert!(ip.ends_with(":x:x:x:x"));
+    }
+
+    // ========== VecDeque overflow coverage ==========
+
+    #[tokio::test]
+    async fn test_log_drops_oldest_without_persistence_increments_errors() {
+        // max_events = 1, no file_tx → second log drops first event, increments total_errors
+        let logger = AuditLogger::new(1);
+        let e1 = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            Some("ws".to_string()),
+            "first".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        );
+        let e2 = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            Some("ws".to_string()),
+            "second".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        );
+        logger.log(e1).await;
+        logger.log(e2).await;
+
+        // Both events were "logged" (total_logged incremented)
+        assert_eq!(logger.total_logged(), 2);
+        // First event was dropped without persistence → error
+        assert_eq!(logger.total_errors(), 1);
+        // Only the second event remains in memory
+        let recent = logger.get_recent_events(10).await;
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].action, "second");
+    }
+
+    #[tokio::test]
+    async fn test_log_drops_oldest_with_persistence_no_error() {
+        // max_events = 1, with file_tx → second log drops first event, but it was
+        // already written to file, so no error.
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let log_path = tmp.path().join("overflow.log");
+        let path_str = log_path.to_str().expect("path is utf-8").to_string();
+
+        let logger = AuditLogger::with_file_logging(1, path_str.clone()).await;
+        let e1 = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            Some("ws".to_string()),
+            "first".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        );
+        let e2 = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            Some("ws".to_string()),
+            "second".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        );
+        logger.log(e1).await;
+        logger.log(e2).await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Both events logged
+        assert_eq!(logger.total_logged(), 2);
+        // No errors because file_tx is Some (dropped events were persisted)
+        assert_eq!(logger.total_errors(), 0);
+        // Only second event in memory
+        let recent = logger.get_recent_events(10).await;
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].action, "second");
+        // Both events in file
+        let content = tokio::fs::read_to_string(&log_path)
+            .await
+            .expect("file should exist");
+        let lines: Vec<&str> = content.trim().lines().collect();
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_log_drops_multiple_when_far_over_capacity() {
+        // max_events = 2, log 5 events → 3 dropped
+        let logger = AuditLogger::new(2);
+        for i in 0..5 {
+            let event = AuditEvent::new(
+                AuditEventType::IdGeneration,
+                Some("ws".to_string()),
+                format!("act-{i}"),
+                "res".to_string(),
+                AuditResult::Success,
+            );
+            logger.log(event).await;
+        }
+
+        assert_eq!(logger.total_logged(), 5);
+        // 3 events dropped without persistence → 3 errors
+        assert_eq!(logger.total_errors(), 3);
+        // Only last 2 remain in memory
+        let recent = logger.get_recent_events(10).await;
+        assert_eq!(recent.len(), 2);
+        // Newest first
+        assert_eq!(recent[0].action, "act-4");
+        assert_eq!(recent[1].action, "act-3");
+    }
+
+    // ========== CoreAuditLoggerTrait impl coverage ==========
+
+    #[tokio::test]
+    async fn test_core_audit_logger_trait_log_converts_and_logs() {
+        use crate::core::algorithm::AuditEvent as CoreAuditEvent;
+
+        let logger = AuditLogger::new(10);
+        let core_event = CoreAuditEvent::new(
+            AuditEventType::DegradationEvent,
+            Some("ws-core".to_string()),
+            "degrade".to_string(),
+            "algorithm:segment".to_string(),
+            AuditResult::Partial,
+        )
+        .with_details(serde_json::json!({"reason": "circuit_open"}));
+
+        // Use the trait method (not the inherent method)
+        use crate::core::algorithm::AuditLogger as CoreAuditLoggerTrait;
+        CoreAuditLoggerTrait::log(&logger, core_event).await;
+
+        assert_eq!(logger.total_logged(), 1);
+        let events = logger.get_recent_events(1).await;
+        assert_eq!(events.len(), 1);
+        // Server-side AuditEvent has id (from next_audit_event_id), client_ip=None,
+        // user_agent=None, duration_ms=0, error_message=None
+        assert!(events[0].id > 0);
+        assert!(events[0].client_ip.is_none());
+        assert!(events[0].user_agent.is_none());
+        assert_eq!(events[0].duration_ms, 0);
+        assert!(events[0].error_message.is_none());
+        assert_eq!(events[0].workspace_id.as_deref(), Some("ws-core"));
+        assert_eq!(events[0].result, AuditResult::Partial);
+        assert_eq!(events[0].event_type, AuditEventType::DegradationEvent);
+        // details carried over from core event
+        assert!(events[0].details.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_core_audit_logger_trait_log_unknown_result_preserved() {
+        // CoreAuditEvent can have result=Unknown; server-side preserves it
+        // (M4 fix: no longer forced to Failure).
+        use crate::core::algorithm::{
+            AuditEvent as CoreAuditEvent, AuditLogger as CoreAuditLoggerTrait,
+        };
+
+        let logger = AuditLogger::new(10);
+        let core_event = CoreAuditEvent {
+            event_type: AuditEventType::HealthCheck,
+            workspace_id: None,
+            action: "check".to_string(),
+            resource: "health".to_string(),
+            result: AuditResult::Unknown,
+            details: None,
+            timestamp: chrono::Utc::now(),
+        };
+
+        CoreAuditLoggerTrait::log(&logger, core_event).await;
+
+        let events = logger.get_recent_events(1).await;
+        assert_eq!(events[0].result, AuditResult::Unknown);
+    }
+
+    // ========== log with closed file channel ==========
+
+    #[tokio::test]
+    async fn test_log_with_closed_file_channel_increments_errors() {
+        // Construct a logger manually with a dead sender (receiver dropped).
+        // Tests the `tx.send().is_err()` branch in log().
+        let (tx, rx) = mpsc::unbounded_channel::<AuditEvent>();
+        drop(rx); // Close the channel
+
+        let logger = AuditLogger {
+            events: Arc::new(Mutex::new(VecDeque::with_capacity(10))),
+            max_events: 10,
+            total_logged: Arc::new(AtomicU64::new(0)),
+            total_errors: Arc::new(AtomicU64::new(0)),
+            file_tx: Some(tx),
+            _writer_task: None,
+        };
+
+        let event = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            None,
+            "act".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        );
+        logger.log(event).await;
+
+        // Event was still logged to memory
+        assert_eq!(logger.total_logged(), 1);
+        // Channel closed → error incremented
+        assert_eq!(logger.total_errors(), 1);
+    }
+
+    // ========== Clone semantics ==========
+
+    #[tokio::test]
+    async fn test_logger_clone_shares_state() {
+        // AuditLogger derives Clone; cloned loggers should share the same
+        // events buffer and counters (Arc-backed).
+        let logger = AuditLogger::new(10);
+        let logger_clone = logger.clone();
+
+        let event = AuditEvent::new(
+            AuditEventType::IdGeneration,
+            Some("ws".to_string()),
+            "act".to_string(),
+            "res".to_string(),
+            AuditResult::Success,
+        );
+        logger_clone.log(event).await;
+
+        // Original logger sees the event (shared Arc<Mutex>)
+        assert_eq!(logger.total_logged(), 1);
+        let recent = logger.get_recent_events(10).await;
+        assert_eq!(recent.len(), 1);
+    }
 }

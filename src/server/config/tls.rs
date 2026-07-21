@@ -258,6 +258,41 @@ impl TlsManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::config::{TlsConfig, TlsVersion};
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    /// Generate a self-signed cert + key pair as PEM files for testing.
+    /// Returns (cert_file, key_file) NamedTempFile handles.
+    fn generate_test_cert_files() -> (NamedTempFile, NamedTempFile) {
+        // Install ring crypto provider (required by rustls 0.23 + rcgen 0.13).
+        // `install_default()` is idempotent; safe to call multiple times.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        // rcgen 0.13 API: `generate_simple_self_signed` returns a
+        // `CertifiedKey { cert, key_pair }`. `cert.pem()` and
+        // `key_pair.serialize_pem()` both return `String`.
+        let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("generate self-signed cert");
+        let cert_pem = certified.cert.pem();
+        let key_pem = certified.key_pair.serialize_pem();
+
+        let mut cert_file = NamedTempFile::new().expect("cert tmp file");
+        cert_file
+            .write_all(cert_pem.as_bytes())
+            .expect("write cert pem");
+        cert_file.flush().expect("flush cert file");
+
+        let mut key_file = NamedTempFile::new().expect("key tmp file");
+        key_file
+            .write_all(key_pem.as_bytes())
+            .expect("write key pem");
+        key_file.flush().expect("flush key file");
+
+        (cert_file, key_file)
+    }
+
+    // ===== TlsConfig::default =====
 
     #[test]
     fn test_tls_config_default() {
@@ -268,10 +303,430 @@ mod tests {
         assert!(config.ca_path.is_none());
         assert!(!config.http_enabled);
         assert!(!config.grpc_enabled);
-        assert_eq!(
-            config.min_tls_version,
-            crate::core::config::TlsVersion::Tls13
-        );
+        assert_eq!(config.min_tls_version, TlsVersion::Tls13);
         assert!(!config.alpn_protocols.is_empty());
+    }
+
+    // ===== TlsError Display =====
+
+    #[test]
+    fn test_tls_error_certificate_load_error_display() {
+        let err = TlsError::CertificateLoadError("file missing".to_string());
+        assert_eq!(err.to_string(), "Failed to load certificate: file missing");
+    }
+
+    #[test]
+    fn test_tls_error_private_key_load_error_display() {
+        let err = TlsError::PrivateKeyLoadError("bad key".to_string());
+        assert_eq!(err.to_string(), "Failed to load private key: bad key");
+    }
+
+    #[test]
+    fn test_tls_error_invalid_config_display() {
+        let err = TlsError::InvalidConfig("bad config".to_string());
+        assert_eq!(err.to_string(), "Invalid TLS configuration: bad config");
+    }
+
+    #[test]
+    fn test_tls_error_equality_and_clone() {
+        let err1 = TlsError::CertificateLoadError("a".to_string());
+        let err2 = TlsError::CertificateLoadError("a".to_string());
+        let err3 = TlsError::PrivateKeyLoadError("a".to_string());
+        assert_eq!(err1, err2);
+        assert_ne!(err1, err3);
+        // Clone produces equal value
+        assert_eq!(err1.clone(), err1);
+    }
+
+    // ===== TlsManager::new — default state =====
+
+    #[test]
+    fn test_tls_manager_new_disabled_config() {
+        let config = TlsConfig::default();
+        let manager = TlsManager::new(config);
+        // Disabled config: nothing should be initialized
+        assert!(!manager.is_http_enabled());
+        assert!(!manager.is_grpc_enabled());
+        assert!(manager.http_acceptor().is_none());
+        assert!(manager.grpc_tls_config().is_none());
+    }
+
+    #[test]
+    fn test_tls_manager_new_preserves_disabled_flags() {
+        // Even if http_enabled/grpc_enabled are true in config, when not
+        // initialized, is_*_enabled returns false (acceptor is None).
+        let config = TlsConfig {
+            enabled: true,
+            http_enabled: true,
+            grpc_enabled: true,
+            ..Default::default()
+        };
+        let manager = TlsManager::new(config);
+        assert!(!manager.is_http_enabled());
+        assert!(!manager.is_grpc_enabled());
+        assert!(manager.http_acceptor().is_none());
+        assert!(manager.grpc_tls_config().is_none());
+    }
+
+    // ===== TlsManager::initialize — disabled config returns Ok =====
+
+    #[tokio::test]
+    async fn test_initialize_disabled_returns_ok_without_initializing() {
+        let mut manager = TlsManager::new(TlsConfig::default());
+        let result = manager.initialize().await;
+        assert!(result.is_ok());
+        // Even after initialize, disabled means acceptors remain None
+        assert!(manager.http_acceptor().is_none());
+        assert!(manager.grpc_tls_config().is_none());
+        assert!(!manager.is_http_enabled());
+        assert!(!manager.is_grpc_enabled());
+    }
+
+    // ===== TlsManager::initialize — missing cert file =====
+
+    #[tokio::test]
+    async fn test_initialize_enabled_missing_cert_file_returns_cert_error() {
+        let config = TlsConfig {
+            enabled: true,
+            cert_path: "/nonexistent/cert.pem".to_string(),
+            key_path: "/nonexistent/key.pem".to_string(),
+            http_enabled: true,
+            ..Default::default()
+        };
+        let mut manager = TlsManager::new(config);
+        let result = manager.initialize().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, TlsError::CertificateLoadError(_)));
+        assert!(err.to_string().contains("Certificate file not found"));
+    }
+
+    // ===== TlsManager::initialize — missing key file =====
+
+    #[tokio::test]
+    async fn test_initialize_enabled_missing_key_file_returns_key_error() {
+        // Create a valid cert file but leave key path nonexistent.
+        let (cert_file, _key_file) = generate_test_cert_files();
+        let config = TlsConfig {
+            enabled: true,
+            cert_path: cert_file
+                .path()
+                .to_str()
+                .expect("cert path utf8")
+                .to_string(),
+            key_path: "/nonexistent/key.pem".to_string(),
+            http_enabled: true,
+            ..Default::default()
+        };
+        let mut manager = TlsManager::new(config);
+        let result = manager.initialize().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, TlsError::PrivateKeyLoadError(_)));
+        assert!(err.to_string().contains("Private key file not found"));
+    }
+
+    // ===== TlsManager::initialize — empty cert file =====
+
+    #[tokio::test]
+    async fn test_initialize_empty_cert_file_returns_cert_error() {
+        let cert_file = NamedTempFile::new().expect("cert tmp");
+        let key_file = NamedTempFile::new().expect("key tmp");
+        let config = TlsConfig {
+            enabled: true,
+            cert_path: cert_file.path().to_str().unwrap().to_string(),
+            key_path: key_file.path().to_str().unwrap().to_string(),
+            http_enabled: true,
+            ..Default::default()
+        };
+        let mut manager = TlsManager::new(config);
+        let result = manager.initialize().await;
+        assert!(result.is_err());
+        // Empty cert file -> rustls_pemfile returns None -> "Empty certificate chain"
+        let err = result.unwrap_err();
+        assert!(matches!(err, TlsError::CertificateLoadError(_)));
+    }
+
+    // ===== TlsManager::initialize — empty key file =====
+
+    #[tokio::test]
+    async fn test_initialize_empty_key_file_returns_key_error() {
+        let (cert_file, _key) = generate_test_cert_files();
+        let empty_key = NamedTempFile::new().expect("key tmp");
+        let config = TlsConfig {
+            enabled: true,
+            cert_path: cert_file.path().to_str().unwrap().to_string(),
+            key_path: empty_key.path().to_str().unwrap().to_string(),
+            http_enabled: true,
+            ..Default::default()
+        };
+        let mut manager = TlsManager::new(config);
+        let result = manager.initialize().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, TlsError::PrivateKeyLoadError(_)));
+        assert!(err.to_string().contains("Empty private key"));
+    }
+
+    // ===== TlsManager::initialize — valid cert+key, http_enabled =====
+
+    #[tokio::test]
+    async fn test_initialize_valid_http_enabled_creates_acceptor() {
+        let (cert_file, key_file) = generate_test_cert_files();
+        let config = TlsConfig {
+            enabled: true,
+            cert_path: cert_file.path().to_str().unwrap().to_string(),
+            key_path: key_file.path().to_str().unwrap().to_string(),
+            http_enabled: true,
+            grpc_enabled: false,
+            ..Default::default()
+        };
+        let mut manager = TlsManager::new(config);
+        let result = manager.initialize().await;
+        assert!(result.is_ok(), "initialize should succeed: {:?}", result);
+        assert!(manager.is_http_enabled(), "http should be enabled");
+        assert!(!manager.is_grpc_enabled(), "grpc should not be enabled");
+        assert!(manager.http_acceptor().is_some());
+        assert!(manager.grpc_tls_config().is_none());
+    }
+
+    // ===== TlsManager::initialize — valid cert+key, grpc_enabled =====
+
+    #[tokio::test]
+    async fn test_initialize_valid_grpc_enabled_creates_tls_config() {
+        let (cert_file, key_file) = generate_test_cert_files();
+        let config = TlsConfig {
+            enabled: true,
+            cert_path: cert_file.path().to_str().unwrap().to_string(),
+            key_path: key_file.path().to_str().unwrap().to_string(),
+            http_enabled: false,
+            grpc_enabled: true,
+            ..Default::default()
+        };
+        let mut manager = TlsManager::new(config);
+        let result = manager.initialize().await;
+        assert!(result.is_ok(), "initialize should succeed: {:?}", result);
+        assert!(!manager.is_http_enabled());
+        assert!(manager.is_grpc_enabled(), "grpc should be enabled");
+        assert!(manager.http_acceptor().is_none());
+        assert!(manager.grpc_tls_config().is_some());
+    }
+
+    // ===== TlsManager::initialize — both http + grpc enabled =====
+
+    #[tokio::test]
+    async fn test_initialize_both_http_and_grpc_enabled() {
+        let (cert_file, key_file) = generate_test_cert_files();
+        let config = TlsConfig {
+            enabled: true,
+            cert_path: cert_file.path().to_str().unwrap().to_string(),
+            key_path: key_file.path().to_str().unwrap().to_string(),
+            http_enabled: true,
+            grpc_enabled: true,
+            ..Default::default()
+        };
+        let mut manager = TlsManager::new(config);
+        let result = manager.initialize().await;
+        assert!(result.is_ok(), "initialize should succeed: {:?}", result);
+        assert!(manager.is_http_enabled());
+        assert!(manager.is_grpc_enabled());
+        assert!(manager.http_acceptor().is_some());
+        assert!(manager.grpc_tls_config().is_some());
+    }
+
+    // ===== TlsManager::initialize — TLS 1.2 min version =====
+
+    #[tokio::test]
+    async fn test_initialize_tls12_min_version_succeeds() {
+        let (cert_file, key_file) = generate_test_cert_files();
+        let config = TlsConfig {
+            enabled: true,
+            cert_path: cert_file.path().to_str().unwrap().to_string(),
+            key_path: key_file.path().to_str().unwrap().to_string(),
+            http_enabled: true,
+            min_tls_version: TlsVersion::Tls12,
+            ..Default::default()
+        };
+        let mut manager = TlsManager::new(config);
+        let result = manager.initialize().await;
+        assert!(result.is_ok(), "TLS 1.2 min should succeed: {:?}", result);
+        assert!(manager.is_http_enabled());
+    }
+
+    // ===== TlsManager::initialize — TLS 1.3 min version =====
+
+    #[tokio::test]
+    async fn test_initialize_tls13_min_version_succeeds() {
+        let (cert_file, key_file) = generate_test_cert_files();
+        let config = TlsConfig {
+            enabled: true,
+            cert_path: cert_file.path().to_str().unwrap().to_string(),
+            key_path: key_file.path().to_str().unwrap().to_string(),
+            http_enabled: true,
+            min_tls_version: TlsVersion::Tls13,
+            ..Default::default()
+        };
+        let mut manager = TlsManager::new(config);
+        let result = manager.initialize().await;
+        assert!(result.is_ok(), "TLS 1.3 min should succeed: {:?}", result);
+        assert!(manager.is_http_enabled());
+    }
+
+    // ===== TlsManager::initialize — custom ALPN protocols =====
+
+    #[tokio::test]
+    async fn test_initialize_with_custom_alpn_protocols_succeeds() {
+        let (cert_file, key_file) = generate_test_cert_files();
+        let config = TlsConfig {
+            enabled: true,
+            cert_path: cert_file.path().to_str().unwrap().to_string(),
+            key_path: key_file.path().to_str().unwrap().to_string(),
+            http_enabled: true,
+            alpn_protocols: vec!["h2".to_string(), "http/1.1".to_string()],
+            ..Default::default()
+        };
+        let mut manager = TlsManager::new(config);
+        let result = manager.initialize().await;
+        assert!(result.is_ok(), "ALPN config should succeed: {:?}", result);
+        assert!(manager.is_http_enabled());
+        // The acceptor was created; ALPN protocols are baked into the
+        // ServerConfig (we cannot introspect them via TlsAcceptor's public
+        // API, but the fact that initialize() returned Ok with non-empty
+        // alpn_protocols confirms the branch was exercised).
+        assert!(manager.http_acceptor().is_some());
+    }
+
+    // ===== TlsManager::initialize — empty ALPN protocols branch =====
+
+    #[tokio::test]
+    async fn test_initialize_with_empty_alpn_protocols_skips_alpn_block() {
+        let (cert_file, key_file) = generate_test_cert_files();
+        let config = TlsConfig {
+            enabled: true,
+            cert_path: cert_file.path().to_str().unwrap().to_string(),
+            key_path: key_file.path().to_str().unwrap().to_string(),
+            http_enabled: true,
+            alpn_protocols: vec![],
+            ..Default::default()
+        };
+        let mut manager = TlsManager::new(config);
+        let result = manager.initialize().await;
+        assert!(result.is_ok(), "empty ALPN should succeed: {:?}", result);
+        assert!(manager.is_http_enabled());
+    }
+
+    // ===== TlsManager::initialize — gRPC with CA cert (mTLS) =====
+
+    #[tokio::test]
+    async fn test_initialize_grpc_with_ca_cert_succeeds() {
+        let (cert_file, key_file) = generate_test_cert_files();
+        // Use the same cert as the CA for testing purposes (self-signed).
+        let ca_file = NamedTempFile::new().expect("ca tmp");
+        std::fs::write(ca_file.path(), std::fs::read(cert_file.path()).unwrap()).unwrap();
+
+        let config = TlsConfig {
+            enabled: true,
+            cert_path: cert_file.path().to_str().unwrap().to_string(),
+            key_path: key_file.path().to_str().unwrap().to_string(),
+            http_enabled: false,
+            grpc_enabled: true,
+            ca_path: Some(ca_file.path().to_str().unwrap().to_string()),
+            ..Default::default()
+        };
+        let mut manager = TlsManager::new(config);
+        let result = manager.initialize().await;
+        assert!(result.is_ok(), "gRPC with CA should succeed: {:?}", result);
+        assert!(manager.is_grpc_enabled());
+        assert!(manager.grpc_tls_config().is_some());
+    }
+
+    // ===== TlsManager::initialize — gRPC with empty CA file =====
+
+    #[tokio::test]
+    async fn test_initialize_grpc_with_empty_ca_returns_error() {
+        let (cert_file, key_file) = generate_test_cert_files();
+        let empty_ca = NamedTempFile::new().expect("ca tmp");
+
+        let config = TlsConfig {
+            enabled: true,
+            cert_path: cert_file.path().to_str().unwrap().to_string(),
+            key_path: key_file.path().to_str().unwrap().to_string(),
+            http_enabled: false,
+            grpc_enabled: true,
+            ca_path: Some(empty_ca.path().to_str().unwrap().to_string()),
+            ..Default::default()
+        };
+        let mut manager = TlsManager::new(config);
+        let result = manager.initialize().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, TlsError::CertificateLoadError(_)));
+        assert!(err.to_string().contains("Empty CA certificate"));
+    }
+
+    // ===== TlsManager::initialize — gRPC with nonexistent CA file =====
+
+    #[tokio::test]
+    async fn test_initialize_grpc_with_nonexistent_ca_returns_error() {
+        let (cert_file, key_file) = generate_test_cert_files();
+        let config = TlsConfig {
+            enabled: true,
+            cert_path: cert_file.path().to_str().unwrap().to_string(),
+            key_path: key_file.path().to_str().unwrap().to_string(),
+            http_enabled: false,
+            grpc_enabled: true,
+            ca_path: Some("/nonexistent/ca.pem".to_string()),
+            ..Default::default()
+        };
+        let mut manager = TlsManager::new(config);
+        let result = manager.initialize().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, TlsError::CertificateLoadError(_)));
+    }
+
+    // ===== TlsManager::initialize — neither http nor grpc enabled =====
+
+    #[tokio::test]
+    async fn test_initialize_neither_http_nor_grpc_enabled_succeeds() {
+        // Even with enabled=true, if both http_enabled and grpc_enabled are
+        // false, the function should succeed without creating acceptors.
+        let (cert_file, key_file) = generate_test_cert_files();
+        let config = TlsConfig {
+            enabled: true,
+            cert_path: cert_file.path().to_str().unwrap().to_string(),
+            key_path: key_file.path().to_str().unwrap().to_string(),
+            http_enabled: false,
+            grpc_enabled: false,
+            ..Default::default()
+        };
+        let mut manager = TlsManager::new(config);
+        let result = manager.initialize().await;
+        assert!(result.is_ok());
+        assert!(!manager.is_http_enabled());
+        assert!(!manager.is_grpc_enabled());
+        assert!(manager.http_acceptor().is_none());
+        assert!(manager.grpc_tls_config().is_none());
+    }
+
+    // ===== TlsManager — accessor methods =====
+
+    #[test]
+    fn test_http_acceptor_returns_none_before_initialize() {
+        let manager = TlsManager::new(TlsConfig::default());
+        assert!(manager.http_acceptor().is_none());
+    }
+
+    #[test]
+    fn test_grpc_tls_config_returns_none_before_initialize() {
+        let manager = TlsManager::new(TlsConfig::default());
+        assert!(manager.grpc_tls_config().is_none());
+    }
+
+    #[test]
+    fn test_tls_manager_is_cloneable() {
+        let manager = TlsManager::new(TlsConfig::default());
+        // TlsManager derives Clone — required for use in axum State.
+        let _cloned = manager.clone();
     }
 }

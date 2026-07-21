@@ -814,3 +814,637 @@ pub struct GroupListResponse {
     pub groups: Vec<GroupResponse>,
     pub total: u64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== HealthStatus::Display ==========
+
+    #[test]
+    fn test_health_status_display_healthy() {
+        assert_eq!(HealthStatus::Healthy.to_string(), "healthy");
+    }
+
+    #[test]
+    fn test_health_status_display_degraded() {
+        assert_eq!(HealthStatus::Degraded.to_string(), "degraded");
+    }
+
+    #[test]
+    fn test_health_status_display_unhealthy() {
+        assert_eq!(HealthStatus::Unhealthy.to_string(), "unhealthy");
+    }
+
+    // ========== HealthStatus::From<&str> ==========
+
+    #[test]
+    fn test_health_status_from_str_known_values() {
+        assert_eq!(HealthStatus::from("healthy"), HealthStatus::Healthy);
+        assert_eq!(HealthStatus::from("degraded"), HealthStatus::Degraded);
+        assert_eq!(HealthStatus::from("unhealthy"), HealthStatus::Unhealthy);
+    }
+
+    #[test]
+    fn test_health_status_from_str_unknown_defaults_to_unhealthy() {
+        // Unknown strings must fall back to Unhealthy (fail-closed).
+        assert_eq!(HealthStatus::from("unknown"), HealthStatus::Unhealthy);
+        assert_eq!(HealthStatus::from(""), HealthStatus::Unhealthy);
+        // Case-sensitive: "HEALTHY" is not "healthy".
+        assert_eq!(HealthStatus::from("HEALTHY"), HealthStatus::Unhealthy);
+    }
+
+    // ========== HealthStatus::From<String> ==========
+
+    #[test]
+    fn test_health_status_from_string_delegates_to_str() {
+        assert_eq!(
+            HealthStatus::from("healthy".to_string()),
+            HealthStatus::Healthy
+        );
+        assert_eq!(
+            HealthStatus::from("degraded".to_string()),
+            HealthStatus::Degraded
+        );
+        assert_eq!(
+            HealthStatus::from("unhealthy".to_string()),
+            HealthStatus::Unhealthy
+        );
+        assert_eq!(
+            HealthStatus::from("bogus".to_string()),
+            HealthStatus::Unhealthy
+        );
+    }
+
+    // ========== HealthStatus serde round-trip ==========
+
+    #[test]
+    fn test_health_status_serde_roundtrip_preserves_variants() {
+        for status in [
+            HealthStatus::Healthy,
+            HealthStatus::Degraded,
+            HealthStatus::Unhealthy,
+        ] {
+            let json = serde_json::to_string(&status).unwrap();
+            let back: HealthStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, status);
+        }
+    }
+
+    // ========== ErrorResponse ==========
+
+    #[test]
+    fn test_error_response_new_omits_details() {
+        let resp = ErrorResponse::new(404, "Not Found".to_string());
+        assert_eq!(resp.code, 404);
+        assert_eq!(resp.message, "Not Found");
+        assert_eq!(resp.details, None);
+    }
+
+    #[test]
+    fn test_error_response_with_details_attaches_details() {
+        let resp = ErrorResponse::with_details(500, "Internal".to_string(), "db down".to_string());
+        assert_eq!(resp.code, 500);
+        assert_eq!(resp.message, "Internal");
+        assert_eq!(resp.details, Some("db down".to_string()));
+    }
+
+    #[test]
+    fn test_error_response_serde_roundtrip_with_details() {
+        let resp = ErrorResponse::with_details(400, "Bad".to_string(), "missing field".to_string());
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: ErrorResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.code, 400);
+        assert_eq!(back.message, "Bad");
+        assert_eq!(back.details, Some("missing field".to_string()));
+    }
+
+    #[test]
+    fn test_error_response_serde_roundtrip_without_details() {
+        let resp = ErrorResponse::new(404, "Not Found".to_string());
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: ErrorResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.code, 404);
+        assert_eq!(back.message, "Not Found");
+        assert_eq!(back.details, None);
+    }
+
+    // ========== ApiErrorCode::Display ==========
+
+    #[test]
+    fn test_api_error_code_display_all_variants() {
+        assert_eq!(ApiErrorCode::Unauthorized.to_string(), "1001");
+        assert_eq!(ApiErrorCode::Forbidden.to_string(), "1002");
+        assert_eq!(ApiErrorCode::InvalidApiKey.to_string(), "1003");
+        assert_eq!(ApiErrorCode::ApiKeyExpired.to_string(), "1004");
+        assert_eq!(ApiErrorCode::ApiKeyDisabled.to_string(), "1005");
+        assert_eq!(ApiErrorCode::WorkspaceNotFound.to_string(), "2001");
+        assert_eq!(ApiErrorCode::GroupNotFound.to_string(), "2002");
+        assert_eq!(ApiErrorCode::BizTagNotFound.to_string(), "2003");
+        assert_eq!(ApiErrorCode::ResourceAlreadyExists.to_string(), "2004");
+        assert_eq!(ApiErrorCode::InvalidInput.to_string(), "3001");
+        assert_eq!(ApiErrorCode::ValidationError.to_string(), "3002");
+        assert_eq!(ApiErrorCode::MissingRequiredField.to_string(), "3003");
+        assert_eq!(ApiErrorCode::InvalidUuid.to_string(), "3004");
+        assert_eq!(ApiErrorCode::RateLimitExceeded.to_string(), "4001");
+        assert_eq!(ApiErrorCode::InternalError.to_string(), "5001");
+        assert_eq!(ApiErrorCode::DatabaseError.to_string(), "5002");
+        assert_eq!(ApiErrorCode::CacheError.to_string(), "5003");
+        assert_eq!(ApiErrorCode::ServiceUnavailable.to_string(), "5004");
+    }
+
+    // ========== ApiErrorResponse ==========
+
+    #[test]
+    fn test_api_error_response_new_populates_request_id_and_timestamp() {
+        let resp = ApiErrorResponse::new(ApiErrorCode::Unauthorized, "Unauthorized".to_string());
+        assert_eq!(resp.code, "1001");
+        assert_eq!(resp.message, "Unauthorized");
+        assert_eq!(resp.details, None);
+        // request_id is a UUID string (non-empty).
+        assert!(!resp.request_id.is_empty());
+        // timestamp is millis since epoch — must be positive.
+        assert!(resp.timestamp > 0);
+    }
+
+    #[test]
+    fn test_api_error_response_with_details_chain_attaches_details() {
+        let resp = ApiErrorResponse::new(ApiErrorCode::Forbidden, "Forbidden".to_string())
+            .with_details("admin role required".to_string());
+        assert_eq!(resp.code, "1002");
+        assert_eq!(resp.details, Some("admin role required".to_string()));
+    }
+
+    #[test]
+    fn test_api_error_response_serde_roundtrip() {
+        let resp = ApiErrorResponse::new(ApiErrorCode::InvalidInput, "bad".to_string())
+            .with_details("ctx".to_string());
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: ApiErrorResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.code, resp.code);
+        assert_eq!(back.message, resp.message);
+        assert_eq!(back.details, resp.details);
+        assert_eq!(back.request_id, resp.request_id);
+        assert_eq!(back.timestamp, resp.timestamp);
+    }
+
+    // ========== From<ErrorResponse> for ApiErrorResponse ==========
+
+    #[test]
+    fn test_from_error_response_maps_401_to_unauthorized() {
+        let err = ErrorResponse::new(401, "Unauthorized".to_string());
+        let api_err: ApiErrorResponse = err.into();
+        assert_eq!(api_err.code, "1001");
+        assert_eq!(api_err.message, "Unauthorized");
+        // No details on the source -> default placeholder string.
+        assert_eq!(api_err.details, Some("No additional details".to_string()));
+    }
+
+    #[test]
+    fn test_from_error_response_maps_403_to_forbidden() {
+        let err = ErrorResponse::new(403, "Forbidden".to_string());
+        let api_err: ApiErrorResponse = err.into();
+        assert_eq!(api_err.code, "1002");
+    }
+
+    #[test]
+    fn test_from_error_response_maps_404_to_workspace_not_found() {
+        let err = ErrorResponse::new(404, "Not Found".to_string());
+        let api_err: ApiErrorResponse = err.into();
+        assert_eq!(api_err.code, "2001");
+    }
+
+    #[test]
+    fn test_from_error_response_maps_429_to_rate_limit_exceeded() {
+        let err = ErrorResponse::new(429, "Too Many".to_string());
+        let api_err: ApiErrorResponse = err.into();
+        assert_eq!(api_err.code, "4001");
+    }
+
+    #[test]
+    fn test_from_error_response_maps_500_to_internal_error() {
+        let err = ErrorResponse::new(500, "Internal".to_string());
+        let api_err: ApiErrorResponse = err.into();
+        assert_eq!(api_err.code, "5001");
+    }
+
+    #[test]
+    fn test_from_error_response_maps_unknown_code_to_internal_error() {
+        let err = ErrorResponse::new(418, "Teapot".to_string());
+        let api_err: ApiErrorResponse = err.into();
+        assert_eq!(api_err.code, "5001");
+    }
+
+    #[test]
+    fn test_from_error_response_preserves_existing_details() {
+        let err =
+            ErrorResponse::with_details(401, "Unauthorized".to_string(), "key expired".to_string());
+        let api_err: ApiErrorResponse = err.into();
+        assert_eq!(api_err.details, Some("key expired".to_string()));
+    }
+
+    // ========== ErrorMessage::message ==========
+
+    #[test]
+    fn test_error_message_returns_user_friendly_strings() {
+        assert_eq!(
+            ErrorMessage::InvalidApiKey.message(),
+            "Invalid API key signature"
+        );
+        assert_eq!(ErrorMessage::ApiKeyExpired.message(), "API key has expired");
+        assert_eq!(
+            ErrorMessage::ApiKeyDisabled.message(),
+            "API key has been disabled"
+        );
+        assert_eq!(
+            ErrorMessage::WorkspaceNotFound.message(),
+            "Workspace not found"
+        );
+        assert_eq!(ErrorMessage::GroupNotFound.message(), "Group not found");
+        assert_eq!(ErrorMessage::BizTagNotFound.message(), "Biz tag not found");
+        assert_eq!(ErrorMessage::InvalidInput.message(), "Invalid input");
+        assert_eq!(ErrorMessage::InvalidIdFormat.message(), "Invalid ID format");
+        assert_eq!(
+            ErrorMessage::InvalidAlgorithmType.message(),
+            "Invalid algorithm type"
+        );
+        assert_eq!(
+            ErrorMessage::RateLimitExceeded.message(),
+            "Rate limit exceeded"
+        );
+        assert_eq!(
+            ErrorMessage::InternalError.message(),
+            "Internal server error"
+        );
+        assert_eq!(
+            ErrorMessage::DatabaseError.message(),
+            "Database operation failed"
+        );
+        assert_eq!(
+            ErrorMessage::CacheError.message(),
+            "Cache service unavailable"
+        );
+        assert_eq!(
+            ErrorMessage::ServiceUnavailable.message(),
+            "Service unavailable"
+        );
+        assert_eq!(
+            ErrorMessage::AlgorithmError.message(),
+            "ID generation algorithm error"
+        );
+        assert_eq!(
+            ErrorMessage::ConfigurationError.message(),
+            "Configuration error"
+        );
+    }
+
+    // ========== ErrorMessage::with_context (context-appending branch) ==========
+
+    #[test]
+    fn test_error_message_with_context_invalid_input_appends_context() {
+        assert_eq!(
+            ErrorMessage::InvalidInput.with_context("missing field"),
+            "Invalid input: missing field"
+        );
+    }
+
+    #[test]
+    fn test_error_message_with_context_invalid_id_format_appends_context() {
+        assert_eq!(
+            ErrorMessage::InvalidIdFormat.with_context("bad uuid"),
+            "Invalid ID format: bad uuid"
+        );
+    }
+
+    #[test]
+    fn test_error_message_with_context_invalid_algorithm_type_appends_context() {
+        assert_eq!(
+            ErrorMessage::InvalidAlgorithmType.with_context("foo"),
+            "Invalid algorithm type: foo"
+        );
+    }
+
+    #[test]
+    fn test_error_message_with_context_resource_errors_append_context() {
+        assert_eq!(
+            ErrorMessage::WorkspaceNotFound.with_context("ws-1"),
+            "Workspace not found: ws-1"
+        );
+        assert_eq!(
+            ErrorMessage::GroupNotFound.with_context("g-1"),
+            "Group not found: g-1"
+        );
+        assert_eq!(
+            ErrorMessage::BizTagNotFound.with_context("tag-1"),
+            "Biz tag not found: tag-1"
+        );
+    }
+
+    #[test]
+    fn test_error_message_with_context_server_errors_append_context() {
+        assert_eq!(
+            ErrorMessage::DatabaseError.with_context("conn refused"),
+            "Database operation failed: conn refused"
+        );
+        assert_eq!(
+            ErrorMessage::CacheError.with_context("redis down"),
+            "Cache service unavailable: redis down"
+        );
+        assert_eq!(
+            ErrorMessage::ConfigurationError.with_context("invalid toml"),
+            "Configuration error: invalid toml"
+        );
+        assert_eq!(
+            ErrorMessage::AlgorithmError.with_context("snowflake"),
+            "ID generation algorithm error: snowflake"
+        );
+    }
+
+    #[test]
+    fn test_error_message_with_context_passthrough_variants_ignore_context() {
+        // These variants fall into the `_ =>` arm and must NOT append context.
+        assert_eq!(
+            ErrorMessage::InvalidApiKey.with_context("ctx"),
+            "Invalid API key signature"
+        );
+        assert_eq!(
+            ErrorMessage::ApiKeyExpired.with_context("ctx"),
+            "API key has expired"
+        );
+        assert_eq!(
+            ErrorMessage::ApiKeyDisabled.with_context("ctx"),
+            "API key has been disabled"
+        );
+        assert_eq!(
+            ErrorMessage::RateLimitExceeded.with_context("ctx"),
+            "Rate limit exceeded"
+        );
+        assert_eq!(
+            ErrorMessage::InternalError.with_context("ctx"),
+            "Internal server error"
+        );
+        assert_eq!(
+            ErrorMessage::ServiceUnavailable.with_context("ctx"),
+            "Service unavailable"
+        );
+    }
+
+    // ========== PaginationParams / GroupListParams serde defaults ==========
+
+    #[test]
+    fn test_pagination_params_uses_defaults_when_empty() {
+        // Exercises default_page (returns 1) and default_page_size (returns 20).
+        let params: PaginationParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(params.page, 1);
+        assert_eq!(params.page_size, 20);
+        assert_eq!(params.workspace_id, None);
+    }
+
+    #[test]
+    fn test_pagination_params_with_explicit_values() {
+        let json = r#"{"page":3,"page_size":50,"workspace_id":"ws-1"}"#;
+        let params: PaginationParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.page, 3);
+        assert_eq!(params.page_size, 50);
+        assert_eq!(params.workspace_id, Some("ws-1".to_string()));
+    }
+
+    #[test]
+    fn test_group_list_params_uses_defaults() {
+        let json = r#"{"workspace":"test"}"#;
+        let params: GroupListParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.workspace, "test");
+        assert_eq!(params.page, 1);
+        assert_eq!(params.page_size, 20);
+    }
+
+    // ========== datetime_to_rfc3339 ==========
+
+    #[test]
+    fn test_datetime_to_rfc3339_preserves_offset() {
+        let dt = chrono::DateTime::parse_from_rfc3339("2026-07-20T12:30:45+08:00").unwrap();
+        let rfc = datetime_to_rfc3339(dt);
+        assert_eq!(rfc, "2026-07-20T12:30:45+08:00");
+    }
+
+    #[test]
+    fn test_datetime_to_rfc3339_utc() {
+        let dt = chrono::DateTime::parse_from_rfc3339("2026-01-15T08:00:00+00:00").unwrap();
+        let rfc = datetime_to_rfc3339(dt);
+        assert_eq!(rfc, "2026-01-15T08:00:00+00:00");
+    }
+
+    // ========== naive_to_rfc3339 (additional robustness) ==========
+
+    #[test]
+    fn test_naive_to_rfc3339_returns_valid_rfc3339_with_utc_offset() {
+        let dt = chrono::NaiveDate::from_ymd_opt(2026, 7, 20)
+            .unwrap()
+            .and_hms_opt(12, 30, 45)
+            .unwrap();
+        let rfc = naive_to_rfc3339(dt);
+        let parsed = chrono::DateTime::parse_from_rfc3339(&rfc).unwrap();
+        assert_eq!(parsed.timestamp(), dt.and_utc().timestamp());
+        // NaiveDateTime is interpreted as UTC, so offset must be +00:00.
+        // `local_minus_utc()` is an inherent method on `FixedOffset`;
+        // the redundant `.fix()` call was removed (chrono 0.4.45 dropped
+        // the `Offset::fix` method that required the `Offset` trait import).
+        assert_eq!(parsed.offset().local_minus_utc(), 0);
+    }
+
+    // ========== Request struct validation (Validate derive) ==========
+
+    #[test]
+    fn test_generate_request_validation_accepts_valid_input() {
+        let req = GenerateRequest {
+            workspace: "ws".to_string(),
+            group: "g".to_string(),
+            biz_tag: "tag".to_string(),
+            algorithm: None,
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn test_generate_request_validation_rejects_empty_fields() {
+        let req = GenerateRequest {
+            workspace: String::new(),
+            group: "g".to_string(),
+            biz_tag: "tag".to_string(),
+            algorithm: None,
+        };
+        assert!(req.validate().is_err());
+    }
+
+    #[test]
+    fn test_batch_generate_request_validation_rejects_out_of_range_size() {
+        let req = BatchGenerateRequest {
+            workspace: "ws".to_string(),
+            group: "g".to_string(),
+            biz_tag: "tag".to_string(),
+            size: Some(0),
+            algorithm: None,
+        };
+        assert!(req.validate().is_err());
+
+        let req2 = BatchGenerateRequest {
+            workspace: "ws".to_string(),
+            group: "g".to_string(),
+            biz_tag: "tag".to_string(),
+            size: Some(101),
+            algorithm: None,
+        };
+        assert!(req2.validate().is_err());
+    }
+
+    #[test]
+    fn test_batch_generate_request_validation_accepts_valid_size() {
+        let req = BatchGenerateRequest {
+            workspace: "ws".to_string(),
+            group: "g".to_string(),
+            biz_tag: "tag".to_string(),
+            size: Some(50),
+            algorithm: None,
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn test_parse_request_validation_accepts_empty_algorithm() {
+        // algorithm field has #[serde(default)] and #[validate(length(min = 0, max = 32))]
+        let req = ParseRequest {
+            id: "123".to_string(),
+            workspace: "ws".to_string(),
+            group: "g".to_string(),
+            biz_tag: "tag".to_string(),
+            algorithm: String::new(),
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn test_parse_request_validation_rejects_empty_workspace() {
+        let req = ParseRequest {
+            id: "123".to_string(),
+            workspace: String::new(),
+            group: "g".to_string(),
+            biz_tag: "tag".to_string(),
+            algorithm: String::new(),
+        };
+        assert!(req.validate().is_err());
+    }
+
+    #[test]
+    fn test_update_rate_limit_request_validation_rejects_out_of_range() {
+        let req = UpdateRateLimitRequest {
+            default_rps: Some(0),
+            burst_size: None,
+        };
+        assert!(req.validate().is_err());
+
+        let req2 = UpdateRateLimitRequest {
+            default_rps: None,
+            burst_size: Some(0),
+        };
+        assert!(req2.validate().is_err());
+    }
+
+    #[test]
+    fn test_update_rate_limit_request_validation_accepts_in_range() {
+        let req = UpdateRateLimitRequest {
+            default_rps: Some(100),
+            burst_size: Some(50),
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn test_update_logging_request_validation_rejects_empty_level() {
+        let req = UpdateLoggingRequest {
+            level: Some(String::new()),
+        };
+        assert!(req.validate().is_err());
+    }
+
+    #[test]
+    fn test_update_logging_request_validation_accepts_valid_level() {
+        let req = UpdateLoggingRequest {
+            level: Some("info".to_string()),
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn test_set_algorithm_request_validation_rejects_empty_biz_tag() {
+        let req = SetAlgorithmRequest {
+            biz_tag: String::new(),
+            algorithm: "segment".to_string(),
+        };
+        assert!(req.validate().is_err());
+    }
+
+    #[test]
+    fn test_set_algorithm_request_validation_accepts_valid_input() {
+        let req = SetAlgorithmRequest {
+            biz_tag: "tag".to_string(),
+            algorithm: "segment".to_string(),
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn test_create_workspace_request_validation_rejects_invalid_max_groups() {
+        let req = CreateWorkspaceRequest {
+            name: "ws".to_string(),
+            description: None,
+            max_groups: Some(0),
+            max_biz_tags: None,
+        };
+        assert!(req.validate().is_err());
+
+        let req2 = CreateWorkspaceRequest {
+            name: "ws".to_string(),
+            description: None,
+            max_groups: None,
+            max_biz_tags: Some(10001),
+        };
+        assert!(req2.validate().is_err());
+    }
+
+    #[test]
+    fn test_create_group_request_validation_rejects_empty_workspace() {
+        let req = CreateGroupRequest {
+            workspace: String::new(),
+            name: "g".to_string(),
+            description: None,
+            max_biz_tags: None,
+        };
+        assert!(req.validate().is_err());
+    }
+
+    #[test]
+    fn test_create_api_key_request_validation_accepts_admin_without_workspace() {
+        let req = CreateApiKeyRequest {
+            workspace_id: None,
+            name: "admin-key".to_string(),
+            description: None,
+            role: Some("admin".to_string()),
+            rate_limit: Some(1000),
+            expires_at: None,
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn test_create_api_key_request_validation_rejects_out_of_range_rate_limit() {
+        let req = CreateApiKeyRequest {
+            workspace_id: None,
+            name: "k".to_string(),
+            description: None,
+            role: Some("user".to_string()),
+            rate_limit: Some(50), // below min=100
+            expires_at: None,
+        };
+        assert!(req.validate().is_err());
+    }
+}

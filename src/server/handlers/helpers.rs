@@ -58,7 +58,9 @@ pub(super) fn map_db_error<E: std::fmt::Display>(error: E) -> CoreError {
 
 /// Convert UUID parse errors to `CoreError::InvalidInput`.
 pub(super) fn map_uuid_error<E: std::fmt::Display>(error: E) -> CoreError {
-    CoreError::InvalidInput(format!("Invalid UUID: {}", error))
+    CoreError::InvalidInput(
+        t!("api.error.handlers.helpers.invalid_uuid", error = error).to_string(),
+    )
 }
 
 /// HTTP status code for a `CoreError` variant.

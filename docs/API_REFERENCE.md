@@ -114,25 +114,29 @@ pub enum TlsVersion {
 
 #### `TlsManager`
 
-TLS certificate and configuration manager.
+TLS certificate and configuration manager. Derives `Clone` (required for use in `axum::State`).
 
 ```rust
+#[derive(Clone)]
 pub struct TlsManager {
     config: TlsConfig,
-    tls_config: Arc<ServerTlsConfig>,
+    http_acceptor: Option<TlsAcceptor>,
+    grpc_tls_config: Option<Arc<ServerTlsConfig>>,
 }
 ```
 
 **Methods:**
 
 ```rust
-pub fn initialize(config: TlsConfig) -> Result<Self>
+pub fn new(config: TlsConfig) -> Self
 pub fn is_http_enabled(&self) -> bool
 pub fn is_grpc_enabled(&self) -> bool
-pub fn http_acceptor(&self) -> Result<TlsAcceptor>
-pub fn grpc_tls_config(&self) -> Arc<ServerTlsConfig>
-pub async fn serve_https(incoming: TlsIncoming, router: axum::Router) -> std::io::Result<()>
+pub fn http_acceptor(&self) -> Option<&TlsAcceptor>
+pub fn grpc_tls_config(&self) -> Option<&Arc<ServerTlsConfig>>
+pub async fn initialize(&mut self) -> TlsResult<()>
 ```
+
+**Usage:** Construct via `TlsManager::new(config)`, then call `manager.initialize().await?` to load cert/key files and populate `http_acceptor` / `grpc_tls_config`. `initialize()` is a no-op (returns `Ok(())`) when `config.enabled == false`. The manager must be initialized mutably before `is_http_enabled` / `is_grpc_enabled` return `true`.
 
 ---
 
@@ -425,16 +429,17 @@ pub async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result
 The core trait that all ID generation algorithms must implement.
 
 ```rust
-pub trait IdAlgorithm: AsAny + Send + Sync {
+pub trait IdAlgorithm: Send + Sync {
     async fn generate(&self, ctx: &GenerateContext) -> Result<Id>;
     async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result<IdBatch>;
     fn health_check(&self) -> HealthStatus;
     fn metrics(&self) -> AlgorithmMetricsSnapshot;
     fn algorithm_type(&self) -> AlgorithmType;
-    async fn initialize(&mut self, config: &Config) -> Result<()>;
     async fn shutdown(&self) -> Result<()>;
 }
 ```
+
+> **Note:** The `async fn initialize(&mut self, config: &Config)` method was removed from the trait in L13 (see `src/core/algorithm/traits.rs:44-56`). Algorithm initialization is now performed via inherent methods on each algorithm struct (e.g. `SnowflakeAlgorithm::initialize`), invoked by `AlgorithmBuilder::build` before the `Box<dyn IdAlgorithm>` is handed out. This keeps the trait object-safe and avoids requiring `&mut self` on shared `Arc<dyn IdAlgorithm>` references.
 
 #### `generate()`
 
@@ -480,14 +485,6 @@ fn algorithm_type(&self) -> AlgorithmType
 
 **Returns:** `AlgorithmType` - One of `Segment`, `Snowflake`, `UuidV7`, `UuidV4`
 
-#### `initialize()`
-
-Initialize the algorithm with configuration.
-
-```rust
-async fn initialize(&mut self, config: &Config) -> Result<()>
-```
-
 #### `shutdown()`
 
 Gracefully shutdown the algorithm and release resources.
@@ -512,6 +509,21 @@ pub trait IdGenerator: Send + Sync {
         biz_tag: &str,
         size: usize,
     ) -> Result<Vec<Id>>;
+    async fn generate_with_algorithm(
+        &self,
+        algorithm: AlgorithmType,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+    ) -> Result<Id>;
+    async fn batch_generate_with_algorithm(
+        &self,
+        algorithm: AlgorithmType,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+        size: usize,
+    ) -> Result<Vec<Id>>;
     async fn get_algorithm_name(
         &self,
         workspace: &str,
@@ -521,9 +533,10 @@ pub trait IdGenerator: Send + Sync {
     async fn health_check(&self) -> HealthStatus;
     async fn get_primary_algorithm(&self) -> String;
     fn get_degradation_manager(&self) -> &Arc<DegradationManager>;
-    fn set_algorithm(&self, biz_tag: &str, algorithm: AlgorithmType);
 }
 ```
+
+> **Note:** The `set_algorithm` method was removed (not present in `src/core/algorithm/traits.rs:58-99`). Per-algorithm routing is handled via `generate_with_algorithm` / `batch_generate_with_algorithm`, which accept an `AlgorithmType` parameter at call time.
 
 ---
 
@@ -1093,7 +1106,7 @@ Nebula ID implements strict parameter validation to ensure system stability and 
 ### Basic Segment Algorithm
 
 ```rust
-use nebula_core::algorithm::SegmentAlgorithm;
+use nebulaid::core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1112,7 +1125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Snowflake Algorithm
 
 ```rust
-use nebula_core::algorithm::SnowflakeAlgorithm;
+use nebulaid::core::algorithm::SnowflakeAlgorithm;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let snowflake = SnowflakeAlgorithm::new(1, 1);
@@ -1130,7 +1143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### UUID Generation
 
 ```rust
-use nebula_core::algorithm::uuid_v7::{UuidV7Impl, UuidV4Impl};
+use nebulaid::core::algorithm::uuid_v7::{UuidV7Impl, UuidV4Impl};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let v7 = UuidV7Impl::new();
@@ -1149,9 +1162,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Using IdAlgorithm Trait
 
 ```rust
-use nebula_core::algorithm::traits::IdAlgorithm;
-use nebula_core::algorithm::SnowflakeAlgorithm;
-use nebula_core::algorithm::GenerateContext;
+use nebulaid::core::algorithm::traits::IdAlgorithm;
+use nebulaid::core::algorithm::SnowflakeAlgorithm;
+use nebulaid::core::algorithm::GenerateContext;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1174,9 +1187,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### With Health Monitoring
 
 ```rust
-use nebula_core::algorithm::segment::{SegmentAlgorithm, DcFailureDetector};
-use nebula_core::coordinator::EtcdClusterHealthMonitor;
-use nebula_core::config::EtcdConfig;
+use nebulaid::core::algorithm::segment::{SegmentAlgorithm, DcFailureDetector};
+use nebulaid::core::coordinator::EtcdClusterHealthMonitor;
+use nebulaid::core::config::EtcdConfig;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1204,7 +1217,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Batch Generation
 
 ```rust
-use nebula_core::algorithm::SegmentAlgorithm;
+use nebulaid::core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -113,14 +113,18 @@ impl super::ApiHandlers {
         let size = req.size.unwrap_or(10);
         if size == 0 {
             return Err(CoreError::InvalidInput(
-                "Batch size cannot be zero".to_string(),
+                t!("api.error.handlers.id_handlers.batch_size_zero").to_string(),
             ));
         }
         if size > max_batch_size as usize {
-            return Err(CoreError::InvalidInput(format!(
-                "Batch size {} exceeds maximum allowed value of {}",
-                size, max_batch_size
-            )));
+            return Err(CoreError::InvalidInput(
+                t!(
+                    "api.error.handlers.id_handlers.batch_size_exceeds_max",
+                    size = size,
+                    max = max_batch_size
+                )
+                .to_string(),
+            ));
         }
 
         let result = if let Some(ref alg_str) = req.algorithm {
@@ -182,8 +186,11 @@ impl super::ApiHandlers {
     }
 
     pub async fn parse(&self, req: ParseRequest) -> Result<ParseResponse> {
-        let id = Id::from_string(&req.id)
-            .map_err(|e| CoreError::InvalidIdString(format!("Failed to parse ID: {}", e)))?;
+        let id = Id::from_string(&req.id).map_err(|e| {
+            CoreError::InvalidIdString(
+                t!("api.error.handlers.id_handlers.parse_id_failed", error = e).to_string(),
+            )
+        })?;
 
         let algorithm = if req.algorithm.is_empty() {
             self.id_generator

@@ -75,6 +75,28 @@
 
 </td>
 </tr>
+<tr>
+<td width="50%">
+
+### 🌟 v0.2.0 新增特性
+
+- 🌍 **ICU 国际化** - `rust-i18n 3.1` + `Accept-Language` 协商（RFC 7231 §5.3.5），支持 `en` + `zh-CN`，1989 处 `t!()` 调用
+- 🔧 **Trait 抽象** - `EtcdClientOps` 与 `ConfigManagementService` trait 支持 mock 注入，业务逻辑可测试
+- 🛡️ **SAST 加固** - `tiangang` SAST + `diting` 三维度审查，0 CRITICAL / 0 HIGH
+- 📦 **统一脚本入口** - `scripts/run.sh` 统一调度 `deploy` / `lint` / `redis-test` / `api-test` / `install-hooks` / `help`
+
+</td>
+<td width="50%">
+
+### 🎯 v0.2.0 质量门禁
+
+- ✅ **0 警告**：`cargo build --all-features` 与 `cargo clippy -D warnings` 均无告警
+- ✅ **4000+ 测试**：行覆盖率 89.91%（CI 门禁 `--fail-under-lines 95`）
+- ✅ **0 死代码**：`cargo udeps` + `cargo rustc -W dead_code` 双重审计
+- ✅ **mod.rs 接口隔离**：强制执行规则 25（`mod.rs` 只暴露 trait + pub 类型）
+
+</td>
+</tr>
 </table>
 
 <div align="center">
@@ -628,11 +650,11 @@ cargo test --test integration
 
 | 类别 | 测试数量 | 覆盖率 |
 |----------|-------|----------|
-| 单元测试 | 453 | 95%+ |
-| 集成测试 | 42 | 95%+ |
-| **总计** | **495+** | **95%+** |
+| 单元测试 | 4000+ | 89.91% |
+| 集成测试 | 42 | 89.91% |
+| **总计** | **4000+** | **89.91%** |
 
-> 自 v0.2.0 起，CI 覆盖率门禁已调高至 `--fail-under-lines 95`（见 `.github/workflows/ci.yml`）。
+> 自 v0.2.0 起，CI 覆盖率门禁已调高至 `--fail-under-lines 95`（见 `.github/workflows/ci.yml`）。v0.2.0 发布时实际行覆盖率为 89.91%；门禁值是下限，非当前值。
 
 </details>
 

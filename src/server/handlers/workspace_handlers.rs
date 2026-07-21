@@ -31,10 +31,11 @@ impl super::ApiHandlers {
             .await
             .map_err(map_db_error)?;
 
-        let repo = self
-            .api_key_repo
-            .as_ref()
-            .ok_or_else(|| CoreError::NotFound("API key repository not configured".to_string()))?;
+        let repo = self.api_key_repo.as_ref().ok_or_else(|| {
+            CoreError::NotFound(
+                t!("api.error.handlers.workspace_handlers.api_key_repo_not_configured").to_string(),
+            )
+        })?;
 
         let workspace_uuid = uuid::Uuid::parse_str(&workspace.id).map_err(map_uuid_error)?;
 
@@ -82,13 +83,20 @@ impl super::ApiHandlers {
             .await
             .map_err(map_db_error)?
             .ok_or_else(|| {
-                CoreError::NotFound(format!("Workspace '{}' not found", workspace_name))
+                CoreError::NotFound(
+                    t!(
+                        "api.error.handlers.workspace_handlers.not_found",
+                        name = workspace_name
+                    )
+                    .to_string(),
+                )
             })?;
 
-        let repo = self
-            .api_key_repo
-            .as_ref()
-            .ok_or_else(|| CoreError::NotFound("API key repository not configured".to_string()))?;
+        let repo = self.api_key_repo.as_ref().ok_or_else(|| {
+            CoreError::NotFound(
+                t!("api.error.handlers.workspace_handlers.api_key_repo_not_configured").to_string(),
+            )
+        })?;
 
         let workspace_uuid = uuid::Uuid::parse_str(&workspace.id).map_err(map_uuid_error)?;
 

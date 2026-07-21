@@ -29,6 +29,24 @@ api.error.workspace_not_found: "工作空间未找到"
 api.error.invalid_workspace_id: "无效的工作空间 ID"
 api.error.workspace_id_required: "用户密钥需要 workspace_id"
 
+# Phase 4 v0.2.0-final-polish — handler 构造的错误/成功消息国际化。
+# 由 src/server/handlers/*.rs 中的 t!() 宏使用，对 CoreError 变体的
+# 内部 String（或成功响应消息）进行本地化。这些消息随后会经过
+# `core_error_to_response` 派发（后者只翻译变体模板，不翻译内部 String）。
+# 命名规范：
+# api.error.handlers.<handler_name>.<error_type>
+# api.success.handlers.<handler_name>.<message_type>
+api.error.handlers.id_handlers.batch_size_zero: "批量大小不能为零"
+api.error.handlers.id_handlers.batch_size_exceeds_max: "批量大小 %{size} 超过最大允许值 %{max}"
+api.error.handlers.id_handlers.parse_id_failed: "解析 ID 失败：%{error}"
+api.error.handlers.biz_tag_handlers.not_found: "业务标签未找到：%{id}"
+api.error.handlers.workspace_handlers.api_key_repo_not_configured: "API 密钥仓库未配置"
+api.error.handlers.workspace_handlers.not_found: "工作空间 '%{name}' 未找到"
+api.error.handlers.api_key_handlers.invalid_role: "无效的角色：%{role}"
+api.error.handlers.api_key_handlers.user_key_already_exists: "工作空间 %{workspace_id} 的用户 API 密钥已存在"
+api.success.handlers.api_key_handlers.revoked: "API 密钥 %{id} 已成功吊销"
+api.error.handlers.helpers.invalid_uuid: "无效的 UUID：%{error}"
+
 # Phase 8 T041（CRITICAL C-1 / HIGH H-1 修复）—— 5xx 通用错误文案。
 # 由 `helpers::core_error_to_response` 用于内部错误响应：底层 `CoreError`
 # 的 String 可能含敏感信息（数据库连接串、文件路径等），仅服务端

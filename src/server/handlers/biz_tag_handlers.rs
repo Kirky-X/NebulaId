@@ -109,11 +109,12 @@ impl super::ApiHandlers {
     }
 
     pub async fn get_biz_tag(&self, id: uuid::Uuid) -> Result<BizTagResponse> {
-        let biz_tag: crate::core::database::BizTag = self
-            .config_service
-            .get_biz_tag(id)
-            .await?
-            .ok_or_else(|| CoreError::NotFound(format!("BizTag not found: {}", id)))?;
+        let biz_tag: crate::core::database::BizTag =
+            self.config_service.get_biz_tag(id).await?.ok_or_else(|| {
+                CoreError::NotFound(
+                    t!("api.error.handlers.biz_tag_handlers.not_found", id = id).to_string(),
+                )
+            })?;
 
         Ok(BizTagResponse {
             id: biz_tag.id.to_string(),

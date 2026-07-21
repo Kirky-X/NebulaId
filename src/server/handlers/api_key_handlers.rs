@@ -51,10 +51,9 @@ impl super::ApiHandlers {
             Some("admin") => ApiKeyRole::Admin,
             Some("user") | None => ApiKeyRole::User,
             Some(r) => {
-                return Err(CoreError::AuthenticationError(format!(
-                    "Invalid role: {}",
-                    r
-                )))
+                return Err(CoreError::AuthenticationError(
+                    t!("api.error.handlers.api_key_handlers.invalid_role", role = r).to_string(),
+                ))
             }
         };
 
@@ -103,10 +102,13 @@ impl super::ApiHandlers {
                 .any(|k| k.role == crate::core::database::ApiKeyRole::User);
 
             if has_user_key {
-                return Err(CoreError::AuthenticationError(format!(
-                    "User API key already exists for workspace: {}",
-                    ws_id
-                )));
+                return Err(CoreError::AuthenticationError(
+                    t!(
+                        "api.error.handlers.api_key_handlers.user_key_already_exists",
+                        workspace_id = ws_id
+                    )
+                    .to_string(),
+                ));
             }
         }
 
@@ -232,7 +234,7 @@ impl super::ApiHandlers {
 
         Ok(RevokeApiKeyResponse {
             success: true,
-            message: format!("API key {} revoked successfully", id),
+            message: t!("api.success.handlers.api_key_handlers.revoked", id = id).to_string(),
         })
     }
 

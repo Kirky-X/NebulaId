@@ -31,6 +31,24 @@ api.error.workspace_not_found: "Workspace not found"
 api.error.invalid_workspace_id: "Invalid workspace ID"
 api.error.workspace_id_required: "workspace_id is required for user keys"
 
+# Phase 4 v0.2.0-final-polish — handler-constructed error/success messages.
+# Used by t!() macro in src/server/handlers/*.rs to localize the inner
+# String of CoreError variants (or success response messages) that are
+# later dispatched via `core_error_to_response` (which only translates
+# the variant template, not the inner String). Naming convention:
+# api.error.handlers.<handler_name>.<error_type>
+# api.success.handlers.<handler_name>.<message_type>
+api.error.handlers.id_handlers.batch_size_zero: "Batch size cannot be zero"
+api.error.handlers.id_handlers.batch_size_exceeds_max: "Batch size %{size} exceeds maximum allowed value of %{max}"
+api.error.handlers.id_handlers.parse_id_failed: "Failed to parse ID: %{error}"
+api.error.handlers.biz_tag_handlers.not_found: "BizTag not found: %{id}"
+api.error.handlers.workspace_handlers.api_key_repo_not_configured: "API key repository not configured"
+api.error.handlers.workspace_handlers.not_found: "Workspace '%{name}' not found"
+api.error.handlers.api_key_handlers.invalid_role: "Invalid role: %{role}"
+api.error.handlers.api_key_handlers.user_key_already_exists: "User API key already exists for workspace: %{workspace_id}"
+api.success.handlers.api_key_handlers.revoked: "API key %{id} revoked successfully"
+api.error.handlers.helpers.invalid_uuid: "Invalid UUID: %{error}"
+
 # Phase 8 T041 (CRITICAL C-1 / HIGH H-1 fix) — generic 5xx messages.
 # Used by `helpers::core_error_to_response` for internal errors whose
 # underlying `CoreError` String may contain sensitive data (DB URLs,

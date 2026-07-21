@@ -172,13 +172,15 @@ impl TlsManager {
 
         // 为 HTTP 配置 TLS with version enforcement
         if self.config.http_enabled {
-            // Build TLS configuration
             let mut config_with_alpn = ServerConfig::builder()
                 .with_no_client_auth()
                 .with_single_cert(vec![cert_der.clone()], private_key_der.clone_key())
                 .map_err(|e| TlsError::InvalidConfig(e.to_string()))?;
 
-            // Log configured TLS version (rustls handles version negotiation automatically)
+            // tiangang H1 部分修复：rustls 0.23 的 ServerConfig 不暴露 protocol_versions
+            // 公开字段，with_no_client_auth() 快捷方法跳过 versions 配置。
+            // 当前依赖 rustls 默认（TLS 1.2+1.3），并通过 min_tls_version 配置记录意图。
+            // 完整强制需迁移到 rustls CryptoProvider 自定义流程，延后到 v0.3.0。
             match self.config.min_tls_version {
                 crate::core::config::TlsVersion::Tls12 => {
                     tracing::info!(

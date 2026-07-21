@@ -115,38 +115,47 @@ cargo --version
 
 ### 安装
 
-在你的 `Cargo.toml` 中添加 `nebula-id`：
+在你的 `Cargo.toml` 中添加 `nebulaid`：
 
 ```toml
 [dependencies]
-nebula-id = { path = "./crates/core" }
+nebulaid = { version = "0.2", features = ["postgresql"] }
 
-# 如果需要完整的服务器功能
-[dependencies]
-nebula-id = { path = ".", features = ["server"] }
+# 如需 etcd 分布式协调（推荐生产环境）
+# nebulaid = { version = "0.2", features = ["postgresql", "etcd"] }
 ```
 
-或者使用命令行：
+或者使用命令行（自动添加最新版本到 Cargo.toml）：
 
 ```bash
-cargo add nebula-id --path crates/core
+cargo add nebulaid
 ```
+
+> 💡 **可用 features**：`postgresql`（默认）、`sqlite`、`etcd`、`http`（默认）、`grpc`（默认）。项目为单包结构（无 `crates/` 子目录），不要使用 `path = "./crates/core"`。
 
 ### 第一步
 
-让我们通过一个简单的例子来验证安装。我们将使用 Segment 算法生成分布式 ID：
+让我们通过一个简单的例子来验证安装。我们将使用 Segment 算法生成分布式 ID（通过统一的 `AlgorithmBuilder` 入口）：
 
 ```rust
-use nebula_core::algorithm::SegmentAlgorithm;
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 使用本地数据中心 ID 初始化
-    let segment = SegmentAlgorithm::new(1);
-    
-    // 生成 ID
-    let id = segment.generate_id()?;
-    
+    // 加载配置（datacenter_id 等在 [app] 段配置，详见 config/config.toml）
+    let config = Config::default();
+
+    // 通过统一的 AlgorithmBuilder 构建算法实例（返回 Box<dyn IdAlgorithm>）
+    let segment = AlgorithmBuilder::new(AlgorithmType::Segment)
+        .build(&config)
+        .await?;
+
+    // 生成 ID（需传入 GenerateContext）
+    let ctx = GenerateContext::default();
+    let id = segment.generate(&ctx).await?;
+
     println!("Generated ID: {}", id);
     Ok(())
 }
@@ -188,24 +197,29 @@ Segment 算法支持多数据中心部署，每个数据中心分配唯一的 DC
 Segment 算法通过预分配号段的方式实现高性能 ID 生成：
 
 ```rust
-use nebula_core::algorithm::{SegmentAlgorithm, AlgorithmBuilder};
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 使用默认配置初始化
-    let segment = AlgorithmBuilder::new()
-        .with_datacenter_id(1)
-        .build_segment()
+    // datacenter_id 等在 Config.app 中配置（见 config/config.toml）
+    let config = Config::default();
+
+    // 通过 AlgorithmBuilder 构建 Segment 算法
+    let segment = AlgorithmBuilder::new(AlgorithmType::Segment)
+        .build(&config)
         .await?;
-    
-    // 生成 ID
-    let id = segment.generate_id().await?;
+
+    // 生成单个 ID
+    let ctx = GenerateContext::default();
+    let id = segment.generate(&ctx).await?;
     println!("Generated ID: {}", id);
-    
-    // 批量生成（更高效）
-    let ids = segment.generate_batch(100).await?;
-    println!("Generated {} IDs", ids.len());
-    
+
+    // 批量生成（更高效，单次数据库交互）
+    let batch = segment.batch_generate(&ctx, 100).await?;
+    println!("Generated {} IDs", batch.ids.len());
+
     Ok(())
 }
 ```
@@ -215,24 +229,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Snowflake 算法生成 64 位有序 ID，无需数据库协调：
 
 ```rust
-use nebula_core::algorithm::{SnowflakeAlgorithm, AlgorithmBuilder};
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 使用自定义配置初始化
-    let snowflake = AlgorithmBuilder::new()
-        .with_worker_id(1)
-        .with_datacenter_id(1)
-        .build_snowflake()?;
-    
-    // 生成 ID
-    let id = snowflake.generate_id()?;
+    // worker_id、datacenter_id 在 Config.app 中配置
+    let config = Config::default();
+
+    // 构建 Snowflake 算法（无需数据库协调，依赖时钟与 worker_id 唯一性）
+    let snowflake = AlgorithmBuilder::new(AlgorithmType::Snowflake)
+        .build(&config)
+        .await?;
+
+    // 生成 ID（Snowflake 与 Segment 共用 IdAlgorithm trait 接口）
+    let ctx = GenerateContext::default();
+    let id = snowflake.generate(&ctx).await?;
     println!("Generated ID: {}", id);
-    
+
     // 批量生成
-    let ids = snowflake.generate_batch(100)?;
-    println!("Generated {} IDs", ids.len());
-    
+    let batch = snowflake.batch_generate(&ctx, 100).await?;
+    println!("Generated {} IDs", batch.ids.len());
+
     Ok(())
 }
 ```
@@ -242,19 +261,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 支持标准 UUID v7（时间有序）和 v4（完全随机）：
 
 ```rust
-use nebula_core::algorithm::UuidV7Algorithm;
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = Config::default();
+
     // UUID v7 - 时间有序，适合数据库主键
-    let v7 = UuidV7Algorithm::new();
-    let uuid_v7 = v7.generate_id().await?;
+    let v7 = AlgorithmBuilder::new(AlgorithmType::UuidV7)
+        .build(&config)
+        .await?;
+
+    let ctx = GenerateContext::default();
+    let uuid_v7 = v7.generate(&ctx).await?;
     println!("UUID v7: {}", uuid_v7);
-    
+
     // 批量生成
-    let batch = v7.generate_batch(100).await?;
-    println!("Generated {} UUIDs", batch.len());
-    
+    let batch = v7.batch_generate(&ctx, 100).await?;
+    println!("Generated {} UUIDs", batch.ids.len());
+
     Ok(())
 }
 ```
@@ -268,21 +295,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 `Nebula ID` 支持多数据中心部署，实现负载均衡和故障转移：
 
 ```rust
-use nebula_core::algorithm::SegmentAlgorithm;
-use nebula_core::coordinator::EtcdWorkerAllocator;
+use nebulaid::core::coordinator::{EtcdClientOps, EtcdClientWrapper, EtcdWorkerAllocator, WorkerIdAllocator};
+use nebulaid::core::config::EtcdConfig;
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 创建工作节点分配器
-    let allocator = Arc::new(EtcdWorkerAllocator::new());
-    
-    // 初始化 Segment 算法
-    let segment = SegmentAlgorithm::with_allocator(1, allocator);
-    
-    // 生成 ID（自动负载均衡）
-    let id = segment.generate_id().await?;
-    
+    // 1. 创建 etcd 客户端（生产环境用 EtcdClientWrapper）
+    let client: Arc<dyn EtcdClientOps> = Arc::new(
+        EtcdClientWrapper::new(vec!["http://localhost:2379".into()]).await?
+    );
+
+    // 2. 通过 EtcdWorkerAllocator 在分布式环境中分配唯一 worker_id
+    //    签名：new(client, datacenter_id, etcd_config) -> Result<Self, WorkerAllocatorError>
+    let allocator = EtcdWorkerAllocator::new(
+        client,
+        1,                       // datacenter_id
+        EtcdConfig::default(),
+    )
+    .await?;
+
+    let worker_id = allocator.allocate().await?;
+    println!("Allocated worker_id: {}", worker_id);
+
+    // 3. worker_id 通常写入 Config.app.worker_id，由 main.rs 启动流程注入 AlgorithmBuilder。
+    //    业务代码一般不直接调用 EtcdWorkerAllocator，而是消费 main.rs 启动后的 IdGenerator 服务。
+
     Ok(())
 }
 ```
@@ -292,17 +330,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 实时监控数据中心健康状态：
 
 ```rust
-use nebula_core::coordinator::EtcdClusterHealthMonitor;
+use nebulaid::core::coordinator::{EtcdClusterHealthMonitor, EtcdClusterStatus};
+use nebulaid::core::config::EtcdConfig;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 创建集群健康监控器
-    let monitor = EtcdClusterHealthMonitor::new();
-    
-    // 获取集群状态
-    let status = monitor.get_cluster_status().await?;
+    // 签名：new(config: EtcdConfig, cache_file_path: String) -> Self
+    // （etcd 不可用时降级到 cache_file_path 指向的本地缓存文件）
+    let monitor = EtcdClusterHealthMonitor::new(
+        EtcdConfig::default(),
+        "etcd-cache.json".to_string(),
+    );
+
+    // 获取集群状态（同步方法，返回 EtcdClusterStatus 枚举）
+    let status: EtcdClusterStatus = monitor.get_status();
     println!("Cluster status: {:?}", status);
-    
+
+    // 检查是否在 etcd 不可用时降级到了本地缓存
+    if monitor.is_using_cache() {
+        println!("⚠️ etcd 不可用，已降级到本地缓存");
+    }
+
     Ok(())
 }
 ```
@@ -312,49 +361,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 针对高并发场景的性能优化配置：
 
 ```rust
-use nebula_core::cache::MultiLevelCache;
-use nebula_core::algorithm::SegmentAlgorithm;
-use nebula_core::config::SegmentAlgorithmConfig;
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::config::SegmentAlgorithmConfig;
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 创建多级缓存
-    let cache = MultiLevelCache::new()
-        .with_local_cache_size(10000)
-        .with_redis_url("redis://localhost")
-        .build();
-    
-    // 优化配置
-    let config = SegmentAlgorithmConfig {
-        segment_size: 10000,
-        preload_count: 10,
-        ..Default::default()
+    // 通过 Config.algorithm.segment 调优 Segment 算法
+    // 实际字段：base_step / min_step / max_step / switch_threshold
+    // （动态步长算法根据 QPS 在 [min_step, max_step] 之间自动切换）
+    let mut config = Config::default();
+    config.algorithm.segment = SegmentAlgorithmConfig {
+        base_step: 10000,
+        min_step: 1000,
+        max_step: 100000,
+        switch_threshold: 0.8,
     };
-    
-    // 初始化
-    let segment = SegmentAlgorithm::with_config(1, config);
-    
-    // 使用通道进行异步生成
-    let (tx, rx) = tokio::sync::mpsc::channel(1000);
-    
-    // 在后台任务中生成 ID
+
+    let segment = AlgorithmBuilder::new(AlgorithmType::Segment)
+        .build(&config)
+        .await?;
+
+    // 使用通道进行异步批量生成（batch_generate 一次拿一批，减少数据库交互）
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = GenerateContext::default();
+
     let handle = tokio::spawn(async move {
-        for _ in 0..10000 {
-            let id = segment.generate_id().await?;
-            tx.send(id).await?;
+        let batch = segment.batch_generate(&ctx, 1000).await?;
+        for id in batch.ids {
+            tx.send(id).await.map_err(|e| e.to_string())?;
         }
         Ok::<_, Box<dyn std::error::Error>>(())
     });
-    
-    // 收集结果
+
     let mut ids = Vec::new();
     while let Some(id) = rx.recv().await {
         ids.push(id);
     }
-    
+
     handle.await??;
     println!("Generated {} IDs", ids.len());
-    
+
     Ok(())
 }
 ```
@@ -372,9 +420,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### ✅ 推荐做法
 
 - **选择合适的算法**: 根据需求选择算法 - Segment 适合高并发、Snowflake 适合低延迟、UUID 适合分布式标识。
-- **预配置号段大小**: 根据业务增长预估设置合理的 `segment_size`，避免频繁数据库访问。
+- **预配置号段大小**: 根据业务增长预估设置合理的 `base_step`（`SegmentAlgorithmConfig`），避免频繁数据库访问。
 - **健康监控**: 生产环境务必启用健康监控，实现故障自动转移。
-- **批量生成**: 对于批量操作（如数据导入），使用 `generate_batch` 提高性能。
+- **批量生成**: 对于批量操作（如数据导入），使用 `IdAlgorithm::batch_generate(&ctx, size)` 提高性能。
 - **异步处理**: 高并发场景使用异步通道处理 ID 生成请求。
 
 ### ❌ 避免做法
@@ -392,10 +440,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 <summary><b>❓ 问题：ID 生成延迟过高</b></summary>
 
 **解决方案：**
-1. 检查 `segment_size` 是否过小，增加号段大小减少数据库访问。
-2. 确认 `preload_count` 设置是否合理，增加预加载数量。
+1. 检查 `base_step`（`SegmentAlgorithmConfig`）是否过小，增加号段步长以减少数据库访问。
+2. 确认 `max_step` / `switch_threshold` 配置是否合理，让动态步长算法在高 QPS 下自动放大步长。
 3. 检查数据库连接池配置，确保有足够的连接数。
-4. 考虑使用本地缓存减少网络开销。
+4. 考虑使用 `batch_generate(&ctx, size)` 一次性获取多个 ID，减少网络开销。
 
 </details>
 
@@ -426,7 +474,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 **解决方案：**
 1. 增加数据库连接池大小配置。
-2. 减少 `segment_size` 以降低并发访问压力。
+2. 适当放大 `base_step` / `max_step`，让单次号段加载支持更多 ID 请求，降低并发访问压力。
 3. 使用连接池复用技术，避免频繁创建连接。
 4. 考虑使用读写分离，将 Segment 加载指向从库。
 

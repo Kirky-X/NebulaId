@@ -860,8 +860,12 @@ mod tests {
     // ==================== merge 测试 ====================
 
     /// 自定义 other 应覆盖 base 的所有可覆盖字段（覆盖各 if 的 true 分支）
+    ///
+    /// 加 ENV_LOCK：`Config::default()` 内部读取 `DATABASE_URL` 环境变量，
+    /// 与 `load_from_env_*` 测试并行运行时会因 env var 时序导致 panic。
     #[test]
     fn merge_with_custom_other_overrides_all_fields() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let mut base = Config::default();
         let mut other = Config::default();
         other.app.host = "1.2.3.4".to_string();
@@ -916,8 +920,12 @@ mod tests {
     }
 
     /// 默认 other 不应覆盖 base 的自定义字段（覆盖各 if 的 false 分支）
+    ///
+    /// 加 ENV_LOCK：`Config::default()` 内部读取 `DATABASE_URL` 环境变量，
+    /// 与 `load_from_env_*` 测试并行运行时会因 env var 时序导致 panic。
     #[test]
     fn merge_with_default_other_preserves_base_customizations() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let mut base = Config::default();
         base.app.host = "custom.host".to_string();
         base.app.http_port = 7777;
@@ -959,8 +967,13 @@ mod tests {
     }
 
     /// merge 空的 etcd.endpoints 不应覆盖 base 的非空 endpoints
+    ///
+    /// 加 ENV_LOCK：`Config::default()` 内部读取 `DATABASE_URL` 环境变量，
+    /// 与 `load_from_env_*` 测试并行运行时会因 env var 时序导致 panic
+    /// （`std::env::var("DATABASE_URL").unwrap()` 在 `.is_ok()` 通过后失败）。
     #[test]
     fn merge_preserves_etcd_endpoints_when_other_empty() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let mut base = Config::default();
         base.etcd.endpoints = vec!["custom:2379".to_string()];
         let mut other = Config::default();
@@ -970,8 +983,18 @@ mod tests {
     }
 
     /// merge 相同的 database.url 不应覆盖（条件中 url != self.database.url 为 false）
+    ///
+    /// 加 ENV_LOCK：`Config::default()` 内部读取 `DATABASE_URL` 环境变量，
+    /// 若不串行化，与 `load_from_env_database_url` 并行运行时会出现两次
+    /// `Config::default()` 返回不同 URL（一次 postgres 一次 sqlite::memory:），
+    /// 导致 merge 后 URL 被覆盖，破坏 "url 相同不覆盖" 的断言。
     #[test]
     fn merge_preserves_database_url_when_same() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // 显式移除 DATABASE_URL：ENV_LOCK 只串行化本模块测试，
+        // 其他模块（app.rs::tests 等）的测试可能在不持有此锁的情况下
+        // 设置 DATABASE_URL，导致两次 Config::default() 返回不同 URL。
+        let _url_guard = VarGuard::remove("DATABASE_URL");
         let mut base = Config::default();
         let original_url = base.database.url.clone();
         let other = Config::default(); // 相同的 url

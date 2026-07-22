@@ -19,7 +19,7 @@ name = "nebula-id"
 path = "src/main.rs"
 
 [build-dependencies]
-protoc-bin-vendored = "3.2.0"
+protoc-bin-vendored = "3.2"
 tonic-prost-build = "0.14"
 
 [features]
@@ -64,7 +64,7 @@ tower = { version = "0.5", features = ["full"] }
 tower-http = { version = "0.5", features = ["cors", "compression-gzip", "timeout", "limit", "trace", "set-header"] }
 
 # OpenAPI 文档
-utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
+utoipa = { version = "5.0", features = ["axum_extras", "chrono", "uuid"] }
 
 # gRPC / Protobuf
 tonic = { version = "0.14", features = ["tls-webpki-roots"] }
@@ -83,7 +83,7 @@ sqlx = { version = "0.8", default-features = false, optional = true, features = 
 
 # 日志追踪
 tracing = "0.1"
-tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # 工具库
 uuid = { version = "1.22", features = ["v4", "v7", "v8", "serde"] }
@@ -96,11 +96,11 @@ rand = "0.10"
 subtle = "2.5"
 # Argon2id 用于 API key 密钥哈希（CWE-916 修复）
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
-regex = "1"
+regex = "1.0"
 toml = "1.1"
 reqwest = { version = "0.13", features = ["json"] }
 validator = { version = "0.20", features = ["derive"] }
-serde_with = "3"
+serde_with = "3.0"
 config = "0.15"
 
 # 错误处理
@@ -109,12 +109,12 @@ anyhow = "1.0"
 # 加密
 rustls = "0.23"
 tokio-rustls = "0.26"
-rustls-pemfile = "2"
+rustls-pemfile = "2.0"
 
 # 基础组件
 arc-swap = "1.6"
-smallvec = "1"
-url = "2"
+smallvec = "1.0"
+url = "2.0"
 
 # 速率限制和流量控制
 limiteron = { version = "0.2", default-features = false, features = ["postgres", "quota-control", "ban-manager"] }
@@ -125,7 +125,7 @@ rust-i18n = { version = "3.1", default-features = false }
 [dev-dependencies]
 mockall = "0.13"
 sea-orm = { version = "1.1", features = ["mock"] }
-tempfile = "3"
+tempfile = "3.0"
 reqwest = { version = "0.13", features = ["json"] }
 criterion = { version = "0.5", default-features = false }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }

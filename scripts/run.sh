@@ -42,8 +42,19 @@ case "${1:-help}" in
         exec bash "$SCRIPT_DIR/_redis_test_impl.sh" "$@"
         ;;
     api-test)
+        # Canonical API test suite lives in tests/api_test.sh (V6, comprehensive).
+        # _api_test_impl.sh and test_api.py were simpler duplicates and have been removed.
+        # tests/api_test.sh reads BASE_URL from env (default: production); translate the
+        # optional positional server_url arg into BASE_URL for backward compatibility.
+        # Preserve historical default: api-test without args targets localhost, not production.
         shift
-        exec bash "$SCRIPT_DIR/_api_test_impl.sh" "$@"
+        if [ $# -gt 0 ]; then
+            export BASE_URL="$1"
+            shift
+        else
+            export BASE_URL="${BASE_URL:-http://localhost:8080}"
+        fi
+        exec bash "$SCRIPT_DIR/../tests/api_test.sh" "$@"
         ;;
     install-hooks)
         shift

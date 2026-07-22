@@ -837,7 +837,7 @@ Since v0.2.0 all development/deployment scripts are merged into a single entry p
 | `deploy` | — | Deploy Nebula ID via docker-compose | `_deploy_impl.sh` |
 | `lint` | `pre-commit` | Run local CI pre-checks (fmt + clippy + test + security/docs/coverage) | `_pre_commit_impl.sh` |
 | `redis-test` | — | Run Redis integration tests | `_redis_test_impl.sh` |
-| `api-test` | — | Run API endpoint tests, optional `server_url` argument | `_api_test_impl.sh` |
+| `api-test` | — | Run API endpoint tests, optional `server_url` argument | `tests/api_test.sh` |
 | `install-hooks` | — | Install git pre-commit hooks | `_install_hooks_impl.sh` |
 | `pre-commit` | `lint` | Same as `lint`, runs local CI pre-checks | `_pre_commit_impl.sh` |
 | `help` | `--help`, `-h` | Show usage information | — |

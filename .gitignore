@@ -116,6 +116,7 @@ docs/gh-pages/
 *.bak
 *_BACKUP_*
 *_SAVE_*
+temp/
 
 # -----------------------------------------------------------------------------
 # Local Debug / Cargo Output Capture (do not commit)

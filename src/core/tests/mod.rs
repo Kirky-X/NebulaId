@@ -13,9 +13,15 @@
 // limitations under the License.
 
 #[cfg(test)]
+pub mod algorithm_e2e_tests;
+#[cfg(test)]
 pub mod cache_tests;
 pub mod degradation_tests;
 #[cfg(test)]
 pub mod dynamic_step_tests;
 #[cfg(test)]
 pub mod integration_tests;
+#[cfg(test)]
+pub mod server_layer_e2e_tests;
+#[cfg(test)]
+pub mod supporting_layer_e2e_tests;

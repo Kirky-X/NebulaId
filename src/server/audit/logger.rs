@@ -150,6 +150,17 @@ impl AuditEvent {
     }
 }
 
+/// Writer task 命令：写入事件或显式 flush（sync_all 落盘）。
+///
+/// `Flush` 变体携带 oneshot Sender，writer task 处理完所有排队 Event 后
+/// sync_all 文件并回复，使调用方可以确定性等待持久化完成（替代 sleep）。
+enum AuditCommand {
+    /// 写入一条审计事件到文件
+    Event(Box<AuditEvent>),
+    /// Flush：sync_all 确保所有已写入数据落盘，完成后回复 oneshot
+    Flush(tokio::sync::oneshot::Sender<()>),
+}
+
 #[derive(Clone)]
 pub struct AuditLogger {
     events: Arc<Mutex<VecDeque<AuditEvent>>>,
@@ -158,7 +169,7 @@ pub struct AuditLogger {
     total_errors: Arc<AtomicU64>,
     /// 文件写入 channel：log 方法只发送事件（非阻塞），独立 task 消费并写文件。
     /// 解决 H7：避免在 Mutex 持有期间执行文件 I/O。
-    file_tx: Option<mpsc::UnboundedSender<AuditEvent>>,
+    file_tx: Option<mpsc::UnboundedSender<AuditCommand>>,
     /// 持有 writer task 的 JoinHandle，保持 task 存活。
     /// Arc 包装以便 Clone 时共享；JoinHandle drop 不会 cancel task（tokio 默认行为），
     /// task 会在所有 sender drop 后自然退出。
@@ -201,19 +212,35 @@ impl AuditLogger {
             return Self::new(max_events);
         }
 
-        let (tx, mut rx) = mpsc::unbounded_channel::<AuditEvent>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<AuditCommand>();
         let total_errors = Arc::new(AtomicU64::new(0));
         let errors_clone = total_errors.clone();
         let path_clone = log_file_path.clone();
 
         let handle = tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                if let Err(e) = Self::write_event_to_file(&event, &path_clone).await {
-                    errors_clone.fetch_add(1, Ordering::SeqCst);
-                    tracing::error!(
-                        "{}",
-                        t!("log.server.audit.logger.persist_failed", error = e)
-                    );
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    AuditCommand::Event(event) => {
+                        if let Err(e) = Self::write_event_to_file(&event, &path_clone).await {
+                            errors_clone.fetch_add(1, Ordering::SeqCst);
+                            tracing::error!(
+                                "{}",
+                                t!("log.server.audit.logger.persist_failed", error = e)
+                            );
+                        }
+                    }
+                    AuditCommand::Flush(ack) => {
+                        // 处理完所有排队 Event 后 sync_all 确保数据落盘。
+                        // 这替代了每事件 sync_all 的性能开销，仅按需 flush。
+                        if let Err(e) = Self::sync_file(&path_clone).await {
+                            errors_clone.fetch_add(1, Ordering::SeqCst);
+                            tracing::error!(
+                                "{}",
+                                t!("log.server.audit.logger.persist_failed", error = e)
+                            );
+                        }
+                        let _ = ack.send(());
+                    }
                 }
             }
         });
@@ -297,7 +324,10 @@ impl AuditLogger {
 
         // 锁外异步发送到文件 writer channel（非阻塞）
         if let Some(ref tx) = self.file_tx {
-            if tx.send(event.clone()).is_err() {
+            if tx
+                .send(AuditCommand::Event(Box::new(event.clone())))
+                .is_err()
+            {
                 // channel 关闭（writer task panic 或退出）
                 self.total_errors.fetch_add(1, Ordering::SeqCst);
                 tracing::error!(
@@ -337,14 +367,14 @@ impl AuditLogger {
     /// 仍会克隆 `redacted_client_ip` / `redacted_user_agent`，所以实际
     /// 节省的是其余字段的深拷贝，量级为 1-2 万次/秒）。
     async fn write_event_to_file(event: &AuditEvent, path: &str) -> std::io::Result<()> {
-        use tokio::fs::OpenOptions;
-        use tokio::io::AsyncWriteExt;
-
-        let mut file = OpenOptions::new()
+        // 使用同步 std::fs 而非 tokio::fs：writer task 是专用串行消费者，
+        // 阻塞 I/O 可接受。同步 I/O 消除 tokio::fs::File 异步 drop 与后续
+        // 读取之间的竞争（数据在 write_all 返回后立即可见，无需 sync_all）。
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(path)
-            .await?;
+            .open(path)?;
 
         // 仅对需要脱敏的 client_ip / user_agent 做转换，其余字段引用序列化。
         let redacted_client_ip = event.client_ip.as_deref().map(AuditEvent::redact_ip);
@@ -373,8 +403,35 @@ impl AuditLogger {
         serde_json::to_writer(&mut buf, &log_line)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         buf.push(b'\n');
-        file.write_all(&buf).await?;
+        file.write_all(&buf)?;
+        // 不在此处 sync_all：每事件 fsync 在高 QPS 场景下会成为 I/O 瓶颈。
+        // 数据持久化由调用方按需调用 `flush()` 触发（writer task 执行 sync_all）。
         Ok(())
+    }
+
+    /// 对日志文件执行 sync_all，确保所有已写入数据落盘。
+    /// 由 writer task 在处理 `AuditCommand::Flush` 时调用。
+    async fn sync_file(path: &str) -> std::io::Result<()> {
+        // 同步 I/O：writer task 专用，阻塞可接受
+        let file = std::fs::OpenOptions::new().write(true).open(path)?;
+        file.sync_all()?;
+        Ok(())
+    }
+
+    /// 显式 flush：等待 writer task 处理完所有已发送事件并 sync_all 落盘。
+    ///
+    /// 替代测试中的 `sleep(100ms)` 等待模式，提供确定性持久化保证。
+    /// 生产路径中按需调用（如关闭前、关键审计点后），避免每事件 fsync 的性能开销。
+    ///
+    /// 若未配置文件持久化（`file_tx` 为 None），则立即返回（无操作）。
+    pub async fn flush(&self) {
+        if let Some(ref tx) = self.file_tx {
+            let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+            // Flush 命令排在所有已发送 Event 之后，writer task 会先处理完事件再 sync
+            if tx.send(AuditCommand::Flush(ack_tx)).is_ok() {
+                let _ = ack_rx.await;
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2421,7 +2478,7 @@ mod tests {
     async fn test_log_with_closed_file_channel_increments_errors() {
         // Construct a logger manually with a dead sender (receiver dropped).
         // Tests the `tx.send().is_err()` branch in log().
-        let (tx, rx) = mpsc::unbounded_channel::<AuditEvent>();
+        let (tx, rx) = mpsc::unbounded_channel::<AuditCommand>();
         drop(rx); // Close the channel
 
         let logger = AuditLogger {

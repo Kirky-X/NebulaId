@@ -262,6 +262,16 @@ impl IdAlgorithm for SnowflakeAlgorithm {
     }
 
     async fn batch_generate(&self, _ctx: &GenerateContext, size: usize) -> Result<IdBatch> {
+        // size=0 边界：直接返回空批次，不进入重试循环
+        // （否则 `ids.is_empty()` 判定会误报 "Failed to generate IDs"）
+        if size == 0 {
+            return Ok(IdBatch::new(
+                Vec::new(),
+                AlgorithmType::Snowflake,
+                String::new(),
+            ));
+        }
+
         let mut ids = Vec::with_capacity(size);
         let mut retries = 0;
         const MAX_RETRIES: usize = 100;

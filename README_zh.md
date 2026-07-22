@@ -839,7 +839,7 @@ curl http://localhost:8080/api/v1/invalid
 | `deploy` | — | 通过 docker-compose 部署 Nebula ID | `_deploy_impl.sh` |
 | `lint` | `pre-commit` | 运行本地 CI 预检（fmt + clippy + test + 安全/文档/覆盖率） | `_pre_commit_impl.sh` |
 | `redis-test` | — | 运行 Redis 集成测试 | `_redis_test_impl.sh` |
-| `api-test` | — | 运行 API 端点测试，可选参数 `server_url` | `_api_test_impl.sh` |
+| `api-test` | — | 运行 API 端点测试，可选参数 `server_url` | `tests/api_test.sh` |
 | `install-hooks` | — | 安装 git pre-commit hooks | `_install_hooks_impl.sh` |
 | `pre-commit` | `lint` | 同 `lint`，运行本地 CI 预检 | `_pre_commit_impl.sh` |
 | `help` | `--help`、`-h` | 显示 Usage 信息 | — |

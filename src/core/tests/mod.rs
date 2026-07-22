@@ -33,6 +33,8 @@ pub mod infra_e2e_tests;
 #[cfg(test)]
 pub mod integration_tests;
 #[cfg(test)]
+pub mod remaining_e2e_tests;
+#[cfg(test)]
 pub mod segment_monitoring_e2e_tests;
 #[cfg(test)]
 pub mod server_layer_e2e_tests;

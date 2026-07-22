@@ -15,12 +15,12 @@
 use crate::server::handlers::ApiHandlers;
 use crate::server::models::{BatchGenerateRequest, GenerateRequest, ParseRequest};
 use async_trait::async_trait;
+use sdforge::tonic::{Request, Response, Status};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
-use tonic::{Request, Response, Status};
 
 // Use pre-generated proto modules
 use crate::server::proto::nebula::id::v1;
@@ -150,7 +150,7 @@ impl NebulaIdService for GrpcServer {
 
     async fn batch_generate_stream(
         &self,
-        request: Request<tonic::Streaming<BatchGenerateStreamRequest>>,
+        request: Request<sdforge::tonic::Streaming<BatchGenerateStreamRequest>>,
     ) -> Result<Response<Self::BatchGenerateStreamStream>, Status> {
         let mut stream = request.into_inner();
         let (tx, rx) = mpsc::channel(128);
@@ -352,7 +352,7 @@ mod tests {
         let resp = server.generate(req).await;
         assert!(resp.is_err());
         let err = resp.unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Internal);
+        assert_eq!(err.code(), sdforge::tonic::Code::Internal);
     }
 
     #[tokio::test]
@@ -430,7 +430,7 @@ mod tests {
             metadata: Default::default(),
         });
         let err = server.batch_generate(req).await.unwrap_err();
-        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert_eq!(err.code(), sdforge::tonic::Code::InvalidArgument);
         assert!(err.message().contains("zero"));
     }
 
@@ -444,7 +444,7 @@ mod tests {
             metadata: Default::default(),
         });
         let err = server.batch_generate(req).await.unwrap_err();
-        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert_eq!(err.code(), sdforge::tonic::Code::InvalidArgument);
         assert!(err.message().contains("exceeds maximum"));
     }
 
@@ -458,7 +458,7 @@ mod tests {
             metadata: Default::default(),
         });
         let err = server.batch_generate(req).await.unwrap_err();
-        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert_eq!(err.code(), sdforge::tonic::Code::InvalidArgument);
     }
 
     #[tokio::test]
@@ -471,7 +471,7 @@ mod tests {
             metadata: Default::default(),
         });
         let err = server.batch_generate(req).await.unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Internal);
+        assert_eq!(err.code(), sdforge::tonic::Code::Internal);
     }
 
     #[tokio::test]
@@ -517,7 +517,7 @@ mod tests {
             id: "not-a-valid-id".to_string(),
         });
         let err = server.parse(req).await.unwrap_err();
-        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert_eq!(err.code(), sdforge::tonic::Code::InvalidArgument);
     }
 
     #[tokio::test]
@@ -525,7 +525,7 @@ mod tests {
         let server = create_test_grpc_server();
         let req = Request::new(GrpcParseRequest { id: String::new() });
         let err = server.parse(req).await.unwrap_err();
-        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert_eq!(err.code(), sdforge::tonic::Code::InvalidArgument);
     }
 
     // ===== health_check =====

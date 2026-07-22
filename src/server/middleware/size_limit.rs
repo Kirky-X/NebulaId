@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use axum::{
+use sdforge::axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use tower_http::limit::RequestBodyLimitLayer;
+use sdforge::tower_http::limit::RequestBodyLimitLayer;
 
 /// 请求体大小限制（1MB）
 pub const MAX_REQUEST_SIZE: usize = 1_048_576;
@@ -44,7 +44,11 @@ impl IntoResponse for RequestBodyTooLarge {
             MAX_REQUEST_SIZE as f64 / (1024.0 * 1024.0)
         ));
 
-        (StatusCode::PAYLOAD_TOO_LARGE, axum::Json(error_response)).into_response()
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            sdforge::axum::Json(error_response),
+        )
+            .into_response()
     }
 }
 

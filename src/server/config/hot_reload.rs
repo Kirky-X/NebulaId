@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::core::config::app_config::parse_toml_config;
 use crate::core::config::Config;
 use crate::core::types::id::AlgorithmType;
 use crate::core::types::Result;
@@ -91,14 +92,14 @@ impl HotReloadConfig {
             }
         };
 
-        let new_config = match toml::from_str::<Config>(&content) {
+        let new_config = match parse_toml_config(&content, "hot_reload") {
             Ok(c) => c,
             Err(e) => {
                 error!(
                     "{}",
                     t!(
                         "log.server.config.hot_reload.parse_config_failed",
-                        error = e
+                        error = e.to_string()
                     )
                 );
                 return Ok(false);

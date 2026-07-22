@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use sdforge::utoipa::ToSchema;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use utoipa::ToSchema;
 use validator::Validate;
 
 /// Health status of the system

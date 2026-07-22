@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::core::types::id::{AlgorithmType, IdFormat};
-use sea_orm::entity::prelude::*;
+use dbnexus::sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// Custom type for PostgreSQL INTEGER[] array

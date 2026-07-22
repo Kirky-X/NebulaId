@@ -29,7 +29,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tonic::Request;
+use sdforge::tonic::Request;
 
 use crate::core::algorithm::AlgorithmRouter;
 use crate::core::config::Config;
@@ -227,7 +227,7 @@ async fn e2e_grpc_batch_generate_count_zero_returns_invalid_argument() {
         .batch_generate(req)
         .await
         .expect_err("count=0 应返回错误");
-    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    assert_eq!(err.code(), sdforge::tonic::Code::InvalidArgument);
     assert!(err.message().contains("zero"));
 }
 
@@ -245,7 +245,7 @@ async fn e2e_grpc_batch_generate_count_over_100_returns_invalid_argument() {
         .batch_generate(req)
         .await
         .expect_err("count=101 应返回错误");
-    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    assert_eq!(err.code(), sdforge::tonic::Code::InvalidArgument);
     assert!(err.message().contains("exceeds maximum"));
 }
 

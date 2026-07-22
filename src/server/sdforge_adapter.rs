@@ -33,7 +33,7 @@
 //! `name` and is what clients hit. This annotation makes the spec-vs-code
 //! deviation explicit at the source so future readers do not re-flag it.
 
-use axum::Router;
+use sdforge::axum::Router;
 use sdforge::core::Registration;
 use sdforge::forge;
 use serde_json::json;

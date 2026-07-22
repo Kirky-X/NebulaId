@@ -49,6 +49,22 @@ pub struct Config {
     pub batch_generate: BatchGenerateConfig,
 }
 
+/// 使用 confers 从 TOML 字符串解析 Config。
+///
+/// confers 不直接支持 serde 反序列化，需通过 `AnnotatedValue → serde_json::Value
+/// → Config` 两步转换。统一封装避免调用点重复（DRY）。
+pub(crate) fn parse_toml_config(content: &str, source_id: &str) -> ConfigResult<Config> {
+    let annotated = confers::parse_content(
+        content,
+        confers::Format::Toml,
+        confers::SourceId::new(source_id),
+        None,
+    )
+    .map_err(|e| ConfigError::InvalidValue(e.to_string()))?;
+    serde_json::from_value(annotated.to_json())
+        .map_err(|e| ConfigError::InvalidValue(e.to_string()))
+}
+
 impl Config {
     /// Load configuration from file with environment variable expansion
     /// Supports ${VAR_NAME} syntax for environment variable substitution
@@ -69,8 +85,7 @@ impl Config {
             tracing::debug!(event = "auth_section", auth_section = %auth_section);
         }
 
-        let config: Config =
-            toml::from_str(&expanded).map_err(|e| ConfigError::InvalidValue(e.to_string()))?;
+        let config: Config = parse_toml_config(&expanded, "config")?;
 
         tracing::debug!(event = "toml_parsed", raw_auth_enabled = %format!("{:?}", config.auth.enabled), "{}", t!("log.core.config.app_config.toml_parsed"));
         tracing::debug!(event = "config_loaded", auth_enabled = %config.auth.enabled, "{}", t!("log.core.config.app_config.config_loaded"));
@@ -395,6 +410,26 @@ mod tests {
     fn load_from_file_missing_path_returns_file_error() {
         let result = Config::load_from_file("/nonexistent/path/no/such/file.toml");
         assert!(matches!(result, Err(ConfigError::FileError(_))));
+    }
+
+    /// confers 替换 toml 后语义等价性：unknown fields 应被静默忽略（与 toml crate 默认行为一致）
+    ///
+    /// 验证 confers 的 TOML→JSON 转换不会因 unknown fields 报错，
+    /// 且已知字段值正确解析。这是 M-3 审查项的边界覆盖。
+    #[test]
+    fn load_from_file_ignores_unknown_fields_like_toml_crate() {
+        let original = Config::default();
+        let mut toml_content = toml::to_string(&original).expect("序列化 Config 应成功");
+        // 追加 unknown 顶层表和字段
+        toml_content.push_str("\n[unknown_section]\nunknown_key = \"ignored\"\nunknown_int = 42\n");
+
+        let temp = tempfile::NamedTempFile::new().expect("创建临时文件应成功");
+        std::fs::write(temp.path(), &toml_content).expect("写入临时文件应成功");
+
+        let loaded = Config::load_from_file(temp.path().to_str().unwrap())
+            .expect("confers 应静默忽略 unknown fields，与 toml crate 默认行为一致");
+        assert_eq!(loaded.app.host, original.app.host);
+        assert_eq!(loaded.app.http_port, original.app.http_port);
     }
 
     /// TOML 解析错误应返回 InvalidValue

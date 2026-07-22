@@ -15,9 +15,9 @@
 use crate::server::audit::{AuditEventType, AuditLogger, AuditResult};
 use crate::server::middleware::ApiKeyAuth;
 use crate::server::rate_limit::RateLimiter;
-use axum::body::Body;
-use axum::http::Request;
-use axum::response::Response;
+use sdforge::axum::body::Body;
+use sdforge::axum::http::Request;
+use sdforge::axum::response::Response;
 use std::net::IpAddr;
 use std::sync::Arc;
 use tracing::debug;
@@ -53,7 +53,7 @@ impl AuditMiddleware {
     pub async fn audit_middleware(
         &self,
         req: Request<Body>,
-        next: axum::middleware::Next,
+        next: sdforge::axum::middleware::Next,
     ) -> Response {
         let start = std::time::Instant::now();
         let path = req.uri().path().to_string();
@@ -124,8 +124,8 @@ mod tests {
     use super::*;
     use crate::server::middleware::ApiKeyAuth;
     use crate::server::rate_limit::RateLimiter;
-    use axum::body::Body;
-    use axum::http::Request;
+    use sdforge::axum::body::Body;
+    use sdforge::axum::http::Request;
 
     #[tokio::test]
     async fn test_audit_middleware_creation() {
@@ -274,12 +274,12 @@ mod tests {
     // 提取到模块级以便多个测试共享。
 
     use async_trait::async_trait;
-    use axum::extract::State;
-    use axum::http::StatusCode;
-    use axum::middleware::from_fn_with_state;
-    use axum::routing::get;
-    use axum::Router;
-    use tower::ServiceExt;
+    use sdforge::axum::extract::State;
+    use sdforge::axum::http::StatusCode;
+    use sdforge::axum::middleware::from_fn_with_state;
+    use sdforge::axum::routing::get;
+    use sdforge::axum::Router;
+    use sdforge::tower::ServiceExt;
     use uuid::Uuid;
 
     #[derive(Clone)]
@@ -404,7 +404,7 @@ mod tests {
     async fn audit_middleware_fn(
         State(mid): State<Arc<AuditMiddleware>>,
         req: Request<Body>,
-        next: axum::middleware::Next,
+        next: sdforge::axum::middleware::Next,
     ) -> Response {
         mid.audit_middleware(req, next).await
     }

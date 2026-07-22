@@ -50,7 +50,7 @@
 
 use std::sync::Arc;
 
-use axum::{
+use sdforge::axum::{
     body::Body,
     http::{Request, StatusCode},
     middleware::{from_fn, from_fn_with_state, Next},
@@ -58,8 +58,8 @@ use axum::{
     routing::get,
     Router,
 };
+use sdforge::tower::ServiceExt;
 use tempfile::tempdir;
-use tower::ServiceExt;
 
 use crate::server::api_version::{
     api_version_middleware, ApiVersion, ApiVersionErrorResponse, API_VERSION_HEADER,
@@ -99,7 +99,7 @@ fn build_size_limit_router() -> Router {
     Router::new()
         .route(
             "/echo",
-            axum::routing::post(|body: axum::body::Bytes| async move {
+            sdforge::axum::routing::post(|body: sdforge::axum::body::Bytes| async move {
                 format!("received {} bytes", body.len())
             }),
         )
@@ -116,7 +116,7 @@ fn make_body(size: usize) -> String {
 /// 不能用闭包，因为 axum 0.8 的 `FromFnLayer` 要求 `F: FnMut + Clone + Send + 'static`
 /// 且签名严格匹配；闭包虽然也能匹配但 `State<S>` extractor 必须显式声明。
 async fn rate_limit_handler(
-    axum::extract::State(state): axum::extract::State<RateLimitMiddleware>,
+    sdforge::axum::extract::State(state): sdforge::axum::extract::State<RateLimitMiddleware>,
     req: Request<Body>,
     next: Next,
 ) -> Response {

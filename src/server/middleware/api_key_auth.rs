@@ -13,14 +13,14 @@
 // limitations under the License.
 
 use crate::core::database::ApiKeyRepository;
-use axum::body::Body;
-use axum::extract::State;
-use axum::http::{Request, StatusCode};
-use axum::middleware::Next;
-use axum::response::IntoResponse;
-use axum::response::Response;
 use base64::Engine;
 use parking_lot::RwLock;
+use sdforge::axum::body::Body;
+use sdforge::axum::extract::State;
+use sdforge::axum::http::{Request, StatusCode};
+use sdforge::axum::middleware::Next;
+use sdforge::axum::response::IntoResponse;
+use sdforge::axum::response::Response;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -119,7 +119,7 @@ impl ApiKeyAuth {
     }
 
     fn too_many_requests_response(&self) -> Response {
-        let response = axum::Json(serde_json::json!({
+        let response = sdforge::axum::Json(serde_json::json!({
             "code": 429,
             "message": "Too many authentication attempts. Please try again later."
         }))
@@ -334,7 +334,7 @@ impl ApiKeyAuth {
 
     fn unauthorized_response(&self, client_ip: &str) -> Response {
         self.record_auth_failure(client_ip);
-        let response = axum::Json(serde_json::json!({
+        let response = sdforge::axum::Json(serde_json::json!({
             "code": 401,
             "message": "Invalid or missing API key"
         }))
@@ -357,7 +357,7 @@ pub async fn admin_required_middleware(req: Request<Body>, next: Next) -> Respon
         );
     }
 
-    let response = axum::Json(serde_json::json!({
+    let response = sdforge::axum::Json(serde_json::json!({
         "code": 403,
         "message": "Admin access required"
     }))
@@ -382,13 +382,13 @@ mod tests {
     };
     use crate::core::types::Result;
     use async_trait::async_trait;
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use axum::middleware::from_fn_with_state;
-    use axum::routing::get;
-    use axum::Router;
+    use sdforge::axum::body::Body;
+    use sdforge::axum::http::{Request, StatusCode};
+    use sdforge::axum::middleware::from_fn_with_state;
+    use sdforge::axum::routing::get;
+    use sdforge::axum::Router;
+    use sdforge::tower::ServiceExt;
     use sha2::Digest;
-    use tower::ServiceExt;
     use uuid::Uuid;
 
     #[derive(Clone)]
@@ -767,9 +767,9 @@ mod tests {
         // Build a router that applies both auth middleware and admin_required
         // middleware. We inject the role extension manually for the admin
         // tests since we want to isolate the admin check.
-        Router::new()
-            .route("/test", get(|| async { "ok" }))
-            .layer(axum::middleware::from_fn(admin_required_middleware))
+        Router::new().route("/test", get(|| async { "ok" })).layer(
+            sdforge::axum::middleware::from_fn(admin_required_middleware),
+        )
     }
 
     fn make_request_with_role(role: ApiKeyRole) -> Request<Body> {
@@ -838,7 +838,7 @@ mod tests {
     async fn read_body_to_string(body: Body) -> String {
         // Use axum's built-in `to_bytes` (axum 0.8) instead of http_body_util,
         // which is not in the project's dev-dependencies.
-        let bytes = axum::body::to_bytes(body, usize::MAX)
+        let bytes = sdforge::axum::body::to_bytes(body, usize::MAX)
             .await
             .expect("failed to read response body");
         String::from_utf8(bytes.to_vec()).expect("response body is not valid UTF-8")

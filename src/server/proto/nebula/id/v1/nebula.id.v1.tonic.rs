@@ -8,36 +8,36 @@ pub mod nebula_id_service_client {
         clippy::wildcard_imports,
         clippy::let_unit_value,
     )]
-    use tonic::codegen::*;
-    use tonic::codegen::http::Uri;
+    use sdforge::tonic::codegen::*;
+    use sdforge::tonic::codegen::http::Uri;
     #[derive(Debug, Clone)]
     pub struct NebulaIdServiceClient<T> {
-        inner: tonic::client::Grpc<T>,
+        inner: sdforge::tonic::client::Grpc<T>,
     }
-    impl NebulaIdServiceClient<tonic::transport::Channel> {
+    impl NebulaIdServiceClient<sdforge::tonic::transport::Channel> {
         /// Attempt to create a new client by connecting to a given endpoint.
-        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
+        pub async fn connect<D>(dst: D) -> Result<Self, sdforge::tonic::transport::Error>
         where
-            D: TryInto<tonic::transport::Endpoint>,
+            D: TryInto<sdforge::tonic::transport::Endpoint>,
             D::Error: Into<StdError>,
         {
-            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
+            let conn = sdforge::tonic::transport::Endpoint::new(dst)?.connect().await?;
             Ok(Self::new(conn))
         }
     }
     impl<T> NebulaIdServiceClient<T>
     where
-        T: tonic::client::GrpcService<tonic::body::Body>,
+        T: sdforge::tonic::client::GrpcService<sdforge::tonic::body::Body>,
         T::Error: Into<StdError>,
         T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
     {
         pub fn new(inner: T) -> Self {
-            let inner = tonic::client::Grpc::new(inner);
+            let inner = sdforge::tonic::client::Grpc::new(inner);
             Self { inner }
         }
         pub fn with_origin(inner: T, origin: Uri) -> Self {
-            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            let inner = sdforge::tonic::client::Grpc::with_origin(inner, origin);
             Self { inner }
         }
         pub fn with_interceptor<F>(
@@ -45,16 +45,16 @@ pub mod nebula_id_service_client {
             interceptor: F,
         ) -> NebulaIdServiceClient<InterceptedService<T, F>>
         where
-            F: tonic::service::Interceptor,
+            F: sdforge::tonic::service::Interceptor,
             T::ResponseBody: Default,
-            T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
+            T: sdforge::tonic::codegen::Service<
+                http::Request<sdforge::tonic::body::Body>,
                 Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                    <T as sdforge::tonic::client::GrpcService<sdforge::tonic::body::Body>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
+            <T as sdforge::tonic::codegen::Service<
+                http::Request<sdforge::tonic::body::Body>,
             >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             NebulaIdServiceClient::new(InterceptedService::new(inner, interceptor))
@@ -92,16 +92,16 @@ pub mod nebula_id_service_client {
         }
         pub async fn generate(
             &mut self,
-            request: impl tonic::IntoRequest<super::GenerateRequest>,
+            request: impl sdforge::tonic::IntoRequest<super::GenerateRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::GenerateResponse>,
-            tonic::Status,
+            sdforge::tonic::Response<super::GenerateResponse>,
+            sdforge::tonic::Status,
         > {
             self.inner
                 .ready()
                 .await
                 .map_err(|e| {
-                    tonic::Status::unknown(
+                    sdforge::tonic::Status::unknown(
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
@@ -116,16 +116,16 @@ pub mod nebula_id_service_client {
         }
         pub async fn batch_generate(
             &mut self,
-            request: impl tonic::IntoRequest<super::BatchGenerateRequest>,
+            request: impl sdforge::tonic::IntoRequest<super::BatchGenerateRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::BatchGenerateResponse>,
-            tonic::Status,
+            sdforge::tonic::Response<super::BatchGenerateResponse>,
+            sdforge::tonic::Status,
         > {
             self.inner
                 .ready()
                 .await
                 .map_err(|e| {
-                    tonic::Status::unknown(
+                    sdforge::tonic::Status::unknown(
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
@@ -142,13 +142,13 @@ pub mod nebula_id_service_client {
         }
         pub async fn parse(
             &mut self,
-            request: impl tonic::IntoRequest<super::ParseRequest>,
-        ) -> std::result::Result<tonic::Response<super::ParseResponse>, tonic::Status> {
+            request: impl sdforge::tonic::IntoRequest<super::ParseRequest>,
+        ) -> std::result::Result<sdforge::tonic::Response<super::ParseResponse>, sdforge::tonic::Status> {
             self.inner
                 .ready()
                 .await
                 .map_err(|e| {
-                    tonic::Status::unknown(
+                    sdforge::tonic::Status::unknown(
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
@@ -163,16 +163,16 @@ pub mod nebula_id_service_client {
         }
         pub async fn health_check(
             &mut self,
-            request: impl tonic::IntoRequest<super::HealthCheckRequest>,
+            request: impl sdforge::tonic::IntoRequest<super::HealthCheckRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::HealthCheckResponse>,
-            tonic::Status,
+            sdforge::tonic::Response<super::HealthCheckResponse>,
+            sdforge::tonic::Status,
         > {
             self.inner
                 .ready()
                 .await
                 .map_err(|e| {
-                    tonic::Status::unknown(
+                    sdforge::tonic::Status::unknown(
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
@@ -187,18 +187,18 @@ pub mod nebula_id_service_client {
         }
         pub async fn batch_generate_stream(
             &mut self,
-            request: impl tonic::IntoStreamingRequest<
+            request: impl sdforge::tonic::IntoStreamingRequest<
                 Message = super::BatchGenerateStreamRequest,
             >,
         ) -> std::result::Result<
-            tonic::Response<tonic::codec::Streaming<super::BatchGenerateStreamResponse>>,
-            tonic::Status,
+            sdforge::tonic::Response<sdforge::tonic::codec::Streaming<super::BatchGenerateStreamResponse>>,
+            sdforge::tonic::Status,
         > {
             self.inner
                 .ready()
                 .await
                 .map_err(|e| {
-                    tonic::Status::unknown(
+                    sdforge::tonic::Status::unknown(
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
@@ -227,50 +227,50 @@ pub mod nebula_id_service_server {
         clippy::wildcard_imports,
         clippy::let_unit_value,
     )]
-    use tonic::codegen::*;
+    use sdforge::tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with NebulaIdServiceServer.
     #[async_trait]
     pub trait NebulaIdService: std::marker::Send + std::marker::Sync + 'static {
         async fn generate(
             &self,
-            request: tonic::Request<super::GenerateRequest>,
+            request: sdforge::tonic::Request<super::GenerateRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::GenerateResponse>,
-            tonic::Status,
+            sdforge::tonic::Response<super::GenerateResponse>,
+            sdforge::tonic::Status,
         >;
         async fn batch_generate(
             &self,
-            request: tonic::Request<super::BatchGenerateRequest>,
+            request: sdforge::tonic::Request<super::BatchGenerateRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::BatchGenerateResponse>,
-            tonic::Status,
+            sdforge::tonic::Response<super::BatchGenerateResponse>,
+            sdforge::tonic::Status,
         >;
         async fn parse(
             &self,
-            request: tonic::Request<super::ParseRequest>,
-        ) -> std::result::Result<tonic::Response<super::ParseResponse>, tonic::Status>;
+            request: sdforge::tonic::Request<super::ParseRequest>,
+        ) -> std::result::Result<sdforge::tonic::Response<super::ParseResponse>, sdforge::tonic::Status>;
         async fn health_check(
             &self,
-            request: tonic::Request<super::HealthCheckRequest>,
+            request: sdforge::tonic::Request<super::HealthCheckRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::HealthCheckResponse>,
-            tonic::Status,
+            sdforge::tonic::Response<super::HealthCheckResponse>,
+            sdforge::tonic::Status,
         >;
         /// Server streaming response type for the BatchGenerateStream method.
-        type BatchGenerateStreamStream: tonic::codegen::tokio_stream::Stream<
+        type BatchGenerateStreamStream: sdforge::tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<
                     super::BatchGenerateStreamResponse,
-                    tonic::Status,
+                    sdforge::tonic::Status,
                 >,
             >
             + std::marker::Send
             + 'static;
         async fn batch_generate_stream(
             &self,
-            request: tonic::Request<tonic::Streaming<super::BatchGenerateStreamRequest>>,
+            request: sdforge::tonic::Request<sdforge::tonic::Streaming<super::BatchGenerateStreamRequest>>,
         ) -> std::result::Result<
-            tonic::Response<Self::BatchGenerateStreamStream>,
-            tonic::Status,
+            sdforge::tonic::Response<Self::BatchGenerateStreamStream>,
+            sdforge::tonic::Status,
         >;
     }
     #[derive(Debug)]
@@ -299,7 +299,7 @@ pub mod nebula_id_service_server {
             interceptor: F,
         ) -> InterceptedService<Self, F>
         where
-            F: tonic::service::Interceptor,
+            F: sdforge::tonic::service::Interceptor,
         {
             InterceptedService::new(Self::new(inner), interceptor)
         }
@@ -332,13 +332,13 @@ pub mod nebula_id_service_server {
             self
         }
     }
-    impl<T, B> tonic::codegen::Service<http::Request<B>> for NebulaIdServiceServer<T>
+    impl<T, B> sdforge::tonic::codegen::Service<http::Request<B>> for NebulaIdServiceServer<T>
     where
         T: NebulaIdService,
         B: Body + std::marker::Send + 'static,
         B::Error: Into<StdError> + std::marker::Send + 'static,
     {
-        type Response = http::Response<tonic::body::Body>;
+        type Response = http::Response<sdforge::tonic::body::Body>;
         type Error = std::convert::Infallible;
         type Future = BoxFuture<Self::Response, Self::Error>;
         fn poll_ready(
@@ -354,16 +354,16 @@ pub mod nebula_id_service_server {
                     struct GenerateSvc<T: NebulaIdService>(pub Arc<T>);
                     impl<
                         T: NebulaIdService,
-                    > tonic::server::UnaryService<super::GenerateRequest>
+                    > sdforge::tonic::server::UnaryService<super::GenerateRequest>
                     for GenerateSvc<T> {
                         type Response = super::GenerateResponse;
                         type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
+                            sdforge::tonic::Response<Self::Response>,
+                            sdforge::tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::GenerateRequest>,
+                            request: sdforge::tonic::Request<super::GenerateRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
@@ -380,7 +380,7 @@ pub mod nebula_id_service_server {
                     let fut = async move {
                         let method = GenerateSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
+                        let mut grpc = sdforge::tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
@@ -399,16 +399,16 @@ pub mod nebula_id_service_server {
                     struct BatchGenerateSvc<T: NebulaIdService>(pub Arc<T>);
                     impl<
                         T: NebulaIdService,
-                    > tonic::server::UnaryService<super::BatchGenerateRequest>
+                    > sdforge::tonic::server::UnaryService<super::BatchGenerateRequest>
                     for BatchGenerateSvc<T> {
                         type Response = super::BatchGenerateResponse;
                         type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
+                            sdforge::tonic::Response<Self::Response>,
+                            sdforge::tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::BatchGenerateRequest>,
+                            request: sdforge::tonic::Request<super::BatchGenerateRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
@@ -426,7 +426,7 @@ pub mod nebula_id_service_server {
                     let fut = async move {
                         let method = BatchGenerateSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
+                        let mut grpc = sdforge::tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
@@ -445,15 +445,15 @@ pub mod nebula_id_service_server {
                     struct ParseSvc<T: NebulaIdService>(pub Arc<T>);
                     impl<
                         T: NebulaIdService,
-                    > tonic::server::UnaryService<super::ParseRequest> for ParseSvc<T> {
+                    > sdforge::tonic::server::UnaryService<super::ParseRequest> for ParseSvc<T> {
                         type Response = super::ParseResponse;
                         type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
+                            sdforge::tonic::Response<Self::Response>,
+                            sdforge::tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::ParseRequest>,
+                            request: sdforge::tonic::Request<super::ParseRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
@@ -470,7 +470,7 @@ pub mod nebula_id_service_server {
                     let fut = async move {
                         let method = ParseSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
+                        let mut grpc = sdforge::tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
@@ -489,16 +489,16 @@ pub mod nebula_id_service_server {
                     struct HealthCheckSvc<T: NebulaIdService>(pub Arc<T>);
                     impl<
                         T: NebulaIdService,
-                    > tonic::server::UnaryService<super::HealthCheckRequest>
+                    > sdforge::tonic::server::UnaryService<super::HealthCheckRequest>
                     for HealthCheckSvc<T> {
                         type Response = super::HealthCheckResponse;
                         type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
+                            sdforge::tonic::Response<Self::Response>,
+                            sdforge::tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::HealthCheckRequest>,
+                            request: sdforge::tonic::Request<super::HealthCheckRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
@@ -515,7 +515,7 @@ pub mod nebula_id_service_server {
                     let fut = async move {
                         let method = HealthCheckSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
+                        let mut grpc = sdforge::tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
@@ -534,18 +534,18 @@ pub mod nebula_id_service_server {
                     struct BatchGenerateStreamSvc<T: NebulaIdService>(pub Arc<T>);
                     impl<
                         T: NebulaIdService,
-                    > tonic::server::StreamingService<super::BatchGenerateStreamRequest>
+                    > sdforge::tonic::server::StreamingService<super::BatchGenerateStreamRequest>
                     for BatchGenerateStreamSvc<T> {
                         type Response = super::BatchGenerateStreamResponse;
                         type ResponseStream = T::BatchGenerateStreamStream;
                         type Future = BoxFuture<
-                            tonic::Response<Self::ResponseStream>,
-                            tonic::Status,
+                            sdforge::tonic::Response<Self::ResponseStream>,
+                            sdforge::tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<
-                                tonic::Streaming<super::BatchGenerateStreamRequest>,
+                            request: sdforge::tonic::Request<
+                                sdforge::tonic::Streaming<super::BatchGenerateStreamRequest>,
                             >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
@@ -567,7 +567,7 @@ pub mod nebula_id_service_server {
                     let fut = async move {
                         let method = BatchGenerateStreamSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
+                        let mut grpc = sdforge::tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
@@ -584,18 +584,18 @@ pub mod nebula_id_service_server {
                 _ => {
                     Box::pin(async move {
                         let mut response = http::Response::new(
-                            tonic::body::Body::default(),
+                            sdforge::tonic::body::Body::default(),
                         );
                         let headers = response.headers_mut();
                         headers
                             .insert(
-                                tonic::Status::GRPC_STATUS,
-                                (tonic::Code::Unimplemented as i32).into(),
+                                sdforge::tonic::Status::GRPC_STATUS,
+                                (sdforge::tonic::Code::Unimplemented as i32).into(),
                             );
                         headers
                             .insert(
                                 http::header::CONTENT_TYPE,
-                                tonic::metadata::GRPC_CONTENT_TYPE,
+                                sdforge::tonic::metadata::GRPC_CONTENT_TYPE,
                             );
                         Ok(response)
                     })
@@ -617,7 +617,7 @@ pub mod nebula_id_service_server {
     }
     /// Generated gRPC service name
     pub const SERVICE_NAME: &str = "nebula.id.v1.NebulaIdService";
-    impl<T> tonic::server::NamedService for NebulaIdServiceServer<T> {
+    impl<T> sdforge::tonic::server::NamedService for NebulaIdServiceServer<T> {
         const NAME: &'static str = SERVICE_NAME;
     }
 }

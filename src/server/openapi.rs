@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use axum::Router;
-use utoipa::OpenApi;
+use sdforge::axum::Router;
+use sdforge::utoipa::OpenApi;
 
 use crate::server::models::{
     ApiErrorResponse, ApiInfoResponse, ApiKeyListResponse, ApiKeyResponse,
@@ -140,7 +140,7 @@ pub fn create_swagger_router() -> Router {
 }
 
 /// OpenAPI JSON 处理器
-#[utoipa::path(
+#[sdforge::utoipa::path(
     get,
     path = "/api-docs/openapi.json",
     responses(
@@ -148,8 +148,8 @@ pub fn create_swagger_router() -> Router {
     ),
     tag = "docs"
 )]
-pub async fn openapi_json_handler() -> impl axum::response::IntoResponse {
-    axum::Json(ApiDoc::openapi())
+pub async fn openapi_json_handler() -> impl sdforge::axum::response::IntoResponse {
+    sdforge::axum::Json(ApiDoc::openapi())
 }
 
 #[cfg(test)]

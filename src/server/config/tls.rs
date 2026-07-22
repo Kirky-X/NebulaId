@@ -17,6 +17,7 @@
 
 use crate::core::config::TlsConfig;
 use rustls::pki_types::PrivateKeyDer;
+use sdforge::tonic::transport::{Certificate, Identity, ServerTlsConfig};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -24,7 +25,6 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::TlsAcceptor;
-use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum TlsError {

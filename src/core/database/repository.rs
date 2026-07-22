@@ -14,11 +14,11 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
-use rand::{Rng, RngExt};
-use sea_orm::{
+use dbnexus::sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QuerySelect, Set,
     TransactionTrait,
 };
+use rand::{Rng, RngExt};
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -192,7 +192,7 @@ use crate::core::database::group_entity::{CreateGroupRequest, Group, UpdateGroup
 use crate::core::database::workspace_entity::{CreateWorkspaceRequest, UpdateWorkspaceRequest};
 
 pub struct SeaOrmRepository {
-    db: sea_orm::DatabaseConnection,
+    db: dbnexus::sea_orm::DatabaseConnection,
     /// Salt for API key hashing
     salt: String,
     /// 分布式锁（可选，用于 segment 分配）
@@ -206,7 +206,7 @@ pub struct SeaOrmRepository {
 }
 
 impl SeaOrmRepository {
-    pub fn new(db: sea_orm::DatabaseConnection, salt: String) -> Self {
+    pub fn new(db: dbnexus::sea_orm::DatabaseConnection, salt: String) -> Self {
         Self {
             db,
             salt,
@@ -229,7 +229,7 @@ impl SeaOrmRepository {
     }
 
     /// Get the underlying database connection for advanced operations
-    pub fn get_db_connection(&self) -> &sea_orm::DatabaseConnection {
+    pub fn get_db_connection(&self) -> &dbnexus::sea_orm::DatabaseConnection {
         &self.db
     }
 
@@ -1766,7 +1766,9 @@ mod mock_tests {
     };
     use crate::core::types::id::{AlgorithmType, IdFormat};
     use chrono::NaiveDateTime;
-    use sea_orm::{DatabaseBackend, DbErr, MockDatabase, MockExecResult, MockRow, RuntimeErr};
+    use dbnexus::sea_orm::{
+        DatabaseBackend, DbErr, MockDatabase, MockExecResult, MockRow, RuntimeErr,
+    };
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
@@ -1775,13 +1777,13 @@ mod mock_tests {
     // ------------------------------------------------------------------
 
     /// Build a `SeaOrmRepository` backed by a `MockDatabase`.
-    fn make_repo(db: sea_orm::DatabaseConnection) -> SeaOrmRepository {
+    fn make_repo(db: dbnexus::sea_orm::DatabaseConnection) -> SeaOrmRepository {
         SeaOrmRepository::new(db, "test_salt".to_string())
     }
 
     /// Build an empty `MockDatabase` connection (Postgres backend) for tests
     /// that don't need to mock any query/exec results.
-    fn empty_pg_connection() -> sea_orm::DatabaseConnection {
+    fn empty_pg_connection() -> dbnexus::sea_orm::DatabaseConnection {
         MockDatabase::new(DatabaseBackend::Postgres).into_connection()
     }
 
@@ -2863,8 +2865,11 @@ mod mock_tests {
     #[tokio::test]
     async fn test_biz_tag_count_by_group_returns_count() {
         let g_id = fixed_uuid(63);
-        let mut count_row: BTreeMap<String, sea_orm::Value> = BTreeMap::new();
-        count_row.insert("num_items".to_string(), sea_orm::Value::BigInt(Some(7)));
+        let mut count_row: BTreeMap<String, dbnexus::sea_orm::Value> = BTreeMap::new();
+        count_row.insert(
+            "num_items".to_string(),
+            dbnexus::sea_orm::Value::BigInt(Some(7)),
+        );
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![count_row]])
             .into_connection();
@@ -2877,8 +2882,11 @@ mod mock_tests {
     #[tokio::test]
     async fn test_biz_tag_count_returns_count_with_optional_group() {
         let ws_id = fixed_uuid(64);
-        let mut count_row: BTreeMap<String, sea_orm::Value> = BTreeMap::new();
-        count_row.insert("num_items".to_string(), sea_orm::Value::BigInt(Some(3)));
+        let mut count_row: BTreeMap<String, dbnexus::sea_orm::Value> = BTreeMap::new();
+        count_row.insert(
+            "num_items".to_string(),
+            dbnexus::sea_orm::Value::BigInt(Some(3)),
+        );
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![count_row]])
             .into_connection();
@@ -3390,8 +3398,11 @@ mod mock_tests {
     #[tokio::test]
     async fn test_api_key_count_returns_count_for_workspace() {
         let ws_id = fixed_uuid(93);
-        let mut count_row: BTreeMap<String, sea_orm::Value> = BTreeMap::new();
-        count_row.insert("num_items".to_string(), sea_orm::Value::BigInt(Some(5)));
+        let mut count_row: BTreeMap<String, dbnexus::sea_orm::Value> = BTreeMap::new();
+        count_row.insert(
+            "num_items".to_string(),
+            dbnexus::sea_orm::Value::BigInt(Some(5)),
+        );
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![count_row]])
             .into_connection();
@@ -5384,13 +5395,13 @@ mod mock_tests {
 #[cfg(all(test, feature = "integration-tests"))]
 mod tests {
     use super::*;
-    use sea_orm::{ConnectOptions, ConnectionTrait, Database, Statement};
+    use dbnexus::sea_orm::{ConnectOptions, ConnectionTrait, Database, Statement};
 
-    async fn setup_test_db(db: &sea_orm::DatabaseConnection) {
+    async fn setup_test_db(db: &dbnexus::sea_orm::DatabaseConnection) {
         let backend = db.get_database_backend();
 
         // Set search_path to include nebula_id schema
-        db.execute(Statement::from_string(
+        db.execute_raw(Statement::from_string(
             backend,
             r#"SET search_path TO public, nebula_id"#,
         ))
@@ -5398,7 +5409,7 @@ mod tests {
         .unwrap();
 
         // Create schema if it doesn't exist
-        db.execute(Statement::from_string(
+        db.execute_raw(Statement::from_string(
             backend,
             r#"CREATE SCHEMA IF NOT EXISTS nebula_id"#,
         ))
@@ -5406,7 +5417,7 @@ mod tests {
         .unwrap();
 
         // Create enums in public schema for SeaORM compatibility
-        db.execute(Statement::from_string(
+        db.execute_raw(Statement::from_string(
             backend,
             r#"DO $$ BEGIN
                 CREATE TYPE public.algorithm_type AS ENUM ('segment', 'snowflake', 'uuid_v7', 'uuid_v4');
@@ -5417,7 +5428,7 @@ mod tests {
         .await
         .unwrap();
 
-        db.execute(Statement::from_string(
+        db.execute_raw(Statement::from_string(
             backend,
             r#"DO $$ BEGIN
                 CREATE TYPE public.id_format AS ENUM ('numeric', 'prefixed', 'uuid');
@@ -5428,7 +5439,7 @@ mod tests {
         .await
         .unwrap();
 
-        db.execute(Statement::from_string(
+        db.execute_raw(Statement::from_string(
             backend,
             r#"DO $$ BEGIN
                 CREATE TYPE public.workspace_status AS ENUM ('active', 'inactive', 'suspended');
@@ -5439,7 +5450,7 @@ mod tests {
         .await
         .unwrap();
 
-        db.execute(Statement::from_string(
+        db.execute_raw(Statement::from_string(
             backend,
             r#"
             CREATE TABLE IF NOT EXISTS "nebula_id"."workspaces" (
@@ -5457,7 +5468,7 @@ mod tests {
         .await
         .unwrap();
 
-        db.execute(Statement::from_string(
+        db.execute_raw(Statement::from_string(
             backend,
             r#"
             CREATE TABLE IF NOT EXISTS "nebula_id"."groups" (
@@ -5475,7 +5486,7 @@ mod tests {
         .await
         .unwrap();
 
-        db.execute(Statement::from_string(
+        db.execute_raw(Statement::from_string(
             backend,
             r#"
             CREATE TABLE IF NOT EXISTS "nebula_id"."biz_tags" (
@@ -5499,7 +5510,7 @@ mod tests {
         .await
         .unwrap();
 
-        db.execute(Statement::from_string(
+        db.execute_raw(Statement::from_string(
             backend,
             r#"
             CREATE TABLE IF NOT EXISTS "nebula_id"."segments" (
@@ -5519,7 +5530,7 @@ mod tests {
         .await
         .unwrap();
 
-        db.execute(Statement::from_string(
+        db.execute_raw(Statement::from_string(
             backend,
             r#"
             CREATE TABLE IF NOT EXISTS "nebula_id"."api_keys" (

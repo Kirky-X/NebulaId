@@ -30,11 +30,11 @@ use nebulaid::server::proto::nebula::id::v1::nebula_id_service_server::NebulaIdS
 use nebulaid::server::rate_limit::limiter::RateLimiter;
 use nebulaid::server::router::create_router;
 use nebulaid::server::sdforge_adapter::{init_sdforge, merge_sdforge_routes};
+use sdforge::tonic::transport::Server;
 use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tonic::transport::Server;
 use tracing::warn;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -351,7 +351,7 @@ async fn start_http_server(
     let router = create_router(handlers, auth, rate_limiter, audit_logger)
         .await
         .layer(create_size_limit_middleware())
-        .merge(merge_sdforge_routes(axum::Router::new()));
+        .merge(merge_sdforge_routes(sdforge::axum::Router::new()));
 
     // 检查是否启用 HTTPS (暂时回退到普通 HTTP，TLS 功能待完善)
     if let Some(ref tls) = tls_manager {
@@ -364,7 +364,7 @@ async fn start_http_server(
     info!("{}", t!("log.main.starting_http_server", addr = addr));
     let listener = TcpListener::bind(addr).await?;
 
-    axum::serve(listener, router)
+    sdforge::axum::serve(listener, router)
         .with_graceful_shutdown(async {
             tokio::signal::ctrl_c().await.ok();
             info!("{}", t!("log.main.shutting_down_http_server"));

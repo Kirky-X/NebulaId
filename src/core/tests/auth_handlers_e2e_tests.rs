@@ -46,16 +46,16 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::{
+use base64::Engine;
+use sdforge::axum::{
     body::Body,
     http::{Request, StatusCode},
     middleware::{from_fn, from_fn_with_state},
     routing::get,
     Router,
 };
-use base64::Engine;
+use sdforge::tower::ServiceExt;
 use sha2::Digest;
-use tower::ServiceExt;
 use uuid::Uuid;
 use validator::Validate;
 
@@ -268,7 +268,7 @@ fn make_request_with_role(role: ApiKeyRole) -> Request<Body> {
 
 /// 读取响应 body 为字符串（用 axum 0.8 内置的 `to_bytes`）。
 async fn read_body_to_string(body: Body) -> String {
-    let bytes = axum::body::to_bytes(body, usize::MAX)
+    let bytes = sdforge::axum::body::to_bytes(body, usize::MAX)
         .await
         .expect("failed to read response body");
     String::from_utf8(bytes.to_vec()).expect("response body is not valid UTF-8")

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use sea_orm::{
+use dbnexus::sea_orm::{
     ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend, DbErr, Statement,
 };
 use tracing::{info, warn};
@@ -130,8 +130,8 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
 
     // Create schema if not exists (only for PostgreSQL)
     let create_schema_sql = format!(r#"CREATE SCHEMA IF NOT EXISTS {}"#, NEBULA_SCHEMA);
-    let stmt = Statement::from_string(DbBackend::Postgres, &create_schema_sql);
-    match db.execute(stmt).await {
+    // sea-orm 2.0: execute() 要求 StatementBuilder trait，原始 SQL 用 execute_unprepared
+    match db.execute_unprepared(&create_schema_sql).await {
         Ok(_) => info!(
             "{}",
             t!(
@@ -254,8 +254,8 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
     ];
 
     for sql in tables {
-        let stmt = Statement::from_string(DbBackend::Postgres, &sql);
-        match db.execute(stmt).await {
+        // sea-orm 2.0: execute() 要求 StatementBuilder trait，原始 SQL 用 execute_unprepared
+        match db.execute_unprepared(&sql).await {
             Ok(_) => {
                 let table_name = sql.split_whitespace().nth(4).unwrap_or("").replace('(', "");
                 info!(
@@ -332,7 +332,7 @@ impl DatabaseManager {
 mod tests {
     use super::*;
     use crate::core::config::{DatabaseConfig, DatabaseEngine};
-    use sea_orm::{DatabaseBackend, DbErr, MockDatabase, MockExecResult, RuntimeErr};
+    use dbnexus::sea_orm::{DatabaseBackend, DbErr, MockDatabase, MockExecResult, RuntimeErr};
 
     #[cfg(feature = "sqlite")]
     #[tokio::test]
@@ -556,7 +556,7 @@ mod tests {
 
     // ===== run_migrations with MockDatabase =====
 
-    fn mock_db_with_n_ok(n: usize) -> sea_orm::DatabaseConnection {
+    fn mock_db_with_n_ok(n: usize) -> dbnexus::sea_orm::DatabaseConnection {
         let results: Vec<MockExecResult> = (0..n)
             .map(|_| MockExecResult {
                 last_insert_id: 0,

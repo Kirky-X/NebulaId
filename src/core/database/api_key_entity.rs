@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use sea_orm::entity::prelude::*;
+use dbnexus::sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

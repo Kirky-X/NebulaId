@@ -18,14 +18,10 @@ path = "src/lib.rs"
 name = "nebula-id"
 path = "src/main.rs"
 
-[build-dependencies]
-protoc-bin-vendored = "3.2"
-tonic-prost-build = "0.14"
-
 [features]
 default = ["postgresql", "http", "grpc"]
-postgresql = ["sea-orm/sqlx-postgres", "sqlx/postgres"]
-sqlite = ["sea-orm/sqlx-sqlite", "sqlx/sqlite"]
+postgresql = ["dbnexus/postgres"]
+sqlite = ["dbnexus/sqlite"]
 etcd = ["dep:etcd-client"]
 # integration-tests: 门控需要真实数据库的 #[ignore] 集成测试
 integration-tests = []
@@ -44,8 +40,8 @@ unexpected_cfgs = { level = "allow", check-cfg = [
 # 外部组件（基础设施层）
 confers = "0.4"
 oxcache = "0.3"
-dbnexus = { version = "0.4", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }
-sdforge = { version = "0.4", default-features = false, features = ["http", "grpc"] }
+dbnexus = { version = "0.4", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
+sdforge = { version = "0.4", default-features = false, features = ["http", "grpc", "openapi"] }
 
 # 工具
 async-trait = "0.1"
@@ -58,18 +54,22 @@ tokio = { version = "1.50", features = ["full"] }
 tokio-stream = "0.1"
 futures-util = "0.3"
 
-# Web 框架
-axum = { version = "0.8", features = ["json", "macros"] }
-tower = { version = "0.5", features = ["full"] }
-tower-http = { version = "0.5", features = ["cors", "compression-gzip", "timeout", "limit", "trace", "set-header"] }
+# Web 框架（axum/tower/tower-http 通过 sdforge re-export 使用）
 
-# OpenAPI 文档
-utoipa = { version = "5.0", features = ["axum_extras", "chrono", "uuid"] }
+# gRPC / Protobuf（通过 sdforge::tonic / sdforge::prost re-export使用）
 
-# gRPC / Protobuf
-tonic = { version = "0.14", features = ["tls-webpki-roots"] }
-tonic-prost = "0.14"
-prost = "0.14"
+# Derive 宏直接依赖：以下 crate 的 derive 宏（OpenApi/ToSchema/Message/DeriveEntityModel 等）
+# 展开时生成 `::crate_name::` 绝对路径，Rust 2018+ 要求这些 crate 在 extern prelude 中
+# 可见（即必须是直接依赖）。实际 API 仍通过 sdforge/dbnexus re-export 使用。
+#
+# 注：derive 宏（如 `#[derive(ToSchema)]`）必须走直接依赖（生成 `::utoipa::` 路径）；
+# 而属性宏（如 `#[utoipa::path(...)]`）通过 `#[sdforge::utoipa::path(...)]` 形式调用，
+# 因为属性宏的展开只依赖宏注册表路径解析，不受 extern prelude 限制。两者并存是
+# Rust 宏系统的固有特性，非冗余声明。
+utoipa = { version = "5.0", default-features = false, features = ["macros", "uuid", "chrono"] }
+prost = { version = "0.14", default-features = false, features = ["derive"] }
+sea-orm = { version = "2.0", default-features = false, features = ["macros", "with-json", "with-uuid", "with-chrono"] }
+tonic-prost = { version = "0.14", default-features = false }
 
 # 分布式协调
 etcd-client = { version = "0.17", optional = true }
@@ -77,9 +77,7 @@ etcd-client = { version = "0.17", optional = true }
 # 缓存与存储
 parking_lot = "0.12"
 
-# 数据库（dbnexus 接管连接管理，sea-orm 仍用于 ORM 查询）
-sea-orm = { version = "1.1", features = ["runtime-tokio-rustls", "with-chrono", "with-uuid", "postgres-array"] }
-sqlx = { version = "0.8", default-features = false, optional = true, features = ["runtime-tokio", "tls-rustls", "uuid", "chrono"] }
+# 数据库（完全由 dbnexus 接管，sea-orm 通过 dbnexus::sea_orm re-export使用）
 
 # 日志追踪
 tracing = "0.1"
@@ -95,13 +93,12 @@ getrandom = "0.2"
 rand = "0.10"
 subtle = "2.5"
 # Argon2id 用于 API key 密钥哈希（CWE-916 修复）
-argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
+# std feature 启用 rand_core/getrandom 支持，OsRng 可用
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash", "std"] }
 regex = "1.0"
-toml = "1.1"
 reqwest = { version = "0.13", features = ["json"] }
 validator = { version = "0.20", features = ["derive"] }
 serde_with = "3.0"
-config = "0.15"
 
 # 错误处理
 anyhow = "1.0"
@@ -124,11 +121,13 @@ rust-i18n = { version = "3.1", default-features = false }
 
 [dev-dependencies]
 mockall = "0.13"
-sea-orm = { version = "1.1", features = ["mock"] }
+sea-orm = { version = "2.0", default-features = false, features = ["mock"] }
 tempfile = "3.0"
 reqwest = { version = "0.13", features = ["json"] }
 criterion = { version = "0.5", default-features = false }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+# toml 仅用于测试中序列化 Config 为 TOML 字符串（confers 不提供序列化功能）
+toml = { version = "1.1", default-features = false, features = ["std", "serde"] }
 
 [[bench]]
 name = "i18n"
@@ -151,3 +150,10 @@ opt-level = 0
 [profile.bench]
 opt-level = 3
 lto = true
+
+[patch.crates-io]
+# TODO(RELEASE-BLOCKER): sdforge 0.4.7 必须先发布到 crates.io（包含 forge alias +
+# axum/tower/tower_http/tonic/prost/utoipa 完整 re-export），否则移除此 patch 会
+# 导致编译失败。发布后删除此 [patch.crates-io] 节，并将上方 sdforge 版本约束
+# 改为 "0.4.7"。
+sdforge = { path = "../sdforge" }

@@ -23,12 +23,14 @@ repos:
 
   # Rust Static Analysis (cargo clippy)
   # 限定 --package nebulaid，避免扫描 path 依赖
+  # 不使用 --all-features：postgresql 与 sqlite 互斥（dbnexus compile_error），
+  # 测试主要 feature 组合（postgresql + http + grpc + etcd + integration-tests）
   - repo: local
     hooks:
       - id: cargo-clippy
         name: Rust Static Analysis
         description: Run cargo clippy for code quality analysis
-        entry: bash -c 'cargo clippy --package nebulaid --all-features -- -D warnings'
+        entry: bash -c 'cargo clippy --package nebulaid --features "postgresql,http,grpc,etcd,integration-tests" -- -D warnings'
         language: system
         pass_filenames: false
         always_run: true
@@ -36,12 +38,13 @@ repos:
 
   # Rust Compilation Check (cargo check)
   # 限定 --package nebulaid，避免扫描 path 依赖
+  # 不使用 --all-features（同上：postgresql 与 sqlite 互斥）
   - repo: local
     hooks:
       - id: cargo-check
         name: Rust Compilation Check
         description: Verify project compiles without errors
-        entry: bash -c 'cargo check --package nebulaid --all-features'
+        entry: bash -c 'cargo check --package nebulaid --features "postgresql,http,grpc,etcd,integration-tests"'
         language: system
         pass_filenames: false
         always_run: true

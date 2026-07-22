@@ -27,37 +27,14 @@ default = ["postgresql", "http", "grpc"]
 postgresql = ["sea-orm/sqlx-postgres", "sqlx/postgres"]
 sqlite = ["sea-orm/sqlx-sqlite", "sqlx/sqlite"]
 etcd = ["dep:etcd-client"]
-# Gate the `mod tests` integration-test blocks (those requiring a live
-# database, marked #[ignore]). When this feature is disabled, those test
-# modules are not compiled, so cargo-llvm-cov does not count their lines
-# as uncovered. Enable with `--features integration-tests` to run them
-# against a real database (`DATABASE_URL` + `--ignored`).
+# integration-tests: 门控需要真实数据库的 #[ignore] 集成测试
 integration-tests = []
-
-# sdforge 0.4.4 macros emit #[cfg(feature = "http")] / #[cfg(feature = "grpc")]
-# gates *inside* the downstream crate's #[forge] expansion. These gates are
-# evaluated against nebulaid's own [features] table, not sdforge's. Without
-# mirror features here, inventory::submit!(RouteRegistration) gets cfg'd out
-# and init_all_plugins() returns 0 routes (silent regression observed when
-# sdforge-macros upgraded 0.4.2 → 0.4.4, which added these gates).
-#
-# These are empty mirror features — sdforge's http/grpc features are still
-# hardcoded in the sdforge dependency declaration below. The mirror features
-# only exist so the macro-emitted #[cfg(feature = "http")] evaluates to true
-# in nebulaid's crate context. When a user explicitly disables them via
-# --no-default-features, sdforge::http remains available (hardcoded) but
-# inventory::submit! is cfg'd out — init_sdforge() will return 0 routes,
-# which is the expected behavior for a build that opts out of sdforge
-# route registration.
+# sdforge 宏在 #[forge] 展开时 emit #[cfg(feature = "http"/"grpc")]，
+# 这里声明空镜像 feature 使其在 nebulaid crate 上下文中求值为 true
 http = []
 grpc = []
 
-# sdforge 0.4.4 macros also emit #[cfg(feature = "...")] gates for other
-# sdforge-internal features (cli/mcp/openapi/websocket/streaming/cache/...)
-# inside #[forge] expansions. check-cfg only knows about nebulaid's own
-# [features] table, so it would flag these as unexpected. Declare them as
-# known cfg values to silence the spurious warnings without actually
-# exposing them as nebulaid features (we only enable http + grpc above).
+# sdforge 宏还 emit 其他内部 feature 的 cfg gate，声明为已知 cfg 值以消除 check-cfg 警告
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = [
     'cfg(feature, values("http", "grpc", "cli", "mcp", "openapi", "websocket", "streaming", "cache", "logging", "inklog", "i18n", "security", "ratelimit", "ratelimit-http", "docs", "limiteron-integration", "kit"))',
@@ -74,7 +51,7 @@ sdforge = { version = "0.4", default-features = false, features = ["http", "grpc
 async-trait = "0.1"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1"
+serde_json = "1.0"
 
 # 异步运行时
 tokio = { version = "1.50", features = ["full"] }
@@ -85,7 +62,6 @@ futures-util = "0.3"
 axum = { version = "0.8", features = ["json", "macros"] }
 tower = { version = "0.5", features = ["full"] }
 tower-http = { version = "0.5", features = ["cors", "compression-gzip", "timeout", "limit", "trace", "set-header"] }
-hyper = { version = "1.8", features = ["full"] }
 
 # OpenAPI 文档
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
@@ -101,7 +77,7 @@ etcd-client = { version = "0.17", optional = true }
 # 缓存与存储
 parking_lot = "0.12"
 
-# 数据库
+# 数据库（dbnexus 接管连接管理，sea-orm 仍用于 ORM 查询）
 sea-orm = { version = "1.1", features = ["runtime-tokio-rustls", "with-chrono", "with-uuid", "postgres-array"] }
 sqlx = { version = "0.8", default-features = false, optional = true, features = ["runtime-tokio", "tls-rustls", "uuid", "chrono"] }
 
@@ -115,12 +91,10 @@ chrono = { version = "0.4", features = ["std"] }
 hex = "0.4"
 base64 = "0.21"
 sha2 = "0.11"
-hmac = "0.12"
 getrandom = "0.2"
 rand = "0.10"
 subtle = "2.5"
-# Argon2id 用于 API key 密钥哈希（替代 SHA256，CWE-916 修复）
-# 显式禁用默认特性以减少依赖体积，仅启用 password-hash（PHC 格式支持）与 alloc
+# Argon2id 用于 API key 密钥哈希（CWE-916 修复）
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
 regex = "1"
 toml = "1.1"
@@ -140,33 +114,12 @@ rustls-pemfile = "2"
 # 基础组件
 arc-swap = "1.6"
 smallvec = "1"
-bytes = "1"
-crc32fast = "1"
-either = "1"
-pin-project = "1.1"
-# Phase 9 T043 (CRITICAL C1) — used by `redact_db_url` to scrub DB
-# passwords before `final_url` enters tracing logs. reqwest/sea-orm
-# already pull url in transitively; declaring it explicitly lets us
-# call `Url::set_password` without relying on a downstream re-export.
 url = "2"
 
-# 速率限制和流量控制 - 使用 limiteron 库
+# 速率限制和流量控制
 limiteron = { version = "0.2", default-features = false, features = ["postgres", "quota-control", "ban-manager"] }
 
-# 国际化 (ICU i18n — Phase 8)
-# Phase 8 T041 (MED-001 fix) — pinned to `3.1` (Major.Minor per rule 29).
-# `src/core/i18n.rs` calls `crate::_rust_i18n_try_translate` and
-# `rust_i18n::replace_patterns`, both `#[doc(hidden)] pub fn` generated
-# by the `i18n!` macro. The minor pin limits breakage risk if a future
-# 3.x release renames or removes these hidden APIs. If rust-i18n 4.x
-# exposes a stable per-locale translate API, migrate accordingly.
-#
-# Phase 8 T041 (LOW L-8 fix, rule 28) — `default-features = false`
-# disables rust-i18n's default `accept-language` feature (we provide
-# our own `parse_accept_language` in `src/server/middleware/locale.rs`
-# with stricter RFC 7231 §5.3.1 conformance + DoS guards). The
-# `i18n!` macro and `t!()` / `_rust_i18n_try_translate` / `replace_patterns`
-# APIs do not require the default features.
+# 国际化（default-features = false 禁用 accept-language，项目自带更严格的 RFC 7231 解析）
 rust-i18n = { version = "3.1", default-features = false }
 
 [dev-dependencies]
@@ -174,11 +127,7 @@ mockall = "0.13"
 sea-orm = { version = "1.1", features = ["mock"] }
 tempfile = "3"
 reqwest = { version = "0.13", features = ["json"] }
-# Phase 8 T041 (LOW L4 perf) — criterion bench for i18n translation
-# overhead and locale negotiation. `default-features = false` per rule 28;
-# we only need the sync API (no async_tokio) for these micro-benchmarks.
 criterion = { version = "0.5", default-features = false }
-# TLS 测试用：生成自签证书 (default-features = false per rule 28)
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
 
 [[bench]]

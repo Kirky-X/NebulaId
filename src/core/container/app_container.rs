@@ -20,8 +20,128 @@ use confers::interface::ConfigProvider;
 use oxcache::backend::{MokaMemoryBackend, RedisBackend};
 use oxcache::cache::{ChainCache, ChainLink};
 use oxcache::Cache;
+use std::any::TypeId;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use trait_kit::core::{AsyncAutoBuilder, ModuleMeta};
+use trait_kit::AsyncKit;
+
+// ============================================================================
+// trait-kit 模块定义 — 替代手写的 DI 构建逻辑
+// ============================================================================
+
+/// 配置文件路径（用于 AsyncKit::set_config 传入 from_config_file 的参数）
+#[derive(Clone)]
+struct ConfigFilePath(String);
+
+/// ConfigModule — 产出 `Arc<dyn ConfigProvider>`，无依赖
+struct ConfigModule;
+
+impl ModuleMeta for ConfigModule {
+    const NAME: &'static str = "config";
+    fn dependencies() -> &'static [(&'static str, TypeId)] {
+        &[]
+    }
+}
+
+impl AsyncAutoBuilder for ConfigModule {
+    type Capability = Arc<dyn ConfigProvider>;
+    type Error = CoreError;
+
+    fn build<'a>(
+        kit: &'a AsyncKit,
+    ) -> Pin<Box<dyn Future<Output = Result<Self::Capability, Self::Error>> + Send + 'a>> {
+        Box::pin(async move {
+            let path = kit
+                .config::<ConfigFilePath>()
+                .map_err(|e| CoreError::ConfigurationError(e.to_string()))?;
+            let config_provider_impl = ConfigProviderImpl::builder()
+                .file(&path.0)
+                .env()
+                .build()
+                .map_err(|e| CoreError::ConfigurationError(e.to_string()))?;
+            Ok(Arc::new(config_provider_impl) as Arc<dyn ConfigProvider>)
+        })
+    }
+}
+
+/// CacheModule — 产出 `Arc<Cache<String, Vec<u8>>>`，依赖 ConfigModule
+struct CacheModule;
+
+impl ModuleMeta for CacheModule {
+    const NAME: &'static str = "cache";
+    fn dependencies() -> &'static [(&'static str, TypeId)] {
+        static DEPS: &[(&str, TypeId)] = &[("config", TypeId::of::<ConfigModule>())];
+        DEPS
+    }
+}
+
+impl AsyncAutoBuilder for CacheModule {
+    type Capability = Arc<Cache<String, Vec<u8>>>;
+    type Error = CoreError;
+
+    fn build<'a>(
+        kit: &'a AsyncKit,
+    ) -> Pin<Box<dyn Future<Output = Result<Self::Capability, Self::Error>> + Send + 'a>> {
+        Box::pin(async move {
+            let config_provider = kit
+                .require::<ConfigModule>()
+                .map_err(|e| CoreError::ConfigurationError(e.to_string()))?;
+            let config_adapter = ConfigAdapter::new(config_provider);
+            let redis_config = config_adapter.get_redis_config();
+
+            let l1 = MokaMemoryBackend::builder().capacity(10000).build();
+            let l2 = RedisBackend::new(&redis_config.url)
+                .await
+                .map_err(|e| CoreError::CacheError(e.to_string()))?;
+            let chain = ChainCache::builder()
+                .link(ChainLink::from_backend(l1))
+                .link(ChainLink::from_backend(l2))
+                .build();
+            let cache: Cache<String, Vec<u8>> = Cache::builder()
+                .backend_arc(Arc::new(chain))
+                .build()
+                .await
+                .map_err(|e| CoreError::CacheError(e.to_string()))?;
+            Ok(Arc::new(cache))
+        })
+    }
+}
+
+/// DatabaseModule — 产出 `Arc<dyn dbnexus::ConnectionPool>`，依赖 ConfigModule
+struct DatabaseModule;
+
+impl ModuleMeta for DatabaseModule {
+    const NAME: &'static str = "database";
+    fn dependencies() -> &'static [(&'static str, TypeId)] {
+        static DEPS: &[(&str, TypeId)] = &[("config", TypeId::of::<ConfigModule>())];
+        DEPS
+    }
+}
+
+impl AsyncAutoBuilder for DatabaseModule {
+    type Capability = Arc<dyn dbnexus::ConnectionPool>;
+    type Error = CoreError;
+
+    fn build<'a>(
+        kit: &'a AsyncKit,
+    ) -> Pin<Box<dyn Future<Output = Result<Self::Capability, Self::Error>> + Send + 'a>> {
+        Box::pin(async move {
+            let config_provider = kit
+                .require::<ConfigModule>()
+                .map_err(|e| CoreError::ConfigurationError(e.to_string()))?;
+            let config_adapter = ConfigAdapter::new(config_provider);
+            let db_config = config_adapter.get_database_config();
+
+            let database = dbnexus::DbPool::new(&db_config.url)
+                .await
+                .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
+            Ok(Arc::new(database) as Arc<dyn dbnexus::ConnectionPool>)
+        })
+    }
+}
 
 /// Application container for managing all dependencies.
 ///
@@ -115,51 +235,21 @@ impl AppContainer {
     /// let segment_config = container.config_adapter().get_segment_config();
     /// ```
     pub async fn from_config_file(config_path: &str) -> Result<Self, CoreError> {
-        // Load configuration
-        let config_provider_impl = ConfigProviderImpl::builder()
-            .file(config_path)
-            .env()
-            .build()
-            .map_err(|e| CoreError::ConfigurationError(e.to_string()))?;
+        // 使用 trait-kit 的 AsyncKit 管理依赖构建拓扑：
+        // ConfigModule（无依赖）→ CacheModule/DatabaseModule（依赖 ConfigModule）
+        // AsyncKit::build() 自动按拓扑序构建，替代原手写的线性构建逻辑
+        let mut kit = AsyncKit::new();
+        kit.set_config(ConfigFilePath(config_path.to_string()));
+        kit.register::<ConfigModule>()?;
+        kit.register::<CacheModule>()?;
+        kit.register::<DatabaseModule>()?;
+        let kit = kit.build().await?;
 
-        // Convert to trait object
-        let config_provider: Arc<dyn ConfigProvider> = Arc::new(config_provider_impl);
-        let config_adapter = ConfigAdapter::new(Arc::clone(&config_provider));
+        let config = kit.require::<ConfigModule>()?;
+        let cache = kit.require::<CacheModule>()?;
+        let database = kit.require::<DatabaseModule>()?;
 
-        // Get database configuration
-        let db_config = config_adapter.get_database_config();
-
-        // Get Redis configuration for tiered cache
-        let redis_config = config_adapter.get_redis_config();
-
-        // Initialize tiered cache backend (L1 memory + L2 Redis) using oxcache.
-        // oxcache 0.3.8 removed CacheBuilder::tiered; ChainCache now provides
-        // multi-tier composition and implements CacheBackend, so it can be
-        // wrapped by Cache<K, V> via backend_arc.
-        let l1 = MokaMemoryBackend::builder().capacity(10000).build();
-        let l2 = RedisBackend::new(&redis_config.url)
-            .await
-            .map_err(|e| CoreError::CacheError(e.to_string()))?;
-        let chain = ChainCache::builder()
-            .link(ChainLink::from_backend(l1))
-            .link(ChainLink::from_backend(l2))
-            .build();
-        let cache: Cache<String, Vec<u8>> = Cache::builder()
-            .backend_arc(Arc::new(chain))
-            .build()
-            .await
-            .map_err(|e| CoreError::CacheError(e.to_string()))?;
-
-        // Initialize database pool (using dbnexus)
-        let database = dbnexus::DbPool::new(&db_config.url)
-            .await
-            .map_err(|e| CoreError::DatabaseError(e.to_string()))?;
-
-        Ok(Self::with_dependencies(
-            config_provider,
-            Arc::new(cache),
-            Arc::new(database),
-        ))
+        Ok(Self::with_dependencies(config, cache, database))
     }
 
     /// Get the configuration adapter.

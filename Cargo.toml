@@ -42,6 +42,8 @@ confers = "0.4"
 oxcache = "0.3"
 dbnexus = { version = "0.4", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
 sdforge = { version = "0.4", default-features = false, features = ["http", "grpc", "openapi"] }
+inklog = { version = "0.1", default-features = false }
+trait-kit = { version = "0.3", default-features = false, features = ["async"] }
 
 # 工具
 async-trait = "0.1"
@@ -79,9 +81,8 @@ parking_lot = "0.12"
 
 # 数据库（完全由 dbnexus 接管，sea-orm 通过 dbnexus::sea_orm re-export使用）
 
-# 日志追踪
+# 日志追踪（tracing-subscriber 由 inklog 间接引入，日志初始化通过 inklog 接管）
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # 工具库
 uuid = { version = "1.22", features = ["v4", "v7", "v8", "serde"] }
@@ -157,3 +158,7 @@ lto = true
 # 导致编译失败。发布后删除此 [patch.crates-io] 节，并将上方 sdforge 版本约束
 # 改为 "0.4.7"。
 sdforge = { path = "../sdforge" }
+# inklog 本地 patch：crates.io 上 0.1.12 仍使用 LevelFilter，不支持 RUST_LOG
+# 按模块过滤（如 `RUST_LOG=nebulaid=debug,hyper=warn`）。本地 ../inklog 已切换至
+# EnvFilter，发布到 crates.io 后删除此 patch 节。
+inklog = { path = "../inklog" }

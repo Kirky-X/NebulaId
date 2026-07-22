@@ -658,15 +658,27 @@ impl ConfigManagementService for ConfigManager {
                         last_error: None,
                     }
                 }
-                Err(e) => DatabaseMetrics {
-                    status: crate::server::models::HealthStatus::Unhealthy,
-                    connection_pool: ConnectionPoolMetrics {
-                        active_connections: 0,
-                        idle_connections: 0,
-                        max_connections: 0,
-                    },
-                    last_error: Some(e.to_string()),
-                },
+                Err(e) => {
+                    // SEC-MEDIUM-001 修复（CWE-209 / strix vuln-0003）：/metrics
+                    // 端点公开且无认证，原始 DB 错误字符串可能暴露主机名、端口、
+                    // 驱动诊断信息。此处返回通用消息，详细错误通过 tracing::error!
+                    // 记录到服务端日志保留运维可见性。
+                    tracing::error!(
+                        error = %e,
+                        "database health check failed — details redacted from /metrics"
+                    );
+                    DatabaseMetrics {
+                        status: crate::server::models::HealthStatus::Unhealthy,
+                        connection_pool: ConnectionPoolMetrics {
+                            active_connections: 0,
+                            idle_connections: 0,
+                            max_connections: 0,
+                        },
+                        last_error: Some(
+                            "Database health check failed — see server logs".to_string(),
+                        ),
+                    }
+                }
             }
         } else {
             DatabaseMetrics {

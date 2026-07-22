@@ -17,7 +17,6 @@ Thumbs.db
 # Rust Build Artifacts
 # -----------------------------------------------------------------------------
 target/
-Cargo.lock
 
 # -----------------------------------------------------------------------------
 # IDE and Editor Files
@@ -117,6 +116,7 @@ docs/gh-pages/
 *_BACKUP_*
 *_SAVE_*
 temp/
+strix_runs/
 
 # -----------------------------------------------------------------------------
 # Local Debug / Cargo Output Capture (do not commit)

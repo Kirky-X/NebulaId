@@ -103,6 +103,14 @@ pub async fn create_router(
             "/workspaces/{name}/regenerate-user-key",
             post(handle_regenerate_user_key),
         )
+        // SEC-CRITICAL-002 修复（CWE-862 / strix vuln-0002）：服务级配置变更
+        // 端点（速率限制、日志、热重载、默认算法）必须由 Admin 角色执行。
+        // 原本错放在 v1_authenticated_routes，导致任何 User API key 都能
+        // 将全局速率限制降到 1 RPS 或修改默认算法，影响全部租户。
+        .route("/config/rate-limit", post(handle_update_rate_limit))
+        .route("/config/logging", post(handle_update_logging))
+        .route("/config/reload", post(handle_reload_config))
+        .route("/config/algorithm", post(handle_set_algorithm))
         // Apply admin requirement middleware first, then auth middleware
         // This ensures auth runs first to set the ApiKeyRole extension
         .layer(sdforge::axum::middleware::from_fn(
@@ -116,10 +124,6 @@ pub async fn create_router(
     // Authenticated endpoints (require API key)
     let v1_authenticated_routes = Router::new()
         .route("/config", get(handle_get_config))
-        .route("/config/rate-limit", post(handle_update_rate_limit))
-        .route("/config/logging", post(handle_update_logging))
-        .route("/config/reload", post(handle_reload_config))
-        .route("/config/algorithm", post(handle_set_algorithm))
         // ID generation (user only)
         .route("/generate", post(handle_generate))
         .route("/generate/batch", post(handle_batch_generate))
@@ -594,21 +598,35 @@ async fn handle_create_biz_tag(
 
 async fn handle_get_biz_tag(
     State(state): State<AppState>,
+    extensions: sdforge::axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: sdforge::axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
     Path(id): Path<String>,
 ) -> Result<Json<BizTagResponse>, (StatusCode, Json<ErrorResponse>)> {
     let uuid = uuid::Uuid::parse_str(&id).map_err(|_| invalid_uuid_response(locale))?;
 
-    state
+    // SEC-CRITICAL-003 修复（CWE-639 / strix vuln-0001）：IDOR 防护。
+    // 与 handle_create_biz_tag 一致，仅 User API key 可访问 BizTag，
+    // 且必须校验目标 BizTag 的 workspace_id 与调用者一致，防止跨租户访问。
+    verify_user_role(extensions_role.0, locale)?;
+
+    let response = state
         .handlers
         .get_biz_tag(uuid)
         .await
-        .map(Json)
-        .map_err(|e| core_error_to_response(&e, locale))
+        .map_err(|e| core_error_to_response(&e, locale))?;
+
+    let biz_tag_workspace =
+        uuid::Uuid::parse_str(&response.workspace_id).map_err(|_| invalid_uuid_response(locale))?;
+    verify_workspace_id(biz_tag_workspace, &extensions.0, locale)?;
+
+    Ok(Json(response))
 }
 
 async fn handle_update_biz_tag(
     State(state): State<AppState>,
+    extensions: sdforge::axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: sdforge::axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
     Path(id): Path<String>,
     Json(req): Json<UpdateBizTagRequest>,
@@ -618,6 +636,19 @@ async fn handle_update_biz_tag(
     if let Err(validation_errors) = req.validate() {
         return Err(validation_error_response(&validation_errors, locale));
     }
+
+    // SEC-CRITICAL-003 修复（CWE-639 / strix vuln-0001）：IDOR 防护。
+    // 先查询现有 BizTag 校验 workspace 归属，再执行更新。
+    verify_user_role(extensions_role.0, locale)?;
+
+    let existing = state
+        .handlers
+        .get_biz_tag(uuid)
+        .await
+        .map_err(|e| core_error_to_response(&e, locale))?;
+    let biz_tag_workspace =
+        uuid::Uuid::parse_str(&existing.workspace_id).map_err(|_| invalid_uuid_response(locale))?;
+    verify_workspace_id(biz_tag_workspace, &extensions.0, locale)?;
 
     state
         .handlers
@@ -629,10 +660,25 @@ async fn handle_update_biz_tag(
 
 async fn handle_delete_biz_tag(
     State(state): State<AppState>,
+    extensions: sdforge::axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: sdforge::axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
     let uuid = uuid::Uuid::parse_str(&id).map_err(|_| invalid_uuid_response(locale))?;
+
+    // SEC-CRITICAL-003 修复（CWE-639 / strix vuln-0001）：IDOR 防护。
+    // 先查询现有 BizTag 校验 workspace 归属，再执行删除。
+    verify_user_role(extensions_role.0, locale)?;
+
+    let existing = state
+        .handlers
+        .get_biz_tag(uuid)
+        .await
+        .map_err(|e| core_error_to_response(&e, locale))?;
+    let biz_tag_workspace =
+        uuid::Uuid::parse_str(&existing.workspace_id).map_err(|_| invalid_uuid_response(locale))?;
+    verify_workspace_id(biz_tag_workspace, &extensions.0, locale)?;
 
     state
         .handlers
@@ -1986,6 +2032,8 @@ mod tests {
         let state = create_test_app_state();
         let result = handle_get_biz_tag(
             State(state),
+            Extension(Some(uuid::Uuid::new_v4())),
+            Extension(crate::server::middleware::ApiKeyRole::User),
             Extension(Locale::En),
             Path("not-a-uuid".to_string()),
         )
@@ -2000,6 +2048,8 @@ mod tests {
         let state = create_test_app_state();
         let result = handle_get_biz_tag(
             State(state),
+            Extension(Some(uuid::Uuid::new_v4())),
+            Extension(crate::server::middleware::ApiKeyRole::User),
             Extension(Locale::En),
             Path(uuid::Uuid::new_v4().to_string()),
         )
@@ -2031,6 +2081,8 @@ mod tests {
         };
         let result = handle_update_biz_tag(
             State(state),
+            Extension(Some(uuid::Uuid::new_v4())),
+            Extension(crate::server::middleware::ApiKeyRole::User),
             Extension(Locale::En),
             Path("not-a-uuid".to_string()),
             Json(req),
@@ -2056,6 +2108,8 @@ mod tests {
         };
         let result = handle_update_biz_tag(
             State(state),
+            Extension(Some(uuid::Uuid::new_v4())),
+            Extension(crate::server::middleware::ApiKeyRole::User),
             Extension(Locale::En),
             Path(uuid::Uuid::new_v4().to_string()),
             Json(req),
@@ -2073,6 +2127,8 @@ mod tests {
         let state = create_test_app_state();
         let result = handle_delete_biz_tag(
             State(state),
+            Extension(Some(uuid::Uuid::new_v4())),
+            Extension(crate::server::middleware::ApiKeyRole::User),
             Extension(Locale::En),
             Path("not-a-uuid".to_string()),
         )
@@ -2087,6 +2143,8 @@ mod tests {
         let state = create_test_app_state();
         let result = handle_delete_biz_tag(
             State(state),
+            Extension(Some(uuid::Uuid::new_v4())),
+            Extension(crate::server::middleware::ApiKeyRole::User),
             Extension(Locale::En),
             Path(uuid::Uuid::new_v4().to_string()),
         )

@@ -124,6 +124,18 @@ impl From<oxcache::OxCacheError> for CoreError {
     }
 }
 
+impl From<inklog::InklogError> for CoreError {
+    fn from(e: inklog::InklogError) -> Self {
+        CoreError::ConfigurationError(e.to_string())
+    }
+}
+
+impl From<trait_kit::TraitKitError> for CoreError {
+    fn from(e: trait_kit::TraitKitError) -> Self {
+        CoreError::ConfigurationError(e.to_string())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub code: i32,

@@ -26,8 +26,8 @@
 //! All four copies now delegate to [`get_client_ip`] below, which
 //! enforces the `trusted_proxies` check uniformly.
 
-use sdforge::axum::body::Body;
-use sdforge::axum::http::Request;
+use axum::body::Body;
+use axum::http::Request;
 use std::net::{IpAddr, SocketAddr};
 
 /// Extract the originating client IP from a request.
@@ -82,7 +82,7 @@ fn parse_xri(req: &Request<Body>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sdforge::axum::http::Request;
+    use axum::http::Request;
     use std::net::{Ipv4Addr, SocketAddr};
 
     fn make_request(

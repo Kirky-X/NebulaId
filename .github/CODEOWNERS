@@ -13,40 +13,34 @@
 /src/main.rs            @Kirky-X
 
 # ID 生成核心算法
-/src/id/                @Kirky-X
-/src/snowflake/         @Kirky-X
+/src/core/algorithm/    @Kirky-X
 
 # 数据库 / 存储层
-/src/db/                @Kirky-X
-/src/storage/           @Kirky-X
-
-# 缓存层
-/src/cache/             @Kirky-X
+/src/core/database/     @Kirky-X
+/src/infrastructure/    @Kirky-X
 
 # 限流
-/src/limiter/           @Kirky-X
+/src/server/rate_limit/ @Kirky-X
 
 # API 层（gRPC + HTTP）
-/src/api/               @Kirky-X
-/src/grpc/              @Kirky-X
-/src/http/              @Kirky-X
+/src/server/router.rs   @Kirky-X
+/src/server/grpc.rs     @Kirky-X
+/src/server/handlers/   @Kirky-X
 
 # 配置
-/src/config/            @Kirky-X
+/src/core/config/       @Kirky-X
+/src/server/config/     @Kirky-X
 /config/                @Kirky-X
 
 # 安全相关变更需要严格审阅
-/src/auth/              @Kirky-X
-/src/security/          @Kirky-X
-/src/crypto/            @Kirky-X
-/.gitleaks.toml          @Kirky-X
+/src/core/auth/         @Kirky-X
 deny.toml                @Kirky-X
+/.cargo/audit.toml       @Kirky-X
 
 # CI / CD / 基础设施
 /.github/               @Kirky-X
 /Makefile                @Kirky-X
-/Dockerfile              @Kirky-X
-docker-compose.yml       @Kirky-X
+/docker/                 @Kirky-X
 /lefthook.yml            @Kirky-X
 /.pre-commit-config.yaml @Kirky-X
 
@@ -57,5 +51,6 @@ docker-compose.yml       @Kirky-X
 # 文档（轻量审阅）
 /docs/                   @Kirky-X
 /README.md               @Kirky-X
+/README_zh.md            @Kirky-X
 /AGENTS.md               @Kirky-X
 /CHANGELOG.md            @Kirky-X

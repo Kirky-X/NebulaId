@@ -26,7 +26,7 @@
 - [ ] 代码已通过 `cargo fmt --package nebulaid -- --check`
 - [ ] 代码已通过 `cargo clippy --package nebulaid --all-features -- -D warnings`
 - [ ] 已运行 `cargo test --package nebulaid --all-features`
-- [ ] 已运行 `cargo llvm-cov --package nebulaid --all-features --fail-under-lines 80`（覆盖率 ≥80%）
+- [ ] 已运行 `cargo llvm-cov --package nebulaid --all-features --fail-under-lines 95`（覆盖率 ≥95%，与 CI 门禁一致）
 - [ ] 已通过 `cargo deny check`（许可证 + 安全）
 - [ ] 已通过 `cargo audit --deny warnings`
 - [ ] 新增公共 API 已更新 `docs/` 或 CHANGELOG

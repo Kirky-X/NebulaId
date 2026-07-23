@@ -103,15 +103,17 @@ jobs:
           cache-targets: false
 
       - name: Validate Package
-        run: cargo check --package nebulaid --all-features
+        # 不使用 --all-features：postgresql 与 sqlite 互斥（dbnexus compile_error）
+        run: cargo check --package nebulaid --features postgresql,etcd,http,grpc
 
       - name: Get crates.io Auth Token
         uses: rust-lang/crates-io-auth-action@v1
         id: auth
 
       - name: Publish to crates.io
+        # 不使用 --all-features：postgresql 与 sqlite 互斥；用最大兼容 feature 集发布
         run: |
-          cargo publish -p nebulaid --all-features || \
+          cargo publish -p nebulaid --features postgresql,etcd,http,grpc || \
             cargo publish -p nebulaid
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
@@ -170,15 +172,7 @@ jobs:
           mkdir -p release
           cp target/release/${{ matrix.artifact_name }} release/
           cd release
-          if [[ "${{ matrix.os }}" == *"windows"* ]]; then
-            tar -czf ../${{ matrix.asset_name }} .
-          else
-            if [[ "${{ matrix.os }}" == *"ubuntu"* ]]; then
-              tar -czf ../${{ matrix.asset_name }} .
-            else
-              tar -czf ../${{ matrix.asset_name }} .
-            fi
-          fi
+          tar -czf ../${{ matrix.asset_name }} .
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4

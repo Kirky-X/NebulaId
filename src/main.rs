@@ -350,7 +350,7 @@ async fn start_http_server(
     let router = create_router(handlers, auth, rate_limiter, audit_logger)
         .await
         .layer(create_size_limit_middleware())
-        .merge(merge_sdforge_routes(sdforge::axum::Router::new()));
+        .merge(merge_sdforge_routes(axum::Router::new()));
 
     // 检查是否启用 HTTPS (暂时回退到普通 HTTP，TLS 功能待完善)
     if let Some(ref tls) = tls_manager {
@@ -363,7 +363,7 @@ async fn start_http_server(
     info!("{}", t!("log.main.starting_http_server", addr = addr));
     let listener = TcpListener::bind(addr).await?;
 
-    sdforge::axum::serve(listener, router)
+    axum::serve(listener, router)
         .with_graceful_shutdown(async {
             tokio::signal::ctrl_c().await.ok();
             info!("{}", t!("log.main.shutting_down_http_server"));

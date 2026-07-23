@@ -25,17 +25,17 @@
 
 #![cfg(test)]
 
-use nebulaid::core::types::{CoreError, ErrorResponse};
-use nebulaid::server::handlers::helpers::core_error_to_response;
-use nebulaid::server::middleware::locale::{locale_middleware, Locale};
-use sdforge::axum::{
+use axum::{
     body::Body,
     http::{Request, StatusCode},
     middleware::from_fn,
     routing::get,
     Router,
 };
-use sdforge::tower::ServiceExt;
+use nebulaid::core::types::{CoreError, ErrorResponse};
+use nebulaid::server::handlers::helpers::core_error_to_response;
+use nebulaid::server::middleware::locale::{locale_middleware, Locale};
+use tower::ServiceExt;
 
 /// Build a minimal router that exercises the i18n error-response path.
 ///
@@ -48,7 +48,7 @@ fn i18n_router() -> Router {
         .route(
             "/error",
             get(
-                |sdforge::axum::Extension(locale): sdforge::axum::Extension<Locale>| async move {
+                |axum::Extension(locale): axum::Extension<Locale>| async move {
                     let err = CoreError::InvalidInput("negative".to_string());
                     let (status, body) = core_error_to_response(&err, locale);
                     (status, body)
@@ -58,7 +58,7 @@ fn i18n_router() -> Router {
         .route(
             "/uuid",
             get(
-                |sdforge::axum::Extension(locale): sdforge::axum::Extension<Locale>| async move {
+                |axum::Extension(locale): axum::Extension<Locale>| async move {
                     let (status, body) =
                         nebulaid::server::handlers::helpers::invalid_uuid_response(locale);
                     (status, body)
@@ -68,8 +68,8 @@ fn i18n_router() -> Router {
         .layer(from_fn(locale_middleware))
 }
 
-async fn decode_json(resp: sdforge::axum::response::Response) -> ErrorResponse {
-    let bytes = sdforge::axum::body::to_bytes(resp.into_body(), usize::MAX)
+async fn decode_json(resp: axum::response::Response) -> ErrorResponse {
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .expect("body should decode");
     serde_json::from_slice(&bytes).expect("body should be valid ErrorResponse JSON")
@@ -207,7 +207,7 @@ async fn t042_5xx_database_error_does_not_leak_internal_string() {
         .route(
             "/db",
             get(
-                |sdforge::axum::Extension(locale): sdforge::axum::Extension<Locale>| async move {
+                |axum::Extension(locale): axum::Extension<Locale>| async move {
                     let err =
                         CoreError::DatabaseError("postgres://user:secret@host:5432/db".to_string());
                     let (status, body) = core_error_to_response(&err, locale);

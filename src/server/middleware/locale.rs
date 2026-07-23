@@ -37,10 +37,10 @@
 //! error messages). Treating locale as a trust boundary will introduce
 //! header-forging vulnerabilities.
 
-use sdforge::axum::body::Body;
-use sdforge::axum::extract::Request;
-use sdforge::axum::middleware::Next;
-use sdforge::axum::response::Response;
+use axum::body::Body;
+use axum::extract::Request;
+use axum::middleware::Next;
+use axum::response::Response;
 use std::fmt;
 
 /// Supported locales for NebulaID.
@@ -119,10 +119,7 @@ impl Default for Locale {
 /// Axum middleware: negotiate locale from `Accept-Language` and inject
 /// `Extension<Locale>` into the request.
 pub async fn locale_middleware(mut req: Request<Body>, next: Next) -> Response {
-    let locale = negotiate_locale(
-        req.headers()
-            .get(sdforge::axum::http::header::ACCEPT_LANGUAGE),
-    );
+    let locale = negotiate_locale(req.headers().get(axum::http::header::ACCEPT_LANGUAGE));
     req.extensions_mut().insert(locale);
     next.run(req).await
 }
@@ -130,7 +127,7 @@ pub async fn locale_middleware(mut req: Request<Body>, next: Next) -> Response {
 /// Negotiate the best `Locale` from an `Accept-Language` header value.
 ///
 /// Accepts `None` (header missing) — returns `Locale::DEFAULT`.
-pub fn negotiate_locale(header: Option<&sdforge::axum::http::HeaderValue>) -> Locale {
+pub fn negotiate_locale(header: Option<&axum::http::HeaderValue>) -> Locale {
     let Some(value) = header else {
         return Locale::DEFAULT;
     };
@@ -276,7 +273,7 @@ fn parse_qvalue(s: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sdforge::axum::http::HeaderValue;
+    use axum::http::HeaderValue;
 
     /// Helper: negotiate from a `&str` header value.
     fn negotiate(s: &str) -> Locale {
@@ -560,11 +557,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_locale_middleware_injects_extension() {
-        use sdforge::axum::body::Body;
-        use sdforge::axum::http::{Request, StatusCode};
-        use sdforge::axum::routing::get;
-        use sdforge::axum::Router;
-        use sdforge::tower::ServiceExt;
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use axum::routing::get;
+        use axum::Router;
+        use tower::ServiceExt;
 
         let app = Router::new()
             .route(
@@ -578,7 +575,7 @@ mod tests {
                     locale.as_str().to_string()
                 }),
             )
-            .layer(sdforge::axum::middleware::from_fn(locale_middleware));
+            .layer(axum::middleware::from_fn(locale_middleware));
 
         // zh-CN request
         let resp = app
@@ -593,7 +590,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = sdforge::axum::body::to_bytes(resp.into_body(), usize::MAX)
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
         assert_eq!(&body[..], b"zh-CN");
@@ -611,7 +608,7 @@ mod tests {
                     locale.as_str().to_string()
                 }),
             )
-            .layer(sdforge::axum::middleware::from_fn(locale_middleware));
+            .layer(axum::middleware::from_fn(locale_middleware));
         let resp = app2
             .oneshot(
                 Request::builder()
@@ -621,7 +618,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let body = sdforge::axum::body::to_bytes(resp.into_body(), usize::MAX)
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
         assert_eq!(&body[..], b"en");

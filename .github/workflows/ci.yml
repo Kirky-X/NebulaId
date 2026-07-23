@@ -53,7 +53,9 @@ jobs:
         run: cargo fmt --package ${{ env.PKG }} -- --check
 
       - name: Clippy Lint
-        run: cargo clippy --package ${{ env.PKG }} --all-features -- -D warnings
+        # 不使用 --all-features：postgresql 与 sqlite 互斥（dbnexus compile_error）。
+        # 且 limiteron 硬编码 dbnexus/postgres，sqlite 无法与 limiteron 共存，故只检查 postgres 变体。
+        run: cargo clippy --package ${{ env.PKG }} --features postgresql,etcd,http,grpc -- -D warnings
 
   # 阶段 2：cargo-deny 检查（许可证 + 安全）
   deny:
@@ -86,7 +88,8 @@ jobs:
       - name: Security Audit
         run: cargo audit --deny warnings
 
-  # 阶段 4：多 feature matrix 测试 + 覆盖率门禁（≥80%）
+  # 阶段 4：多 feature matrix 测试 + 覆盖率门禁（≥95%）
+  # 注：sqlite 未纳入矩阵——limiteron 硬编码 dbnexus/postgres，sqlite 无法与之共存。
   test:
     name: Test (${{ matrix.feature }})
     runs-on: ubuntu-latest
@@ -98,7 +101,6 @@ jobs:
         feature:
           - default
           - postgresql
-          - sqlite
           - etcd
     steps:
       - uses: actions/checkout@v4

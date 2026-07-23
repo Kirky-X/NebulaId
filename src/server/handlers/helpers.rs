@@ -48,8 +48,8 @@ use crate::core::i18n::{translate_with_locale, translate_with_locale_args};
 use crate::core::CoreError;
 use crate::server::middleware::locale::Locale;
 use crate::server::models::ErrorResponse;
-use sdforge::axum::http::StatusCode;
-use sdforge::axum::Json;
+use axum::http::StatusCode;
+use axum::Json;
 
 /// Convert database errors to `CoreError::DatabaseError`.
 pub(super) fn map_db_error<E: std::fmt::Display>(error: E) -> CoreError {

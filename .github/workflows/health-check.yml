@@ -1,23 +1,16 @@
 name: Health Check
 
 on:
-  push:
-    branches: [ "**" ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - '.gitignore'
-      - 'LICENSE*'
-  pull_request:
-    branches: [ main, develop ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - '.gitignore'
-      - 'LICENSE*'
+  # 定时健康检查：每日 UTC 02:00 运行（与 ci.yml 的 push/PR 触发解耦，避免重复）
+  schedule:
+    - cron: '0 2 * * *'
+  # 支持手动触发
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
+  # 限定 --package nebulaid，避免扫描 path 依赖（与 ci.yml 保持一致）
+  PKG: nebulaid
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -47,16 +40,17 @@ jobs:
           cache-targets: false
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit
+        run: cargo install cargo-audit --locked
 
       - name: Security Audit
         run: cargo audit --deny warnings
 
       - name: Format Check
-        run: cargo fmt --all -- --check
+        run: cargo fmt --package ${{ env.PKG }} -- --check
 
       - name: Clippy Lint
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        # 不使用 --all-features：postgresql 与 sqlite 互斥（dbnexus compile_error），与 ci.yml 保持一致
+        run: cargo clippy --package ${{ env.PKG }} --features postgresql,etcd,http,grpc -- -D warnings
 
   # 构建检查
   build:
@@ -80,7 +74,7 @@ jobs:
           cache-targets: false
 
       - name: Build Project
-        run: cargo build --all-targets --all-features
+        run: cargo build --package ${{ env.PKG }} --features postgresql,etcd,http,grpc
 
   # 测试
   test:
@@ -93,6 +87,8 @@ jobs:
 
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -103,20 +99,16 @@ jobs:
           shared-key: "nebula-health"
           cache-targets: false
 
-      - name: Run Tests
-        run: cargo test --all-targets --all-features
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
 
-      - name: Generate Code Coverage
-        if: github.event_name == 'pull_request'
-        run: |
-          cargo install grcov --locked
-          grcov . --binary-path ./target/debug/ --source-dir . --output-type cobertura-xml --output-path cobertura.xml
+      - name: Run Tests with Coverage
+        run: cargo llvm-cov --package ${{ env.PKG }} --features postgresql,etcd,http,grpc --fail-under-lines 80 --lcov --output-path lcov.info
 
       - name: Upload Coverage Report
-        if: github.event_name == 'pull_request'
         uses: codecov/codecov-action@v5
         with:
-          files: cobertura.xml
+          files: lcov.info
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
           verbose: true

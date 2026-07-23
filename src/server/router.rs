@@ -35,14 +35,14 @@ use crate::server::models::{
     WorkspaceListResponse, WorkspaceResponse,
 };
 use crate::server::rate_limit::{limiter::RateLimiter, middleware::RateLimitMiddleware};
-use sdforge::axum::{
+use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderValue, StatusCode},
     routing::{delete, get, post},
     Extension, Json, Router,
 };
-use sdforge::tower_http::set_header::SetResponseHeaderLayer;
 use std::sync::Arc;
+use tower_http::set_header::SetResponseHeaderLayer;
 use validator::Validate;
 
 #[derive(Clone)]
@@ -113,10 +113,10 @@ pub async fn create_router(
         .route("/config/algorithm", post(handle_set_algorithm))
         // Apply admin requirement middleware first, then auth middleware
         // This ensures auth runs first to set the ApiKeyRole extension
-        .layer(sdforge::axum::middleware::from_fn(
+        .layer(axum::middleware::from_fn(
             crate::server::middleware::admin_required_middleware,
         ))
-        .layer(sdforge::axum::middleware::from_fn_with_state(
+        .layer(axum::middleware::from_fn_with_state(
             auth.clone(),
             crate::server::middleware::auth_middleware_fn,
         ));
@@ -153,10 +153,8 @@ pub async fn create_router(
         // `ApiKeyRole` 扩展）。这样 `anonymous_block_middleware` 执行时
         // `ApiKeyRole` 扩展已由 `auth_middleware_fn` 注入，可正确拒绝
         // Anonymous 角色。前次修复顺序相反，导致中间件完全无效。
-        .layer(sdforge::axum::middleware::from_fn(
-            anonymous_block_middleware,
-        ))
-        .layer(sdforge::axum::middleware::from_fn_with_state(
+        .layer(axum::middleware::from_fn(anonymous_block_middleware))
+        .layer(axum::middleware::from_fn_with_state(
             auth.clone(),
             crate::server::middleware::auth_middleware_fn,
         ));
@@ -172,14 +170,14 @@ pub async fn create_router(
     let api_v1_routes = Router::new()
         .nest(&format!("/api/{}", API_V1), v1_public_routes)
         // Apply API version middleware to all API routes
-        .layer(sdforge::axum::middleware::from_fn(api_version_middleware))
+        .layer(axum::middleware::from_fn(api_version_middleware))
         // Phase 8 T041 (M4 perf fix) — locale negotiation only needs
         // to run on `/api/v1/*` routes (handlers under this prefix
         // read `Extension<Locale>` for error translation). `/health`,
         // `/ready`, `/metrics`, and `/api-docs/openapi.json` do not
         // consume the locale and were needlessly paying the
         // `Accept-Language` parse cost on every request.
-        .layer(sdforge::axum::middleware::from_fn(locale_middleware));
+        .layer(axum::middleware::from_fn(locale_middleware));
 
     // ========== Root Routes ==========
     // Public router (no authentication) - includes health check and metrics
@@ -219,9 +217,9 @@ pub async fn create_router(
             HeaderValue::from_static("strict-origin-when-cross-origin"),
         ))
         .layer(cors)
-        .layer(sdforge::axum::Extension(rate_limit_middleware))
-        .layer(sdforge::axum::Extension(audit_middleware))
-        .layer(sdforge::axum::Extension(audit_logger))
+        .layer(axum::Extension(rate_limit_middleware))
+        .layer(axum::Extension(audit_middleware))
+        .layer(axum::Extension(audit_logger))
 }
 
 // ========== Helper Functions ==========
@@ -250,10 +248,10 @@ pub async fn create_router(
 ///
 /// `verify_user_role` 保留用于 handler 内的 Admin 拒绝场景。
 pub async fn anonymous_block_middleware(
-    req: sdforge::axum::http::Request<sdforge::axum::body::Body>,
-    next: sdforge::axum::middleware::Next,
-) -> sdforge::axum::response::Response {
-    use sdforge::axum::response::IntoResponse;
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
 
     match req
         .extensions()
@@ -370,8 +368,8 @@ fn verify_workspace_id(
 
 async fn handle_generate(
     State(state): State<AppState>,
-    extensions: sdforge::axum::Extension<Option<uuid::Uuid>>,
-    extensions_role: sdforge::axum::Extension<crate::server::middleware::ApiKeyRole>,
+    extensions: axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
     Json(req): Json<GenerateRequest>,
 ) -> Result<Json<GenerateResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -394,8 +392,8 @@ async fn handle_generate(
 
 async fn handle_batch_generate(
     State(state): State<AppState>,
-    extensions: sdforge::axum::Extension<Option<uuid::Uuid>>,
-    extensions_role: sdforge::axum::Extension<crate::server::middleware::ApiKeyRole>,
+    extensions: axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
     Json(req): Json<BatchGenerateRequest>,
 ) -> Result<Json<BatchGenerateResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -517,7 +515,7 @@ async fn handle_update_logging(
     Ok(Json(state.config_service.update_logging(req).await))
 }
 
-// 注：原 #[sdforge::axum::debug_handler] 已移除。
+// 注：原 #[axum::debug_handler] 已移除。
 //
 // 根因：axum 0.8 的 debug_handler 是 derive 宏，展开时内部硬编码生成 `::axum::`
 // 绝对路径（不像 utoipa/prost 那样可通过 re-export 调用属性宏）。按 Rust 2018+
@@ -574,8 +572,8 @@ async fn handle_api_info() -> Json<ApiInfoResponse> {
 
 async fn handle_create_biz_tag(
     State(state): State<AppState>,
-    extensions: sdforge::axum::Extension<Option<uuid::Uuid>>,
-    extensions_role: sdforge::axum::Extension<crate::server::middleware::ApiKeyRole>,
+    extensions: axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
     Json(req): Json<CreateBizTagRequest>,
 ) -> Result<Json<BizTagResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -598,8 +596,8 @@ async fn handle_create_biz_tag(
 
 async fn handle_get_biz_tag(
     State(state): State<AppState>,
-    extensions: sdforge::axum::Extension<Option<uuid::Uuid>>,
-    extensions_role: sdforge::axum::Extension<crate::server::middleware::ApiKeyRole>,
+    extensions: axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
     Path(id): Path<String>,
 ) -> Result<Json<BizTagResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -625,8 +623,8 @@ async fn handle_get_biz_tag(
 
 async fn handle_update_biz_tag(
     State(state): State<AppState>,
-    extensions: sdforge::axum::Extension<Option<uuid::Uuid>>,
-    extensions_role: sdforge::axum::Extension<crate::server::middleware::ApiKeyRole>,
+    extensions: axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
     Path(id): Path<String>,
     Json(req): Json<UpdateBizTagRequest>,
@@ -660,8 +658,8 @@ async fn handle_update_biz_tag(
 
 async fn handle_delete_biz_tag(
     State(state): State<AppState>,
-    extensions: sdforge::axum::Extension<Option<uuid::Uuid>>,
-    extensions_role: sdforge::axum::Extension<crate::server::middleware::ApiKeyRole>,
+    extensions: axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
@@ -768,8 +766,8 @@ async fn handle_get_workspace(
 
 async fn handle_create_group(
     State(state): State<AppState>,
-    extensions: sdforge::axum::Extension<Option<uuid::Uuid>>,
-    extensions_role: sdforge::axum::Extension<crate::server::middleware::ApiKeyRole>,
+    extensions: axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
     Json(req): Json<CreateGroupRequest>,
 ) -> Result<Json<GroupResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -938,7 +936,7 @@ mod tests {
     use std::sync::Arc;
     // `Router::oneshot` is provided by `tower::ServiceExt`. Bring it into
     // scope so tests can drive the router end-to-end.
-    use sdforge::tower::ServiceExt;
+    use tower::ServiceExt;
 
     fn create_test_api_handlers() -> Arc<ApiHandlers> {
         let config = Config::default();
@@ -1084,27 +1082,27 @@ mod tests {
     fn build_anonymous_block_router() -> Router {
         // A router with just the anonymous_block_middleware layer to test
         // its behavior in isolation.
-        Router::new().route("/test", get(|| async { "ok" })).layer(
-            sdforge::axum::middleware::from_fn(anonymous_block_middleware),
-        )
+        Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(anonymous_block_middleware))
     }
 
     fn make_request_with_extension<T: Clone + Send + Sync + 'static>(
         ext: T,
-    ) -> sdforge::axum::http::Request<sdforge::axum::body::Body> {
-        sdforge::axum::http::Request::builder()
+    ) -> axum::http::Request<axum::body::Body> {
+        axum::http::Request::builder()
             .uri("/test")
             .method("GET")
             .extension(ext)
-            .body(sdforge::axum::body::Body::empty())
+            .body(axum::body::Body::empty())
             .unwrap()
     }
 
-    fn make_request_no_extension() -> sdforge::axum::http::Request<sdforge::axum::body::Body> {
-        sdforge::axum::http::Request::builder()
+    fn make_request_no_extension() -> axum::http::Request<axum::body::Body> {
+        axum::http::Request::builder()
             .uri("/test")
             .method("GET")
-            .body(sdforge::axum::body::Body::empty())
+            .body(axum::body::Body::empty())
             .unwrap()
     }
 
@@ -1287,9 +1285,9 @@ mod tests {
         let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
         let resp = router
             .oneshot(
-                sdforge::axum::http::Request::builder()
+                axum::http::Request::builder()
                     .uri("/health")
-                    .body(sdforge::axum::body::Body::empty())
+                    .body(axum::body::Body::empty())
                     .unwrap(),
             )
             .await
@@ -1307,9 +1305,9 @@ mod tests {
         let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
         let resp = router
             .oneshot(
-                sdforge::axum::http::Request::builder()
+                axum::http::Request::builder()
                     .uri("/ready")
-                    .body(sdforge::axum::body::Body::empty())
+                    .body(axum::body::Body::empty())
                     .unwrap(),
             )
             .await
@@ -1327,9 +1325,9 @@ mod tests {
         let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
         let resp = router
             .oneshot(
-                sdforge::axum::http::Request::builder()
+                axum::http::Request::builder()
                     .uri("/metrics")
-                    .body(sdforge::axum::body::Body::empty())
+                    .body(axum::body::Body::empty())
                     .unwrap(),
             )
             .await
@@ -1347,9 +1345,9 @@ mod tests {
         let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
         let resp = router
             .oneshot(
-                sdforge::axum::http::Request::builder()
+                axum::http::Request::builder()
                     .uri("/api/v1")
-                    .body(sdforge::axum::body::Body::empty())
+                    .body(axum::body::Body::empty())
                     .unwrap(),
             )
             .await
@@ -1367,9 +1365,9 @@ mod tests {
         let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
         let resp = router
             .oneshot(
-                sdforge::axum::http::Request::builder()
+                axum::http::Request::builder()
                     .uri("/nonexistent-route")
-                    .body(sdforge::axum::body::Body::empty())
+                    .body(axum::body::Body::empty())
                     .unwrap(),
             )
             .await
@@ -1389,11 +1387,11 @@ mod tests {
         let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
         let resp = router
             .oneshot(
-                sdforge::axum::http::Request::builder()
+                axum::http::Request::builder()
                     .uri("/api/v1/generate")
                     .method("POST")
                     .header("content-type", "application/json")
-                    .body(sdforge::axum::body::Body::from(
+                    .body(axum::body::Body::from(
                         serde_json::to_vec(&serde_json::json!({
                             "workspace": "test",
                             "group": "test",
@@ -1418,9 +1416,9 @@ mod tests {
         let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
         let resp = router
             .oneshot(
-                sdforge::axum::http::Request::builder()
+                axum::http::Request::builder()
                     .uri("/api-docs/openapi.json")
-                    .body(sdforge::axum::body::Body::empty())
+                    .body(axum::body::Body::empty())
                     .unwrap(),
             )
             .await
@@ -1441,9 +1439,9 @@ mod tests {
         let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
         let resp = router
             .oneshot(
-                sdforge::axum::http::Request::builder()
+                axum::http::Request::builder()
                     .uri("/health")
-                    .body(sdforge::axum::body::Body::empty())
+                    .body(axum::body::Body::empty())
                     .unwrap(),
             )
             .await

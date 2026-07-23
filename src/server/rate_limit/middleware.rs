@@ -18,8 +18,8 @@
 //! based on client IP, workspace ID, or custom identifiers.
 
 use crate::server::rate_limit::limiter::RateLimiter;
-use sdforge::axum::middleware::Next;
-use sdforge::axum::{
+use axum::middleware::Next;
+use axum::{
     body::Body,
     http::{Request, StatusCode},
     response::IntoResponse,
@@ -96,7 +96,7 @@ impl RateLimitMiddleware {
             response
         } else {
             // Rate limited - return 429 response
-            let mut response = sdforge::axum::Json(serde_json::json!({
+            let mut response = axum::Json(serde_json::json!({
                 "code": 429,
                 "message": "Rate limit exceeded",
                 "retry_after": result.retry_after
@@ -138,12 +138,12 @@ fn get_client_ip(req: &Request<Body>, trusted_proxies: &[IpAddr]) -> Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sdforge::axum::extract::State;
-    use sdforge::axum::middleware::from_fn_with_state;
-    use sdforge::axum::routing::get;
-    use sdforge::axum::Router;
-    use sdforge::tower::ServiceExt;
+    use axum::extract::State;
+    use axum::middleware::from_fn_with_state;
+    use axum::routing::get;
+    use axum::Router;
     use std::sync::Arc;
+    use tower::ServiceExt;
 
     #[tokio::test]
     async fn test_rate_limit_middleware_creation() {
@@ -162,7 +162,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_client_ip_no_proxy() {
-        use sdforge::axum::http::Request;
+        use axum::http::Request;
 
         let req = Request::builder()
             .uri("http://example.com")
@@ -175,7 +175,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_client_ip_with_trusted_proxy() {
-        use sdforge::axum::http::Request;
+        use axum::http::Request;
 
         let mut req = Request::builder()
             .uri("http://example.com")
@@ -194,7 +194,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_client_ip_untrusted_proxy() {
-        use sdforge::axum::http::Request;
+        use axum::http::Request;
 
         let mut req = Request::builder()
             .uri("http://example.com")
@@ -215,7 +215,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_client_ip_with_x_real_ip_header() {
-        use sdforge::axum::http::Request;
+        use axum::http::Request;
 
         let mut req = Request::builder()
             .uri("http://example.com")
@@ -235,7 +235,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_client_ip_trusted_proxy_without_forwarded_headers() {
-        use sdforge::axum::http::Request;
+        use axum::http::Request;
 
         let mut req = Request::builder()
             .uri("http://example.com")
@@ -356,7 +356,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
 
         // Read body and verify JSON content
-        let body_bytes = sdforge::axum::body::to_bytes(response.into_body(), usize::MAX)
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();

@@ -21,9 +21,9 @@
 - 预检缓存配置
 */
 
-use sdforge::axum::http::{HeaderName, HeaderValue, Method};
-use sdforge::tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use axum::http::{HeaderName, HeaderValue, Method};
 use std::time::Duration;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
 /// CORS 预检请求缓存时间（1小时）
 const CORS_MAX_AGE: Duration = Duration::from_secs(3600);

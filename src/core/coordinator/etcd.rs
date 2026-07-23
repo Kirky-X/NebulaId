@@ -1074,8 +1074,6 @@ mod tests {
         assert_eq!(entry2.unwrap().value, "value2");
     }
 
-    // ===== EtcdWorkerAllocator tests (10) =====
-
     #[tokio::test]
     async fn test_allocator_new_succeeds() {
         let client = mock_into_client(MockEtcdClientOps::new());
@@ -1091,7 +1089,6 @@ mod tests {
     #[tokio::test]
     async fn test_allocator_allocate_succeeds() {
         let mut mock = MockEtcdClientOps::new();
-        // worker_id=0 的 key 已存在 → 跳过；其他 id 的 key 不存在 → 进入 CAS
         mock.expect_kv_get().returning(|key| {
             if key.ends_with("/0") {
                 Ok(Some(b"taken".to_vec()))
@@ -1160,7 +1157,6 @@ mod tests {
     async fn test_allocator_allocate_kv_get_network_error_continues() {
         let mut mock = MockEtcdClientOps::new();
         let mut seq = mockall::Sequence::new();
-        // 第一次 kv_get (worker_id=0): 网络错误 → 容错跳过
         mock.expect_kv_get()
             .times(1)
             .in_sequence(&mut seq)
@@ -1289,8 +1285,6 @@ mod tests {
         assert!(!allocator.is_healthy(), "默认 health_status=0 应为 false");
     }
 
-    // ===== EtcdDistributedLock tests (8) =====
-
     #[tokio::test]
     async fn test_lock_new_succeeds() {
         let client = mock_into_client(MockEtcdClientOps::new());
@@ -1307,7 +1301,6 @@ mod tests {
         mock.expect_lease_grant().returning(|_| Ok(456));
         mock.expect_txn_check_create_rev_and_put()
             .returning(|_, _, _| Ok(true));
-        // L9 修复后：guard drop 时会 spawn release task 调用 lease_revoke。
         // 用 `.returning` 不限制 times（0 次或多次），避免 fire-and-forget
         // task 时序不确定导致 mock 验证失败。
         mock.expect_lease_revoke().returning(|_| Ok(()));
@@ -1337,7 +1330,6 @@ mod tests {
             .in_sequence(&mut seq)
             .returning(|_, _, _| Ok(true)); // 第二次成功
 
-        // L9 修复后：冲突时撤销 1 次 + guard drop 时可能撤销 1 次。
         // 用 `.returning` 不限制 times，避免 fire-and-forget task 时序问题。
         mock.expect_lease_revoke().returning(|_| Ok(()));
 
@@ -1401,7 +1393,6 @@ mod tests {
     #[tokio::test]
     async fn test_lock_guard_release_succeeds() {
         let mut mock = MockEtcdClientOps::new();
-        // L9 修复后：显式 release 成功 → released=true → drop 跳过，
         // 因此 lease_revoke 只会被调用 1 次。使用 `.times(1)` 验证此行为。
         mock.expect_lease_revoke().times(1).returning(|_| Ok(()));
 
@@ -1419,13 +1410,11 @@ mod tests {
 
         let result = guard.release().await;
         assert!(result.is_ok());
-        // guard 在 test 结束时 drop，released=true → Drop 跳过 lease_revoke
     }
 
     #[tokio::test]
     async fn test_lock_guard_release_fails() {
         let mut mock = MockEtcdClientOps::new();
-        // L9 修复后：显式 release 失败 → released 仍为 false → drop 时
         // spawn 后台 task 再次调用 lease_revoke。由于 spawn 是
         // fire-and-forget，时序不确定，用 `.returning` 不限制 times。
         mock.expect_lease_revoke()
@@ -1451,8 +1440,6 @@ mod tests {
         );
         // guard drop 时 spawn 后台 task 再次尝试 release（也会失败，仅 log warning）
     }
-
-    // ===== EtcdClusterHealthMonitor with injected client tests (5) =====
 
     #[tokio::test]
     async fn test_health_monitor_new_with_client_succeeds() {
@@ -1566,8 +1553,6 @@ mod tests {
         assert!(!monitor.is_using_cache(), "恢复后应退出本地缓存模式");
     }
 
-    // ===== EtcdError Display tests (2) =====
-
     #[test]
     fn test_etcd_error_display_network_and_lease_invalid() {
         let net_err = EtcdError::Network("conn refused".to_string());
@@ -1610,8 +1595,6 @@ mod tests {
         assert!(display.contains("unexpected"));
     }
 
-    // ===== check_etcd_health injected-path timeout 分支 =====
-
     /// 注入路径下 ping 超时（`Err(_)` from `tokio::time::timeout`）应触发 record_failure。
     ///
     /// 覆盖 etcd.rs::check_etcd_health 第 405-413 行：mock ping 返回 `Pin<Box<Future>>`
@@ -1628,7 +1611,6 @@ mod tests {
         let cache_path = cache_file.path().to_string_lossy().to_string();
         let monitor = EtcdClusterHealthMonitor::new_with_client(config, cache_path, client);
 
-        // 1 次 timeout → consecutive_failures = 1，仍为 Healthy（需 >= 3 才 Degraded）
         monitor.check_etcd_health().await;
         assert_eq!(
             monitor.get_status(),
@@ -1636,7 +1618,6 @@ mod tests {
             "单次 ping 超时不应立即降级"
         );
 
-        // 再 ping timeout 2 次 → consecutive_failures = 3 → Degraded
         monitor.check_etcd_health().await;
         monitor.check_etcd_health().await;
         assert_eq!(
@@ -1645,8 +1626,6 @@ mod tests {
             "连续 3 次 ping 超时应进入 Degraded"
         );
     }
-
-    // ===== check_etcd_health production default path =====
 
     /// 生产默认路径（未注入 client）+ 空 endpoints 应直接 return（early-exit）。
     ///
@@ -1659,7 +1638,6 @@ mod tests {
         config.endpoints = vec![];
         let cache_file = NamedTempFile::new().expect("Failed to create temp file");
         let cache_path = cache_file.path().to_string_lossy().to_string();
-        // new（非 new_with_client）→ client = None → 走生产默认路径
         let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
 
         // 空 endpoints → 直接 return，状态不变（仍为 Healthy，无 record_failure 调用）
@@ -1680,8 +1658,6 @@ mod tests {
     /// 返回 `Err(EtcdError::Network(...))`）。生产路径的 `Ok(Err(e))` 分支
     /// 仅在真实网络故障时触发，由集成测试（`--features integration-tests`）
     /// 或真实 etcd 环境覆盖。详见 `check_etcd_health` 生产路径注释。
-
-    // ===== Clone impls =====
 
     /// EtcdClusterHealthMonitor::clone 应复制所有原子状态与缓存。
     ///
@@ -1731,7 +1707,6 @@ mod tests {
             .await
             .unwrap();
 
-        // 分配一个 worker id 让 allocated_id != 0
         let worker_id = allocator.allocate().await.unwrap();
         assert!(worker_id >= 1);
 
@@ -1744,8 +1719,6 @@ mod tests {
             "clone 应复制 allocated_id"
         );
     }
-
-    // ===== EtcdDistributedLock::with_client (无 new 的 info!) =====
 
     /// `EtcdDistributedLock::with_client` 直接构造（不调用 `new`）应可用。
     ///
@@ -1761,8 +1734,6 @@ mod tests {
         // lock_path 前缀应正确设置（通过 acquire 间接验证）
         // 这里仅验证构造成功且无 panic
     }
-
-    // ===== EtcdLockGuard::drop 分支 =====
 
     /// 显式 release 失败后 drop 应再次尝试 spawn lease_revoke。
     ///
@@ -1828,8 +1799,6 @@ mod tests {
 
         // mock 期望 lease_revoke 调用 0 次，若被调用会 panic
     }
-
-    // ===== load_local_cache 错误分支 =====
 
     /// load_local_cache 文件不存在时应返回 Ok(())（早返回，不报错）。
     ///
@@ -1922,8 +1891,6 @@ mod tests {
         );
     }
 
-    // ===== record_success 缓存恢复分支 =====
-
     /// record_success 在 Failed+using_cache 状态下应重置为 Healthy 并退出缓存模式。
     ///
     /// 覆盖 etcd.rs 第 252-263 行：当 status != Healthy（已是 Failed/Degraded）
@@ -1979,8 +1946,6 @@ mod tests {
         );
     }
 
-    // ===== start_health_check (lines 373-381) =====
-
     /// `start_health_check` 应成功 spawn 后台健康检查 task 并执行至少一次循环。
     ///
     /// 覆盖 etcd.rs 第 373-381 行：clone self + tokio::spawn 无限循环。
@@ -2001,8 +1966,6 @@ mod tests {
         // 验证 monitor 仍可用（spawn 未影响主结构）
         assert_eq!(monitor.get_status(), EtcdClusterStatus::Healthy);
     }
-
-    // ===== start_cache_persistence (lines 466-479) =====
 
     /// `start_cache_persistence` 应成功 spawn 后台持久化 task 并执行至少一次循环。
     ///
@@ -2030,8 +1993,6 @@ mod tests {
         );
     }
 
-    // ===== check_etcd_health production path with non-empty endpoints (lines 435-461) =====
-
     /// 生产默认路径（未注入 client）+ 非空 endpoints 应走 Client::connect 路径。
     ///
     /// 覆盖 etcd.rs 第 435-461 行：endpoints 非空时 clone endpoints + timeout +
@@ -2044,7 +2005,6 @@ mod tests {
         config.connect_timeout_ms = 100; // 短超时避免测试卡死
         let cache_file = NamedTempFile::new().expect("Failed to create temp file");
         let cache_path = cache_file.path().to_string_lossy().to_string();
-        // new（非 new_with_client）→ client = None → 走生产默认路径
         let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
 
         // 调用 check_etcd_health，走生产路径（非注入路径）
@@ -2081,8 +2041,6 @@ mod tests {
         let _ = status; // 不断言具体值，只需覆盖代码路径
     }
 
-    // ===== HangingPingClient non-ping methods (lines 984-1003) =====
-
     /// 直接调用 HangingPingClient 的非 ping 方法，覆盖 trait impl。
     ///
     /// 覆盖 etcd.rs 第 984-1003 行：HangingPingClient 的 kv_get / kv_delete /
@@ -2118,8 +2076,6 @@ mod tests {
         assert!(txn_result.is_ok());
         assert!(txn_result.unwrap());
     }
-
-    // ===== EtcdClientWrapper::new + methods (lines 100-184) =====
 
     /// `EtcdClientWrapper::new` 不可达 endpoint + 方法调用错误路径。
     ///
@@ -2183,8 +2139,6 @@ mod tests {
         let _ = result.is_ok() || result.is_err();
     }
 
-    // ===== try_allocate_id: kv_get Ok(Some(_)) branch (line 593) =====
-
     /// try_allocate_id 当 kv_get 返回 Ok(Some(_)) 时应返回 Ok(false)（key 已存在）。
     ///
     /// 覆盖 etcd.rs 第 593 行：`Ok(Some(_)) => return Ok(false)`。
@@ -2211,8 +2165,6 @@ mod tests {
             result
         );
     }
-
-    // ===== EtcdDistributedLock::with_client + acquire + release =====
 
     /// `with_client` 构造的 lock 应能 acquire 并显式 release。
     ///
@@ -2309,8 +2261,6 @@ mod tests {
         );
     }
 
-    // ===== EtcdWorkerAllocator datacenter_id 边界 =====
-
     /// allocator with datacenter_id=0 应正常工作。
     ///
     /// 覆盖 worker_path 对 datacenter_id=0 的格式化路径。
@@ -2351,8 +2301,6 @@ mod tests {
         assert_eq!(worker_id, 1, "datacenter_id=255 时 worker_id 应从 1 开始");
     }
 
-    // ===== EtcdWorkerAllocator release 后再 allocate =====
-
     /// allocator release 后 allocated_id 重置为 0，可再次 allocate。
     ///
     /// 覆盖 release → allocate 序列，验证状态重置正确。
@@ -2382,8 +2330,6 @@ mod tests {
         assert_eq!(allocator.get_allocated_id(), Some(id2));
     }
 
-    // ===== EtcdClusterHealthMonitor set_status 直接调用 =====
-
     /// 直接调用 set_status 覆盖所有状态转换。
     ///
     /// 覆盖 etcd.rs 第 244-246 行：set_status 直接设置原子状态。
@@ -2403,8 +2349,6 @@ mod tests {
         monitor.set_status(EtcdClusterStatus::Healthy);
         assert_eq!(monitor.get_status(), EtcdClusterStatus::Healthy);
     }
-
-    // ===== EtcdLockGuard drop with lease_revoke failure in spawn =====
 
     /// guard 未显式 release 时 drop 应 spawn 后台 task 调用 lease_revoke，
     /// 即使 lease_revoke 失败也不 panic。
@@ -2434,8 +2378,6 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    // ===== save_local_cache + load_local_cache round-trip with empty cache =====
-
     /// 空 cache save + load round-trip 应正常工作。
     ///
     /// 覆盖 save_local_cache 对空 HashMap 的序列化 + load_local_cache 对空数组的反序列化。
@@ -2457,8 +2399,6 @@ mod tests {
         assert!(monitor2.get_from_cache("any").is_none());
     }
 
-    // ===== Coverage boost: check_etcd_health 空 endpoints 生产路径 =====
-
     /// 生产默认路径（未注入 client）+ 空 endpoints 应走 warn + 早返回。
     ///
     /// 覆盖 etcd.rs 第 427-432 行：endpoints 为空时
@@ -2479,8 +2419,6 @@ mod tests {
         );
     }
 
-    // ===== Coverage boost: start_cache_persistence save 错误路径 =====
-
     /// start_cache_persistence 在 save_local_cache 失败时应走 error! 分支不 panic。
     ///
     /// 覆盖 etcd.rs 第 471-475 行：spawn loop 中 save_local_cache 返回 Err 时
@@ -2497,8 +2435,6 @@ mod tests {
             .await;
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-
-    // ===== Coverage boost: try_allocate_id kv_get Err 容错路径 =====
 
     /// try_allocate_id 在 kv_get 返回 Err 时应容错继续（返回 Ok(false)）。
     ///
@@ -2532,8 +2468,6 @@ mod tests {
         );
         assert_eq!(worker_id.unwrap(), 4, "前 3 个 id 被跳过，应分配 id=4");
     }
-
-    // ===== Coverage boost: release kv_delete Err 错误路径 =====
 
     /// release 在 kv_delete 返回 Err 时应返回 EtcdError 并记 error!。
     ///

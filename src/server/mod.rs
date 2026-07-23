@@ -19,6 +19,10 @@ pub mod api_version;
 pub mod grpc;
 pub mod router;
 
+// garrison 集成模块：仅在 garrison-auth 特性启用时编译
+#[cfg(feature = "garrison-auth")]
+pub mod auth;
+
 // Internal implementation modules
 // These are pub for binary target access but NOT part of the public library API
 // Users should only use types re-exported in lib.rs

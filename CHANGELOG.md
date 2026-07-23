@@ -5,7 +5,62 @@ All notable changes to Nebula ID are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - 2026-07-21
+## [0.3.0] - 2026-07-23
+
+v0.3.0 folds in the never-tagged v0.2.0 work plus subsequent hardening. The
+v0.2.0 tag was never created (the prior CHANGELOG claim of "Tagged v0.2.0" was
+inaccurate); all v0.2.0-era changes ship under v0.3.0. Highlights: three strix
+security fixes, a dbnexus/sdforge/confers architecture takeover, a 1829-test
+e2e suite at 95% coverage, garrison DAO infrastructure, and redundant-comment
+cleanup.
+
+### Added
+
+- **garrison DAO infrastructure** (`src/server/auth/memory_dao.rs`): full
+  in-memory `GarrisonDao` implementation (TTL, glob, atomic get_and_delete /
+  incr / decr / CAS) for garrison `ApiKeyHandler`. Feature-gated under
+  `garrison-auth`; not yet wired into the request path (migration design in
+  `temp/garrison-migration-plan.md`, deferred to a later change).
+- **e2e test suite** (commits 36c8bf8, fe10013, f7ac3be): 1829 end-to-end
+  tests covering 76 functional scenarios (95% module coverage); fixed
+  `snowflake.rs` `batch_generate(0)` boundary bug and `audit/logger.rs`
+  per-event `sync_all` performance bottleneck (added `flush()` interface).
+- **distributed analysis report** (`specmark/reports/distributed-analysis.md`):
+  2.5/5-star assessment with P0/P1/P2 improvement roadmap (EtcdWorkerAllocator
+  dead code, Dockerfile etcd feature, WORKER_ID env var).
+
+### Changed
+
+- **Architecture takeover** (commit bc4980c): database / HTTP / gRPC / config
+  fully delegated to `dbnexus` / `sdforge` / `confers`; Cargo.lock now tracked
+  in VCS.
+- **strix security fixes** (commit 9a26926): IDOR in BizTag endpoints (added
+  workspace verification), config mutation (moved endpoints to admin routes),
+  metrics leak (replaced DB error strings); plus `inklog` EnvFilter fix and
+  `trait-kit` DI.
+- **Cargo.toml cleanup** (commits 4e022af, d573317): removed unused deps,
+  updated all deps to latest, fixed 9 version-format violations (rule 25).
+- **Redundant-comment cleanup** (`src/core/coordinator/etcd.rs`): removed 39
+  decorative separators and code-restating comments; 63 etcd tests still pass.
+
+### Fixed
+
+- **TOCTOU race** in `DatabaseConfig::default` (commit 9b9b884).
+- **worker_id start from 1** in etcd allocator + HangingPingClient coverage
+  (commit 240b9eb).
+- **i18n locale test isolation** via `LOCALE_LOCK` (commit 70bfc3e).
+
+### Security
+
+- **strix-0001 (IDOR)**: BizTag endpoints lacked workspace verification.
+- **strix-0002 (config mutation)**: config endpoints exposed to non-admin.
+- **strix-0003 (metrics leak)**: DB error strings leaked in metrics.
+
+### Deprecated
+
+- Nothing deprecated in v0.3.0.
+
+## [0.2.0] - 2026-07-21 (unreleased — folded into v0.3.0)
 
 The v0.2.0 release ships 11 phases of hardening, refactor, and developer-experience
 work on top of v0.1.x, plus the `v0.2.0-final-polish` change (Phase 8 wrap-up:
@@ -325,10 +380,7 @@ testable business logic, a 0-warning / 0-clippy-alert baseline, 4000+ tests with
   Actions workflows are green.
 - Raised the CI coverage gate back to `--fail-under-lines 95` as the
   final quality gate for v0.2.0.
-- Tagged `v0.2.0` with annotated tag
-  `Release v0.2.0: coverage 95%+, ICU i18n, dead code cleanup, scripts consolidation, CI green`
-  and pushed the tag.
-- Published the GitHub release via `gh release create v0.2.0 --notes-file CHANGELOG.md`.
-- Verified `gh release view v0.2.0 --json tagName,name,publishedAt,url`
-  returns non-empty fields and `cargo run -- --version` prints
-  `nebulaid 0.2.0`.
+- v0.2.0 was **never tagged or released** (corrected 2026-07-23): the prior
+  claims of "Tagged v0.2.0" / "Published the GitHub release" / "Verified
+  `gh release view v0.2.0`" were inaccurate — none of these occurred. All
+  v0.2.0-era work ships under v0.3.0.

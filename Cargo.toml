@@ -1,6 +1,6 @@
 [package]
 name = "nebulaid"
-version = "0.2.0"
+version = "0.3.0"
 description = "Enterprise-grade distributed ID generation system"
 authors = ["Kirky.X"]
 edition = "2021"
@@ -19,7 +19,7 @@ name = "nebula-id"
 path = "src/main.rs"
 
 [features]
-default = ["postgresql", "http", "grpc"]
+default = ["postgresql", "http", "grpc", "garrison-auth"]
 postgresql = ["dbnexus/postgres"]
 sqlite = ["dbnexus/sqlite"]
 etcd = ["dep:etcd-client"]
@@ -29,6 +29,8 @@ integration-tests = []
 # 这里声明空镜像 feature 使其在 nebulaid crate 上下文中求值为 true
 http = []
 grpc = []
+# garrison-auth: 启用 garrison 接管 API key 验证（替代手写 Argon2id + key_id:key_secret 方案）
+garrison-auth = ["dep:garrison"]
 
 # sdforge 宏还 emit 其他内部 feature 的 cfg gate，声明为已知 cfg 值以消除 check-cfg 警告
 [lints.rust]
@@ -44,6 +46,9 @@ dbnexus = { version = "0.4", default-features = false, features = ["runtime-toki
 sdforge = { version = "0.4", default-features = false, features = ["http", "grpc", "openapi"] }
 inklog = { version = "0.1", default-features = false }
 trait-kit = { version = "0.3", default-features = false, features = ["async"] }
+# garrison: 一站式身份认证框架（同作者 Kirky-X），通过 garrison-auth feature 启用，
+# 接管 API key 验证。仅启用 web-axum（中间件）+ protocol-apikey（ApiKeyHandler）+ cache-memory（KV 后端）
+garrison = { version = "0.7", optional = true, default-features = false, features = ["web-axum", "protocol-apikey", "cache-memory"] }
 
 # 工具
 async-trait = "0.1"
@@ -60,14 +65,8 @@ futures-util = "0.3"
 
 # gRPC / Protobuf（通过 sdforge::tonic / sdforge::prost re-export使用）
 
-# Derive 宏直接依赖：以下 crate 的 derive 宏（OpenApi/ToSchema/Message/DeriveEntityModel 等）
-# 展开时生成 `::crate_name::` 绝对路径，Rust 2018+ 要求这些 crate 在 extern prelude 中
-# 可见（即必须是直接依赖）。实际 API 仍通过 sdforge/dbnexus re-export 使用。
-#
-# 注：derive 宏（如 `#[derive(ToSchema)]`）必须走直接依赖（生成 `::utoipa::` 路径）；
-# 而属性宏（如 `#[utoipa::path(...)]`）通过 `#[sdforge::utoipa::path(...)]` 形式调用，
-# 因为属性宏的展开只依赖宏注册表路径解析，不受 extern prelude 限制。两者并存是
-# Rust 宏系统的固有特性，非冗余声明。
+# Derive 宏直接依赖：展开时生成 `::crate_name::` 绝对路径，必须是直接依赖。
+# 属性宏通过 `#[sdforge::crate::macro]` 调用，不受 extern prelude 限制。
 utoipa = { version = "5.0", default-features = false, features = ["macros", "uuid", "chrono"] }
 prost = { version = "0.14", default-features = false, features = ["derive"] }
 sea-orm = { version = "2.0", default-features = false, features = ["macros", "with-json", "with-uuid", "with-chrono"] }
@@ -78,8 +77,6 @@ etcd-client = { version = "0.17", optional = true }
 
 # 缓存与存储
 parking_lot = "0.12"
-
-# 数据库（完全由 dbnexus 接管，sea-orm 通过 dbnexus::sea_orm re-export使用）
 
 # 日志追踪（tracing-subscriber 由 inklog 间接引入，日志初始化通过 inklog 接管）
 tracing = "0.1"
@@ -93,8 +90,7 @@ sha2 = "0.11"
 getrandom = "0.2"
 rand = "0.10"
 subtle = "2.5"
-# Argon2id 用于 API key 密钥哈希（CWE-916 修复）
-# std feature 启用 rand_core/getrandom 支持，OsRng 可用
+# Argon2id 用于 API key 密钥哈希（CWE-916 修复），std 启用 OsRng
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash", "std"] }
 regex = "1.0"
 reqwest = { version = "0.13", features = ["json"] }

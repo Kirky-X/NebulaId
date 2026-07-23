@@ -764,7 +764,7 @@ test uuid_v4_next_id    ... bench: 50 ns/iter (+/- 5)
 
 ```toml
 [dependencies.nebula-id]
-version = "0.2.0"
+version = "0.3.0"
 features = ["audit", "tls"]
 ```
 

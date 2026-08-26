@@ -50,133 +50,28 @@
 //! 所有 TLS 测试用 `tempfile::NamedTempFile` 隔离文件 I/O；限流清理
 //! 测试用独立的 `RateLimiter` 实例避免桶状态竞争。
 
-use std::collections::HashMap;
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use axum::{
     body::Body,
     http::{header, HeaderValue, Request, StatusCode},
     routing::get,
     Router,
 };
-use confers::interface::ConfigProvider;
-use confers::types::AnnotatedValue;
-use dbnexus::database::pool::PoolStatus;
 use dbnexus::sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
-use dbnexus::{ConnectionPool, DbConfig, DbError, DbResult, Session};
-use oxcache::backend::MokaMemoryBackend;
-use oxcache::Cache;
 use sdforge::tower::ServiceExt;
 use sdforge::tower_http::set_header::SetResponseHeaderLayer;
 use tempfile::NamedTempFile;
 
 use crate::core::config::{DatabaseConfig, DatabaseEngine, TlsConfig};
-use crate::core::container::AppContainer;
 use crate::core::database::{create_connection, run_migrations};
 use crate::core::types::CoreError;
 use crate::server::config::tls::{TlsError, TlsManager};
 use crate::server::middleware::utils::get_client_ip;
 use crate::server::rate_limit::limiter::RateLimiter;
 
-// ============================================================================
-// Mock 辅助（参考 src/core/container/app_container.rs 测试模式）
-// ============================================================================
-
-/// 最小化 ConfigProvider mock —— 空值表，满足 trait 即可。
-struct MockConfigProvider {
-    values: HashMap<String, AnnotatedValue>,
-}
-
-impl MockConfigProvider {
-    fn new() -> Self {
-        Self {
-            values: HashMap::new(),
-        }
-    }
-}
-
-impl ConfigProvider for MockConfigProvider {
-    fn get_raw(&self, key: &str) -> Option<&AnnotatedValue> {
-        self.values.get(key)
-    }
-    fn keys(&self) -> Vec<String> {
-        self.values.keys().cloned().collect()
-    }
-}
-
-/// 最小化 ConnectionPool mock —— get_session 总是返回 Err，用于
-/// 验证 health_check 的错误传播路径。
-struct MockConnectionPool {
-    status: PoolStatus,
-    config: DbConfig,
-    session_error_msg: String,
-}
-
-impl MockConnectionPool {
-    fn new(status: PoolStatus, config: DbConfig, session_error_msg: String) -> Self {
-        Self {
-            status,
-            config,
-            session_error_msg,
-        }
-    }
-}
-
-#[async_trait]
-impl ConnectionPool for MockConnectionPool {
-    async fn get_session(&self, _role: &str) -> DbResult<Session> {
-        Err(DbError::Config(self.session_error_msg.clone()))
-    }
-
-    fn status(&self) -> PoolStatus {
-        self.status.clone()
-    }
-
-    fn config(&self) -> &DbConfig {
-        &self.config
-    }
-}
-
-/// 构造一个 PoolStatus（参考 app_container.rs 测试）。
-fn pool_status(active: u32, idle: u32, max_active: u32) -> PoolStatus {
-    PoolStatus {
-        total: active + idle,
-        active,
-        idle,
-        wait_count: 0,
-        max_waiters: 0,
-        borrow_count: 0,
-        max_active,
-    }
-}
-
-fn make_mock_config() -> Arc<dyn ConfigProvider> {
-    Arc::new(MockConfigProvider::new())
-}
-
-fn make_mock_db_pool() -> Arc<dyn ConnectionPool> {
-    Arc::new(MockConnectionPool::new(
-        pool_status(0, 0, 10),
-        DbConfig::default(),
-        "mock session unavailable".to_string(),
-    ))
-}
-
-async fn make_test_cache() -> Arc<Cache<String, Vec<u8>>> {
-    let l1 = MokaMemoryBackend::builder().capacity(100).build();
-    let cache: Cache<String, Vec<u8>> = Cache::builder()
-        .backend_arc(Arc::new(l1))
-        .build()
-        .await
-        .expect("cache build should succeed with MokaMemoryBackend");
-    Arc::new(cache)
-}
-
-// ============================================================================
 // E2E-SECHEAD 组：安全头注入端到端
 // ============================================================================
 
@@ -458,58 +353,6 @@ async fn e2e_rate_limiter_cleanup_keeps_active_buckets() {
     handle.abort();
 }
 
-// ============================================================================
-// E2E-CONTAINER 组：容器构建端到端
-// ============================================================================
-
-/// E2E-CONTAINER-001: builder 缺所有依赖时 try_build 返回 ConfigurationError。
-#[tokio::test]
-async fn e2e_container_builder_missing_config_returns_error() {
-    // 空构造器，未提供任何依赖
-    let result = AppContainer::builder().try_build();
-    match result {
-        Err(CoreError::ConfigurationError(msg)) => {
-            assert!(
-                msg.contains("config provider"),
-                "应提示 config provider 缺失，实际为: {msg}"
-            );
-        }
-        other => panic!("期望 ConfigurationError，实际为: {other:?}"),
-    }
-}
-
-/// E2E-CONTAINER-002: health_check 返回 Result<bool, CoreError>。
-///
-/// 用 mock config + 真实 cache + mock db pool（get_session 返回 Err）
-/// 构造 container。cache 健康检查通过，db 健康检查失败 → health_check
-/// 返回 Err(DatabaseError)，验证错误传播路径与返回类型签名。
-#[tokio::test]
-async fn e2e_container_health_check_returns_bool() {
-    let container = AppContainer::with_dependencies(
-        make_mock_config(),
-        make_test_cache().await,
-        make_mock_db_pool(),
-    );
-
-    let result = container.health_check().await;
-    // health_check 签名为 Result<bool, CoreError>；mock db 不健康 → Err
-    match result {
-        Ok(b) => {
-            // 健康场景：返回 Ok(true)（cache 与 db 都健康时）
-            let _: bool = b;
-        }
-        Err(CoreError::DatabaseError(msg)) => {
-            // mock db pool 的 get_session 返回 Err，错误应传播
-            assert!(
-                msg.contains("mock session unavailable"),
-                "应传播 db session 错误，实际为: {msg}"
-            );
-        }
-        Err(other) => panic!("期望 Ok(bool) 或 DatabaseError，实际为: {other:?}"),
-    }
-}
-
-// ============================================================================
 // E2E-DB 组：数据库连接端到端
 // ============================================================================
 

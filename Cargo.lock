@@ -3239,7 +3239,6 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tracing",
- "trait-kit",
  "url",
  "utoipa",
  "uuid",

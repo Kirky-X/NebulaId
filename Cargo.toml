@@ -45,7 +45,6 @@ oxcache = "0.3"
 dbnexus = { version = "0.4", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
 sdforge = { version = "0.5.0-rc.1", default-features = false, features = ["http", "grpc", "openapi"] }
 inklog = { version = "0.3.0-rc.1", default-features = false }
-trait-kit = { version = "0.3", default-features = false, features = ["async"] }
 # garrison: 一站式身份认证框架（同作者 Kirky-X），通过 garrison-auth feature 启用，
 # 接管 API key 验证。仅启用 web-axum（中间件）+ protocol-apikey（ApiKeyHandler）+ cache-memory（KV 后端）
 garrison = { version = "0.7", optional = true, default-features = false, features = ["web-axum", "protocol-apikey", "cache-memory"] }

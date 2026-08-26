@@ -17,7 +17,6 @@
 // Public API modules (re-exported in lib.rs)
 pub mod algorithm;
 pub mod config;
-pub mod container;
 pub mod database;
 pub mod i18n;
 pub mod monitoring;
@@ -39,7 +38,6 @@ pub use algorithm::{
 
 pub use types::{Id, IdBatch};
 
-pub use container::AppContainer;
 
 pub use config::{Config, TlsConfig};
 

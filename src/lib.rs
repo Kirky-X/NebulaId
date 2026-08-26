@@ -26,7 +26,7 @@
 //! # Usage
 //!
 //! ```rust
-//! use nebulaid::core::{Config, AppContainer};
+//! use nebulaid::core::Config;
 //! ```
 
 // Core namespace - 核心业务逻辑
@@ -34,9 +34,6 @@ pub mod core;
 
 // Server namespace - HTTP/gRPC 服务
 pub mod server;
-
-// Internal implementation modules
-pub(crate) mod infrastructure;
 
 // Phase 8 ICU i18n — load locale files at compile time.
 // `i18n!` embeds all `locales/*.yml` as static data; `t!()` macro becomes

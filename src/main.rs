@@ -49,10 +49,11 @@ extern crate rust_i18n;
 i18n!("locales", fallback = "en");
 
 const DEFAULT_CONFIG_PATH: &str = "config/config.toml";
-const DEFAULT_SERVER_PORT: u16 = 8080;
-const DEFAULT_GRPC_PORT: u16 = 50051;
 
 /// 服务器配置
+///
+/// 端口默认值唯一归属 `core::config::AppConfig::default()`（8080/9091），
+/// 此处经 `AppConfig::default()` 派生，禁止再引入本地端口常量。
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     /// HTTP 服务端口
@@ -67,12 +68,13 @@ pub struct ServerConfig {
 
 impl Default for ServerConfig {
     fn default() -> Self {
+        let app = nebulaid::core::config::AppConfig::default();
         let workers = std::thread::available_parallelism()
             .map(|p| p.get())
             .unwrap_or(1);
         Self {
-            http_port: DEFAULT_SERVER_PORT,
-            grpc_port: DEFAULT_GRPC_PORT,
+            http_port: app.http_port,
+            grpc_port: app.grpc_port,
             workers,
             shutdown_timeout_secs: 30,
         }
@@ -337,7 +339,7 @@ async fn create_id_generator(
 }
 
 async fn start_http_server(
-    _config: ServerConfig,
+    bind_addr: SocketAddr,
     handlers: Arc<ApiHandlers>,
     auth: Arc<ApiKeyAuth>,
     rate_limiter: Arc<RateLimiter>,
@@ -345,12 +347,10 @@ async fn start_http_server(
     _config_service: Arc<dyn ConfigManagementService>,
     tls_manager: Option<Arc<TlsManager>>,
 ) -> Result<()> {
-    let addr = SocketAddr::from(([0, 0, 0, 0], DEFAULT_SERVER_PORT));
-
     let router = create_router(handlers, auth, rate_limiter, audit_logger)
         .await
         .layer(create_size_limit_middleware())
-        .merge(merge_sdforge_routes(sdforge::axum::Router::new()));
+        .merge(merge_sdforge_routes(axum::Router::new()));
 
     // 检查是否启用 HTTPS (暂时回退到普通 HTTP，TLS 功能待完善)
     if let Some(ref tls) = tls_manager {
@@ -359,11 +359,11 @@ async fn start_http_server(
         }
     }
 
-    // 回退到普通 HTTP
-    info!("{}", t!("log.main.starting_http_server", addr = addr));
-    let listener = TcpListener::bind(addr).await?;
+    // 回退到普通 HTTP（绑定地址由调用方从 config.app.http_addr() 解析传入）
+    info!("{}", t!("log.main.starting_http_server", addr = bind_addr));
+    let listener = TcpListener::bind(bind_addr).await?;
 
-    sdforge::axum::serve(listener, router)
+    axum::serve(listener, router)
         .with_graceful_shutdown(async {
             tokio::signal::ctrl_c().await.ok();
             info!("{}", t!("log.main.shutting_down_http_server"));
@@ -519,8 +519,17 @@ async fn main() -> Result<()> {
         workers: std::thread::available_parallelism()
             .map(|p| p.get())
             .unwrap_or(1),
-        shutdown_timeout_secs: 30,
+        shutdown_timeout_secs: config.app.shutdown_timeout_seconds,
     };
+
+    // HTTP 绑定地址唯一来源于 config.app（host + http_port），修复原先
+    // 忽略配置、硬编码 [0,0,0,0]:8080 导致 http_port 配置失效的缺陷。
+    let http_bind_addr: SocketAddr = config.app.http_addr().map_err(|e| {
+        nebulaid::core::types::CoreError::InternalError(format!(
+            "invalid http bind address from config.app (host={}, port={}): {}",
+            config.app.host, config.app.http_port, e
+        ))
+    })?;
 
     info!(
         "{}",
@@ -729,6 +738,14 @@ async fn main() -> Result<()> {
             (h, cs)
         } else {
             let cs = Arc::new(ConfigManager::new(hot_config, id_generator.clone()));
+            // T011：仅当配置显式开启时启动文件监视；缺省 false 保持历史行为
+            if config.hot_reload.auto_watch_enabled {
+                let watcher = hot_config.clone();
+                tokio::spawn(async move {
+                    watcher.watch(2000).await;
+                });
+                info!("{}", t!("log.main.hot_reload_watcher_started"));
+            }
             let h = Arc::new(ApiHandlers::new(id_generator.clone(), cs.clone()));
             (h, cs)
         };
@@ -756,7 +773,7 @@ async fn main() -> Result<()> {
         info!("{}", t!("log.main.server_initialized_starting"));
 
         let http_server = tokio::spawn(start_http_server(
-            server_config.clone(),
+            http_bind_addr,
             handlers.clone(),
             auth.clone(),
             rate_limiter.clone(),
@@ -889,7 +906,7 @@ async fn main() -> Result<()> {
         info!("{}", t!("log.main.server_initialized_starting"));
 
         let http_server = tokio::spawn(start_http_server(
-            server_config.clone(),
+            http_bind_addr,
             handlers.clone(),
             auth.clone(),
             rate_limiter.clone(),
@@ -984,7 +1001,10 @@ mod tests {
     #[tokio::test]
     async fn test_server_config_default() {
         let config = ServerConfig::default();
-        assert_eq!(config.http_port, DEFAULT_SERVER_PORT);
+        // 端口默认值唯一归属 AppConfig::default（T001：删除本地端口常量后）
+        let app = nebulaid::core::config::AppConfig::default();
+        assert_eq!(config.http_port, app.http_port);
+        assert_eq!(config.grpc_port, app.grpc_port);
         assert!(config.workers > 0);
         assert_eq!(config.shutdown_timeout_secs, 30);
     }
@@ -1260,16 +1280,9 @@ mod tests {
         let rate_limiter = Arc::new(RateLimiter::new(10000, 100));
         let audit_logger = Arc::new(AuditLogger::new(10000));
 
-        let server_config = ServerConfig {
-            http_port: 0,
-            grpc_port: 0,
-            workers: 1,
-            shutdown_timeout_secs: 1,
-        };
-
         let server = tokio::spawn(async move {
             start_http_server(
-                server_config,
+                SocketAddr::from(([127, 0, 0, 1], 0)),
                 handlers,
                 auth,
                 rate_limiter,

@@ -95,6 +95,10 @@ impl ConfigAdapter {
             grpc_port: self.provider.get_int("app.grpc_port").unwrap_or(9091) as u16,
             dc_id: self.provider.get_int("app.dc_id").unwrap_or(0) as u8,
             worker_id: self.provider.get_int("app.worker_id").unwrap_or(0) as u8,
+            shutdown_timeout_seconds: self
+                .provider
+                .get_int("app.shutdown_timeout_seconds")
+                .unwrap_or(30) as u64,
         }
     }
 
@@ -193,7 +197,7 @@ impl ConfigAdapter {
     ///
     /// Phase 9 T043 (HIGH H1 / tiangang HIGH-1) — `api_key_salt` no
     /// longer falls back to a hard-coded value. If unset, returns an
-    /// empty string; `AuthManager::from_env()` enforces the
+    /// empty string; the garrison auth path enforces the
     /// production-must-set-env rule (panic on missing salt in release
     /// builds, random salt in dev builds).
     pub fn get_auth_config(&self) -> AuthConfig {
@@ -468,6 +472,12 @@ impl ConfigAdapter {
             rate_limit: self.get_rate_limit_config(),
             tls: self.get_tls_config(),
             batch_generate: self.get_batch_generate_config(),
+            hot_reload: crate::core::config::HotReloadSettings {
+                auto_watch_enabled: self
+                    .provider
+                    .get_bool("hot_reload.auto_watch_enabled")
+                    .unwrap_or(false),
+            },
         }
     }
 

@@ -187,7 +187,6 @@ mod tests {
     use crate::server::handlers::mock_generator::MockIdGenerator;
     use crate::server::models::*;
     use async_trait::async_trait;
-    use mockall::mock;
     use std::sync::Arc;
     use uuid::Uuid;
 
@@ -326,52 +325,10 @@ mod tests {
         }
     }
 
-    mock! {
-        pub SysMockConfigService {}
-        #[async_trait]
-        impl ConfigManagementService for SysMockConfigService {
-            fn get_config(&self) -> ConfigResponse;
-            fn get_secure_config(&self) -> SecureConfigResponse;
-            fn get_batch_max_size(&self) -> u32;
-            async fn update_rate_limit(&self, req: UpdateRateLimitRequest) -> UpdateConfigResponse;
-            async fn update_logging(&self, req: UpdateLoggingRequest) -> UpdateConfigResponse;
-            async fn reload_config(&self) -> UpdateConfigResponse;
-            async fn get_rate_limit_override(&self) -> Option<(u32, u32)>;
-            async fn set_algorithm(&self, req: SetAlgorithmRequest) -> SetAlgorithmResponse;
-            async fn create_biz_tag(&self, request: &crate::core::database::CreateBizTagRequest) -> crate::core::Result<BizTag>;
-            async fn get_biz_tag(&self, id: Uuid) -> crate::core::Result<Option<BizTag>>;
-            async fn update_biz_tag(&self, id: Uuid, request: &crate::core::database::UpdateBizTagRequest) -> crate::core::Result<BizTag>;
-            async fn delete_biz_tag(&self, id: Uuid) -> crate::core::Result<()>;
-            async fn count_biz_tags(&self, workspace_id: Uuid, group_id: Option<Uuid>) -> crate::core::Result<u64>;
-            async fn list_biz_tags(&self, workspace_id: Uuid, group_id: Option<Uuid>, limit: Option<u32>, offset: Option<u32>) -> crate::core::Result<Vec<BizTag>>;
-            async fn create_workspace(&self, req: CreateWorkspaceRequest) -> crate::core::Result<WorkspaceResponse>;
-            async fn list_workspaces(&self) -> crate::core::Result<WorkspaceListResponse>;
-            async fn get_workspace(&self, name: &str) -> crate::core::Result<Option<WorkspaceResponse>>;
-            async fn create_group(&self, req: CreateGroupRequest) -> crate::core::Result<GroupResponse>;
-            async fn list_groups(&self, workspace: &str) -> crate::core::Result<GroupListResponse>;
-            async fn get_database_metrics(&self) -> DatabaseMetrics;
-            async fn get_cache_metrics(&self) -> CacheMetrics;
-            async fn get_algorithm_metrics(&self) -> Vec<(AlgorithmType, crate::core::algorithm::AlgorithmMetricsSnapshot)>;
-        }
-    }
+    use crate::server::handlers::mock_tests::{MockApiKeyRepository, MockConfigManagementService};
+    type MockSysMockConfigService = MockConfigManagementService;
 
-    mock! {
-        pub SysMockApiKeyRepo {}
-        #[async_trait]
-        impl ApiKeyRepository for SysMockApiKeyRepo {
-            async fn create_api_key(&self, request: &crate::core::database::CreateApiKeyRequest) -> Result<ApiKeyWithSecret>;
-            async fn get_api_key_by_id(&self, key_id: &str) -> Result<Option<ApiKeyInfo>>;
-            async fn validate_api_key(&self, key_id: &str, key_secret: &str) -> Result<Option<(Option<Uuid>, ApiKeyRole)>>;
-            async fn list_api_keys(&self, workspace_id: Uuid, limit: Option<u32>, offset: Option<u32>) -> Result<Vec<ApiKeyInfo>>;
-            async fn delete_api_key(&self, id: Uuid) -> Result<()>;
-            async fn revoke_api_key(&self, id: Uuid) -> Result<()>;
-            async fn update_last_used(&self, id: Uuid) -> Result<()>;
-            async fn get_admin_api_key(&self, workspace_id: Uuid) -> Result<Option<ApiKeyInfo>>;
-            async fn count_api_keys(&self, workspace_id: Uuid) -> Result<u64>;
-            async fn rotate_api_key(&self, key_id: &str, grace_period_seconds: u64) -> Result<ApiKeyWithSecret>;
-            async fn get_keys_older_than(&self, age_threshold_days: i64) -> Result<Vec<ApiKeyInfo>>;
-        }
-    }
+    type MockSysMockApiKeyRepo = MockApiKeyRepository;
 
     fn healthy_db_metrics() -> DatabaseMetrics {
         DatabaseMetrics {

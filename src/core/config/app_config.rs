@@ -21,6 +21,15 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 
+/// 热更新相关配置（T011）。
+#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq)]
+pub struct HotReloadSettings {
+    /// 是否在启动时自动监视配置文件 mtime 并热加载。缺省 false：
+    /// 行为与历史版本完全一致，仅能通过 POST /config/reload 手动触发。
+    #[serde(default)]
+    pub auto_watch_enabled: bool,
+}
+
 /// Complete application configuration
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct Config {
@@ -43,6 +52,9 @@ pub struct Config {
     pub logging: LoggingConfig,
     /// Rate limiting settings
     pub rate_limit: RateLimitConfig,
+    /// 热更新设置（T011：auto_watch_enabled 默认 false，缺省时零行为变化）
+    #[serde(default)]
+    pub hot_reload: HotReloadSettings,
     /// TLS settings
     pub tls: TlsConfig,
     /// Batch generation settings
@@ -106,6 +118,12 @@ impl Config {
         if self.app.grpc_port == 0 {
             return Err(ConfigError::InvalidValue(
                 "gRPC port must be between 1 and 65535".to_string(),
+            ));
+        }
+
+        if self.app.shutdown_timeout_seconds == 0 {
+            return Err(ConfigError::InvalidValue(
+                "Shutdown timeout must be greater than 0 seconds".to_string(),
             ));
         }
 
@@ -288,6 +306,12 @@ impl Config {
         if other.app.worker_id != 0 {
             self.app.worker_id = other.app.worker_id;
         }
+        if other.app.shutdown_timeout_seconds != 30 {
+            self.app.shutdown_timeout_seconds = other.app.shutdown_timeout_seconds;
+        }
+        if other.hot_reload.auto_watch_enabled {
+            self.hot_reload.auto_watch_enabled = true;
+        }
 
         if !other.database.url.is_empty() && other.database.url != self.database.url {
             self.database.url = other.database.url;
@@ -383,6 +407,48 @@ mod tests {
     }
 
     // ==================== load_from_file 测试 ====================
+
+    /// shutdown_timeout_seconds 往返：TOML 显式值保留；字段缺省时 serde default 兜底 30；
+    /// merge 仅在非默认值时覆盖（T002 回归钉）
+    #[test]
+    fn shutdown_timeout_roundtrip_default_and_merge() {
+        // 1) 序列化往返保留显式值
+        let mut original = Config::default();
+        original.app.shutdown_timeout_seconds = 45;
+        let toml_content = toml::to_string(&original).expect("序列化 Config 应成功");
+        assert!(toml_content.contains("shutdown_timeout_seconds"));
+
+        let temp = tempfile::NamedTempFile::new().expect("创建临时文件应成功");
+        std::fs::write(temp.path(), &toml_content).expect("写入临时文件应成功");
+        let loaded = Config::load_from_file(temp.path().to_str().unwrap()).unwrap();
+        assert_eq!(loaded.app.shutdown_timeout_seconds, 45);
+        assert!(loaded.validate().is_ok());
+
+        // 2) 字段从 TOML 缺省 → serde default 兜底 30
+        //    （完整 Config 的 TOML 中移除该键后反序列化，其余必填字段保持齐全）
+        let without_field = toml_content.replace(
+            "shutdown_timeout_seconds = 45",
+            "shutdown_timeout_removed = 45",
+        );
+        let reloaded: Config = toml::from_str(&without_field).expect("缺省字段应走 serde default");
+        assert_eq!(reloaded.app.shutdown_timeout_seconds, 30);
+
+        // 3) merge：默认值(30)不覆盖，非默认值覆盖
+        let mut base = Config::default();
+        base.merge(Config::default());
+        assert_eq!(base.app.shutdown_timeout_seconds, 30);
+
+        let mut target = Config::default();
+        let mut override_cfg = Config::default();
+        override_cfg.app.shutdown_timeout_seconds = 60;
+        target.merge(override_cfg);
+        assert_eq!(target.app.shutdown_timeout_seconds, 60);
+
+        // 4) validate 拒绝 0 值
+        let mut invalid = Config::default();
+        invalid.app.shutdown_timeout_seconds = 0;
+        assert!(invalid.validate().is_err());
+    }
 
     /// 从有效 TOML 文件加载配置应成功，并保留字段值
     #[test]
@@ -1036,4 +1102,36 @@ mod tests {
         base.merge(other);
         assert_eq!(base.database.url, original_url);
     }
+}
+
+/// T011：hot_reload.auto_watch_enabled 缺省 false、显式 true 往返保留、
+/// merge 仅 true 覆盖（false 不回退已开启状态）。
+#[test]
+fn hot_reload_auto_watch_default_and_merge() {
+    // 以完整默认配置的序列化产物为底稿，保证所有必填段齐全
+    let base = toml::to_string(&Config::default()).expect("序列化默认配置应成功");
+    assert!(
+        base.contains("auto_watch_enabled = false"),
+        "缺省应序列化为 false"
+    );
+
+    let flipped = base.replace("auto_watch_enabled = false", "auto_watch_enabled = true");
+    let parsed: Config = toml::from_str(&flipped).expect("显式 true 应可反序列化");
+    assert!(parsed.hot_reload.auto_watch_enabled);
+
+    let mut on = Config::default();
+    on.hot_reload.auto_watch_enabled = true;
+    let mut target = Config::default();
+    target.merge(on);
+    assert!(target.hot_reload.auto_watch_enabled);
+
+    // merge(false) 不得关闭已开启的开关
+    let mut still_on = Config::default();
+    still_on.hot_reload.auto_watch_enabled = true;
+    let mut later_off = Config::default();
+    still_on.merge(later_off);
+    assert!(
+        still_on.hot_reload.auto_watch_enabled,
+        "merge(false) 不得关闭已开启的开关"
+    );
 }

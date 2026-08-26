@@ -260,38 +260,11 @@ mod tests {
     use crate::server::handlers::ApiHandlers;
     use crate::server::models::*;
     use async_trait::async_trait;
-    use mockall::mock;
     use std::sync::Arc;
     use uuid::Uuid;
 
-    mock! {
-        pub BizTagTestService {}
-        #[async_trait]
-        impl ConfigManagementService for BizTagTestService {
-            fn get_config(&self) -> ConfigResponse;
-            fn get_secure_config(&self) -> SecureConfigResponse;
-            fn get_batch_max_size(&self) -> u32;
-            async fn update_rate_limit(&self, req: UpdateRateLimitRequest) -> UpdateConfigResponse;
-            async fn update_logging(&self, req: UpdateLoggingRequest) -> UpdateConfigResponse;
-            async fn reload_config(&self) -> UpdateConfigResponse;
-            async fn get_rate_limit_override(&self) -> Option<(u32, u32)>;
-            async fn set_algorithm(&self, req: SetAlgorithmRequest) -> SetAlgorithmResponse;
-            async fn create_biz_tag(&self, request: &crate::core::database::CreateBizTagRequest) -> crate::core::Result<BizTag>;
-            async fn get_biz_tag(&self, id: Uuid) -> crate::core::Result<Option<BizTag>>;
-            async fn update_biz_tag(&self, id: Uuid, request: &crate::core::database::UpdateBizTagRequest) -> crate::core::Result<BizTag>;
-            async fn delete_biz_tag(&self, id: Uuid) -> crate::core::Result<()>;
-            async fn count_biz_tags(&self, workspace_id: Uuid, group_id: Option<Uuid>) -> crate::core::Result<u64>;
-            async fn list_biz_tags(&self, workspace_id: Uuid, group_id: Option<Uuid>, limit: Option<u32>, offset: Option<u32>) -> crate::core::Result<Vec<BizTag>>;
-            async fn create_workspace(&self, req: CreateWorkspaceRequest) -> crate::core::Result<WorkspaceResponse>;
-            async fn list_workspaces(&self) -> crate::core::Result<WorkspaceListResponse>;
-            async fn get_workspace(&self, name: &str) -> crate::core::Result<Option<WorkspaceResponse>>;
-            async fn create_group(&self, req: CreateGroupRequest) -> crate::core::Result<GroupResponse>;
-            async fn list_groups(&self, workspace: &str) -> crate::core::Result<GroupListResponse>;
-            async fn get_database_metrics(&self) -> DatabaseMetrics;
-            async fn get_cache_metrics(&self) -> CacheMetrics;
-            async fn get_algorithm_metrics(&self) -> Vec<(AlgorithmType, crate::core::algorithm::AlgorithmMetricsSnapshot)>;
-        }
-    }
+    use crate::server::handlers::mock_tests::MockConfigManagementService;
+    type MockBizTagTestService = MockConfigManagementService;
 
     fn make_handlers(mock: MockBizTagTestService) -> Arc<ApiHandlers> {
         let mock_gen = Arc::new(MockIdGenerator::new());

@@ -299,7 +299,7 @@ log.server.config.tls.tls_initialized: "TLS configuration initialized"
 # src/server/grpc.rs
 log.server.grpc.batch_generate_received: "Received gRPC batch_generate request with count: %{count}"
 log.server.grpc.batch_size_validation_failed_zero: "Batch size validation failed: count is 0"
-log.server.grpc.batch_size_validation_failed_exceeds_max: "Batch size validation failed: count %{count} exceeds maximum 100"
+log.server.grpc.batch_size_validation_failed_exceeds_max: "Batch size validation failed: count %{count} exceeds maximum %{max}"
 log.server.grpc.batch_size_validation_passed: "Batch size validation passed: %{count}"
 
 # src/server/handlers/api_key_handlers.rs
@@ -391,6 +391,7 @@ log.main.tls_init_failed: "Failed to initialize TLS manager: %{error}"
 log.main.tls_disabled: "TLS will be disabled"
 log.main.starting_degradation_check: "Starting degradation manager health check task..."
 log.main.server_initialized_starting: "Server initialized, starting HTTP and gRPC servers..."
+log.main.hot_reload_watcher_started: "Hot reload auto-watch started (polling config file mtime)"
 log.main.http_server_stopped: "HTTP server stopped"
 log.main.http_server_error: "HTTP server error: %{error}"
 log.main.http_server_panic: "HTTP server task panicked: %{error}"

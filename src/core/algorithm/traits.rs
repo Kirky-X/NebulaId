@@ -96,6 +96,14 @@ pub trait IdGenerator: Send + Sync {
     async fn get_primary_algorithm(&self) -> String;
 
     fn get_degradation_manager(&self) -> &Arc<DegradationManager>;
+
+    /// 当前生效的 Snowflake 位布局（T010：解析知识唯一来源）。
+    ///
+    /// 返回 `None` 表示实现不基于 Snowflake 或无法获知布局；调用方应回退
+    /// [`crate::core::algorithm::SnowflakeLayoutInfo::standard`]。
+    fn snowflake_layout(&self) -> Option<crate::core::algorithm::SnowflakeLayoutInfo> {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]

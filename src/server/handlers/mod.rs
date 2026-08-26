@@ -29,6 +29,9 @@ pub mod helpers;
 pub mod id_handlers;
 // pre-existing test helper module (MockIdGenerator); not part of T027-T033 split,
 // retained from pre-refactor codebase (T047 convergence annotation).
+// #[cfg(test)] 门控（code-hygiene-cleanup T003）：仅参与测试编译单元，
+// 不再进入生产二进制。所有调用点均位于 cfg(test) 模块内。
+#[cfg(test)]
 pub mod mock_generator;
 pub mod system_handlers;
 pub mod workspace_handlers;
@@ -146,7 +149,7 @@ impl ApiHandlers {
 }
 
 #[cfg(test)]
-mod mock_tests {
+pub(crate) mod mock_tests {
     use super::*;
     use crate::core::algorithm::AlgorithmMetricsSnapshot;
     use crate::core::database::{

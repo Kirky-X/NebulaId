@@ -88,7 +88,9 @@ pub struct BatchGenerateRequest {
     #[validate(length(min = 1, max = 64))]
     pub biz_tag: String,
 
-    #[validate(range(min = 1, max = 100))]
+    // T012：上限由 config.batch_generate.max_batch_size 运行时校验，
+    // 静态 validator 仅保留下界。
+    #[validate(range(min = 1))]
     pub size: Option<usize>,
 
     #[validate(length(min = 1, max = 20))]
@@ -1287,6 +1289,8 @@ mod tests {
         };
         assert!(req.validate().is_err());
 
+        // T012：静态 validator 仅保留 min=1 下界；上限改由
+        // config.batch_generate.max_batch_size 在 handler 层动态校验
         let req2 = BatchGenerateRequest {
             workspace: "ws".to_string(),
             group: "g".to_string(),
@@ -1294,7 +1298,10 @@ mod tests {
             size: Some(101),
             algorithm: None,
         };
-        assert!(req2.validate().is_err());
+        assert!(
+            req2.validate().is_ok(),
+            "size=101 不再受静态 max=100 限制，上限由配置决定"
+        );
     }
 
     #[test]

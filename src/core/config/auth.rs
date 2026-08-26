@@ -55,10 +55,10 @@ pub struct AuthConfig {
 
 fn default_api_key_salt() -> String {
     // Phase 9 T043 (HIGH H1 / tiangang HIGH-1) — never fall back to a
-    // hard-coded salt. AuthManager::from_env() (see `core/auth/manager.rs`)
+    // hard-coded salt. The garrison-based auth path
     // already panics in production when `NEBULA_API_KEY_SALT` is unset;
     // this function returns an empty string so the empty-ness check in
-    // `AuthManager` triggers the same panic-on-missing-env path. In
+
     // dev/test the manager generates a random per-process salt, so an
     // empty string here is safe for non-production builds.
     std::env::var("NEBULA_API_KEY_SALT").unwrap_or_default()
@@ -71,7 +71,11 @@ fn default_api_key_salt() -> String {
 /// - `auth.rs::default_key_rotation_grace_period_seconds()` (本文件)
 /// - `handlers/mod.rs::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`
 /// - `config_adapter.rs::unwrap_or(7 * 24 * 60 * 60)`
-pub const DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60;
+///
+/// T009（code-hygiene-cleanup）：常量本体迁入
+/// [`crate::core::config::defaults`] 统一注册表，此处 re-export 保持既有
+/// 导入路径兼容。
+pub use crate::core::config::defaults::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS;
 
 /// L16 修复：serde 默认值函数（引用上述常量）。
 fn default_key_rotation_grace_period_seconds() -> u64 {

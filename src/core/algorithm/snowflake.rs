@@ -51,6 +51,73 @@ fn epoch_start() -> SystemTime {
     })
 }
 
+/// Snowflake 位布局元数据（T010：解析知识的唯一权威来源）。
+///
+/// 此前 server 层 `id_handlers::extract_snowflake_metadata` 手工硬编码
+/// 10/8/3 位宽做解码，与配置驱动的生成侧（[`SnowflakeAlgorithmConfig`]）
+/// 存在漂移风险；现收敛为本类型，handler 仅调用 [`Self::parse`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnowflakeLayoutInfo {
+    pub timestamp_bits: u8,
+    pub worker_id_bits: u8,
+    pub datacenter_id_bits: u8,
+    pub sequence_bits: u8,
+}
+
+/// 从原始 u128 值解析出的 Snowflake ID 分量。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParsedSnowflakeId {
+    /// 自 epoch（DEFAULT_START_TIME）以来的毫秒数
+    pub timestamp_ms: u64,
+    pub datacenter_id: u8,
+    pub worker_id: u16,
+    pub sequence: u16,
+}
+
+impl SnowflakeLayoutInfo {
+    /// 从算法配置推导位布局（与 `construct_id` 的移位顺序互为逆运算）。
+    pub fn from_config(cfg: &SnowflakeAlgorithmConfig) -> Self {
+        Self {
+            timestamp_bits: cfg.timestamp_bits(),
+            worker_id_bits: cfg.worker_id_bits,
+            datacenter_id_bits: cfg.datacenter_id_bits,
+            sequence_bits: cfg.sequence_bits,
+        }
+    }
+
+    /// 默认位布局（datacenter=3 / worker=8 / sequence=10），供无法获取
+    /// 运行时配置的调用方（如 mock generator）回退使用——与历史硬编码
+    /// 行为完全一致。
+    pub fn standard() -> Self {
+        Self {
+            timestamp_bits: 64 - 3 - 8 - 10,
+            worker_id_bits: 8,
+            datacenter_id_bits: 3,
+            sequence_bits: 10,
+        }
+    }
+
+    /// 按本布局解析原始值。字段语义与 [`SnowflakeAlgorithm::construct_id`]
+    /// 的组装顺序严格互逆：
+    /// `timestamp << (dc+worker+seq) | dc << (worker+seq) | worker << seq | seq`
+    pub fn parse(&self, value: u128) -> ParsedSnowflakeId {
+        let seq_mask: u128 = (1u128 << self.sequence_bits) - 1;
+        let worker_mask: u128 = (1u128 << self.worker_id_bits) - 1;
+        let dc_mask: u128 = (1u128 << self.datacenter_id_bits) - 1;
+
+        let worker_shift = self.sequence_bits;
+        let dc_shift = self.sequence_bits + self.worker_id_bits;
+        let ts_shift = dc_shift + self.datacenter_id_bits;
+
+        ParsedSnowflakeId {
+            sequence: (value & seq_mask) as u16,
+            worker_id: ((value >> worker_shift) & worker_mask) as u16,
+            datacenter_id: ((value >> dc_shift) & dc_mask) as u8,
+            timestamp_ms: (value >> ts_shift) as u64,
+        }
+    }
+}
+
 pub struct SnowflakeAlgorithm {
     config: SnowflakeAlgorithmConfig,
     datacenter_id: u8,

@@ -13,7 +13,6 @@
 // limitations under the License.
 
 pub(crate) mod audit_trait;
-pub(crate) mod circuit_breaker;
 pub(crate) mod degradation_manager;
 pub mod router;
 pub(crate) mod segment;
@@ -27,9 +26,12 @@ pub use router::AlgorithmRouter;
 
 pub use audit_trait::{AuditEvent, AuditEventType, AuditLogger, AuditResult, DynAuditLogger};
 
-pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitBreakerState};
-
-pub use degradation_manager::DegradationManager;
+// CircuitBreakerState 由 degradation_manager 唯一定义（T005：删除生产零引用的
+// 独立 circuit_breaker.rs 后，熔断器唯一实现为 DegradationManager 内建状态机）。
+pub use degradation_manager::{CircuitBreakerState, DegradationManager};
 
 // Re-export CpuMonitor for CPU monitoring
 pub use segment::CpuMonitor;
+
+// T010：Snowflake 位布局解析的唯一权威类型
+pub use snowflake::{ParsedSnowflakeId, SnowflakeLayoutInfo};

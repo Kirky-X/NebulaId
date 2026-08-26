@@ -89,26 +89,35 @@ impl NebulaIdService for GrpcServer {
             t!("log.server.grpc.batch_generate_received", count = req.count)
         );
 
-        // Validate batch size
+        // Validate batch size（T012：错误消息与 HTTP 同源 i18n）
         if req.count == 0 {
             tracing::warn!(
                 "{}",
                 t!("log.server.grpc.batch_size_validation_failed_zero")
             );
-            return Err(Status::invalid_argument("Batch size cannot be zero"));
+            return Err(Status::invalid_argument(
+                t!("api.error.handlers.id_handlers.batch_size_zero").to_string(),
+            ));
         }
-        if req.count > 100 {
+        // T012：上限唯一来源 = config.batch_generate.max_batch_size
+        let max_batch_size = self.handlers.get_config_service().get_batch_max_size() as usize;
+        if req.count > max_batch_size as i32 {
             tracing::warn!(
                 "{}",
                 t!(
                     "log.server.grpc.batch_size_validation_failed_exceeds_max",
-                    count = req.count
+                    count = req.count,
+                    max = max_batch_size
                 )
             );
-            return Err(Status::invalid_argument(format!(
-                "Batch size {} exceeds maximum allowed value of 100",
-                req.count
-            )));
+            return Err(Status::invalid_argument(
+                t!(
+                    "api.error.handlers.id_handlers.batch_size_exceeds_max",
+                    size = req.count,
+                    max = max_batch_size
+                )
+                .to_string(),
+            ));
         }
 
         tracing::info!(

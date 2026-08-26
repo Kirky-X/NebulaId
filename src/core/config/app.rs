@@ -73,6 +73,13 @@ pub struct AppConfig {
     pub dc_id: u8,
     /// Worker ID (0-255)
     pub worker_id: u8,
+    /// Graceful shutdown timeout (seconds)
+    #[serde(default = "default_shutdown_timeout_seconds")]
+    pub shutdown_timeout_seconds: u64,
+}
+
+fn default_shutdown_timeout_seconds() -> u64 {
+    30
 }
 
 impl Default for AppConfig {
@@ -84,6 +91,7 @@ impl Default for AppConfig {
             grpc_port: 9091,
             dc_id: 0,
             worker_id: 0,
+            shutdown_timeout_seconds: default_shutdown_timeout_seconds(),
         }
     }
 }

@@ -99,6 +99,12 @@ impl IdGenerator for AlgorithmRouter {
         &self.degradation_manager
     }
 
+    fn snowflake_layout(&self) -> Option<crate::core::algorithm::SnowflakeLayoutInfo> {
+        Some(crate::core::algorithm::SnowflakeLayoutInfo::from_config(
+            &self.config.algorithm.snowflake,
+        ))
+    }
+
     async fn generate_with_algorithm(
         &self,
         algorithm: AlgorithmType,
@@ -122,6 +128,33 @@ impl IdGenerator for AlgorithmRouter {
         )
         .await?;
         Ok(batch.ids)
+    }
+}
+
+/// fallback 链遍历要执行的操作（T004：合并单条/批量两套同构降级循环）。
+/// 以类型级分发统一两套循环体，`Out` 关联类型承载 Id / IdBatch 差异。
+trait FallbackRunner {
+    type Out;
+    async fn run(&self, alg: &Arc<dyn IdAlgorithm>, ctx: &GenerateContext) -> Result<Self::Out>;
+}
+
+/// 单条生成 runner
+struct GenerateRun;
+
+impl FallbackRunner for GenerateRun {
+    type Out = Id;
+    async fn run(&self, alg: &Arc<dyn IdAlgorithm>, ctx: &GenerateContext) -> Result<Id> {
+        alg.generate(ctx).await
+    }
+}
+
+/// 批量生成 runner（携带批量大小）
+struct BatchGenerateRun(usize);
+
+impl FallbackRunner for BatchGenerateRun {
+    type Out = IdBatch;
+    async fn run(&self, alg: &Arc<dyn IdAlgorithm>, ctx: &GenerateContext) -> Result<IdBatch> {
+        alg.batch_generate(ctx, self.0).await
     }
 }
 
@@ -332,6 +365,48 @@ impl AlgorithmRouter {
             .await
     }
 
+    /// 遍历 fallback 链：对链上每个已注册算法执行指定操作，记录成功/失败到
+    /// DegradationManager，返回首个成功结果；链遍历完仍无成功则返回 None。
+    ///
+    /// `announce_hits` 控制 fallback 命中时是否输出 info 日志——保留原实现的
+    /// 日志不对称："主算法失败后回退"（true）会广播命中，"主算法未注册直接
+    /// 回退"（false）静默。批量路径两侧均为 false（与原行为一致）。
+    async fn try_fallback_chain<R: FallbackRunner>(
+        &self,
+        algorithms: &HashMap<AlgorithmType, Arc<dyn IdAlgorithm>>,
+        ctx: &GenerateContext,
+        announce_hits: bool,
+        runner: R,
+    ) -> Option<Result<R::Out>> {
+        for fallback in &self.fallback_chain {
+            if let Some(fallback_alg) = algorithms.get(fallback).cloned() {
+                let result = runner.run(&fallback_alg, ctx).await;
+                match result {
+                    Ok(value) => {
+                        self.degradation_manager
+                            .record_generation_result(*fallback, true)
+                            .await;
+                        if announce_hits {
+                            info!(
+                                fallback = ?fallback,
+                                "{}",
+                                t!("log.core.algorithm.router.fell_back_to_algorithm")
+                            );
+                        }
+                        return Some(Ok(value));
+                    }
+                    Err(_) => {
+                        self.degradation_manager
+                            .record_generation_result(*fallback, false)
+                            .await;
+                        continue;
+                    }
+                }
+            }
+        }
+        None
+    }
+
     async fn generate_with_algorithm_internal(
         &self,
         algorithm: AlgorithmType,
@@ -388,28 +463,11 @@ impl AlgorithmRouter {
                         "{}",
                         t!("log.core.algorithm.router.algorithm_failed_fallback")
                     );
-                    for fallback in &self.fallback_chain {
-                        if let Some(fallback_alg) = algorithms.get(fallback).cloned() {
-                            match fallback_alg.generate(ctx).await {
-                                Ok(id) => {
-                                    self.degradation_manager
-                                        .record_generation_result(*fallback, true)
-                                        .await;
-                                    info!(
-                                        fallback = ?fallback,
-                                        "{}",
-                                        t!("log.core.algorithm.router.fell_back_to_algorithm")
-                                    );
-                                    return Ok(id);
-                                }
-                                Err(_) => {
-                                    self.degradation_manager
-                                        .record_generation_result(*fallback, false)
-                                        .await;
-                                    continue;
-                                }
-                            }
-                        }
+                    if let Some(res) = self
+                        .try_fallback_chain(&algorithms, ctx, true, GenerateRun)
+                        .await
+                    {
+                        return res;
                     }
                     return Err(e);
                 }
@@ -423,28 +481,15 @@ impl AlgorithmRouter {
             t!("log.core.algorithm.router.algorithm_not_found")
         );
 
-        for fallback in &self.fallback_chain {
-            if let Some(fallback_alg) = algorithms.get(fallback).cloned() {
-                match fallback_alg.generate(ctx).await {
-                    Ok(id) => {
-                        self.degradation_manager
-                            .record_generation_result(*fallback, true)
-                            .await;
-                        return Ok(id);
-                    }
-                    Err(_) => {
-                        self.degradation_manager
-                            .record_generation_result(*fallback, false)
-                            .await;
-                        continue;
-                    }
-                }
-            }
+        match self
+            .try_fallback_chain(&algorithms, ctx, false, GenerateRun)
+            .await
+        {
+            Some(res) => res,
+            None => Err(CoreError::InternalError(
+                "All algorithms failed".to_string(),
+            )),
         }
-
-        Err(CoreError::InternalError(
-            "All algorithms failed".to_string(),
-        ))
     }
 
     async fn batch_generate_with_algorithm_internal(
@@ -479,51 +524,26 @@ impl AlgorithmRouter {
                     self.degradation_manager
                         .record_generation_result(effective_algorithm, false)
                         .await;
-                    for fallback in &self.fallback_chain {
-                        if let Some(fallback_alg) = algorithms.get(fallback).cloned() {
-                            match fallback_alg.batch_generate(ctx, size).await {
-                                Ok(batch) => {
-                                    self.degradation_manager
-                                        .record_generation_result(*fallback, true)
-                                        .await;
-                                    return Ok(batch);
-                                }
-                                Err(_) => {
-                                    self.degradation_manager
-                                        .record_generation_result(*fallback, false)
-                                        .await;
-                                    continue;
-                                }
-                            }
-                        }
+                    if let Some(res) = self
+                        .try_fallback_chain(&algorithms, ctx, false, BatchGenerateRun(size))
+                        .await
+                    {
+                        return res;
                     }
                     return Err(e);
                 }
             }
         }
 
-        for fallback in &self.fallback_chain {
-            if let Some(fallback_alg) = algorithms.get(fallback).cloned() {
-                match fallback_alg.batch_generate(ctx, size).await {
-                    Ok(batch) => {
-                        self.degradation_manager
-                            .record_generation_result(*fallback, true)
-                            .await;
-                        return Ok(batch);
-                    }
-                    Err(_e) => {
-                        self.degradation_manager
-                            .record_generation_result(*fallback, false)
-                            .await;
-                        continue;
-                    }
-                }
-            }
+        match self
+            .try_fallback_chain(&algorithms, ctx, false, BatchGenerateRun(size))
+            .await
+        {
+            Some(res) => res,
+            None => Err(CoreError::InternalError(
+                "All algorithms failed".to_string(),
+            )),
         }
-
-        Err(CoreError::InternalError(
-            "All algorithms failed".to_string(),
-        ))
     }
 
     pub async fn health_check(&self) -> Vec<(AlgorithmType, HealthStatus)> {

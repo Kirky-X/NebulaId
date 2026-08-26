@@ -225,30 +225,19 @@ impl super::ApiHandlers {
     }
 
     fn extract_snowflake_metadata(&self, id: Id) -> IdMetadataResponse {
-        let value = id.as_u128();
-
-        const SEQUENCE_BITS: u8 = 10;
-        const WORKER_ID_BITS: u8 = 8;
-        const DATACENTER_ID_BITS: u8 = 3;
-
-        let sequence_mask: u128 = (1u128 << SEQUENCE_BITS) - 1;
-        let worker_mask: u128 = (1u128 << WORKER_ID_BITS) - 1;
-        let datacenter_mask: u128 = (1u128 << DATACENTER_ID_BITS) - 1;
-
-        let worker_shift = SEQUENCE_BITS;
-        let datacenter_shift = SEQUENCE_BITS + WORKER_ID_BITS;
-        let timestamp_shift = SEQUENCE_BITS + WORKER_ID_BITS + DATACENTER_ID_BITS;
-
-        let sequence = (value & sequence_mask) as u16;
-        let worker_id = ((value >> worker_shift) & worker_mask) as u16;
-        let datacenter_id = ((value >> datacenter_shift) & datacenter_mask) as u8;
-        let timestamp = (value >> timestamp_shift) as u64;
+        // T010：位布局解析知识下沉 core；运行时取当前配置，取不到时
+        // 回退 standard()（与历史硬编码 3/8/10 行为一致）。
+        let layout = self
+            .id_generator
+            .snowflake_layout()
+            .unwrap_or_else(crate::core::algorithm::SnowflakeLayoutInfo::standard);
+        let parsed = layout.parse(id.as_u128());
 
         IdMetadataResponse {
-            timestamp,
-            datacenter_id,
-            worker_id,
-            sequence,
+            timestamp: parsed.timestamp_ms,
+            datacenter_id: parsed.datacenter_id,
+            worker_id: parsed.worker_id,
+            sequence: parsed.sequence,
             algorithm: "snowflake".to_string(),
             biz_tag: String::new(),
         }
@@ -355,6 +344,43 @@ mod tests {
         assert!(response.is_ok());
         let gen_response = response.unwrap();
         assert_eq!(gen_response.ids.len(), 5);
+    }
+
+    /// T012 边界：size == 配置上限（默认 max_batch_size）应成功
+    #[tokio::test]
+    async fn test_handle_batch_generate_at_configured_limit_succeeds() {
+        let (handlers, _router) = create_test_api_handlers();
+        let limit = handlers.get_config_service().get_batch_max_size() as usize;
+        let req = BatchGenerateRequest {
+            workspace: "test".to_string(),
+            group: "test".to_string(),
+            biz_tag: "test-biz".to_string(),
+            size: Some(limit),
+            algorithm: None,
+        };
+        let response = handlers.batch_generate(req).await;
+        assert!(response.is_ok(), "limit={limit} 应通过");
+    }
+
+    /// T012 边界：size == 上限 + 1 应被拒绝，错误消息含实际值与上限
+    #[tokio::test]
+    async fn test_handle_batch_generate_over_limit_rejected() {
+        let (handlers, _router) = create_test_api_handlers();
+        let limit = handlers.get_config_service().get_batch_max_size() as usize;
+        let req = BatchGenerateRequest {
+            workspace: "test".to_string(),
+            group: "test".to_string(),
+            biz_tag: "test-biz".to_string(),
+            size: Some(limit + 1),
+            algorithm: None,
+        };
+        let response = handlers.batch_generate(req).await;
+        let err = response.expect_err("limit+1 必须被拒绝");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!("{}", limit + 1)) && msg.contains(&format!("{limit}")),
+            "错误消息应包含 size 与 max，实际: {msg}"
+        );
     }
 
     #[tokio::test]

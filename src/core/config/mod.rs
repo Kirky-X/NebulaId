@@ -30,6 +30,7 @@ pub mod app;
 pub mod app_config;
 pub mod auth;
 pub mod batch;
+pub mod defaults;
 pub mod environment;
 pub mod error;
 pub mod logging;
@@ -45,6 +46,7 @@ pub use algorithm::{
 };
 pub use app::{AppConfig, DatabaseConfig, DatabaseEngine, EtcdConfig};
 pub use app_config::Config;
+pub use app_config::HotReloadSettings;
 pub use auth::{ApiKeyEntry, AuthConfig};
 pub use batch::BatchGenerateConfig;
 pub use environment::{is_production, Environment};

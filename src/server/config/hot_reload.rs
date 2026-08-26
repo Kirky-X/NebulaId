@@ -1217,3 +1217,55 @@ max_batch_size = 100
         // If we reach here without panic, the test passes.
     }
 }
+
+/// T011：auto_watch 关闭（缺省）时不产生任何行为；watch 循环在文件
+/// mtime 变化后触发 reload 回调。使用 tempfile + 短轮询间隔验证。
+#[tokio::test]
+async fn test_watch_triggers_reload_callback_on_mtime_change() {
+    // 以完整默认配置序列化产物为底稿，保证 TOML 必填段齐全；
+    // 再注入可观测的差异字段（shutdown_timeout_seconds = 45）
+    let mut base = toml::to_string(&Config::default()).expect("序列化默认配置应成功");
+    if base.contains("shutdown_timeout_seconds") {
+        base = base.replace(
+            "shutdown_timeout_seconds = 30",
+            "shutdown_timeout_seconds = 45",
+        );
+    } else {
+        base = base.replace("[app]", "[app]\nshutdown_timeout_seconds = 45");
+    }
+    let updated = base.replace(
+        "shutdown_timeout_seconds = 45",
+        "shutdown_timeout_seconds = 46",
+    );
+    let temp = tempfile::NamedTempFile::new().expect("创建临时配置文件应成功");
+    std::fs::write(temp.path(), &base).expect("写入初始内容应成功");
+
+    let config = Config::default();
+    let hot = Arc::new(HotReloadConfig::new(
+        config,
+        temp.path().to_string_lossy().to_string(),
+    ));
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
+    hot.add_reload_callback(move |cfg: Config| {
+        let _ = tx.send(cfg.app.shutdown_timeout_seconds);
+    });
+
+    let watcher = hot.clone();
+    let handle = tokio::spawn(async move { watcher.watch(20).await });
+
+    // 修改内容 → mtime 变化 → 首个 tick 或后续 tick 触发 reload
+    std::fs::write(temp.path(), updated).expect("覆写内容应成功");
+
+    let seen = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        .await
+        .expect("2 秒内应触发一次 reload 回调");
+    // 内容变化（name probe→probe2）触发 reload；回调携带重载后的配置
+    assert_eq!(
+        seen,
+        Some(46),
+        "回调应携带重载后配置的 shutdown_timeout_seconds"
+    );
+
+    handle.abort();
+}

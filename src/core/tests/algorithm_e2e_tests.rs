@@ -17,7 +17,7 @@
 //! 覆盖 `temp/功能场景穷举分析.md` 第 1 节中描述的跨模块协同场景：
 //! - Snowflake 通过 AlgorithmBuilder 构建并接入 Router 的完整生命周期
 //! - Snowflake 时钟回拨触发 health_check 不健康，并被 Router 通过 fallback chain 切换
-//! - CircuitBreaker 包裹真实算法的端到端熔断-恢复周期
+//! - DegradationManager 内建熔断状态机包裹真实算法的端到端熔断-恢复周期
 //! - DegradationManager 记录生成结果并决定降级状态
 //! - AlgorithmRouter 与真实 AuditLogger 协同记录生成事件
 //!
@@ -25,12 +25,11 @@
 //! circuit_breaker.rs / router.rs / degradation_tests.rs 内的 `#[cfg(test)] mod tests`）
 //! 重复。
 
-use crate::core::algorithm::circuit_breaker::CircuitBreakerError;
 use crate::core::algorithm::degradation_manager::DegradationState;
 use crate::core::algorithm::DynAuditLogger;
 use crate::core::algorithm::{
-    AlgorithmBuilder, AlgorithmRouter, CircuitBreaker, CircuitBreakerConfig, CircuitBreakerState,
-    DegradationManager, GenerateContext, HealthStatus, IdAlgorithm, IdGenerator,
+    AlgorithmBuilder, AlgorithmRouter, DegradationManager, GenerateContext, HealthStatus,
+    IdAlgorithm, IdGenerator,
 };
 use crate::core::algorithm::{AuditEvent, AuditLogger as CoreAuditLoggerTrait};
 use crate::core::config::Config;
@@ -495,122 +494,6 @@ async fn e2e_router_accepts_audit_logger_without_panic_and_does_not_log() {
         capturing.log_count(),
         0,
         "E2E: Router should not invoke AuditLogger for IdGeneration events (handlers' responsibility)"
-    );
-}
-
-// =============================================================================
-// CircuitBreaker 端到端
-// =============================================================================
-
-/// E2E-CB-001: CircuitBreaker 完整 Closed → Open → HalfOpen → Closed 恢复周期。
-///
-/// 覆盖功能场景穷举分析第 1 节熔断器行的三态机流转。
-/// 与 circuit_breaker.rs 单元测试的区别：此测试通过 `execute` 完整端到端
-/// 路径触发状态转换，并验证 metrics() 在每个阶段返回正确的状态字段。
-///
-/// **注意**：on_failure 中的 `should_transition = should_open || state != HalfOpen`
-/// 意味着 Closed 状态下任何失败立即转 Open（`failure_threshold` 仅对 HalfOpen→Open
-/// 生效）。这是生产代码的设计契约，测试钉住该行为而非文档中"failure_threshold
-/// 次失败转 Open"的描述——后者与实现不符。
-#[tokio::test]
-async fn e2e_circuit_breaker_full_recovery_cycle_via_execute() {
-    let breaker = CircuitBreaker::new(CircuitBreakerConfig {
-        failure_threshold: 3,
-        success_threshold: 2,
-        timeout_ms: 100,
-        min_requests: 100, // 使失败率分支不触发，聚焦 consecutive_failures 路径
-        window_size_seconds: 60,
-        ..Default::default()
-    });
-
-    assert_eq!(breaker.state().await, CircuitBreakerState::Closed);
-
-    // 阶段 1：1 次失败即触发 Closed → Open（生产实现：
-    // `should_transition = should_open || state != STATE_HALF_OPEN`，
-    // Closed 状态下 state != HalfOpen 恒为真，任何失败立即转 Open）
-    let _: Result<(), String> = breaker.execute(async { Err("e2e-fail".to_string()) }).await;
-    assert_eq!(
-        breaker.state().await,
-        CircuitBreakerState::Open,
-        "E2E: any failure in Closed state should open the breaker (by design)"
-    );
-
-    let open_metrics = breaker.metrics().await;
-    assert_eq!(open_metrics.state, CircuitBreakerState::Open);
-    assert_eq!(open_metrics.failed_requests, 1);
-    assert!(open_metrics.next_attempt_at.is_some());
-
-    // 阶段 2：等待超时 → 下次 execute 应转 HalfOpen
-    sleep(Duration::from_millis(120)).await;
-    let _: Result<(), String> = breaker.execute(async { Ok(()) }).await;
-    assert_eq!(
-        breaker.state().await,
-        CircuitBreakerState::HalfOpen,
-        "E2E: after timeout, execute should transition to HalfOpen"
-    );
-
-    // 阶段 3：再 1 次成功（共 2 次）→ Closed
-    let _: Result<(), String> = breaker.execute(async { Ok(()) }).await;
-    assert_eq!(
-        breaker.state().await,
-        CircuitBreakerState::Closed,
-        "E2E: success_threshold successes should close the breaker"
-    );
-
-    let closed_metrics = breaker.metrics().await;
-    assert_eq!(closed_metrics.state, CircuitBreakerState::Closed);
-    assert_eq!(closed_metrics.successful_requests, 2);
-    assert_eq!(closed_metrics.consecutive_successes, 0); // 转 Closed 时清零
-    assert_eq!(closed_metrics.next_attempt_at, None);
-}
-
-/// E2E-CB-002: CircuitBreaker 在 Open 状态下拒绝请求并返回 CircuitBreakerError。
-///
-/// 覆盖功能场景穷举分析第 1 节熔断器行的"Open 状态拒绝请求返回 CircuitBreakerError"。
-#[tokio::test]
-async fn e2e_circuit_breaker_open_state_rejects_with_error() {
-    let breaker = CircuitBreaker::new(CircuitBreakerConfig {
-        failure_threshold: 1,
-        timeout_ms: 10_000, // 远大于测试时长，确保不会因超时进入 HalfOpen
-        ..Default::default()
-    });
-
-    let _: Result<(), String> = breaker.execute(async { Err("e2e-fail".to_string()) }).await;
-    assert_eq!(breaker.state().await, CircuitBreakerState::Open);
-
-    let result: Result<(), CircuitBreakerError> = breaker.execute(async { Ok(()) }).await;
-    assert!(
-        result.is_err(),
-        "E2E: Open state should reject execute without invoking operation"
-    );
-    let err = result.unwrap_err();
-    assert_eq!(err.message, "Circuit breaker is open");
-}
-
-/// E2E-CB-003: CircuitBreaker HalfOpen 失败重回 Open 状态。
-///
-/// 覆盖功能场景穷举分析第 1 节熔断器行的"HalfOpen 失败重回 Open"。
-#[tokio::test]
-async fn e2e_circuit_breaker_half_open_failure_returns_to_open() {
-    let breaker = CircuitBreaker::new(CircuitBreakerConfig {
-        failure_threshold: 1,
-        success_threshold: 3,
-        timeout_ms: 80,
-        ..Default::default()
-    });
-
-    let _: Result<(), String> = breaker.execute(async { Err("e2e-fail".to_string()) }).await;
-    assert_eq!(breaker.state().await, CircuitBreakerState::Open);
-
-    sleep(Duration::from_millis(100)).await;
-    let _: Result<(), String> = breaker.execute(async { Ok(()) }).await;
-    assert_eq!(breaker.state().await, CircuitBreakerState::HalfOpen);
-
-    let _: Result<(), String> = breaker.execute(async { Err("e2e-fail".to_string()) }).await;
-    assert_eq!(
-        breaker.state().await,
-        CircuitBreakerState::Open,
-        "E2E: failure in HalfOpen should re-open the breaker"
     );
 }
 

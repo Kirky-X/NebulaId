@@ -259,7 +259,6 @@ mod tests {
     use crate::server::handlers::mock_generator::MockIdGenerator;
     use crate::server::handlers::ApiHandlers;
     use crate::server::models::*;
-    use async_trait::async_trait;
     use std::sync::Arc;
     use uuid::Uuid;
 

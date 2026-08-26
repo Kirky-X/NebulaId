@@ -177,9 +177,7 @@ mod tests {
     use crate::core::algorithm::{
         DegradationManager, HealthStatus as CoreHealthStatus, IdGenerator as CoreIdGenerator,
     };
-    use crate::core::database::{
-        ApiKeyInfo, ApiKeyRepository, ApiKeyRole, ApiKeyWithSecret, BizTag,
-    };
+    use crate::core::database::{ApiKeyInfo, ApiKeyRepository, ApiKeyRole};
     use crate::core::types::{AlgorithmType, Id};
     use crate::core::{CoreError, Result};
     use crate::server::config::management::{ConfigManagementService, ConfigManager};

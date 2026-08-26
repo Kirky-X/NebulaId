@@ -17,7 +17,6 @@ use crate::core::config::Config;
 use crate::core::types::id::AlgorithmType;
 use crate::core::types::Result;
 use arc_swap::ArcSwap;
-use std::path::Path;
 use std::sync::{Arc, RwLock};
 use tokio::fs;
 use tokio::time::{interval, Duration};
@@ -319,24 +318,6 @@ impl HotReloadConfig {
         };
         map.get(biz_tag).cloned()
     }
-}
-
-pub async fn watch_config_file<P: AsRef<Path>>(
-    path: P,
-    callback: impl Fn(Config) + Send + Sync + 'static,
-) {
-    let hot_config = HotReloadConfig::new(
-        Config::load_from_file(path.as_ref().to_str().unwrap_or("config/config.toml"))
-            .unwrap_or_default(),
-        path.as_ref()
-            .to_str()
-            .unwrap_or("config/config.toml")
-            .to_string(),
-    );
-
-    hot_config.add_reload_callback(callback);
-
-    hot_config.watch(1000).await;
 }
 
 #[cfg(test)]
@@ -781,27 +762,6 @@ max_batch_size = 100
         // If we reach here without panic, the test passes.
     }
 
-    // ========== watch_config_file (free function) ==========
-    // watch_config_file is also an infinite loop; we only verify it
-    // compiles (type-checks) by referencing it.
-
-    /// `watch_config_file` must be callable with the expected signature.
-    /// We don't actually run it (infinite loop); we just verify the
-    /// function exists with the right types.
-    #[tokio::test]
-    async fn test_watch_config_file_signature() {
-        setup_test_env();
-        // Reference the function to ensure it compiles; don't call it.
-        let _ = std::any::TypeId::of::<fn(&str, fn(Config))>();
-        // The function signature is:
-        //   pub async fn watch_config_file<P: AsRef<Path>>(
-        //       path: P,
-        //       callback: impl Fn(Config) + Send + Sync + 'static,
-        //   )
-        // We can't easily test it without spawning an infinite loop,
-        // so this test just documents the expected signature.
-    }
-
     // ========== HotReloadConfig::new edge cases ==========
 
     /// `new` with empty path must still produce a working config (path
@@ -1184,38 +1144,6 @@ max_batch_size = 100
     //   poisoning at all.
     //
     // These paths are documented as known coverage gaps.
-
-    // ----- watch_config_file: spawnable + abortable (covers L323-339) -----
-
-    /// `watch_config_file` is a free function that constructs a
-    /// `HotReloadConfig` from the given path, adds the callback, and
-    /// enters the `watch` infinite loop. We spawn it and abort before
-    /// the first tick to verify it doesn't panic on startup and that
-    /// the function body executes (covering L323-338).
-    #[tokio::test]
-    async fn test_watch_config_file_is_spawnable_and_abortable() {
-        setup_test_env();
-        let temp_dir = TempDir::new().unwrap();
-        let config_path = temp_dir.path().join("wcf_test.toml");
-        write_test_config_file(&config_path, "wcf-test", 8080, 10000, 100, "info");
-
-        let path = config_path.to_str().unwrap().to_string();
-        let handle = tokio::spawn(async move {
-            watch_config_file(path, |_config| {
-                // Callback added inside watch_config_file; may be called
-                // on the first reload if the tick fires before abort.
-            })
-            .await;
-        });
-
-        // Let the function start executing and enter the watch loop.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Abort before the first tick (1000ms interval) completes.
-        handle.abort();
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        // If we reach here without panic, the test passes.
-    }
 }
 
 /// T011：auto_watch 关闭（缺省）时不产生任何行为；watch 循环在文件

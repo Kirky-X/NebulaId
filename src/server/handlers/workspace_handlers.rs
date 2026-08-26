@@ -182,15 +182,13 @@ impl super::ApiHandlers {
 mod tests {
     use crate::core::database::{
         ApiKeyInfo, ApiKeyRepository, ApiKeyResponse as CoreApiKeyResponse, ApiKeyRole,
-        ApiKeyWithSecret, BizTag,
+        ApiKeyWithSecret,
     };
-    use crate::core::types::AlgorithmType;
-    use crate::core::{CoreError, Result};
+    use crate::core::CoreError;
     use crate::server::config::management::ConfigManagementService;
     use crate::server::handlers::mock_generator::MockIdGenerator;
     use crate::server::handlers::ApiHandlers;
     use crate::server::models::*;
-    use async_trait::async_trait;
     use std::sync::Arc;
     use uuid::Uuid;
 

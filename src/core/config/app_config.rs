@@ -1128,7 +1128,7 @@ fn hot_reload_auto_watch_default_and_merge() {
     // merge(false) 不得关闭已开启的开关
     let mut still_on = Config::default();
     still_on.hot_reload.auto_watch_enabled = true;
-    let mut later_off = Config::default();
+    let later_off = Config::default();
     still_on.merge(later_off);
     assert!(
         still_on.hot_reload.auto_watch_enabled,

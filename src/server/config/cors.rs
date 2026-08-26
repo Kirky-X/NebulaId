@@ -21,7 +21,7 @@
 - 预检缓存配置
 */
 
-use sdforge::axum::http::{HeaderName, HeaderValue, Method};
+use axum::http::{HeaderName, HeaderValue, Method};
 use sdforge::tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use std::time::Duration;
 

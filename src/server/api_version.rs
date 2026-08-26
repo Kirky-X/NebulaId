@@ -20,7 +20,7 @@
 - 版本响应头管理
 */
 
-use sdforge::axum::{
+use axum::{
     body::Body,
     http::{HeaderName, Request, StatusCode},
     middleware::Next,
@@ -185,7 +185,7 @@ impl IntoResponse for ApiVersionErrorResponse {
                     supported_versions.join(", ")
                 ));
 
-                (StatusCode::BAD_REQUEST, sdforge::axum::Json(error_response)).into_response()
+                (StatusCode::BAD_REQUEST, axum::Json(error_response)).into_response()
             }
         }
     }

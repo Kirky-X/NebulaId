@@ -43,8 +43,8 @@ unexpected_cfgs = { level = "allow", check-cfg = [
 confers = "0.4"
 oxcache = "0.3"
 dbnexus = { version = "0.4", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
-sdforge = { version = "0.4", default-features = false, features = ["http", "grpc", "openapi"] }
-inklog = { version = "0.1", default-features = false }
+sdforge = { version = "0.5.0-rc.1", default-features = false, features = ["http", "grpc", "openapi"] }
+inklog = { version = "0.3.0-rc.1", default-features = false }
 trait-kit = { version = "0.3", default-features = false, features = ["async"] }
 # garrison: 一站式身份认证框架（同作者 Kirky-X），通过 garrison-auth feature 启用，
 # 接管 API key 验证。仅启用 web-axum（中间件）+ protocol-apikey（ApiKeyHandler）+ cache-memory（KV 后端）
@@ -61,7 +61,11 @@ tokio = { version = "1.50", features = ["full"] }
 tokio-stream = "0.1"
 futures-util = "0.3"
 
-# Web 框架（axum/tower/tower-http 通过 sdforge re-export 使用）
+# Web 框架：axum 直接依赖（0.5.0-rc.1 的 sdforge::axum 精选门面收窄，
+# 不再导出 body::to_bytes/extract::State/routing::delete/http::* 等；
+# tower/tower-http/tonic/prost/utoipa 仍走 sdforge 整体 re-export）。
+# 版本必须与 sdforge 内部 axum 同 minor（0.8），保证 Router 跨边界类型一致。
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "form", "matched-path", "original-uri", "query", "tokio"] }
 
 # gRPC / Protobuf（通过 sdforge::tonic / sdforge::prost re-export使用）
 
@@ -71,6 +75,10 @@ utoipa = { version = "5.0", default-features = false, features = ["macros", "uui
 prost = { version = "0.14", default-features = false, features = ["derive"] }
 sea-orm = { version = "2.0", default-features = false, features = ["macros", "with-json", "with-uuid", "with-chrono"] }
 tonic-prost = { version = "0.14", default-features = false }
+# 直接依赖 tonic：仅为启用 `tls` 特性（sdforge 的 tonic 未开该特性，
+# transport::{Certificate, Identity, ServerTlsConfig} 被特性门控）。
+# 特性联合使 sdforge::tonic 指向同一构建体，版本须与 sdforge 内部一致（0.14）。
+tonic = { version = "0.14", default-features = false, features = ["transport", "tls-ring"] }
 
 # 分布式协调
 etcd-client = { version = "0.17", optional = true }
@@ -149,12 +157,8 @@ opt-level = 3
 lto = true
 
 [patch.crates-io]
-# TODO(RELEASE-BLOCKER): sdforge 0.4.7 必须先发布到 crates.io（包含 forge alias +
-# axum/tower/tower_http/tonic/prost/utoipa 完整 re-export），否则移除此 patch 会
-# 导致编译失败。发布后删除此 [patch.crates-io] 节，并将上方 sdforge 版本约束
-# 改为 "0.4.7"。
+# RC 期依赖固定：sdforge/inklog 尚未发布 0.5.0-rc.1 / 0.3.0-rc.1 到 crates.io，
+# 此 patch 使上述精确版本要求解析到本地工作副本（../sdforge、../inklog）。
+# 两仓库为只读引用；正式版发布后可移除对应条目或改回 crates.io 版本。
 sdforge = { path = "../sdforge" }
-# inklog 本地 patch：crates.io 上 0.1.12 仍使用 LevelFilter，不支持 RUST_LOG
-# 按模块过滤（如 `RUST_LOG=nebulaid=debug,hyper=warn`）。本地 ../inklog 已切换至
-# EnvFilter，发布到 crates.io 后删除此 patch 节。
 inklog = { path = "../inklog" }

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use sdforge::axum::Router;
+use axum::Router;
 use sdforge::utoipa::OpenApi;
 
 use crate::server::models::{
@@ -148,8 +148,8 @@ pub fn create_swagger_router() -> Router {
     ),
     tag = "docs"
 )]
-pub async fn openapi_json_handler() -> impl sdforge::axum::response::IntoResponse {
-    sdforge::axum::Json(ApiDoc::openapi())
+pub async fn openapi_json_handler() -> impl axum::response::IntoResponse {
+    axum::Json(ApiDoc::openapi())
 }
 
 #[cfg(test)]

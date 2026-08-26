@@ -46,14 +46,14 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use base64::Engine;
-use sdforge::axum::{
+use axum::{
     body::Body,
     http::{Request, StatusCode},
     middleware::{from_fn, from_fn_with_state},
     routing::get,
     Router,
 };
+use base64::Engine;
 use sdforge::tower::ServiceExt;
 use sha2::Digest;
 use uuid::Uuid;
@@ -268,7 +268,7 @@ fn make_request_with_role(role: ApiKeyRole) -> Request<Body> {
 
 /// 读取响应 body 为字符串（用 axum 0.8 内置的 `to_bytes`）。
 async fn read_body_to_string(body: Body) -> String {
-    let bytes = sdforge::axum::body::to_bytes(body, usize::MAX)
+    let bytes = axum::body::to_bytes(body, usize::MAX)
         .await
         .expect("failed to read response body");
     String::from_utf8(bytes.to_vec()).expect("response body is not valid UTF-8")
@@ -620,12 +620,14 @@ fn e2e_batch_generate_request_validates_size_zero_fails() {
 }
 
 // ----------------------------------------------------------------------------
-// E2E-VAL-005: BatchGenerateRequest size=101 → 验证失败
+// E2E-VAL-005: BatchGenerateRequest 上限迁移（T012）
 // ----------------------------------------------------------------------------
 
 #[test]
-fn e2e_batch_generate_request_validates_size_101_fails() {
-    // size 范围 [1, 100]，101 应超出上限
+fn e2e_batch_generate_request_validates_size_101_passes_struct_validation() {
+    // T012：结构校验仅保留 min=1；max 由 config.batch_generate.max_batch_size
+    // （默认 100）在 handler 层运行时校验。此处断言 101 通过结构校验，
+    // 超限拒绝行为由 id_handlers/grpc 的边界测试覆盖。
     let request = BatchGenerateRequest {
         workspace: "ws".to_string(),
         group: "g".to_string(),
@@ -636,8 +638,8 @@ fn e2e_batch_generate_request_validates_size_101_fails() {
 
     let result = Validate::validate(&request);
     assert!(
-        result.is_err(),
-        "size=101 应超过 max=100 上限，验证必须失败"
+        result.is_ok(),
+        "size=101 应通过结构校验（上限已迁移至配置层）"
     );
 }
 

@@ -66,9 +66,9 @@ pub struct ApiMetrics {
 
 /// L16 修复：默认密钥轮换宽限期 = 7 天。
 ///
-/// ARCH-MED-002 修复：删除本地 `const`，统一引用
-/// `crate::core::config::auth::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`。
-use crate::core::config::auth::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS;
+/// ARCH-MED-002 修复：删除重复 `const`，统一引用
+/// `crate::core::config::defaults::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`。
+use crate::core::config::defaults::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS;
 
 impl ApiHandlers {
     pub fn new(

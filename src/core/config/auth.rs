@@ -72,14 +72,13 @@ fn default_api_key_salt() -> String {
 /// - `handlers/mod.rs::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`
 /// - `config_adapter.rs::unwrap_or(7 * 24 * 60 * 60)`
 ///
-/// T009（code-hygiene-cleanup）：常量本体迁入
-/// [`crate::core::config::defaults`] 统一注册表，此处 re-export 保持既有
-/// 导入路径兼容。
-pub use crate::core::config::defaults::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS;
-
-/// L16 修复：serde 默认值函数（引用上述常量）。
+/// T009（code-hygiene-cleanup）：常量本体已迁入
+/// [`crate::core::config::defaults`] 统一注册表，旧路径别名按"直接废弃"
+/// 原则移除（无任何消费方后不再保留）。
+///
+/// L16 修复：serde 默认值函数（引用注册表常量）。
 fn default_key_rotation_grace_period_seconds() -> u64 {
-    DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS
+    crate::core::config::defaults::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS
 }
 
 impl Default for AuthConfig {

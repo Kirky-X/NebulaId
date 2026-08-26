@@ -23,7 +23,7 @@ use crate::core::config::{
     SnowflakeAlgorithmConfig, TlsConfig, UuidV7Config,
 };
 // ARCH-MED-002 修复：统一引用 auth 模块的常量，避免默认值重复定义。
-use crate::core::config::auth::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS;
+use crate::core::config::defaults::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS;
 use confers::interface::{ConfigProvider, ConfigProviderExt};
 use std::sync::Arc;
 

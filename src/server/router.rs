@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::server::api_version::{api_version_middleware, API_V1};
-use crate::server::audit::{AuditLogger, AuditMiddleware};
+use crate::server::audit::{audit_middleware_fn, AuditLogger, AuditMiddleware};
 use crate::server::config::{cors, management::ConfigManagementService};
 use crate::server::handlers::helpers::{
     admin_cannot_perform_response, auth_required_response, core_error_to_response,
@@ -77,7 +77,7 @@ pub async fn create_router(
     let rate_limit_middleware = RateLimitMiddleware::new(rate_limiter.clone())
         .with_trusted_proxies(trusted_proxies.clone());
     let audit_middleware =
-        AuditMiddleware::new(audit_logger.clone()).with_trusted_proxies(trusted_proxies);
+        Arc::new(AuditMiddleware::new(audit_logger.clone()).with_trusted_proxies(trusted_proxies));
 
     let config_service = handlers.get_config_service();
 
@@ -218,7 +218,11 @@ pub async fn create_router(
         ))
         .layer(cors)
         .layer(axum::Extension(rate_limit_middleware))
-        .layer(axum::Extension(audit_middleware))
+        .layer(axum::Extension(audit_middleware.clone()))
+        .layer(axum::middleware::from_fn_with_state(
+            audit_middleware,
+            audit_middleware_fn,
+        ))
         .layer(axum::Extension(audit_logger))
 }
 

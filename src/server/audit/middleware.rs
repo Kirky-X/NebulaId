@@ -14,6 +14,7 @@
 
 use crate::server::audit::{AuditEventType, AuditLogger, AuditResult};
 use axum::body::Body;
+use axum::extract::State;
 use axum::http::Request;
 use axum::http::Response;
 use std::net::IpAddr;
@@ -21,7 +22,6 @@ use std::sync::Arc;
 use tracing::debug;
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct AuditMiddleware {
     audit_logger: Arc<AuditLogger>,
     trusted_proxies: Vec<IpAddr>,
@@ -109,6 +109,16 @@ fn get_client_ip(req: &Request<Body>, trusted_proxies: &[IpAddr]) -> Option<Stri
     crate::server::middleware::utils::get_client_ip(req, trusted_proxies)
 }
 
+/// 包装 `AuditMiddleware::audit_middleware` 方法为 axum 中间件函数。
+/// `from_fn_with_state` 要求自由函数，方法必须通过 wrapper 调用。
+pub async fn audit_middleware_fn(
+    State(mid): State<Arc<AuditMiddleware>>,
+    req: Request<Body>,
+    next: axum::middleware::Next,
+) -> Response<Body> {
+    mid.audit_middleware(req, next).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,7 +176,6 @@ mod tests {
     // 复用 mock repo 模式（与 test_audit_middleware_creation 中的实现一致），
     // 提取到模块级以便多个测试共享。
 
-    use axum::extract::State;
     use axum::http::StatusCode;
     use axum::middleware::from_fn_with_state;
     use axum::routing::get;
@@ -186,16 +195,6 @@ mod tests {
         let mid =
             Arc::new(AuditMiddleware::new(audit_logger.clone()).with_trusted_proxies(proxies));
         (mid, audit_logger)
-    }
-
-    /// 包装 AuditMiddleware::audit_middleware 方法为 axum middleware 函数。
-    /// from_fn_with_state 要求自由函数，方法必须通过 wrapper 调用。
-    async fn audit_middleware_fn(
-        State(mid): State<Arc<AuditMiddleware>>,
-        req: Request<Body>,
-        next: axum::middleware::Next,
-    ) -> Response<Body> {
-        mid.audit_middleware(req, next).await
     }
 
     fn build_ok_router(mid: Arc<AuditMiddleware>) -> Router {

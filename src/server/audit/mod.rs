@@ -19,4 +19,4 @@ pub mod middleware;
 
 // Re-exports
 pub use logger::{AuditEvent, AuditEventType, AuditLogger, AuditResult};
-pub use middleware::AuditMiddleware;
+pub use middleware::{audit_middleware_fn, AuditMiddleware};

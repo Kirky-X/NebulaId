@@ -297,6 +297,10 @@ async fn create_id_generator(
 
     // Create CPU monitor
     let cpu_monitor = Arc::new(nebulaid::core::algorithm::CpuMonitor::new());
+    // 启动 CPU 周期采样（仅 Linux：读取 /proc/stat）。任务 detached，
+    // 只要进程存活即持续更新共享的 current_usage，供 Segment 动态步长使用。
+    #[cfg(target_os = "linux")]
+    let _cpu_sampler = cpu_monitor.start_monitoring();
     let router = AlgorithmRouter::new(config.clone(), Some(audit_logger_for_core));
 
     let router = router.with_cpu_monitor(cpu_monitor);
@@ -328,6 +332,10 @@ async fn create_id_generator(
 
     // Create CPU monitor
     let cpu_monitor = Arc::new(nebulaid::core::algorithm::CpuMonitor::new());
+    // 启动 CPU 周期采样（仅 Linux：读取 /proc/stat）。任务 detached，
+    // 只要进程存活即持续更新共享的 current_usage，供 Segment 动态步长使用。
+    #[cfg(target_os = "linux")]
+    let _cpu_sampler = cpu_monitor.start_monitoring();
     let router = AlgorithmRouter::new(config.clone(), Some(audit_logger_for_core));
     let router = router.with_cpu_monitor(cpu_monitor);
     let router = Arc::new(router);
@@ -723,7 +731,7 @@ async fn main() -> Result<()> {
 
         let (handlers, config_service) = if let Some(ref repo) = repository {
             let cs = Arc::new(ConfigManager::with_repository(
-                hot_config,
+                hot_config.clone(),
                 id_generator.clone(),
                 repo.clone(),
                 repo.clone(),
@@ -737,7 +745,7 @@ async fn main() -> Result<()> {
             ));
             (h, cs)
         } else {
-            let cs = Arc::new(ConfigManager::new(hot_config, id_generator.clone()));
+            let cs = Arc::new(ConfigManager::new(hot_config.clone(), id_generator.clone()));
             // T011：仅当配置显式开启时启动文件监视；缺省 false 保持历史行为
             if config.hot_reload.auto_watch_enabled {
                 let watcher = hot_config.clone();
@@ -845,6 +853,7 @@ async fn main() -> Result<()> {
                     "{}",
                     t!("log.main.shutdown_signal_received")
                 );
+                degradation_manager.stop_background_check().await;
             }
         }
 
@@ -978,6 +987,7 @@ async fn main() -> Result<()> {
                     "{}",
                     t!("log.main.shutdown_signal_received")
                 );
+                degradation_manager.stop_background_check().await;
             }
         }
 

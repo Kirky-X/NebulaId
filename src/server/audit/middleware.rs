@@ -183,9 +183,8 @@ mod tests {
         proxies: Vec<IpAddr>,
     ) -> (Arc<AuditMiddleware>, Arc<AuditLogger>) {
         let audit_logger = Arc::new(AuditLogger::new(100));
-        let mid = Arc::new(
-            AuditMiddleware::new(audit_logger.clone()).with_trusted_proxies(proxies),
-        );
+        let mid =
+            Arc::new(AuditMiddleware::new(audit_logger.clone()).with_trusted_proxies(proxies));
         (mid, audit_logger)
     }
 

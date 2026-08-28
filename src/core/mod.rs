@@ -38,7 +38,6 @@ pub use algorithm::{
 
 pub use types::{Id, IdBatch};
 
-
 pub use config::{Config, TlsConfig};
 
 // Re-export oxcache types for convenience

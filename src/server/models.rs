@@ -338,6 +338,7 @@ pub struct MetricsResponse {
     pub database: DatabaseMetrics,
     pub cache: CacheMetrics,
     pub algorithms: Vec<AlgorithmMetrics>,
+    pub degradation_metrics: Vec<DegradationMetrics>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -377,6 +378,20 @@ pub struct AlgorithmMetrics {
     pub total_failed: u64,
     /// L15 修复：`None` 表示该算法无缓存概念，`Some(rate)` 表示真实命中率。
     pub cache_hit_rate: Option<f64>,
+}
+
+/// 降级管理器的逐算法健康/熔断指标，由 `DegradationManager::get_algorithm_metrics` 提供。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DegradationMetrics {
+    pub algorithm: String,
+    pub total_requests: u64,
+    pub total_successes: u64,
+    pub total_failures: u64,
+    pub success_rate: f64,
+    pub consecutive_failures: u8,
+    pub consecutive_successes: u8,
+    pub circuit_breaker_state: String,
+    pub is_degraded: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]

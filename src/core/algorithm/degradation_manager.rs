@@ -32,7 +32,6 @@
 //! 4. **API 完整性**：降级管理器对外应暴露完整的健康状态、指标查询、配置构造能力。
 //!
 //! 详见 `specmark/changes/v0.3.0-release/` 中的告警管道设计文档。
-#![allow(dead_code)]
 
 use crate::core::algorithm::{audit_trait::DynAuditLogger, HealthStatus, IdAlgorithm};
 use crate::core::AlgorithmType;
@@ -241,15 +240,6 @@ impl AlgorithmHealthState {
         );
     }
 
-    pub fn can_make_request(&self) -> bool {
-        let state = self.get_circuit_breaker_state();
-        match state {
-            CircuitBreakerState::Closed => true,
-            CircuitBreakerState::Open => false,
-            CircuitBreakerState::HalfOpen => true,
-        }
-    }
-
     pub fn is_circuit_open(&self, timeout_ms: u64) -> bool {
         if self.get_circuit_breaker_state() != CircuitBreakerState::Open {
             return false;
@@ -365,10 +355,23 @@ impl DegradationManager {
         );
     }
 
+    /// 聚合所有已注册算法的降级健康指标。
+    ///
+    /// 数据由 `record_generation_result` 经 `AlgorithmHealthState::record_request`
+    /// 实时更新，供可观测性端点（如 `ApiHandlers::metrics`）消费。
+    pub fn get_algorithm_metrics(&self) -> std::collections::HashMap<String, AlgorithmMetrics> {
+        self.health_states
+            .load()
+            .iter()
+            .map(|(alg_type, state)| (alg_type.to_string(), state.get_metrics()))
+            .collect()
+    }
+
     pub async fn record_generation_result(&self, alg_type: AlgorithmType, success: bool) {
         let state_opt = { self.health_states.load().get(&alg_type).cloned() };
 
         if let Some(state) = state_opt {
+            state.record_request(success);
             if success {
                 state.record_success();
                 if state.is_degraded.load(Ordering::SeqCst)
@@ -794,25 +797,6 @@ pub struct AlgorithmHealthStateInfo {
     pub is_healthy: bool,
 }
 
-pub fn default_degradation_config() -> DegradationConfig {
-    DegradationConfig {
-        enabled: true,
-        check_interval_ms: DEFAULT_DEGRADATION_CHECK_INTERVAL_MS,
-        failure_threshold: DEFAULT_FAILURE_THRESHOLD,
-        recovery_check_interval_ms: DEFAULT_RECOVERY_CHECK_INTERVAL_MS,
-        recovery_threshold: DEFAULT_RECOVERY_THRESHOLD,
-        auto_recovery: true,
-        fallback_chain: vec![
-            AlgorithmType::Segment,
-            AlgorithmType::Snowflake,
-            AlgorithmType::UuidV7,
-        ],
-        circuit_breaker_timeout_ms: DEFAULT_CIRCUIT_BREAKER_TIMEOUT_MS,
-        half_open_success_threshold: DEFAULT_HALF_OPEN_SUCCESS_THRESHOLD,
-        enable_circuit_breaker: true,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1027,22 +1011,6 @@ mod tests {
     }
 
     #[test]
-    fn test_health_state_can_make_request_in_all_states() {
-        let state = AlgorithmHealthState::new(AlgorithmType::Segment);
-
-        // Closed: can make request
-        assert!(state.can_make_request());
-
-        state.open_circuit_breaker();
-        // Open: cannot make request
-        assert!(!state.can_make_request());
-
-        state.half_open_circuit_breaker();
-        // HalfOpen: can make probe request
-        assert!(state.can_make_request());
-    }
-
-    #[test]
     fn test_health_state_is_circuit_open_returns_false_when_closed() {
         let state = AlgorithmHealthState::new(AlgorithmType::Segment);
         // Closed 状态：is_circuit_open 永远返回 false
@@ -1133,41 +1101,6 @@ mod tests {
             CircuitBreakerState::Closed
         );
         assert!(state.circuit_breaker_opened_at.read().is_none());
-    }
-
-    #[test]
-    fn test_default_degradation_config_function_returns_expected_values() {
-        let config = default_degradation_config();
-
-        assert!(config.enabled);
-        assert_eq!(
-            config.check_interval_ms,
-            DEFAULT_DEGRADATION_CHECK_INTERVAL_MS
-        );
-        assert_eq!(
-            config.recovery_check_interval_ms,
-            DEFAULT_RECOVERY_CHECK_INTERVAL_MS
-        );
-        assert_eq!(config.failure_threshold, DEFAULT_FAILURE_THRESHOLD);
-        assert_eq!(config.recovery_threshold, DEFAULT_RECOVERY_THRESHOLD);
-        assert!(config.auto_recovery);
-        assert_eq!(
-            config.circuit_breaker_timeout_ms,
-            DEFAULT_CIRCUIT_BREAKER_TIMEOUT_MS
-        );
-        assert_eq!(
-            config.half_open_success_threshold,
-            DEFAULT_HALF_OPEN_SUCCESS_THRESHOLD
-        );
-        assert!(config.enable_circuit_breaker);
-        assert_eq!(
-            config.fallback_chain,
-            vec![
-                AlgorithmType::Segment,
-                AlgorithmType::Snowflake,
-                AlgorithmType::UuidV7,
-            ]
-        );
     }
 
     // ===== DegradationManager 扩展测试 =====

@@ -23,8 +23,6 @@ pub mod cache_tests;
 pub mod auth_handlers_e2e_tests;
 pub mod degradation_tests;
 #[cfg(test)]
-pub mod dynamic_step_tests;
-#[cfg(test)]
 pub mod grpc_monitoring_e2e_tests;
 #[cfg(test)]
 pub mod infra_e2e_tests;

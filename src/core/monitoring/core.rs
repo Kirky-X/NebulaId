@@ -23,8 +23,6 @@
 //! discard the alert-state transition tests. Re-evaluate after the
 //! monitoring pipeline is fully integrated.
 
-#![allow(dead_code)]
-
 use crate::core::types::GlobalMetrics;
 use arc_swap::ArcSwap;
 use parking_lot::RwLock;

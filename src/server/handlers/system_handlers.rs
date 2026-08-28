@@ -15,7 +15,9 @@
 //! System / observability handlers: health, readiness, metrics,
 //! and the background key-rotation task launcher (rule 25 split).
 
-use crate::server::models::{AlgorithmMetrics, HealthResponse, MetricsResponse, ReadyResponse};
+use crate::server::models::{
+    AlgorithmMetrics, DegradationMetrics, HealthResponse, MetricsResponse, ReadyResponse,
+};
 use std::sync::atomic::Ordering;
 
 // KeyRotationHandle lives in `api_key_handlers` (it owns the API key repo
@@ -76,6 +78,24 @@ impl super::ApiHandlers {
         let database = self.config_service.get_database_metrics().await;
         let cache = self.config_service.get_cache_metrics().await;
 
+        let degradation_metrics = self
+            .id_generator
+            .get_degradation_manager()
+            .get_algorithm_metrics()
+            .into_iter()
+            .map(|(algorithm, m)| DegradationMetrics {
+                algorithm,
+                total_requests: m.total_requests,
+                total_successes: m.total_successes,
+                total_failures: m.total_failures,
+                success_rate: m.success_rate,
+                consecutive_failures: m.consecutive_failures,
+                consecutive_successes: m.consecutive_successes,
+                circuit_breaker_state: format!("{:?}", m.circuit_breaker_state),
+                is_degraded: m.is_degraded,
+            })
+            .collect();
+
         MetricsResponse {
             total_requests: self.metrics.total_requests.load(Ordering::SeqCst),
             successful_generations: self.metrics.successful_generations.load(Ordering::SeqCst),
@@ -88,6 +108,7 @@ impl super::ApiHandlers {
             database,
             cache,
             algorithms,
+            degradation_metrics,
         }
     }
 

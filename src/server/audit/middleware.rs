@@ -13,11 +13,9 @@
 // limitations under the License.
 
 use crate::server::audit::{AuditEventType, AuditLogger, AuditResult};
-use crate::server::middleware::ApiKeyAuth;
-use crate::server::rate_limit::RateLimiter;
 use axum::body::Body;
 use axum::http::Request;
-use axum::response::Response;
+use axum::http::Response;
 use std::net::IpAddr;
 use std::sync::Arc;
 use tracing::debug;
@@ -26,22 +24,14 @@ use tracing::debug;
 #[allow(dead_code)]
 pub struct AuditMiddleware {
     audit_logger: Arc<AuditLogger>,
-    auth: Arc<ApiKeyAuth>,
-    rate_limiter: Arc<RateLimiter>,
     trusted_proxies: Vec<IpAddr>,
 }
 
 impl AuditMiddleware {
-    pub fn new(
-        audit_logger: Arc<AuditLogger>,
-        auth: Arc<ApiKeyAuth>,
-        rate_limiter: Arc<RateLimiter>,
-    ) -> Self {
+    pub fn new(audit_logger: Arc<AuditLogger>) -> Self {
         Self {
             audit_logger,
-            auth,
-            rate_limiter,
-            trusted_proxies: Vec::new(), // Default: no trusted proxies
+            trusted_proxies: Vec::new(),
         }
     }
 
@@ -54,7 +44,7 @@ impl AuditMiddleware {
         &self,
         req: Request<Body>,
         next: axum::middleware::Next,
-    ) -> Response {
+    ) -> Response<Body> {
         let start = std::time::Instant::now();
         let path = req.uri().path().to_string();
         let method = req.method().to_string();
@@ -122,111 +112,14 @@ fn get_client_ip(req: &Request<Body>, trusted_proxies: &[IpAddr]) -> Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server::middleware::ApiKeyAuth;
-    use crate::server::rate_limit::RateLimiter;
     use axum::body::Body;
     use axum::http::Request;
 
     #[tokio::test]
     async fn test_audit_middleware_creation() {
-        use crate::core::database::{
-            ApiKeyInfo, ApiKeyRepository, ApiKeyResponse, ApiKeyRole as CoreApiKeyRole,
-            ApiKeyWithSecret, CreateApiKeyRequest,
-        };
-        use crate::core::types::Result;
-        use async_trait::async_trait;
-        use uuid::Uuid;
-
-        #[derive(Clone)]
-        struct MockApiKeyRepo;
-
-        #[async_trait]
-        impl ApiKeyRepository for MockApiKeyRepo {
-            async fn create_api_key(
-                &self,
-                _request: &CreateApiKeyRequest,
-            ) -> Result<ApiKeyWithSecret> {
-                Ok(ApiKeyWithSecret {
-                    key: ApiKeyResponse {
-                        id: Uuid::new_v4(),
-                        key_id: "mock_key_id".to_string(),
-                        key_prefix: "nino_".to_string(),
-                        name: "Mock Key".to_string(),
-                        description: None,
-                        role: CoreApiKeyRole::User,
-                        rate_limit: 10000,
-                        enabled: true,
-                        expires_at: None,
-                        created_at: chrono::Utc::now().naive_utc(),
-                    },
-                    key_secret: "mock_secret".to_string(),
-                })
-            }
-
-            async fn get_api_key_by_id(&self, _key_id: &str) -> Result<Option<ApiKeyInfo>> {
-                Ok(None)
-            }
-
-            async fn validate_api_key(
-                &self,
-                _key_id: &str,
-                _key_secret: &str,
-            ) -> Result<Option<(Option<Uuid>, crate::core::database::ApiKeyRole)>> {
-                Ok(None)
-            }
-
-            async fn list_api_keys(
-                &self,
-                _workspace_id: Uuid,
-                _limit: Option<u32>,
-                _offset: Option<u32>,
-            ) -> Result<Vec<ApiKeyInfo>> {
-                Ok(vec![])
-            }
-
-            async fn delete_api_key(&self, _id: Uuid) -> Result<()> {
-                Ok(())
-            }
-
-            async fn revoke_api_key(&self, _id: Uuid) -> Result<()> {
-                Ok(())
-            }
-
-            async fn update_last_used(&self, _key: Uuid) -> Result<()> {
-                Ok(())
-            }
-
-            async fn get_admin_api_key(&self, _workspace_id: Uuid) -> Result<Option<ApiKeyInfo>> {
-                Ok(None)
-            }
-
-            async fn count_api_keys(&self, _workspace_id: Uuid) -> Result<u64> {
-                Ok(0)
-            }
-
-            async fn rotate_api_key(
-                &self,
-                _key_id: &str,
-                _grace_period_seconds: u64,
-            ) -> Result<ApiKeyWithSecret> {
-                Err(crate::core::CoreError::InternalError(
-                    "rotate_api_key not implemented in mock".to_string(),
-                ))
-            }
-
-            async fn get_keys_older_than(
-                &self,
-                _age_threshold_days: i64,
-            ) -> Result<Vec<ApiKeyInfo>> {
-                Ok(vec![])
-            }
-        }
-
         let audit_logger = Arc::new(AuditLogger::new(100));
-        let auth = Arc::new(ApiKeyAuth::new(Arc::new(MockApiKeyRepo), true));
-        let rate_limiter = Arc::new(RateLimiter::new(10000, 100));
 
-        let middleware = AuditMiddleware::new(audit_logger, auth, rate_limiter);
+        let middleware = AuditMiddleware::new(audit_logger);
         assert!(middleware.audit_logger.get_total_logged() == 0);
     }
 
@@ -273,116 +166,16 @@ mod tests {
     // 复用 mock repo 模式（与 test_audit_middleware_creation 中的实现一致），
     // 提取到模块级以便多个测试共享。
 
-    use async_trait::async_trait;
     use axum::extract::State;
     use axum::http::StatusCode;
     use axum::middleware::from_fn_with_state;
     use axum::routing::get;
     use axum::Router;
     use sdforge::tower::ServiceExt;
-    use uuid::Uuid;
-
-    #[derive(Clone)]
-    struct MockRepo;
-
-    #[async_trait]
-    impl crate::core::database::ApiKeyRepository for MockRepo {
-        async fn create_api_key(
-            &self,
-            _request: &crate::core::database::CreateApiKeyRequest,
-        ) -> crate::core::types::Result<crate::core::database::ApiKeyWithSecret> {
-            Ok(crate::core::database::ApiKeyWithSecret {
-                key: crate::core::database::ApiKeyResponse {
-                    id: Uuid::new_v4(),
-                    key_id: "mock_key_id".to_string(),
-                    key_prefix: "nino_".to_string(),
-                    name: "Mock Key".to_string(),
-                    description: None,
-                    role: crate::core::database::ApiKeyRole::User,
-                    rate_limit: 10000,
-                    enabled: true,
-                    expires_at: None,
-                    created_at: chrono::Utc::now().naive_utc(),
-                },
-                key_secret: "mock_secret".to_string(),
-            })
-        }
-
-        async fn get_api_key_by_id(
-            &self,
-            _key_id: &str,
-        ) -> crate::core::types::Result<Option<crate::core::database::ApiKeyInfo>> {
-            Ok(None)
-        }
-
-        async fn validate_api_key(
-            &self,
-            _key_id: &str,
-            _key_secret: &str,
-        ) -> crate::core::types::Result<Option<(Option<Uuid>, crate::core::database::ApiKeyRole)>>
-        {
-            Ok(None)
-        }
-
-        async fn list_api_keys(
-            &self,
-            _workspace_id: Uuid,
-            _limit: Option<u32>,
-            _offset: Option<u32>,
-        ) -> crate::core::types::Result<Vec<crate::core::database::ApiKeyInfo>> {
-            Ok(vec![])
-        }
-
-        async fn delete_api_key(&self, _id: Uuid) -> crate::core::types::Result<()> {
-            Ok(())
-        }
-
-        async fn revoke_api_key(&self, _id: Uuid) -> crate::core::types::Result<()> {
-            Ok(())
-        }
-
-        async fn update_last_used(&self, _key: Uuid) -> crate::core::types::Result<()> {
-            Ok(())
-        }
-
-        async fn get_admin_api_key(
-            &self,
-            _workspace_id: Uuid,
-        ) -> crate::core::types::Result<Option<crate::core::database::ApiKeyInfo>> {
-            Ok(None)
-        }
-
-        async fn count_api_keys(&self, _workspace_id: Uuid) -> crate::core::types::Result<u64> {
-            Ok(0)
-        }
-
-        async fn rotate_api_key(
-            &self,
-            _key_id: &str,
-            _grace_period_seconds: u64,
-        ) -> crate::core::types::Result<crate::core::database::ApiKeyWithSecret> {
-            Err(crate::core::CoreError::InternalError(
-                "rotate_api_key not implemented in mock".to_string(),
-            ))
-        }
-
-        async fn get_keys_older_than(
-            &self,
-            _age_threshold_days: i64,
-        ) -> crate::core::types::Result<Vec<crate::core::database::ApiKeyInfo>> {
-            Ok(vec![])
-        }
-    }
 
     fn make_audit_middleware() -> (Arc<AuditMiddleware>, Arc<AuditLogger>) {
         let audit_logger = Arc::new(AuditLogger::new(100));
-        let auth = Arc::new(ApiKeyAuth::new(Arc::new(MockRepo), true));
-        let rate_limiter = Arc::new(RateLimiter::new(10000, 100));
-        let mid = Arc::new(AuditMiddleware::new(
-            audit_logger.clone(),
-            auth,
-            rate_limiter,
-        ));
+        let mid = Arc::new(AuditMiddleware::new(audit_logger.clone()));
         (mid, audit_logger)
     }
 
@@ -390,11 +183,8 @@ mod tests {
         proxies: Vec<IpAddr>,
     ) -> (Arc<AuditMiddleware>, Arc<AuditLogger>) {
         let audit_logger = Arc::new(AuditLogger::new(100));
-        let auth = Arc::new(ApiKeyAuth::new(Arc::new(MockRepo), true));
-        let rate_limiter = Arc::new(RateLimiter::new(10000, 100));
         let mid = Arc::new(
-            AuditMiddleware::new(audit_logger.clone(), auth, rate_limiter)
-                .with_trusted_proxies(proxies),
+            AuditMiddleware::new(audit_logger.clone()).with_trusted_proxies(proxies),
         );
         (mid, audit_logger)
     }
@@ -405,7 +195,7 @@ mod tests {
         State(mid): State<Arc<AuditMiddleware>>,
         req: Request<Body>,
         next: axum::middleware::Next,
-    ) -> Response {
+    ) -> Response<Body> {
         mid.audit_middleware(req, next).await
     }
 

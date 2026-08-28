@@ -353,7 +353,7 @@ fn e2e_dc_failure_detector_no_healthy_dc_returns_none() {
 #[test]
 fn e2e_double_buffer_initial_load_succeeds() {
     // 构造 DoubleBuffer，模拟初始加载号段并设为 current，验证可消费
-    let (db, _rx) = DoubleBuffer::new(0.1);
+    let db = DoubleBuffer::new(0.1);
     let seg = Arc::new(AtomicSegment::new(100, 1100, 1000));
     db.set_current(seg);
 
@@ -367,7 +367,7 @@ fn e2e_double_buffer_initial_load_succeeds() {
 #[test]
 fn e2e_double_buffer_switch_on_threshold() {
     // switch_threshold=0.3：剩余比例 < 30% 时 need_switch 返回 true
-    let (db, _rx) = DoubleBuffer::new(0.3);
+    let db = DoubleBuffer::new(0.3);
     let seg = Arc::new(AtomicSegment::new(0, 1000, 100));
     db.set_current(seg);
 

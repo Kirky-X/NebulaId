@@ -76,7 +76,7 @@ pub async fn create_router(
 
     let rate_limit_middleware = RateLimitMiddleware::new(rate_limiter.clone())
         .with_trusted_proxies(trusted_proxies.clone());
-    let audit_middleware = AuditMiddleware::new(audit_logger.clone(), auth.clone(), rate_limiter)
+    let audit_middleware = AuditMiddleware::new(audit_logger.clone())
         .with_trusted_proxies(trusted_proxies);
 
     let config_service = handlers.get_config_service();

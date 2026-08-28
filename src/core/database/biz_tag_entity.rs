@@ -16,12 +16,6 @@ use crate::core::types::id::{AlgorithmType, IdFormat};
 use dbnexus::sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
-/// Custom type for PostgreSQL INTEGER[] array
-/// Using simple serialization with sea-orm's Json type for compatibility
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct IntegerArray(pub Vec<i32>);
-
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize)]
 #[sea_orm(table_name = "biz_tags", schema_name = "nebula_id")]
 pub struct Model {

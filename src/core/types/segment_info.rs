@@ -27,27 +27,3 @@ pub struct SegmentInfo {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
-
-impl SegmentInfo {
-    #[allow(dead_code)]
-    pub fn new(
-        workspace_id: String,
-        biz_tag: String,
-        current_id: i64,
-        max_id: i64,
-        step: u32,
-        delta: u32,
-    ) -> Self {
-        Self {
-            id: 0,
-            workspace_id,
-            biz_tag,
-            current_id,
-            max_id,
-            step,
-            delta,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        }
-    }
-}

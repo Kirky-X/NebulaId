@@ -623,26 +623,6 @@ impl DegradationManager {
         DegradationState::Critical
     }
 
-    pub async fn get_effective_algorithm(&self) -> AlgorithmType {
-        let state = self.current_state.read();
-        match &*state {
-            DegradationState::Normal => *self.primary_algorithm.read(),
-            DegradationState::Degraded(alg) => *alg,
-            DegradationState::Critical => {
-                let chain = self.fallback_chain.read().clone();
-                let health_states = self.health_states.load_full();
-                for alg in chain {
-                    if let Some(state) = health_states.get(&alg) {
-                        if state.current_state.load(Ordering::SeqCst) {
-                            return alg;
-                        }
-                    }
-                }
-                *self.primary_algorithm.read()
-            }
-        }
-    }
-
     pub fn get_algorithm_state(&self, alg_type: AlgorithmType) -> Option<AlgorithmHealthStateInfo> {
         self.health_states
             .load()
@@ -1264,71 +1244,6 @@ mod tests {
 
         let state = manager.determine_effective_algorithm().await;
         assert_eq!(state, DegradationState::Critical);
-    }
-
-    #[tokio::test]
-    async fn test_get_effective_algorithm_returns_primary_when_normal() {
-        let manager = DegradationManager::new(None, None);
-        manager.set_primary_algorithm(AlgorithmType::Segment);
-
-        // Normal 状态：返回 primary
-        let alg = manager.get_effective_algorithm().await;
-        assert_eq!(alg, AlgorithmType::Segment);
-    }
-
-    #[tokio::test]
-    async fn test_get_effective_algorithm_returns_degraded_alg_when_degraded() {
-        let manager = DegradationManager::new(None, None);
-        manager.set_primary_algorithm(AlgorithmType::Segment);
-        manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
-
-        // 手动将 current_state 切换为 Degraded(Snowflake)
-        *manager.current_state.write() = DegradationState::Degraded(AlgorithmType::Snowflake);
-
-        let alg = manager.get_effective_algorithm().await;
-        assert_eq!(alg, AlgorithmType::Snowflake);
-    }
-
-    #[tokio::test]
-    async fn test_get_effective_algorithm_critical_uses_first_available() {
-        let manager = DegradationManager::new(None, None);
-        manager.set_primary_algorithm(AlgorithmType::Segment);
-        manager.set_fallback_chain(vec![AlgorithmType::Snowflake, AlgorithmType::UuidV7]);
-
-        // 注册 Snowflake，使其 current_state = true（healthy）
-        manager.register_algorithm(
-            AlgorithmType::Snowflake,
-            Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
-        );
-
-        *manager.current_state.write() = DegradationState::Critical;
-
-        let alg = manager.get_effective_algorithm().await;
-        // Snowflake 是 fallback chain 中第一个 current_state=true 的算法
-        assert_eq!(alg, AlgorithmType::Snowflake);
-    }
-
-    #[tokio::test]
-    async fn test_get_effective_algorithm_critical_falls_back_to_primary_when_none_healthy() {
-        let manager = DegradationManager::new(None, None);
-        manager.set_primary_algorithm(AlgorithmType::Segment);
-        manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
-
-        // 注册 Snowflake，但标记为不健康
-        manager.register_algorithm(
-            AlgorithmType::Snowflake,
-            Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
-        );
-        // 标记 Snowflake 的 current_state = false
-        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Snowflake) {
-            state.current_state.store(false, Ordering::SeqCst);
-        }
-
-        *manager.current_state.write() = DegradationState::Critical;
-
-        let alg = manager.get_effective_algorithm().await;
-        // 所有 fallback 都不可用 → 返回 primary
-        assert_eq!(alg, AlgorithmType::Segment);
     }
 
     #[test]

@@ -20,7 +20,7 @@
 //! - `StepCalculator`、`CpuMonitor`、`DatabaseSegmentLoader`、`RepositoryBackedLoader`
 //! - `SegmentAlgorithmBuilder` 及其 builder 方法（`with_loader`、`with_dc_failure_detector`、
 //!   `with_etcd_cluster_health_monitor` 等）
-//! - `FAILURE_THRESHOLD_DEGRADED`、`FAILURE_THRESHOLD_FAILED`、`DEFAULT_QPS_BASELINE` 常量
+//! - `DEFAULT_QPS_BASELINE` 阈值与 QPS 基线常量
 //! - `SegmentInfo::{remaining, consumed, set_current}`、`DcFailureDetector::{get_dc_state,
 //!   get_healthy_dcs, select_best_dc}` 等方法
 //!
@@ -55,7 +55,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
@@ -145,8 +144,6 @@ impl CpuMonitor {
     }
 }
 
-const FAILURE_THRESHOLD_DEGRADED: u64 = 3;
-const FAILURE_THRESHOLD_FAILED: u64 = 5;
 const DEFAULT_QPS_BASELINE: u64 = 1000;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -534,15 +531,12 @@ pub struct DoubleBuffer {
     current: Arc<ArcSwap<AtomicSegment>>,
     next: Arc<ArcSwapOption<AtomicSegment>>,
     switch_threshold: f64,
-    #[allow(dead_code)]
-    loader_tx: mpsc::Sender<()>,
     // diting-perf C2 修复：loading 标记防止多线程并发触发 load_segment
     loading: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl DoubleBuffer {
-    pub fn new(switch_threshold: f64) -> (Self, mpsc::Receiver<()>) {
-        let (loader_tx, loader_rx) = mpsc::channel(1);
+    pub fn new(switch_threshold: f64) -> Self {
 
         let initial_segment = Arc::new(AtomicSegment::new(0, 0, 0));
         let current = Arc::new(ArcSwap::from(initial_segment));
@@ -552,11 +546,10 @@ impl DoubleBuffer {
             current,
             next,
             switch_threshold,
-            loader_tx,
             loading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
 
-        (db, loader_rx)
+        db
     }
 
     /// diting-perf C2 修复：CAS 标记 loading=true，返回是否抢占成功。
@@ -627,8 +620,6 @@ pub struct SegmentAlgorithm {
     metrics: Arc<AlgorithmMetricsInner>,
     segment_loader: Arc<dyn SegmentLoader + Send + Sync>,
     dc_failure_detector: Arc<DcFailureDetector>,
-    #[allow(dead_code)]
-    local_dc_id: u8,
     // L12 对齐修复：非 etcd 版本不再持有 `etcd_cluster_health_monitor: Option<()>`
     // 占位字段（与 AlgorithmBuilder / AlgorithmRouter 一致）。`with_etcd_cluster_health_monitor`
     // builder 方法仅在 etcd feature 下存在；非 etcd 版本根本不会调用它。
@@ -694,7 +685,6 @@ impl SegmentAlgorithm {
             metrics: Arc::new(AlgorithmMetricsInner::default()),
             segment_loader: Arc::new(DefaultSegmentLoader::default()),
             dc_failure_detector,
-            local_dc_id,
             #[cfg(feature = "etcd")]
             etcd_cluster_health_monitor: None,
             cpu_monitor: None,
@@ -762,10 +752,6 @@ impl SegmentAlgorithm {
     // 原签名接受 `Arc<()>` 但完全忽略参数，类型误导且调用方可能误以为
     // monitor 被实际使用。非 etcd 版本根本不需要这个 builder 方法。
 
-    #[cfg(feature = "etcd")]
-    pub fn get_etcd_cluster_health_monitor(&self) -> Option<&Arc<EtcdClusterHealthMonitor>> {
-        self.etcd_cluster_health_monitor.as_ref()
-    }
     // L12 对齐修复：删除非 etcd 版本的 `get_etcd_cluster_health_monitor() -> Option<&()>`。
     // 非 etcd 版本字段不存在，getter 也无意义。
 
@@ -786,7 +772,7 @@ impl SegmentAlgorithm {
         buffers
             .entry(key.to_string())
             .or_insert_with(|| {
-                let (db, _) = DoubleBuffer::new(self.config.switch_threshold);
+                let db = DoubleBuffer::new(self.config.switch_threshold);
                 Arc::new(db)
             })
             .clone()
@@ -1256,7 +1242,6 @@ impl SegmentAlgorithm {
             metrics: Arc::new(AlgorithmMetricsInner::default()),
             segment_loader,
             dc_failure_detector,
-            local_dc_id,
             #[cfg(feature = "etcd")]
             etcd_cluster_health_monitor: None,
             cpu_monitor: None,
@@ -1408,7 +1393,6 @@ impl SegmentAlgorithmBuilder {
             metrics: Arc::new(AlgorithmMetricsInner::default()),
             segment_loader,
             dc_failure_detector,
-            local_dc_id,
             #[cfg(feature = "etcd")]
             etcd_cluster_health_monitor: None,
             cpu_monitor: self.cpu_monitor,
@@ -1876,7 +1860,7 @@ mod tests {
 
     #[test]
     fn test_double_buffer_set_current_replaces_active_segment() {
-        let (db, _rx) = DoubleBuffer::new(0.1);
+        let db = DoubleBuffer::new(0.1);
         let new_segment = Arc::new(AtomicSegment::new(0, 500, 100));
         db.set_current(new_segment);
 
@@ -1888,14 +1872,14 @@ mod tests {
     #[test]
     fn test_double_buffer_swap_returns_none_when_no_next() {
         // 鏃?next 鏃?swap 杩斿洖 None 涓斾笉鏀瑰彉 current
-        let (db, _rx) = DoubleBuffer::new(0.1);
+        let db = DoubleBuffer::new(0.1);
         let result = db.swap();
         assert!(result.is_none());
     }
 
     #[test]
     fn test_double_buffer_swap_replaces_current_with_next() {
-        let (db, _rx) = DoubleBuffer::new(0.1);
+        let db = DoubleBuffer::new(0.1);
 
         // 璁剧疆鍒濆 current
         let initial = Arc::new(AtomicSegment::new(0, 100, 10));
@@ -1921,14 +1905,14 @@ mod tests {
     #[test]
     fn test_double_buffer_need_switch_when_total_zero() {
         // 鍒濆 segment (0,0,0)锛宼otal = 0锛屽簲瑙﹀彂鍒囨崲
-        let (db, _rx) = DoubleBuffer::new(0.1);
+        let db = DoubleBuffer::new(0.1);
         assert!(db.need_switch());
     }
 
     #[test]
     fn test_double_buffer_need_switch_when_below_threshold() {
         // switch_threshold = 0.3锛屽墿浣?20% < 30%锛屽簲瑙﹀彂鍒囨崲
-        let (db, _rx) = DoubleBuffer::new(0.3);
+        let db = DoubleBuffer::new(0.3);
         let seg = Arc::new(AtomicSegment::new(0, 1000, 100));
         db.set_current(seg);
 
@@ -1948,7 +1932,7 @@ mod tests {
     #[test]
     fn test_double_buffer_no_switch_when_above_threshold() {
         // switch_threshold = 0.1锛屽墿浣?50% > 10%锛屼笉瑙﹀彂鍒囨崲
-        let (db, _rx) = DoubleBuffer::new(0.1);
+        let db = DoubleBuffer::new(0.1);
         let seg = Arc::new(AtomicSegment::new(0, 1000, 100));
         db.set_current(seg);
 
@@ -1966,7 +1950,7 @@ mod tests {
 
     #[test]
     fn test_double_buffer_get_next_returns_set_segment() {
-        let (db, _rx) = DoubleBuffer::new(0.1);
+        let db = DoubleBuffer::new(0.1);
         assert!(db.get_next().is_none());
 
         let next = Arc::new(AtomicSegment::new(100, 200, 10));

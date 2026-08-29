@@ -396,7 +396,8 @@ impl AlertEvaluator for DefaultEvaluator {
 
             e if e.starts_with("clock_backward") => {
                 for alg_metrics in metrics.algorithms.read().values() {
-                    if alg_metrics.p999_latency_ns.load(Ordering::Relaxed) > 0 {
+                    // 该算法处理过请求（有延迟样本）才可能观测到时钟回拨。
+                    if alg_metrics.latency_sample_count() > 0 {
                         return (true, Some("clock_backward_detected".to_string()));
                     }
                 }
@@ -1774,7 +1775,7 @@ mod tests {
         let evaluator = DefaultEvaluator;
         let metrics = GlobalMetrics::new();
         let alg = metrics.get_or_create_metrics(crate::core::types::AlgorithmType::Snowflake);
-        alg.record_latency(1_000_000); // bumps p999_latency_ns above 0
+        alg.record_latency(1_000_000); // 产生延迟样本，使该算法被视为"处理过请求"
 
         let rule = AlertRule::new("clock", "clock_backward", AlertSeverity::Critical);
         let (firing, value) = evaluator.evaluate(&rule, &metrics);

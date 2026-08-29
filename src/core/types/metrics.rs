@@ -16,8 +16,14 @@ use crate::core::types::AlgorithmType;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+
+/// 延迟分位数环形缓冲容量：快照语义为"最近 1024 次请求的延迟分布"。
+///
+/// 设计权衡见 design.md D8：HDR histogram 能力过剩，固定样本环对运维
+/// 分位数足够且零依赖；写侧无锁环写，读侧（低频 metrics 端点）拷贝排序。
+const LATENCY_RING_SIZE: usize = 1024;
 
 #[derive(Debug, Serialize)]
 pub struct AlgorithmMetrics {
@@ -25,23 +31,39 @@ pub struct AlgorithmMetrics {
     pub total_generated: AtomicU64,
     pub total_failed: AtomicU64,
     pub current_qps: AtomicU64,
-    pub p50_latency_ns: AtomicU64,
-    pub p99_latency_ns: AtomicU64,
-    pub p999_latency_ns: AtomicU64,
     pub cache_hit_rate: AtomicU64,
+    /// 累计记录的延迟样本数（单调递增，不随环形缓冲回绕）。
+    latency_samples: AtomicU64,
+    /// 最近 [`LATENCY_RING_SIZE`] 个延迟样本（纳秒），`record_latency` 环写。
+    #[serde(skip)]
+    latency_ring: Box<[AtomicU64]>,
+    /// 环形缓冲写游标（`fetch_add` 取模落槽）。
+    #[serde(skip)]
+    ring_cursor: AtomicUsize,
+}
+
+fn empty_latency_ring() -> Box<[AtomicU64]> {
+    std::iter::repeat_with(|| AtomicU64::new(0))
+        .take(LATENCY_RING_SIZE)
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
 }
 
 impl Clone for AlgorithmMetrics {
     fn clone(&self) -> Self {
+        let ring = empty_latency_ring();
+        for (slot, src) in ring.iter().zip(self.latency_ring.iter()) {
+            slot.store(src.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
         Self {
             algorithm: self.algorithm,
             total_generated: AtomicU64::new(self.total_generated.load(Ordering::Relaxed)),
             total_failed: AtomicU64::new(self.total_failed.load(Ordering::Relaxed)),
             current_qps: AtomicU64::new(self.current_qps.load(Ordering::Relaxed)),
-            p50_latency_ns: AtomicU64::new(self.p50_latency_ns.load(Ordering::Relaxed)),
-            p99_latency_ns: AtomicU64::new(self.p99_latency_ns.load(Ordering::Relaxed)),
-            p999_latency_ns: AtomicU64::new(self.p999_latency_ns.load(Ordering::Relaxed)),
             cache_hit_rate: AtomicU64::new(self.cache_hit_rate.load(Ordering::Relaxed)),
+            latency_samples: AtomicU64::new(self.latency_samples.load(Ordering::Relaxed)),
+            latency_ring: ring,
+            ring_cursor: AtomicUsize::new(self.ring_cursor.load(Ordering::Relaxed)),
         }
     }
 }
@@ -53,10 +75,10 @@ impl Default for AlgorithmMetrics {
             total_generated: AtomicU64::new(0),
             total_failed: AtomicU64::new(0),
             current_qps: AtomicU64::new(0),
-            p50_latency_ns: AtomicU64::new(0),
-            p99_latency_ns: AtomicU64::new(0),
-            p999_latency_ns: AtomicU64::new(0),
             cache_hit_rate: AtomicU64::new(0),
+            latency_samples: AtomicU64::new(0),
+            latency_ring: empty_latency_ring(),
+            ring_cursor: AtomicUsize::new(0),
         }
     }
 }
@@ -77,23 +99,12 @@ impl AlgorithmMetrics {
         self.total_failed.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// 记录一次请求延迟（纳秒）：无锁环写入最近 1024 样本缓冲。
     pub fn record_latency(&self, latency_ns: u64) {
         self.current_qps.fetch_add(1, Ordering::Relaxed);
-
-        let current_p50 = self.p50_latency_ns.load(Ordering::Relaxed);
-        if latency_ns > current_p50 || current_p50 == 0 {
-            self.p50_latency_ns.store(latency_ns, Ordering::Relaxed);
-        }
-
-        let current_p99 = self.p99_latency_ns.load(Ordering::Relaxed);
-        if latency_ns > current_p99 {
-            self.p99_latency_ns.store(latency_ns, Ordering::Relaxed);
-        }
-
-        let current_p999 = self.p999_latency_ns.load(Ordering::Relaxed);
-        if latency_ns > current_p999 {
-            self.p999_latency_ns.store(latency_ns, Ordering::Relaxed);
-        }
+        let slot = self.ring_cursor.fetch_add(1, Ordering::Relaxed) % LATENCY_RING_SIZE;
+        self.latency_ring[slot].store(latency_ns, Ordering::Relaxed);
+        self.latency_samples.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn update_qps(&self, qps: u64) {
@@ -117,16 +128,44 @@ impl AlgorithmMetrics {
         self.current_qps.load(Ordering::Relaxed)
     }
 
+    /// 累计记录过的延迟样本数（含已被环形缓冲覆盖的历史样本）。
+    pub fn latency_sample_count(&self) -> u64 {
+        self.latency_samples.load(Ordering::Relaxed)
+    }
+
+    /// 快照最近 `min(样本数, LATENCY_RING_SIZE)` 个延迟，排序后按
+    /// nearest-rank 取分位数（`permille`：500=p50 / 990=p99 / 999=p99.9）。
+    ///
+    /// 读侧拷贝排序可接受：仅低频 metrics 端点调用；写侧保持无锁。
+    /// 并发快照期间个别槽位可能读到旧值，对统计量无实质影响。
+    fn percentile_ns(&self, permille: u64) -> u64 {
+        let total = self.latency_samples.load(Ordering::Relaxed) as usize;
+        if total == 0 {
+            return 0;
+        }
+        let n = total.min(LATENCY_RING_SIZE);
+        let mut samples: Vec<u64> = self
+            .latency_ring
+            .iter()
+            .take(n)
+            .map(|slot| slot.load(Ordering::Relaxed))
+            .collect();
+        samples.sort_unstable();
+        // nearest-rank：rank = ceil(permille/1000 * n)，钳制在 [1, n]
+        let rank = ((permille * n as u64).div_ceil(1000)).clamp(1, n as u64) as usize;
+        samples[rank - 1]
+    }
+
     pub fn get_p50_latency_ms(&self) -> f64 {
-        self.p50_latency_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0
+        self.percentile_ns(500) as f64 / 1_000_000.0
     }
 
     pub fn get_p99_latency_ms(&self) -> f64 {
-        self.p99_latency_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0
+        self.percentile_ns(990) as f64 / 1_000_000.0
     }
 
     pub fn get_p999_latency_ms(&self) -> f64 {
-        self.p999_latency_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0
+        self.percentile_ns(999) as f64 / 1_000_000.0
     }
 
     pub fn get_cache_hit_rate(&self) -> f64 {
@@ -383,7 +422,6 @@ mod tests {
             AlgorithmType::Segment,
             AlgorithmType::Snowflake,
             AlgorithmType::UuidV8,
-            AlgorithmType::UuidV8,
         ] {
             let m = AlgorithmMetrics::new(alg);
             assert_eq!(m.algorithm, alg);
@@ -432,10 +470,8 @@ mod tests {
     }
 
     #[test]
-    fn test_record_latency_first_call_stores_into_zero_p50_p99_p999() {
-        // First call: current_p50 == 0 → true branch of p50 if;
-        // current_p99 == 0 and latency_ns > 0 → true branch of p99 if;
-        // same for p999.
+    fn test_record_latency_single_sample_is_all_percentiles() {
+        // 单样本时任何分位数都等于该样本本身。
         let m = AlgorithmMetrics::new(AlgorithmType::Segment);
         m.record_latency(5_000_000);
         assert_eq!(m.get_p50_latency_ms(), 5.0);
@@ -443,43 +479,44 @@ mod tests {
         assert_eq!(m.get_p999_latency_ms(), 5.0);
         // record_latency also increments qps (current_qps).
         assert_eq!(m.get_qps(), 1);
+        assert_eq!(m.latency_sample_count(), 1);
     }
 
     #[test]
-    fn test_record_latency_higher_value_updates_all_percentiles() {
+    fn test_record_latency_percentiles_follow_distribution_not_max() {
+        // T009：p50 是中位而非历史最大值。[2ms, 10ms] 排序后：
+        // p50 = nearest-rank ceil(0.5*2)=1 → 2ms；p99/p999 = 第 2 个 → 10ms。
         let m = AlgorithmMetrics::new(AlgorithmType::Segment);
         m.record_latency(2_000_000);
         m.record_latency(10_000_000);
-        assert_eq!(m.get_p50_latency_ms(), 10.0);
+        assert_eq!(m.get_p50_latency_ms(), 2.0);
         assert_eq!(m.get_p99_latency_ms(), 10.0);
         assert_eq!(m.get_p999_latency_ms(), 10.0);
         assert_eq!(m.get_qps(), 2);
     }
 
     #[test]
-    fn test_record_latency_lower_value_keeps_existing_maxima() {
-        // Sets p50/p99/p999 to 5ms, then records 1ms which is lower.
-        // Covers false branches of all three `if latency_ns > current_*` checks
-        // (including the `|| current_p50 == 0` short-circuit on p50).
+    fn test_record_latency_p50_drops_when_distribution_improves() {
+        // 旧实现 p50/p99 只增不降（存历史最大值）；真实分位数必须随分布回落：
+        // [5ms, 1ms] 排序 [1, 5]：p50=1ms，p99/p999=5ms。
         let m = AlgorithmMetrics::new(AlgorithmType::Segment);
         m.record_latency(5_000_000);
         m.record_latency(1_000_000);
-        assert_eq!(m.get_p50_latency_ms(), 5.0);
+        assert_eq!(m.get_p50_latency_ms(), 1.0);
         assert_eq!(m.get_p99_latency_ms(), 5.0);
         assert_eq!(m.get_p999_latency_ms(), 5.0);
     }
 
     #[test]
-    fn test_record_latency_zero_latency_still_stores_into_p50_due_to_zero_check() {
-        // First call with 0 latency: `latency_ns > current_p50` is false (0 > 0),
-        // but `current_p50 == 0` is true → p50 stored as 0. p99/p999 stay 0
-        // (their conditions are `latency_ns > current_p99` which is 0 > 0 = false).
+    fn test_record_latency_zero_latency_is_a_real_sample() {
+        // 0ns 也是合法样本：单样本 [0] 的所有分位数为 0，且计入样本数。
         let m = AlgorithmMetrics::new(AlgorithmType::Segment);
         m.record_latency(0);
         assert_eq!(m.get_p50_latency_ms(), 0.0);
         assert_eq!(m.get_p99_latency_ms(), 0.0);
         assert_eq!(m.get_p999_latency_ms(), 0.0);
         assert_eq!(m.get_qps(), 1);
+        assert_eq!(m.latency_sample_count(), 1);
     }
 
     #[test]
@@ -511,13 +548,94 @@ mod tests {
 
     #[test]
     fn test_get_p999_latency_ms_uses_p999_field_not_p99() {
-        // p999 is updated independently; ensure getter reads the right field.
-        // We can't set p999 directly, but record_latency writes the same value
-        // to all three. Verifying p999 returns the recorded value confirms
-        // the getter maps p999_latency_ns (not p99_latency_ns).
+        // 三档分位数共享同一环形缓冲但取不同 rank；单样本下三者一致，
+        // 区分度由下方分布测试覆盖。此处确保 getter 正确换算纳秒→毫秒。
         let m = AlgorithmMetrics::new(AlgorithmType::Segment);
         m.record_latency(7_500_000);
         assert_eq!(m.get_p999_latency_ms(), 7.5);
+    }
+
+    // ---- T009：环形缓冲真实分位数 ----
+
+    #[test]
+    fn test_percentiles_reflect_distribution_with_long_tail() {
+        // T009 验收：100 次 1ms + 1 次 1000ms。
+        // 排序后索引 0..=99 为 1ms，索引 100 为 1000ms：
+        //   p50  = nearest-rank ceil(0.5*101)=51 → 1ms（而非旧实现的历史最大值）
+        //   p99  = ceil(0.99*101)=100 → 1ms（99% 请求确实 ≤1ms）
+        //   p999 = ceil(0.999*101)=101 → 1000ms（长尾由更高档分位数暴露）
+        let m = AlgorithmMetrics::new(AlgorithmType::Segment);
+        for _ in 0..100 {
+            m.record_latency(1_000_000);
+        }
+        m.record_latency(1_000_000_000);
+
+        assert_eq!(m.get_p50_latency_ms(), 1.0);
+        assert_eq!(m.get_p99_latency_ms(), 1.0);
+        assert_eq!(m.get_p999_latency_ms(), 1000.0);
+        assert_eq!(m.latency_sample_count(), 101);
+    }
+
+    #[test]
+    fn test_ring_evicts_old_samples_beyond_capacity() {
+        // 环形缓冲语义："最近 1024 次请求分布"。先写入 1 个 1000ms 长尾，
+        // 再用 1024 个 1ms 覆盖整个环 —— 长尾必须被逐出，全部分位数回落。
+        let m = AlgorithmMetrics::new(AlgorithmType::Segment);
+        m.record_latency(1_000_000_000);
+        for _ in 0..1024 {
+            m.record_latency(1_000_000);
+        }
+
+        assert_eq!(m.latency_sample_count(), 1025);
+        assert_eq!(m.get_p50_latency_ms(), 1.0);
+        assert_eq!(m.get_p99_latency_ms(), 1.0);
+        assert_eq!(
+            m.get_p999_latency_ms(),
+            1.0,
+            "旧实现 p999 会永久停在历史最大值 1000ms"
+        );
+    }
+
+    #[test]
+    fn test_percentiles_empty_metrics_are_zero() {
+        let m = AlgorithmMetrics::new(AlgorithmType::Snowflake);
+        assert_eq!(m.get_p50_latency_ms(), 0.0);
+        assert_eq!(m.get_p99_latency_ms(), 0.0);
+        assert_eq!(m.get_p999_latency_ms(), 0.0);
+        assert_eq!(m.latency_sample_count(), 0);
+    }
+
+    #[test]
+    fn test_concurrent_latency_recording_keeps_ring_consistent() {
+        // 8 线程 × 512 次并发环写：样本数精确，且分位数落在已记录值域内。
+        let m = std::sync::Arc::new(AlgorithmMetrics::new(AlgorithmType::Snowflake));
+        let mut handles = Vec::new();
+        for t in 0..8u64 {
+            let m = m.clone();
+            handles.push(std::thread::spawn(move || {
+                for i in 0..512u64 {
+                    // 值域 [1000, 8000] ns
+                    m.record_latency(1_000 + (t * 512 + i) % 7_001);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("recording thread panicked");
+        }
+
+        assert_eq!(m.latency_sample_count(), 8 * 512);
+        let p50_ns = m.get_p50_latency_ms() * 1_000_000.0;
+        let p999_ns = m.get_p999_latency_ms() * 1_000_000.0;
+        assert!(
+            (1_000.0..=8_000.0).contains(&p50_ns),
+            "p50={}ns 超出记录值域 [1000, 8000]",
+            p50_ns
+        );
+        assert!(
+            (1_000.0..=8_000.0).contains(&p999_ns),
+            "p999={}ns 超出记录值域 [1000, 8000]",
+            p999_ns
+        );
     }
 
     // ---- QpsWindow ----

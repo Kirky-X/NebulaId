@@ -186,10 +186,8 @@ impl AlgorithmRouter {
             AlgorithmType::Segment => {
                 fallback_chain.push(AlgorithmType::Snowflake);
                 fallback_chain.push(AlgorithmType::UuidV8);
-                fallback_chain.push(AlgorithmType::UuidV8);
             }
             AlgorithmType::Snowflake => {
-                fallback_chain.push(AlgorithmType::UuidV8);
                 fallback_chain.push(AlgorithmType::UuidV8);
             }
             _ => {}
@@ -236,7 +234,6 @@ impl AlgorithmRouter {
         for alg_type in [
             AlgorithmType::Segment,
             AlgorithmType::Snowflake,
-            AlgorithmType::UuidV8,
             AlgorithmType::UuidV8,
         ] {
             #[allow(unused_mut)]
@@ -586,6 +583,35 @@ mod tests {
     use super::*;
     use crate::core::config::Config;
     use async_trait::async_trait;
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_fallback_chain_dedup() {
+        // 默认 Segment：链应为 [Snowflake, UuidV8]，每个算法至多出现一次
+        let mut config = Config::default();
+        config.algorithm.default = "segment".to_string();
+        let router = AlgorithmRouter::new(config, None);
+        let chain: Vec<AlgorithmType> = router.fallback_chain.iter().copied().collect();
+        assert_eq!(
+            chain,
+            vec![AlgorithmType::Snowflake, AlgorithmType::UuidV8],
+            "segment fallback chain must be [Snowflake, UuidV8]"
+        );
+        let mut seen = HashSet::new();
+        for t in &router.fallback_chain {
+            assert!(
+                seen.insert(t),
+                "fallback chain must not contain duplicate algorithms"
+            );
+        }
+
+        // 默认 Snowflake：链应为 [UuidV8]
+        let mut config = Config::default();
+        config.algorithm.default = "snowflake".to_string();
+        let router = AlgorithmRouter::new(config, None);
+        let chain: Vec<AlgorithmType> = router.fallback_chain.iter().copied().collect();
+        assert_eq!(chain, vec![AlgorithmType::UuidV8]);
+    }
 
     #[tokio::test]
     async fn test_algorithm_router_initialize() {
@@ -1013,14 +1039,11 @@ mod tests {
     #[tokio::test]
     async fn test_new_with_segment_default_builds_full_fallback_chain() {
         // 默认 Config: default = "segment"
+        // 链去重（收敛 T013）：同一算法不得重复占位，降级候选 [Snowflake, UuidV8]
         let router = AlgorithmRouter::new(Config::default(), None);
         assert_eq!(
             router.fallback_chain.to_vec(),
-            vec![
-                AlgorithmType::Snowflake,
-                AlgorithmType::UuidV8,
-                AlgorithmType::UuidV8,
-            ]
+            vec![AlgorithmType::Snowflake, AlgorithmType::UuidV8]
         );
     }
 
@@ -1031,7 +1054,7 @@ mod tests {
         let router = AlgorithmRouter::new(config, None);
         assert_eq!(
             router.fallback_chain.to_vec(),
-            vec![AlgorithmType::UuidV8, AlgorithmType::UuidV8]
+            vec![AlgorithmType::UuidV8]
         );
     }
 

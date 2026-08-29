@@ -1080,7 +1080,8 @@ impl crate::core::database::ApiKeyRepository for NoopApiKeyRepo {
         &self,
         _key_id: &str,
         _key_secret: &str,
-    ) -> crate::core::types::Result<Option<(Option<uuid::Uuid>, crate::core::database::ApiKeyRole)>> {
+    ) -> crate::core::types::Result<Option<(Option<uuid::Uuid>, crate::core::database::ApiKeyRole)>>
+    {
         Ok(None)
     }
     async fn list_api_keys(
@@ -1136,7 +1137,10 @@ async fn e2e_create_router_applies_global_rate_limit() {
 
     let config = Config::default();
     let alg_router = Arc::new(AlgorithmRouter::new(config.clone(), None));
-    let hot_config = Arc::new(HotReloadConfig::new(config, "config/config.toml".to_string()));
+    let hot_config = Arc::new(HotReloadConfig::new(
+        config,
+        "config/config.toml".to_string(),
+    ));
     let config_service = Arc::new(ConfigManager::new(hot_config, alg_router.clone()));
     let handlers = Arc::new(ApiHandlers::new(alg_router, config_service));
     let auth = Arc::new(ApiKeyAuth::new(Arc::new(NoopApiKeyRepo), true));
@@ -1197,18 +1201,19 @@ async fn e2e_rate_limit_hot_update_takes_effect() {
     use crate::core::algorithm::AlgorithmRouter;
     use crate::core::config::Config;
     use crate::server::config::hot_reload::HotReloadConfig;
-    use crate::server::config::management::{ConfigManager, ConfigManagementService};
+    use crate::server::config::management::{ConfigManagementService, ConfigManager};
     use crate::server::models::UpdateRateLimitRequest;
 
-    let config = Config::default();
-    let alg_router = Arc::new(AlgorithmRouter::new(config.clone(), None));
-    let hot_config = Arc::new(HotReloadConfig::new(config, "config/config.toml".to_string()));
     let limiter = Arc::new(RateLimiter::new(1, 2));
-    let cs = Arc::new(ConfigManager::new(hot_config, alg_router));
 
     // 耗尽 burst：第 3 次被拒
     for _ in 0..2 {
-        assert!(limiter.check_rate_limit("key-hot", None, None).await.allowed);
+        assert!(
+            limiter
+                .check_rate_limit("key-hot", None, None)
+                .await
+                .allowed
+        );
     }
     assert!(
         !limiter
@@ -1219,14 +1224,16 @@ async fn e2e_rate_limit_hot_update_takes_effect() {
     );
 
     // 接线热更新：ConfigManager 持有 live limiter 并在 update 时同步参数
-    let wired = Arc::new(ConfigManager::new(
-        Arc::new(HotReloadConfig::new(
-            Config::default(),
-            "config/config.toml".to_string(),
-        )),
-        Arc::new(AlgorithmRouter::new(Config::default(), None)),
-    )
-    .with_rate_limiter(limiter.clone()));
+    let wired = Arc::new(
+        ConfigManager::new(
+            Arc::new(HotReloadConfig::new(
+                Config::default(),
+                "config/config.toml".to_string(),
+            )),
+            Arc::new(AlgorithmRouter::new(Config::default(), None)),
+        )
+        .with_rate_limiter(limiter.clone()),
+    );
 
     let resp = wired
         .update_rate_limit(UpdateRateLimitRequest {

@@ -34,7 +34,6 @@ use sdforge::tonic::transport::Server;
 use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::net::TcpListener;
 use tracing::warn;
 use tracing::{error, info};
 
@@ -743,11 +742,10 @@ async fn main() -> Result<()> {
         ));
         // wiring T004：启动限流桶清理后台任务（5 分钟空闲桶回收，60s 周期），
         // 停机时经 abort 退出，防止任务泄漏。
-        let rate_limit_cleanup =
-            rate_limiter.start_cleanup(
-                std::time::Duration::from_secs(300),
-                std::time::Duration::from_secs(60),
-            );
+        let rate_limit_cleanup = rate_limiter.start_cleanup(
+            std::time::Duration::from_secs(300),
+            std::time::Duration::from_secs(60),
+        );
 
         let (handlers, config_service) = if let Some(ref repo) = repository {
             let cs = Arc::new(
@@ -816,8 +814,12 @@ async fn main() -> Result<()> {
             config_service.clone(),
             tls_manager.clone(),
         ));
-        let grpc_server =
-            tokio::spawn(start_grpc_server(server_config, handlers, auth.clone(), tls_manager));
+        let grpc_server = tokio::spawn(start_grpc_server(
+            server_config,
+            handlers,
+            auth.clone(),
+            tls_manager,
+        ));
 
         tokio::select! {
             http_result = http_server => {
@@ -907,11 +909,10 @@ async fn main() -> Result<()> {
         ));
         // wiring T004：启动限流桶清理后台任务（5 分钟空闲桶回收，60s 周期），
         // 停机时经 abort 退出，防止任务泄漏。
-        let rate_limit_cleanup =
-            rate_limiter.start_cleanup(
-                std::time::Duration::from_secs(300),
-                std::time::Duration::from_secs(60),
-            );
+        let rate_limit_cleanup = rate_limiter.start_cleanup(
+            std::time::Duration::from_secs(300),
+            std::time::Duration::from_secs(60),
+        );
 
         let (handlers, config_service) = if let Some(ref repo) = repository {
             let cs = Arc::new(
@@ -972,8 +973,12 @@ async fn main() -> Result<()> {
             config_service.clone(),
             tls_manager.clone(),
         ));
-        let grpc_server =
-            tokio::spawn(start_grpc_server(server_config, handlers, auth.clone(), tls_manager));
+        let grpc_server = tokio::spawn(start_grpc_server(
+            server_config,
+            handlers,
+            auth.clone(),
+            tls_manager,
+        ));
 
         tokio::select! {
             http_result = http_server => {

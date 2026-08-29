@@ -543,8 +543,7 @@ async fn e2e_hot_reload_config_reload_failure_handled() {
 mod grpc_auth {
     use super::*;
     use crate::core::database::{
-        ApiKeyInfo, ApiKeyRepository, ApiKeyResponse, ApiKeyRole, ApiKeyWithSecret,
-        CreateApiKeyRequest,
+        ApiKeyInfo, ApiKeyRepository, ApiKeyRole, ApiKeyWithSecret, CreateApiKeyRequest,
     };
     use crate::server::middleware::api_key_auth::ApiKeyAuth;
     use sdforge::tonic::{Code, Status};
@@ -665,8 +664,10 @@ mod grpc_auth {
             tag: "tag".to_string(),
             metadata: HashMap::new(),
         });
-        req.metadata_mut()
-            .insert("authorization", basic_header("wrong", "creds").parse().unwrap());
+        req.metadata_mut().insert(
+            "authorization",
+            basic_header("wrong", "creds").parse().unwrap(),
+        );
         let err = NebulaIdService::generate(&server, req)
             .await
             .expect_err("无效凭证必须被拒绝");
@@ -675,27 +676,28 @@ mod grpc_auth {
 
     #[tokio::test]
     async fn accepts_valid_credentials_and_injects_identity() {
-        use sdforge::tonic::Status;
-
         let server = auth_server(ApiKeyAuth::new(Arc::new(FixedKeyRepo), true));
         let mut req = Request::new(GrpcGenerateRequest {
             namespace: "ns".to_string(),
             tag: "tag".to_string(),
             metadata: HashMap::new(),
         });
-        req.metadata_mut()
-            .insert("authorization", basic_header("grpc-key", "grpc-secret").parse().unwrap());
+        req.metadata_mut().insert(
+            "authorization",
+            basic_header("grpc-key", "grpc-secret").parse().unwrap(),
+        );
 
-        let authenticated: sdforge::tonic::Request<GrpcGenerateRequest> = server
-            .authenticate(req)
-            .await
-            .expect("合法凭证应通过认证");
+        let authenticated: sdforge::tonic::Request<GrpcGenerateRequest> =
+            server.authenticate(req).await.expect("合法凭证应通过认证");
         let identity = authenticated
             .extensions()
             .get::<Option<Uuid>>()
             .copied()
             .flatten();
-        assert!(identity.is_some(), "workspace_id 必须注入 request extensions");
+        assert!(
+            identity.is_some(),
+            "workspace_id 必须注入 request extensions"
+        );
         let role = authenticated.extensions().get::<ApiKeyRole>().unwrap();
         assert_eq!(*role, ApiKeyRole::User);
     }
@@ -741,11 +743,10 @@ mod grpc_auth {
         });
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-        let mut client = v1::nebula_id_service_client::NebulaIdServiceClient::connect(
-            format!("http://{addr}"),
-        )
-        .await
-        .expect("client connect");
+        let mut client =
+            v1::nebula_id_service_client::NebulaIdServiceClient::connect(format!("http://{addr}"))
+                .await
+                .expect("client connect");
 
         let item = v1::BatchGenerateStreamRequest {
             namespace: "ns".to_string(),
@@ -753,9 +754,7 @@ mod grpc_auth {
             count: 1,
             metadata: HashMap::new(),
         };
-        let result = client
-            .batch_generate_stream(tokio_stream::once(item))
-            .await;
+        let result = client.batch_generate_stream(tokio_stream::once(item)).await;
         match result {
             Err(status) => assert_eq!(status.code(), Code::Unauthenticated),
             Ok(resp) => {

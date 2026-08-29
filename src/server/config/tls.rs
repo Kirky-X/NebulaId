@@ -274,7 +274,7 @@ pub enum DualListener {
 /// DualListener 接受出的流：明文 TCP 或已握手的 TLS 服务端流。
 pub enum DualStream {
     Plain(tokio::net::TcpStream),
-    Tls(tokio_rustls::server::TlsStream<tokio::net::TcpStream>),
+    Tls(Box<tokio_rustls::server::TlsStream<tokio::net::TcpStream>>),
 }
 
 impl DualListener {
@@ -311,7 +311,7 @@ impl axum::serve::Listener for DualListener {
                 loop {
                     match tokio::net::TcpListener::accept(listener).await {
                         Ok((tcp, addr)) => match acceptor.accept(tcp).await {
-                            Ok(stream) => return (DualStream::Tls(stream), addr),
+                            Ok(stream) => return (DualStream::Tls(Box::new(stream)), addr),
                             // 握手失败（客户端非 TLS/证书拒绝等）：记录并继续，
                             // 不让单个坏连接拖垮整个 accept 循环
                             Err(e) => {
@@ -341,7 +341,7 @@ impl tokio::io::AsyncRead for DualStream {
     ) -> std::task::Poll<std::io::Result<()>> {
         match &mut *self {
             DualStream::Plain(s) => std::pin::Pin::new(s).poll_read(cx, buf),
-            DualStream::Tls(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+            DualStream::Tls(s) => std::pin::Pin::new(&mut **s).poll_read(cx, buf),
         }
     }
 }
@@ -354,7 +354,7 @@ impl tokio::io::AsyncWrite for DualStream {
     ) -> std::task::Poll<std::io::Result<usize>> {
         match &mut *self {
             DualStream::Plain(s) => std::pin::Pin::new(s).poll_write(cx, buf),
-            DualStream::Tls(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+            DualStream::Tls(s) => std::pin::Pin::new(&mut **s).poll_write(cx, buf),
         }
     }
 
@@ -364,7 +364,7 @@ impl tokio::io::AsyncWrite for DualStream {
     ) -> std::task::Poll<std::io::Result<()>> {
         match &mut *self {
             DualStream::Plain(s) => std::pin::Pin::new(s).poll_flush(cx),
-            DualStream::Tls(s) => std::pin::Pin::new(s).poll_flush(cx),
+            DualStream::Tls(s) => std::pin::Pin::new(&mut **s).poll_flush(cx),
         }
     }
 
@@ -374,7 +374,7 @@ impl tokio::io::AsyncWrite for DualStream {
     ) -> std::task::Poll<std::io::Result<()>> {
         match &mut *self {
             DualStream::Plain(s) => std::pin::Pin::new(s).poll_shutdown(cx),
-            DualStream::Tls(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+            DualStream::Tls(s) => std::pin::Pin::new(&mut **s).poll_shutdown(cx),
         }
     }
 }

@@ -136,6 +136,11 @@ impl super::ApiHandlers {
         // 原为闭包内硬编码 `const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60`。
         let grace_period_seconds = self.key_rotation_grace_period_seconds;
 
+        // wiring T008：spawn 内的轮换需要失效缓存条目，`&self` 无法跨越 'static
+        // 边界，故先克隆缓存句柄（未启用 garrison-auth 时不存在该变量）。
+        #[cfg(feature = "garrison-auth")]
+        let auth_cache = self.auth_cache.clone();
+
         let _handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(check_interval);
             loop {
@@ -155,14 +160,24 @@ impl super::ApiHandlers {
                                         age_days = max_key_age_days
                                     );
 
-                                    if let Err(e) =
-                                        repo.rotate_api_key(&key.key_id, grace_period_seconds).await
+                                    match repo
+                                        .rotate_api_key(&key.key_id, grace_period_seconds)
+                                        .await
                                     {
-                                        tracing::error!(
-                                            event = "key_rotation_failed",
-                                            key_id = key.key_id,
-                                            error = %e
-                                        );
+                                        Ok(_) => {
+                                            // wiring T008：轮换出的新 secret 必须回源校验。
+                                            #[cfg(feature = "garrison-auth")]
+                                            if let Some(cache) = auth_cache.as_ref() {
+                                                cache.invalidate(&key.key_id).await;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                event = "key_rotation_failed",
+                                                key_id = key.key_id,
+                                                error = %e
+                                            );
+                                        }
                                     }
                                 }
                             }

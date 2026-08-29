@@ -51,6 +51,11 @@ pub struct ApiHandlers {
     /// 现移到 `AuthConfig::key_rotation_grace_period_seconds`，由
     /// `with_key_rotation_grace_period` builder 方法注入。
     pub(super) key_rotation_grace_period_seconds: u64,
+    /// wiring T008：认证缓存句柄。密钥吊销 / 轮换 / 重置时据此失效缓存条目，
+    /// 避免 TTL 内旧凭证仍可通过认证。`None` = 未启用缓存（garrison-auth 关闭
+    /// 或未装配）。
+    #[cfg(feature = "garrison-auth")]
+    pub(super) auth_cache: Option<Arc<crate::server::auth::AuthCache>>,
 }
 
 #[derive(Default)]
@@ -82,6 +87,8 @@ impl ApiHandlers {
             config_service,
             api_key_repo: None,
             key_rotation_grace_period_seconds: DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS,
+            #[cfg(feature = "garrison-auth")]
+            auth_cache: None,
         }
     }
 
@@ -97,7 +104,16 @@ impl ApiHandlers {
             config_service,
             api_key_repo: Some(api_key_repo),
             key_rotation_grace_period_seconds: DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS,
+            #[cfg(feature = "garrison-auth")]
+            auth_cache: None,
         }
+    }
+
+    /// 注入认证缓存句柄（wiring T008），与 `ApiKeyAuth::with_cache` 共享同一实例。
+    #[cfg(feature = "garrison-auth")]
+    pub fn with_auth_cache(mut self, cache: Arc<crate::server::auth::AuthCache>) -> Self {
+        self.auth_cache = Some(cache);
+        self
     }
 
     /// L16 修复：注入 `AuthConfig::key_rotation_grace_period_seconds`。

@@ -108,6 +108,8 @@ impl super::ApiHandlers {
         for key in existing_keys {
             if key.role == crate::core::database::ApiKeyRole::User {
                 repo.delete_api_key(key.id).await.map_err(map_db_error)?;
+                // wiring T008：旧 user key 已删除，缓存条目必须同步失效。
+                self.invalidate_auth_cache(&key.key_id).await;
             }
         }
 

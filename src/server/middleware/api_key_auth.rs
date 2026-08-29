@@ -43,6 +43,9 @@ pub struct ApiKeyAuth {
     pub(crate) enabled: bool,
     trusted_proxies: Vec<IpAddr>,
     auth_failures: Arc<RwLock<HashMap<String, Vec<Instant>>>>,
+    /// wiring T008：garrison cache-memory 认证决策缓存；`None` = 不缓存。
+    #[cfg(feature = "garrison-auth")]
+    cache: Option<Arc<crate::server::auth::AuthCache>>,
 }
 
 impl ApiKeyAuth {
@@ -52,7 +55,18 @@ impl ApiKeyAuth {
             enabled,
             trusted_proxies: Vec::new(),
             auth_failures: Arc::new(RwLock::new(HashMap::new())),
+            #[cfg(feature = "garrison-auth")]
+            cache: None,
         }
+    }
+
+    /// 启用认证缓存（wiring T008）。命中即跳过 DB + Argon2id 校验。
+    ///
+    /// TTL 与失效语义见 [`crate::server::auth::AuthCache`]。
+    #[cfg(feature = "garrison-auth")]
+    pub fn with_cache(mut self, cache: Arc<crate::server::auth::AuthCache>) -> Self {
+        self.cache = Some(cache);
+        self
     }
 
     /// 认证是否启用（wiring T006：gRPC 侧据此决定放行/校验）。
@@ -145,11 +159,58 @@ impl ApiKeyAuth {
         key_id: &str,
         key_secret: &str,
     ) -> Option<(Option<uuid::Uuid>, ApiKeyRole)> {
-        self.repo
+        #[cfg(feature = "garrison-auth")]
+        if let Some(cache) = self.cache.as_ref() {
+            if let Some(identity) = cache.get(key_id, key_secret).await {
+                tracing::debug!(
+                    event = "auth_cache_hit",
+                    key_id_prefix = %key_id.chars().take(8).collect::<String>(),
+                    "authentication served from cache"
+                );
+                return Some((identity.workspace_id, identity.role));
+            }
+        }
+
+        let (workspace_id, role) = self
+            .repo
             .validate_api_key(key_id, key_secret)
             .await
             .ok()
-            .flatten()
+            .flatten()?;
+
+        #[cfg(feature = "garrison-auth")]
+        if let Some(cache) = self.cache.as_ref() {
+            // 缓存必须携带 key 的绝对过期时间，否则「TTL 未结束但 key 已到期」
+            // 会被继续放行。读不到 key 行（异常或删除中）时宁可不缓存。
+            let key_row = match self.repo.get_api_key_by_id(key_id).await {
+                Ok(info) => info,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        key_id_prefix = %key_id.chars().take(8).collect::<String>(),
+                        "cannot read key expiry; skipping auth cache write"
+                    );
+                    None
+                }
+            };
+            if let Some(info) = key_row {
+                cache
+                    .put(
+                        key_id,
+                        key_secret,
+                        &crate::server::auth::CachedIdentity {
+                            workspace_id,
+                            role: role.clone(),
+                            key_expires_at: info
+                                .expires_at
+                                .map(|expires_at| expires_at.and_utc().timestamp()),
+                        },
+                    )
+                    .await;
+            }
+        }
+
+        Some((workspace_id, role))
     }
 
     pub async fn auth_middleware(&self, mut req: Request<Body>, next: Next) -> Response {

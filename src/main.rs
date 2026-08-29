@@ -658,6 +658,20 @@ async fn main() -> Result<()> {
         t!("log.main.auth_enabled", enabled = config.auth.enabled)
     );
 
+    // wiring T008：认证决策缓存 —— ApiKeyAuth 与 ApiHandlers 共享同一实例：
+    // 前者读缓存加速校验，后者在吊销/轮换/重置时失效条目。
+    #[cfg(feature = "garrison-auth")]
+    let auth_cache: Option<Arc<nebulaid::server::auth::AuthCache>> =
+        repository.as_ref().map(|_| {
+            info!(
+                ttl_seconds = config.auth.cache_ttl_seconds,
+                "auth cache enabled (garrison cache-memory)"
+            );
+            Arc::new(nebulaid::server::auth::AuthCache::new(
+                config.auth.cache_ttl_seconds,
+            ))
+        });
+
     // Create API key auth with repository for database-backed storage
     // Phase 9 T043 (HIGH H3) — configure trusted proxies so the auth
     // middleware only honors `X-Forwarded-For` / `X-Real-IP` when the
@@ -668,10 +682,14 @@ async fn main() -> Result<()> {
         .map(|s| s.split(',').filter_map(|p| p.trim().parse().ok()).collect())
         .unwrap_or_default();
     let auth: Arc<ApiKeyAuth> = if let Some(ref repo) = repository {
-        Arc::new(
-            ApiKeyAuth::new(repo.clone(), config.auth.enabled)
-                .with_trusted_proxies(trusted_proxies.clone()),
-        )
+        #[cfg_attr(not(feature = "garrison-auth"), allow(unused_mut))]
+        let mut auth_builder = ApiKeyAuth::new(repo.clone(), config.auth.enabled)
+            .with_trusted_proxies(trusted_proxies.clone());
+        #[cfg(feature = "garrison-auth")]
+        if let Some(cache) = auth_cache.clone() {
+            auth_builder = auth_builder.with_cache(cache);
+        }
+        Arc::new(auth_builder)
     } else {
         error!("{}", t!("log.main.fatal_api_key_auth_requires_database"));
         std::process::exit(1);
@@ -758,12 +776,17 @@ async fn main() -> Result<()> {
                 )
                 .with_rate_limiter(rate_limiter.clone()),
             );
-            let h = Arc::new(build_api_handlers(
+            let mut h = build_api_handlers(
                 id_generator.clone(),
                 cs.clone(),
                 repo.clone(),
                 config.auth.key_rotation_grace_period_seconds,
-            ));
+            );
+            #[cfg(feature = "garrison-auth")]
+            if let Some(cache) = auth_cache.clone() {
+                h = h.with_auth_cache(cache);
+            }
+            let h = Arc::new(h);
             (h, cs)
         } else {
             let cs = Arc::new(
@@ -925,12 +948,17 @@ async fn main() -> Result<()> {
                 )
                 .with_rate_limiter(rate_limiter.clone()),
             );
-            let h = Arc::new(build_api_handlers(
+            let mut h = build_api_handlers(
                 id_generator.clone(),
                 cs.clone(),
                 repo.clone(),
                 config.auth.key_rotation_grace_period_seconds,
-            ));
+            );
+            #[cfg(feature = "garrison-auth")]
+            if let Some(cache) = auth_cache.clone() {
+                h = h.with_auth_cache(cache);
+            }
+            let h = Arc::new(h);
             (h, cs)
         } else {
             let cs = Arc::new(

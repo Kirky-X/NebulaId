@@ -199,6 +199,30 @@ impl super::ApiHandlers {
         })
     }
 
+    /// 按 `key_id` 失效认证缓存条目（wiring T008）。未启用缓存时为 no-op。
+    #[cfg(feature = "garrison-auth")]
+    pub(super) async fn invalidate_auth_cache(&self, key_id: &str) {
+        if let Some(cache) = self.auth_cache.as_ref() {
+            cache.invalidate(key_id).await;
+        }
+    }
+
+    /// 未启用 `garrison-auth` 时的等价 no-op，保持调用点无需条件编译。
+    #[cfg(not(feature = "garrison-auth"))]
+    pub(super) async fn invalidate_auth_cache(&self, _key_id: &str) {}
+
+    /// 整体清空认证缓存。用于只能拿到行 `id`、无法定位 `key_id` 的吊销路径 ——
+    /// 宁可多失效一些条目（下一次校验回源 DB），也不能留下可继续通过的旧凭证。
+    #[cfg(feature = "garrison-auth")]
+    async fn clear_auth_cache(&self) {
+        if let Some(cache) = self.auth_cache.as_ref() {
+            cache.clear().await;
+        }
+    }
+
+    #[cfg(not(feature = "garrison-auth"))]
+    async fn clear_auth_cache(&self) {}
+
     /// Revoke (delete) an API Key (admin only).
     pub async fn revoke_api_key(&self, id: uuid::Uuid) -> Result<RevokeApiKeyResponse> {
         let repo = self.api_key_repo.as_ref().ok_or_else(|| {
@@ -233,6 +257,8 @@ impl super::ApiHandlers {
         }
 
         repo.delete_api_key(id).await.map_err(map_db_error)?;
+        // wiring T008：吊销必须即时生效，不能等 TTL 自然过期。
+        self.clear_auth_cache().await;
 
         Ok(RevokeApiKeyResponse {
             success: true,
@@ -269,6 +295,8 @@ impl super::ApiHandlers {
             .map_err(map_db_error)?;
 
         tracing::info!(event = "api_key_rotated", key_id = key_id);
+        // wiring T008：清掉该 key_id 名下全部条目（含宽限期内的旧 secret 变体）。
+        self.invalidate_auth_cache(key_id).await;
 
         Ok(ApiKeyWithSecretResponse {
             key: ApiKeyResponse {

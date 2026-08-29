@@ -139,7 +139,6 @@ impl UuidV8Impl {
 
         let mut last = self.last_timestamp.load(Ordering::Acquire);
         let mut effective_ts = ts;
-        let mut rollover = false;
         loop {
             if effective_ts < last {
                 if last - effective_ts > self.clock_drift_threshold_ms {
@@ -156,21 +155,20 @@ impl UuidV8Impl {
                 Ordering::Acquire,
             ) {
                 Ok(_) => {
-                    rollover = effective_ts > last;
+                    // UUIDP Cluster：跨毫秒时计数器重置为新的随机起点，仅由 CAS
+                    // 胜者执行。已知限制：毫秒切换瞬间的并发生成中，同毫秒内
+                    // counter 顺序性不作保证；全局唯一性由随机起点 + 21 位计数器
+                    // + 26 位随机熵共同保证。
+                    if effective_ts > last {
+                        self.counter
+                            .store(fast_rand_26() & COUNTER_TOTAL_MASK, Ordering::Release);
+                    }
                     break;
                 }
                 Err(x) => {
                     last = x;
                 }
             }
-        }
-
-        // UUIDP Cluster：跨毫秒时计数器重置为新的随机起点，仅由 CAS 胜者执行。
-        // 已知限制：毫秒切换瞬间的并发生成中，同毫秒内 counter 顺序性不作保证；
-        // 全局唯一性由随机起点 + 21 位计数器 + 26 位随机熵共同保证。
-        if rollover {
-            self.counter
-                .store(fast_rand_26() & COUNTER_TOTAL_MASK, Ordering::Release);
         }
 
         let counter = self.counter.fetch_add(1, Ordering::Relaxed) & COUNTER_TOTAL_MASK;

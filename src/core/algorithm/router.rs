@@ -1052,10 +1052,7 @@ mod tests {
         let mut config = Config::default();
         config.algorithm.default = "snowflake".to_string();
         let router = AlgorithmRouter::new(config, None);
-        assert_eq!(
-            router.fallback_chain.to_vec(),
-            vec![AlgorithmType::UuidV8]
-        );
+        assert_eq!(router.fallback_chain.to_vec(), vec![AlgorithmType::UuidV8]);
     }
 
     #[tokio::test]

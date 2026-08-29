@@ -671,3 +671,181 @@ fn e2e_batch_generate_request_validates_size_boundary_1_and_100_pass() {
     let result_max = Validate::validate(&request_max);
     assert!(result_max.is_ok(), "size=100 是合法上限边界，验证应通过");
 }
+
+// ============================================================================
+// wiring T007: GET /api/v1/biz-tags 租户隔离（CWE-639 / IDOR）
+//
+// 背景：handler 曾把 `None` workspace 透传给分页查询，底层回退为 nil UUID
+// 过滤 —— 既拿不到本租户数据（功能失效），又会匹配 workspace_id 为 nil 的
+// 脏数据行（越权泄露）。本组测试走真实 create_router 全栈（认证中间件 +
+// Anonymous 拦截 + 限流 + 审计），断言过滤键只能来自认证身份或显式参数。
+// ============================================================================
+
+mod biz_tag_tenant_isolation {
+    use super::*;
+    use crate::core::algorithm::AlgorithmRouter;
+    use crate::core::config::Config;
+    use crate::core::database::{BizTag, IdFormat};
+    use crate::core::types::AlgorithmType;
+    use crate::server::audit::AuditLogger;
+    use crate::server::config::management::ConfigManagementService;
+    use crate::server::handlers::mock_tests::{MockApiKeyRepository, MockConfigManagementService};
+    use crate::server::handlers::ApiHandlers;
+    use crate::server::rate_limit::limiter::RateLimiter;
+    use crate::server::router::create_router;
+
+    fn workspace_a() -> Uuid {
+        Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap()
+    }
+
+    fn workspace_b() -> Uuid {
+        Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap()
+    }
+
+    fn make_tag(workspace_id: Uuid, name: &str) -> BizTag {
+        BizTag {
+            id: Uuid::new_v4(),
+            workspace_id,
+            group_id: Uuid::new_v4(),
+            name: name.to_string(),
+            description: None,
+            algorithm: AlgorithmType::Segment,
+            format: IdFormat::Numeric,
+            prefix: "p_".to_string(),
+            base_step: 100,
+            max_step: 1000,
+            datacenter_ids: vec![0],
+            created_at: chrono::Utc::now().naive_utc(),
+            updated_at: chrono::Utc::now().naive_utc(),
+        }
+    }
+
+    /// 按 workspace 精确过滤的内存仓储桩（模拟真实 `WHERE workspace_id = ?`）。
+    fn make_config_service() -> MockConfigManagementService {
+        let all_tags: Vec<BizTag> = vec![
+            make_tag(workspace_a(), "tag-a1"),
+            make_tag(workspace_a(), "tag-a2"),
+            make_tag(workspace_b(), "tag-b1"),
+        ];
+        let mut svc = MockConfigManagementService::new();
+        svc.expect_list_biz_tags()
+            .returning(move |workspace_id, _, _, _| {
+                Ok(all_tags
+                    .iter()
+                    .filter(|tag| tag.workspace_id == workspace_id)
+                    .cloned()
+                    .collect())
+            });
+        svc.expect_count_biz_tags()
+            .returning(move |workspace_id, _| {
+                Ok((workspace_id == workspace_a()) as u64 * 2
+                    + (workspace_id == workspace_b()) as u64)
+            });
+        svc
+    }
+
+    /// user-a → workspace A 的 User key；admin-k → 无租户绑定的 Admin key。
+    fn make_auth() -> Arc<ApiKeyAuth> {
+        let mut repo = MockApiKeyRepository::new();
+        repo.expect_validate_api_key().returning(move |key_id, _| {
+            Ok(match key_id {
+                "user-a" => Some((Some(workspace_a()), ApiKeyRole::User)),
+                "admin-k" => Some((None, ApiKeyRole::Admin)),
+                _ => None,
+            })
+        });
+        Arc::new(ApiKeyAuth::new(Arc::new(repo), true))
+    }
+
+    async fn build_app() -> Router {
+        let config = Config::default();
+        let alg_router = Arc::new(AlgorithmRouter::new(config, None));
+        let config_service: Arc<dyn ConfigManagementService> = Arc::new(make_config_service());
+        let handlers = Arc::new(ApiHandlers::new(alg_router, config_service));
+        // 宽松限流：本组测试只关心认证与租户过滤，不应被 429 干扰
+        let rate_limiter = Arc::new(RateLimiter::new(10_000, 10_000));
+        let audit_logger = Arc::new(AuditLogger::new(10));
+        create_router(handlers, make_auth(), rate_limiter, audit_logger).await
+    }
+
+    async fn list_biz_tags(uri: &str, key_id: &str) -> (StatusCode, Vec<String>) {
+        let app = build_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("authorization", basic_auth_header(key_id, "ignored-secret"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = read_body_to_string(resp.into_body()).await;
+        let workspaces: Vec<String> = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v["biz_tags"].as_array().cloned())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item["workspace_id"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        (status, workspaces)
+    }
+
+    /// User key 不带参数：只能看到本租户 workspace A 的两个 tag。
+    #[tokio::test]
+    async fn user_key_lists_only_own_workspace() {
+        let (status, workspaces) = list_biz_tags("/api/v1/biz-tags", "user-a").await;
+        assert_eq!(status, StatusCode::OK, "合法 user key 应返回 200");
+        assert_eq!(
+            workspaces,
+            vec![workspace_a().to_string(); 2],
+            "响应必须且只能是 workspace A 的 tag"
+        );
+    }
+
+    /// User key 伪造 ?workspace_id=B：参数被忽略，结果仍限定在 A。
+    #[tokio::test]
+    async fn user_key_cannot_override_workspace_via_query() {
+        let uri = format!("/api/v1/biz-tags?workspace_id={}", workspace_b());
+        let (status, workspaces) = list_biz_tags(&uri, "user-a").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            workspaces,
+            vec![workspace_a().to_string(); 2],
+            "越权 workspace 参数必须被忽略（IDOR 防护）"
+        );
+        assert!(
+            !workspaces.contains(&workspace_b().to_string()),
+            "响应不得含 workspace B 的 tag"
+        );
+    }
+
+    /// Admin key 显式指定 workspace B：按参数过滤，返回 B 的 tag。
+    #[tokio::test]
+    async fn admin_key_filters_by_explicit_workspace() {
+        let uri = format!("/api/v1/biz-tags?workspace_id={}", workspace_b());
+        let (status, workspaces) = list_biz_tags(&uri, "admin-k").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            workspaces,
+            vec![workspace_b().to_string()],
+            "Admin 按参数过滤时应返回 workspace B 的 tag"
+        );
+    }
+
+    /// Admin key 不带 workspace 参数：显式 400，不静默回退 nil 全量扫描。
+    #[tokio::test]
+    async fn admin_key_without_workspace_is_rejected() {
+        let (status, workspaces) = list_biz_tags("/api/v1/biz-tags", "admin-k").await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "无 workspace 限定时必须显式报错而非静默查 nil"
+        );
+        assert!(workspaces.is_empty());
+    }
+}

@@ -201,7 +201,11 @@ impl super::ApiHandlers {
             ));
         }
 
-        let workspace_id = workspace_id.unwrap_or_else(uuid::Uuid::nil);
+        let workspace_id = workspace_id.ok_or_else(|| {
+            CoreError::InvalidInput(
+                t!("api.error.handlers.biz_tag_handlers.workspace_id_required_list").to_string(),
+            )
+        })?;
 
         let biz_tags: Vec<crate::core::database::BizTag> = self
             .config_service
@@ -687,21 +691,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_biz_tags_with_pagination_nil_workspace_when_none() {
-        // workspace_id=None 时使用 Uuid::nil() 作为 fallback。
-        let mut mock = MockBizTagTestService::new();
-        mock.expect_list_biz_tags()
-            .withf(|ws, _, _, _| *ws == Uuid::nil())
-            .return_once(|_, _, _, _| Ok(Vec::new()));
-        mock.expect_count_biz_tags()
-            .withf(|ws, _| *ws == Uuid::nil())
-            .return_once(|_, _| Ok(0));
-        let handlers = make_handlers(mock);
+    async fn test_list_biz_tags_with_pagination_missing_workspace_errors() {
+        // wiring T007：workspace_id=None 必须显式报错，不得回退 nil 查脏数据。
+        let handlers = make_handlers(MockBizTagTestService::new());
 
         let result = handlers
             .list_biz_tags_with_pagination(None, None, 10, 0)
             .await;
-        assert!(result.is_ok());
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            CoreError::InvalidInput(msg) => {
+                assert!(msg.contains("workspace_id is required"))
+            }
+            other => panic!("Expected InvalidInput, got {:?}", other),
+        }
     }
 
     #[tokio::test]

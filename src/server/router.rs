@@ -698,6 +698,8 @@ async fn handle_delete_biz_tag(
 
 async fn handle_list_biz_tags(
     State(state): State<AppState>,
+    extensions: axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<BizTagListResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -711,9 +713,31 @@ async fn handle_list_biz_tags(
     let page_size = params.page_size.clamp(1, 100);
     let offset = (page - 1) * page_size;
 
+    // wiring T007 修复（CWE-639）：查询键只能来自认证身份或显式合法参数。
+    // User key 强制绑定自身 workspace，`?workspace_id=` 覆盖一律忽略；
+    // Admin key 无租户绑定，必须显式指定 workspace（跨租户全量导出属新增
+    // 管理能力，本变更 Non-Goals 已排除）。
+    let workspace_id = match extensions_role.0 {
+        crate::server::middleware::ApiKeyRole::User => {
+            extensions.0.ok_or_else(|| auth_required_response(locale))?
+        }
+        crate::server::middleware::ApiKeyRole::Admin => match params.workspace_id.as_deref() {
+            Some(raw) => uuid::Uuid::parse_str(raw).map_err(|_| invalid_uuid_response(locale))?,
+            None => return Err(workspace_id_required_response(locale)),
+        },
+        crate::server::middleware::ApiKeyRole::Anonymous => {
+            return Err(auth_required_response(locale))
+        }
+    };
+
     let response = state
         .handlers
-        .list_biz_tags_with_pagination(None, None, page_size as usize, offset as usize)
+        .list_biz_tags_with_pagination(
+            Some(workspace_id),
+            None,
+            page_size as usize,
+            offset as usize,
+        )
         .await
         .map_err(|e| core_error_to_response(&e, locale))?;
 
@@ -2176,7 +2200,14 @@ mod tests {
             page: 1,
             page_size: 101, // above max=100
         };
-        let result = handle_list_biz_tags(State(state), Extension(Locale::En), Query(params)).await;
+        let result = handle_list_biz_tags(
+            State(state),
+            Extension(None::<uuid::Uuid>),
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Query(params),
+        )
+        .await;
         assert!(result.is_err());
         let (status, _) = result.unwrap_err();
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -2190,7 +2221,14 @@ mod tests {
             page: 1,
             page_size: 0, // below min=1
         };
-        let result = handle_list_biz_tags(State(state), Extension(Locale::En), Query(params)).await;
+        let result = handle_list_biz_tags(
+            State(state),
+            Extension(None::<uuid::Uuid>),
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Query(params),
+        )
+        .await;
         assert!(result.is_err());
         let (status, _) = result.unwrap_err();
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -2204,7 +2242,14 @@ mod tests {
             page: 1,
             page_size: 20,
         };
-        let result = handle_list_biz_tags(State(state), Extension(Locale::En), Query(params)).await;
+        let result = handle_list_biz_tags(
+            State(state),
+            Extension(Some(uuid::Uuid::new_v4())),
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Query(params),
+        )
+        .await;
         // Without repository, list_biz_tags_with_pagination returns Err.
         match result {
             Ok(resp) => {

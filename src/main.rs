@@ -735,6 +735,13 @@ async fn main() -> Result<()> {
             config.rate_limit.default_rps,
             config.rate_limit.burst_size,
         ));
+        // wiring T004：启动限流桶清理后台任务（5 分钟空闲桶回收，60s 周期），
+        // 停机时经 abort 退出，防止任务泄漏。
+        let rate_limit_cleanup =
+            rate_limiter.start_cleanup(
+                std::time::Duration::from_secs(300),
+                std::time::Duration::from_secs(60),
+            );
 
         let (handlers, config_service) = if let Some(ref repo) = repository {
             let cs = Arc::new(
@@ -862,6 +869,7 @@ async fn main() -> Result<()> {
                     t!("log.main.shutdown_signal_received")
                 );
                 degradation_manager.stop_background_check().await;
+                rate_limit_cleanup.abort();
             }
         }
 
@@ -884,6 +892,13 @@ async fn main() -> Result<()> {
             config.rate_limit.default_rps,
             config.rate_limit.burst_size,
         ));
+        // wiring T004：启动限流桶清理后台任务（5 分钟空闲桶回收，60s 周期），
+        // 停机时经 abort 退出，防止任务泄漏。
+        let rate_limit_cleanup =
+            rate_limiter.start_cleanup(
+                std::time::Duration::from_secs(300),
+                std::time::Duration::from_secs(60),
+            );
 
         let (handlers, config_service) = if let Some(ref repo) = repository {
             let cs = Arc::new(
@@ -1003,6 +1018,7 @@ async fn main() -> Result<()> {
                     t!("log.main.shutdown_signal_received")
                 );
                 degradation_manager.stop_background_check().await;
+                rate_limit_cleanup.abort();
             }
         }
 

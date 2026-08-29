@@ -21,7 +21,7 @@ use nebulaid::core::types::Result;
 use nebulaid::server::audit::AuditLogger;
 use nebulaid::server::config::hot_reload::HotReloadConfig;
 use nebulaid::server::config::management::{ConfigManagementService, ConfigManager};
-use nebulaid::server::config::tls::TlsManager;
+use nebulaid::server::config::tls::{DualListener, TlsManager};
 use nebulaid::server::grpc::GrpcServer;
 use nebulaid::server::handlers::ApiHandlers;
 use nebulaid::server::middleware::size_limit::create_size_limit_middleware;
@@ -360,16 +360,20 @@ async fn start_http_server(
         .layer(create_size_limit_middleware())
         .merge(merge_sdforge_routes(axum::Router::new()));
 
-    // 检查是否启用 HTTPS (暂时回退到普通 HTTP，TLS 功能待完善)
-    if let Some(ref tls) = tls_manager {
+    // wiring T005：按配置选择明文或 TLS 监听（此前 http_acceptor 只构造
+    // 不消费，HTTPS 宣称启用却恒为明文）。
+    let tls_acceptor = tls_manager.as_ref().and_then(|tls| {
         if tls.is_http_enabled() {
             info!("{}", t!("log.main.https_enabled_http_fallback"));
+            tls.http_acceptor().cloned()
+        } else {
+            None
         }
-    }
+    });
 
-    // 回退到普通 HTTP（绑定地址由调用方从 config.app.http_addr() 解析传入）
+    // 绑定地址由调用方从 config.app.http_addr() 解析传入
     info!("{}", t!("log.main.starting_http_server", addr = bind_addr));
-    let listener = TcpListener::bind(bind_addr).await?;
+    let listener = DualListener::bind(bind_addr, tls_acceptor).await?;
 
     axum::serve(listener, router)
         .with_graceful_shutdown(async {
@@ -778,11 +782,17 @@ async fn main() -> Result<()> {
             (h, cs)
         };
 
+        // wiring T005：TLS 配置错误 fail-fast —— enabled=true 且证书缺失/
+        // 解析失败时拒绝启动（不再静默降级明文）。enabled=false 时
+        // initialize() 直接返回 Ok，明文部署不受影响。
         let mut tls_manager = TlsManager::new(config.tls.clone());
-        if let Err(e) = tls_manager.initialize().await {
+        tls_manager.initialize().await.map_err(|e| {
             error!("{}", t!("log.main.tls_init_failed", error = e));
-            info!("{}", t!("log.main.tls_disabled"));
-        }
+            nebulaid::core::types::CoreError::InternalError(format!(
+                "TLS configuration error: {}",
+                e
+            ))
+        })?;
         let tls_manager = if tls_manager.is_http_enabled() || tls_manager.is_grpc_enabled() {
             Some(Arc::new(tls_manager))
         } else {
@@ -927,11 +937,17 @@ async fn main() -> Result<()> {
             (h, cs)
         };
 
+        // wiring T005：TLS 配置错误 fail-fast —— enabled=true 且证书缺失/
+        // 解析失败时拒绝启动（不再静默降级明文）。enabled=false 时
+        // initialize() 直接返回 Ok，明文部署不受影响。
         let mut tls_manager = TlsManager::new(config.tls.clone());
-        if let Err(e) = tls_manager.initialize().await {
+        tls_manager.initialize().await.map_err(|e| {
             error!("{}", t!("log.main.tls_init_failed", error = e));
-            info!("{}", t!("log.main.tls_disabled"));
-        }
+            nebulaid::core::types::CoreError::InternalError(format!(
+                "TLS configuration error: {}",
+                e
+            ))
+        })?;
         let tls_manager = if tls_manager.is_http_enabled() || tls_manager.is_grpc_enabled() {
             Some(Arc::new(tls_manager))
         } else {

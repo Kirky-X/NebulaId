@@ -257,6 +257,128 @@ impl TlsManager {
     }
 }
 
+// ============================================================================
+// DualListener（wiring T005）: HTTP 端口真实 TLS
+// ============================================================================
+
+/// 双模监听器：按配置选择明文 TCP 或 TLS（经 `TlsAcceptor` 包装）。
+///
+/// 实现 `axum::serve::Listener`（axum 0.8 该 trait 未 sealed，可外部实现），
+/// 使 `axum::serve` 无需 `axum-server` 等额外依赖即可在单一端口上启用 HTTPS。
+/// 未启用 TLS 时行为与裸 `TcpListener` 完全一致（明文回退）。
+pub enum DualListener {
+    Plain(tokio::net::TcpListener),
+    Tls(tokio::net::TcpListener, TlsAcceptor),
+}
+
+/// DualListener 接受出的流：明文 TCP 或已握手的 TLS 服务端流。
+pub enum DualStream {
+    Plain(tokio::net::TcpStream),
+    Tls(tokio_rustls::server::TlsStream<tokio::net::TcpStream>),
+}
+
+impl DualListener {
+    /// 绑定地址；`tls` 为 `Some` 时该端口走 TLS 握手，否则明文。
+    pub async fn bind(
+        addr: std::net::SocketAddr,
+        tls: Option<TlsAcceptor>,
+    ) -> std::io::Result<Self> {
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        Ok(match tls {
+            Some(acceptor) => DualListener::Tls(listener, acceptor),
+            None => DualListener::Plain(listener),
+        })
+    }
+}
+
+impl axum::serve::Listener for DualListener {
+    type Io = DualStream;
+    type Addr = std::net::SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        match self {
+            DualListener::Plain(listener) => {
+                // 与 axum 内置 TcpListener 实现一致：accept 错误记日志后重试。
+                // 注意用固有方法全限定调用，避免解析到本 trait 的 accept。
+                loop {
+                    match tokio::net::TcpListener::accept(listener).await {
+                        Ok((stream, addr)) => return (DualStream::Plain(stream), addr),
+                        Err(e) => tracing::warn!(error = %e, "tcp accept failed; retrying"),
+                    }
+                }
+            }
+            DualListener::Tls(listener, acceptor) => {
+                loop {
+                    match tokio::net::TcpListener::accept(listener).await {
+                        Ok((tcp, addr)) => match acceptor.accept(tcp).await {
+                            Ok(stream) => return (DualStream::Tls(stream), addr),
+                            // 握手失败（客户端非 TLS/证书拒绝等）：记录并继续，
+                            // 不让单个坏连接拖垮整个 accept 循环
+                            Err(e) => {
+                                tracing::warn!(error = %e, "TLS handshake failed; skipping connection")
+                            }
+                        },
+                        Err(e) => tracing::warn!(error = %e, "tcp accept failed; retrying"),
+                    }
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        match self {
+            DualListener::Plain(listener) => listener.local_addr(),
+            DualListener::Tls(listener, _) => listener.local_addr(),
+        }
+    }
+}
+
+impl tokio::io::AsyncRead for DualStream {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match &mut *self {
+            DualStream::Plain(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+            DualStream::Tls(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for DualStream {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match &mut *self {
+            DualStream::Plain(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+            DualStream::Tls(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match &mut *self {
+            DualStream::Plain(s) => std::pin::Pin::new(s).poll_flush(cx),
+            DualStream::Tls(s) => std::pin::Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match &mut *self {
+            DualStream::Plain(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+            DualStream::Tls(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

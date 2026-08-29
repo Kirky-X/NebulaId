@@ -554,3 +554,122 @@ async fn e2e_tls_initialize_with_valid_cert_succeeds() {
     assert!(manager.http_acceptor().is_some(), "http_acceptor 应存在");
     assert!(!manager.is_grpc_enabled(), "grpc 未启用");
 }
+
+// ============================================================================
+// E2E-TLS-010（wiring T005）: DualListener 真实 TLS 握手（HTTP 端口）
+//
+// 背景：TlsManager.http_acceptor 曾只构造不消费，HTTP 恒明文。
+// DualListener 实现 axum::serve::Listener，使 HTTPS 真实生效。
+// ============================================================================
+
+#[tokio::test]
+async fn e2e_dual_listener_serves_https_request_end_to_end() {
+    use crate::server::config::tls::DualListener;
+    use axum::serve::Listener as _;
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let (cert_file, key_file) = generate_test_cert_files();
+    let config = crate::core::config::TlsConfig {
+        enabled: true,
+        cert_path: cert_file.path().to_str().unwrap().to_string(),
+        key_path: key_file.path().to_str().unwrap().to_string(),
+        http_enabled: true,
+        ..Default::default()
+    };
+    let mut manager = TlsManager::new(config);
+    manager
+        .initialize()
+        .await
+        .expect("tls initialize with rcgen cert");
+    let acceptor = manager.http_acceptor().cloned().expect("http acceptor");
+
+    let listener = DualListener::bind("127.0.0.1:0".parse().unwrap(), Some(acceptor))
+        .await
+        .expect("bind dual listener");
+    let addr = listener
+        .local_addr()
+        .expect("dual listener local addr");
+
+    let app = axum::Router::new().route(
+        "/ping",
+        axum::routing::get(|| async { "pong" }),
+    );
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    // rustls TLS 客户端：信任自签证书，请求 /ping
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let mut roots = rustls::RootCertStore::empty();
+    let cert_pem = std::fs::read(cert_file.path()).expect("read cert pem");
+    let certs: Vec<_> =
+        rustls_pemfile::certs(&mut std::io::BufReader::new(cert_pem.as_slice()))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("parse certs");
+    for cert in certs {
+        roots.add(cert).expect("add root cert");
+    }
+    let client_config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+    let tcp = tokio::net::TcpStream::connect(addr).await.expect("tcp connect");
+    let mut tls_stream = connector
+        .connect("localhost".try_into().expect("server name"), tcp)
+        .await
+        .expect("TLS handshake must succeed over HTTP port");
+    tls_stream
+        .write_all(b"GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .expect("write request");
+    let mut buf = Vec::new();
+    tls_stream
+        .read_to_end(&mut buf)
+        .await
+        .expect("read response");
+    let body = String::from_utf8_lossy(&buf);
+    assert!(
+        body.starts_with("HTTP/1.1 200"),
+        "HTTPS 请求应返回 200，实际响应: {body}"
+    );
+
+    server.abort();
+}
+
+/// E2E-TLS-011（wiring T005）: 未配置 TLS 时 DualListener 行为与纯
+/// TcpListener 一致（明文 HTTP 回归无差异）。
+#[tokio::test]
+async fn e2e_dual_listener_plain_serves_http_when_tls_absent() {
+    use crate::server::config::tls::DualListener;
+    use axum::serve::Listener as _;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = DualListener::bind("127.0.0.1:0".parse().unwrap(), None)
+        .await
+        .expect("bind plain listener");
+    let addr = listener.local_addr().expect("local addr");
+
+    let app =
+        axum::Router::new().route("/ping", axum::routing::get(|| async { "pong" }));
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let mut tcp = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("tcp connect");
+    tcp.write_all(b"GET /ping HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n")
+        .await
+        .expect("write request");
+    let mut buf = Vec::new();
+    tcp.read_to_end(&mut buf).await.expect("read response");
+    let body = String::from_utf8_lossy(&buf);
+    assert!(
+        body.starts_with("HTTP/1.1 200"),
+        "明文 HTTP 请求应返回 200，实际: {body}"
+    );
+
+    server.abort();
+}

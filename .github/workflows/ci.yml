@@ -53,7 +53,9 @@ jobs:
         run: cargo fmt --package ${{ env.PKG }} -- --check
 
       - name: Clippy Lint
-        run: cargo clippy --package ${{ env.PKG }} --all-features -- -D warnings
+        # dbnexus 禁止 sqlite 与 postgres 特性混用（--all-features 触发
+        # compile_error）；default 已含 postgresql，叠加 etcd 覆盖可选依赖。
+        run: cargo clippy --package ${{ env.PKG }} --features etcd -- -D warnings
 
   # 阶段 2：cargo-deny 检查（许可证 + 安全）
   deny:
@@ -98,7 +100,6 @@ jobs:
         feature:
           - default
           - postgresql
-          - sqlite
           - etcd
     steps:
       - uses: actions/checkout@v4
@@ -120,6 +121,8 @@ jobs:
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
 
+      # 注：矩阵不含 sqlite —— limiteron 硬依赖 dbnexus/postgres，与 sqlite
+      # 的 embedded 引擎互斥（compile_error），该特性当前不可构建。
       - name: Build (feature=${{ matrix.feature }})
         run: |
           if [ "${{ matrix.feature }}" = "default" ]; then

@@ -587,14 +587,9 @@ async fn e2e_dual_listener_serves_https_request_end_to_end() {
     let listener = DualListener::bind("127.0.0.1:0".parse().unwrap(), Some(acceptor))
         .await
         .expect("bind dual listener");
-    let addr = listener
-        .local_addr()
-        .expect("dual listener local addr");
+    let addr = listener.local_addr().expect("dual listener local addr");
 
-    let app = axum::Router::new().route(
-        "/ping",
-        axum::routing::get(|| async { "pong" }),
-    );
+    let app = axum::Router::new().route("/ping", axum::routing::get(|| async { "pong" }));
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
@@ -603,10 +598,9 @@ async fn e2e_dual_listener_serves_https_request_end_to_end() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let mut roots = rustls::RootCertStore::empty();
     let cert_pem = std::fs::read(cert_file.path()).expect("read cert pem");
-    let certs: Vec<_> =
-        rustls_pemfile::certs(&mut std::io::BufReader::new(cert_pem.as_slice()))
-            .collect::<Result<Vec<_>, _>>()
-            .expect("parse certs");
+    let certs: Vec<_> = rustls_pemfile::certs(&mut std::io::BufReader::new(cert_pem.as_slice()))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("parse certs");
     for cert in certs {
         roots.add(cert).expect("add root cert");
     }
@@ -615,7 +609,9 @@ async fn e2e_dual_listener_serves_https_request_end_to_end() {
         .with_no_client_auth();
     let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
 
-    let tcp = tokio::net::TcpStream::connect(addr).await.expect("tcp connect");
+    let tcp = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("tcp connect");
     let mut tls_stream = connector
         .connect("localhost".try_into().expect("server name"), tcp)
         .await
@@ -651,8 +647,7 @@ async fn e2e_dual_listener_plain_serves_http_when_tls_absent() {
         .expect("bind plain listener");
     let addr = listener.local_addr().expect("local addr");
 
-    let app =
-        axum::Router::new().route("/ping", axum::routing::get(|| async { "pong" }));
+    let app = axum::Router::new().route("/ping", axum::routing::get(|| async { "pong" }));
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });

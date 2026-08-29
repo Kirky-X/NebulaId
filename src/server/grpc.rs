@@ -43,7 +43,10 @@ pub struct GrpcServer {
 
 impl GrpcServer {
     pub fn new(handlers: Arc<ApiHandlers>) -> Self {
-        Self { handlers, auth: None }
+        Self {
+            handlers,
+            auth: None,
+        }
     }
 
     /// wiring T006：启用 API key 认证。启用后每个 RPC 入口先经

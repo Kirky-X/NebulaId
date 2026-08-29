@@ -382,8 +382,8 @@ mod tests {
         for alg in [
             AlgorithmType::Segment,
             AlgorithmType::Snowflake,
-            AlgorithmType::UuidV7,
-            AlgorithmType::UuidV4,
+            AlgorithmType::UuidV8,
+            AlgorithmType::UuidV8,
         ] {
             let m = AlgorithmMetrics::new(alg);
             assert_eq!(m.algorithm, alg);
@@ -690,7 +690,7 @@ mod tests {
 
     #[test]
     fn test_metrics_snapshot_serde_roundtrip_uuid_variants() {
-        for alg in [AlgorithmType::UuidV7, AlgorithmType::UuidV4] {
+        for alg in [AlgorithmType::UuidV8, AlgorithmType::UuidV8] {
             let original = MetricsSnapshot {
                 algorithm: alg,
                 total_generated: 1,
@@ -737,9 +737,9 @@ mod tests {
         assert!(Arc::ptr_eq(&m1, &m2));
 
         // Different algorithm gets a different Arc.
-        let m3 = g.get_or_create_metrics(AlgorithmType::UuidV7);
+        let m3 = g.get_or_create_metrics(AlgorithmType::UuidV8);
         assert!(!Arc::ptr_eq(&m1, &m3));
-        assert_eq!(m3.algorithm, AlgorithmType::UuidV7);
+        assert_eq!(m3.algorithm, AlgorithmType::UuidV8);
     }
 
     #[test]
@@ -822,14 +822,13 @@ mod tests {
         let g = GlobalMetrics::new();
         let _ = g.get_or_create_metrics(AlgorithmType::Segment);
         let _ = g.get_or_create_metrics(AlgorithmType::Snowflake);
-        let _ = g.get_or_create_metrics(AlgorithmType::UuidV7);
-        let _ = g.get_or_create_metrics(AlgorithmType::UuidV4);
+        let _ = g.get_or_create_metrics(AlgorithmType::UuidV8);
 
         let snapshots = g.get_all_snapshots();
-        assert_eq!(snapshots.len(), 4);
-        // Verify all four algorithms are present (order may vary).
+        assert_eq!(snapshots.len(), 3);
+        // Verify all three algorithms are present (order may vary).
         let mut algos: Vec<_> = snapshots.iter().map(|s| s.algorithm).collect();
         algos.sort_by_key(|a| format!("{a:?}"));
-        assert_eq!(algos.len(), 4);
+        assert_eq!(algos.len(), 3);
     }
 }

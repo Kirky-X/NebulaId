@@ -58,7 +58,7 @@ impl fmt::Display for Id {
         // UUID v7: 版本位 (12-15) 值为 7
         // UUID v4: 版本位 (12-15) 值为 4
         let version_bits = (self.0 >> 76) & 0xF; // 76 = 64 + 12
-        if version_bits == 7 || version_bits == 4 {
+        if version_bits == 7 || version_bits == 4 || version_bits == 8 {
             // 是 UUID 格式，输出标准字符串格式
             let uuid = Uuid::from_u128(self.0);
             write!(f, "{}", uuid)
@@ -100,15 +100,11 @@ impl Id {
         Ok(Id(value))
     }
 
-    pub fn to_uuid_v7(&self) -> Uuid {
+    pub fn to_uuid_v8(&self) -> Uuid {
         Uuid::from_u128(self.0)
     }
 
-    pub fn from_uuid_v7(uuid: Uuid) -> Self {
-        Id(uuid.as_u128())
-    }
-
-    pub fn from_uuid_v4(uuid: Uuid) -> Self {
+    pub fn from_uuid_v8(uuid: Uuid) -> Self {
         Id(uuid.as_u128())
     }
 
@@ -178,8 +174,7 @@ pub enum AlgorithmType {
     #[default]
     Segment,
     Snowflake,
-    UuidV7,
-    UuidV4,
+    UuidV8,
 }
 
 impl fmt::Display for AlgorithmType {
@@ -187,8 +182,7 @@ impl fmt::Display for AlgorithmType {
         match self {
             AlgorithmType::Segment => write!(f, "segment"),
             AlgorithmType::Snowflake => write!(f, "snowflake"),
-            AlgorithmType::UuidV7 => write!(f, "uuid_v7"),
-            AlgorithmType::UuidV4 => write!(f, "uuid_v4"),
+            AlgorithmType::UuidV8 => write!(f, "uuid_v8"),
         }
     }
 }
@@ -200,8 +194,8 @@ impl FromStr for AlgorithmType {
         match s.to_lowercase().as_str() {
             "segment" => Ok(AlgorithmType::Segment),
             "snowflake" => Ok(AlgorithmType::Snowflake),
-            "uuid_v7" | "uuidv7" | "uuid7" => Ok(AlgorithmType::UuidV7),
-            "uuid_v4" | "uuidv4" | "uuid4" => Ok(AlgorithmType::UuidV4),
+            "uuid_v8" | "uuidv8" | "uuid8" | "uuid_v7" | "uuidv7" | "uuid7" | "uuid_v4"
+            | "uuidv4" | "uuid4" => Ok(AlgorithmType::UuidV8),
             _ => Err(CoreError::InvalidAlgorithmType(s.to_string())),
         }
     }
@@ -240,13 +234,13 @@ impl IdMetadata {
         }
     }
 
-    pub fn for_uuid_v7(timestamp: u64) -> Self {
+    pub fn for_uuid_v8(timestamp: u64) -> Self {
         Self {
             timestamp,
             datacenter_id: 0,
             worker_id: 0,
             sequence: 0,
-            algorithm: AlgorithmType::UuidV7,
+            algorithm: AlgorithmType::UuidV8,
             biz_tag: String::new(),
         }
     }
@@ -302,12 +296,12 @@ mod tests {
             AlgorithmType::Snowflake
         );
         assert_eq!(
-            AlgorithmType::from_str("uuid_v7").unwrap(),
-            AlgorithmType::UuidV7
+            AlgorithmType::from_str("uuid_v8").unwrap(),
+            AlgorithmType::UuidV8
         );
         assert_eq!(
-            AlgorithmType::from_str("uuid_v4").unwrap(),
-            AlgorithmType::UuidV4
+            AlgorithmType::from_str("uuid_v8").unwrap(),
+            AlgorithmType::UuidV8
         );
     }
 
@@ -430,24 +424,19 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ===== Id::from_uuid_v4 / to_uuid_v7 roundtrip =====
+    // ===== Id::from_uuid_v8 / to_uuid_v8 roundtrip =====
 
     #[test]
-    fn test_id_from_uuid_v4_roundtrip() {
-        let uuid = Uuid::new_v4();
-        let id = Id::from_uuid_v4(uuid);
-        let back = id.to_uuid_v7();
+    fn test_id_from_uuid_v8_roundtrip() {
+        // 构造 version=8 / variant=10 的 v8 UUID
+        let mut bytes = [0u8; 16];
+        bytes[6] = 0x80; // time_hi_and_version 的版本位 = 8
+        bytes[8] = 0x80; // clock_seq_hi 的 variant 位 = 10
+        let uuid = Uuid::from_bytes(bytes);
+        let id = Id::from_uuid_v8(uuid);
+        let back = id.to_uuid_v8();
         assert_eq!(back, uuid);
-        assert_eq!(back.get_version(), Some(uuid::Version::Random));
-    }
-
-    #[test]
-    fn test_id_from_uuid_v7_roundtrip() {
-        let uuid = Uuid::now_v7();
-        let id = Id::from_uuid_v7(uuid);
-        let back = id.to_uuid_v7();
-        assert_eq!(back, uuid);
-        assert_eq!(back.get_version(), Some(uuid::Version::SortRand));
+        assert_eq!(back.get_version(), Some(uuid::Version::Custom));
     }
 
     // ===== Id::to_hex =====
@@ -532,7 +521,7 @@ mod tests {
     #[test]
     fn test_id_display_uuid_format_for_v7() {
         let uuid = Uuid::now_v7();
-        let id = Id::from_uuid_v7(uuid);
+        let id = Id::from_uuid_v8(uuid);
         // UUID v7 应输出标准 UUID 字符串
         assert_eq!(id.to_string(), uuid.to_string());
         assert_eq!(id.to_string().len(), 36);
@@ -541,7 +530,7 @@ mod tests {
     #[test]
     fn test_id_display_uuid_format_for_v4() {
         let uuid = Uuid::new_v4();
-        let id = Id::from_uuid_v4(uuid);
+        let id = Id::from_uuid_v8(uuid);
         // UUID v4 应输出标准 UUID 字符串
         assert_eq!(id.to_string(), uuid.to_string());
         assert_eq!(id.to_string().len(), 36);
@@ -600,13 +589,8 @@ mod tests {
     }
 
     #[test]
-    fn test_algorithm_type_display_uuid_v7() {
-        assert_eq!(AlgorithmType::UuidV7.to_string(), "uuid_v7");
-    }
-
-    #[test]
-    fn test_algorithm_type_display_uuid_v4() {
-        assert_eq!(AlgorithmType::UuidV4.to_string(), "uuid_v4");
+    fn test_algorithm_type_display_uuid_v8() {
+        assert_eq!(AlgorithmType::UuidV8.to_string(), "uuid_v8");
     }
 
     #[test]
@@ -617,26 +601,22 @@ mod tests {
     // ===== AlgorithmType FromStr 全部分支（别名 + 错误） =====
 
     #[test]
-    fn test_algorithm_type_from_str_uuid_v7_aliases() {
+    fn test_algorithm_type_from_str_uuid_v8_aliases() {
         assert_eq!(
-            AlgorithmType::from_str("uuidv7").unwrap(),
-            AlgorithmType::UuidV7
+            AlgorithmType::from_str("uuidv8").unwrap(),
+            AlgorithmType::UuidV8
         );
         assert_eq!(
             AlgorithmType::from_str("uuid7").unwrap(),
-            AlgorithmType::UuidV7
-        );
-    }
-
-    #[test]
-    fn test_algorithm_type_from_str_uuid_v4_aliases() {
-        assert_eq!(
-            AlgorithmType::from_str("uuidv4").unwrap(),
-            AlgorithmType::UuidV4
+            AlgorithmType::UuidV8
         );
         assert_eq!(
             AlgorithmType::from_str("uuid4").unwrap(),
-            AlgorithmType::UuidV4
+            AlgorithmType::UuidV8
+        );
+        assert_eq!(
+            AlgorithmType::from_str("uuidv4").unwrap(),
+            AlgorithmType::UuidV8
         );
     }
 
@@ -651,8 +631,8 @@ mod tests {
             AlgorithmType::Snowflake
         );
         assert_eq!(
-            AlgorithmType::from_str("UUID_V7").unwrap(),
-            AlgorithmType::UuidV7
+            AlgorithmType::from_str("UUID_V8").unwrap(),
+            AlgorithmType::UuidV8
         );
     }
 
@@ -691,9 +671,9 @@ mod tests {
     }
 
     #[test]
-    fn test_id_metadata_for_uuid_v7() {
-        let metadata = IdMetadata::for_uuid_v7(1700000000);
-        assert_eq!(metadata.algorithm, AlgorithmType::UuidV7);
+    fn test_id_metadata_for_uuid_v8() {
+        let metadata = IdMetadata::for_uuid_v8(1700000000);
+        assert_eq!(metadata.algorithm, AlgorithmType::UuidV8);
         assert_eq!(metadata.timestamp, 1700000000);
         assert_eq!(metadata.datacenter_id, 0);
         assert_eq!(metadata.worker_id, 0);

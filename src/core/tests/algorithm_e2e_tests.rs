@@ -291,8 +291,8 @@ async fn e2e_all_algorithm_types_built_via_builder_generate_unique_ids() {
     let algorithm_types = [
         AlgorithmType::Segment,
         AlgorithmType::Snowflake,
-        AlgorithmType::UuidV7,
-        AlgorithmType::UuidV4,
+        AlgorithmType::UuidV8,
+        AlgorithmType::UuidV8,
     ];
 
     let ctx = make_ctx("e2e-all-algorithms");
@@ -358,20 +358,19 @@ async fn e2e_router_initialize_registers_all_four_algorithms() {
     let health_statuses = router.health_check().await;
     assert_eq!(
         health_statuses.len(),
-        4,
-        "E2E: Router should register 4 algorithms (Segment, Snowflake, UuidV7, UuidV4)"
+        3,
+        "E2E: Router should register 3 algorithms (Segment, Snowflake, UuidV8)"
     );
 
     let registered: HashSet<AlgorithmType> = health_statuses.iter().map(|(t, _)| *t).collect();
     assert!(registered.contains(&AlgorithmType::Segment));
     assert!(registered.contains(&AlgorithmType::Snowflake));
-    assert!(registered.contains(&AlgorithmType::UuidV7));
-    assert!(registered.contains(&AlgorithmType::UuidV4));
+    assert!(registered.contains(&AlgorithmType::UuidV8));
 
     for (alg_type, status) in &health_statuses {
         // Segment 在没有数据库连接时 health_check 返回 Degraded("No active buffers")
         // 这是设计行为——Segment 需要数据库加载号段。其他三种算法（Snowflake/
-        // UuidV7/UuidV4）不依赖外部状态，应返回 Healthy。
+        // UuidV8/UuidV8）不依赖外部状态，应返回 Healthy。
         match alg_type {
             AlgorithmType::Segment => {
                 assert!(
@@ -429,7 +428,7 @@ async fn e2e_router_set_algorithm_per_biz_tag_routes_correctly() {
 /// E2E-RT-003: Router 在主算法成功时直接返回，不触发 fallback。
 ///
 /// 验证功能场景穷举分析中"主算法成功直接返回"的预期行为。
-/// 默认配置下 main=Segment，fallback chain=[Snowflake, UuidV7, UuidV4]。
+/// 默认配置下 main=Segment，fallback chain=[Snowflake, UuidV8, UuidV8]。
 #[tokio::test]
 async fn e2e_router_primary_succeeds_no_fallback_invoked() {
     let config = Config::default();
@@ -517,7 +516,7 @@ async fn e2e_degradation_manager_full_degrade_recover_cycle() {
         failure_threshold: 3,
         recovery_threshold: 3,
         auto_recovery: true,
-        fallback_chain: vec![AlgorithmType::Snowflake, AlgorithmType::UuidV7],
+        fallback_chain: vec![AlgorithmType::Snowflake, AlgorithmType::UuidV8],
         ..Default::default()
     };
     let manager = DegradationManager::new(Some(config), None);
@@ -647,17 +646,17 @@ async fn e2e_router_full_id_generator_trait_integration() {
             .expect("E2E: IdGenerator::generate_with_algorithm(Snowflake) should succeed");
     assert!(id_sf.as_u128() > 0);
 
-    // IdGenerator::batch_generate_with_algorithm (显式指定 UuidV7)
+    // IdGenerator::batch_generate_with_algorithm (显式指定 UuidV8)
     let ids_v7 = IdGenerator::batch_generate_with_algorithm(
         &router,
-        AlgorithmType::UuidV7,
+        AlgorithmType::UuidV8,
         "ws",
         "g",
         "bt-v7",
         3,
     )
     .await
-    .expect("E2E: IdGenerator::batch_generate_with_algorithm(UuidV7) should succeed");
+    .expect("E2E: IdGenerator::batch_generate_with_algorithm(UuidV8) should succeed");
     assert_eq!(ids_v7.len(), 3);
 
     // IdGenerator::health_check
@@ -678,7 +677,7 @@ async fn e2e_router_full_id_generator_trait_integration() {
 
 /// E2E-XMOD-002: Router fallback chain 在所有真实算法都健康时不会触发。
 ///
-/// 默认配置下 main=Segment，fallback=[Snowflake, UuidV7, UuidV4]。
+/// 默认配置下 main=Segment，fallback=[Snowflake, UuidV8, UuidV8]。
 /// 主算法 Segment 在初始化后是健康的，所有生成请求都应通过 Segment 完成。
 /// 此测试验证在正常工况下 fallback chain 不会被错误触发。
 #[tokio::test]
@@ -705,11 +704,11 @@ async fn e2e_router_fallback_chain_not_triggered_on_healthy_primary() {
     assert!(!segment_state.is_degraded);
     assert!(segment_state.consecutive_successes >= 10);
 
-    // Snowflake / UuidV7 / UuidV4 未被调用，consecutive_successes == 0
+    // Snowflake / UuidV8 / UuidV8 未被调用，consecutive_successes == 0
     for alg in [
         AlgorithmType::Snowflake,
-        AlgorithmType::UuidV7,
-        AlgorithmType::UuidV4,
+        AlgorithmType::UuidV8,
+        AlgorithmType::UuidV8,
     ] {
         let state = dm.get_algorithm_state(alg).expect("E2E: alg tracked");
         assert_eq!(state.consecutive_successes, 0);

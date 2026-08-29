@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Algorithm configuration (segment / snowflake / uuid_v7).
+//! Algorithm configuration (segment / snowflake / uuid_v8).
 
 use crate::core::types::AlgorithmType;
 use serde::{Deserialize, Serialize};
@@ -85,12 +85,12 @@ impl Default for SnowflakeAlgorithmConfig {
 
 /// UUID v7 configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct UuidV7Config {
+pub struct UuidV8Config {
     /// Enable/disable UUID v7 generation
     pub enabled: bool,
 }
 
-impl Default for UuidV7Config {
+impl Default for UuidV8Config {
     fn default() -> Self {
         Self { enabled: true }
     }
@@ -106,7 +106,7 @@ pub struct AlgorithmConfig {
     /// Snowflake algorithm settings
     pub snowflake: SnowflakeAlgorithmConfig,
     /// UUID v7 settings
-    pub uuid_v7: UuidV7Config,
+    pub uuid_v8: UuidV8Config,
 }
 
 impl Default for AlgorithmConfig {
@@ -115,7 +115,7 @@ impl Default for AlgorithmConfig {
             default: "segment".to_string(),
             segment: SegmentAlgorithmConfig::default(),
             snowflake: SnowflakeAlgorithmConfig::default(),
-            uuid_v7: UuidV7Config::default(),
+            uuid_v8: UuidV8Config::default(),
         }
     }
 }

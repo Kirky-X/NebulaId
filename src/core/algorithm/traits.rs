@@ -262,10 +262,9 @@ pub trait AlgorithmFactory: Send + Sync {
     ) -> Result<Box<dyn IdAlgorithm>>;
 }
 
-/// 4 个内置算法的工厂 struct。`pub` 让外部测试代码可构造并注入。
+/// 内置算法的工厂 struct。`pub` 让外部测试代码可构造并注入。
 pub struct SnowflakeFactory;
-pub struct UuidV7Factory;
-pub struct UuidV4Factory;
+pub struct UuidV8Factory;
 pub struct SegmentFactory;
 
 /// 算法工厂注册表（懒加载，进程级单例）。
@@ -276,8 +275,7 @@ pub fn algorithm_factories() -> &'static HashMap<AlgorithmType, Arc<dyn Algorith
     FACTORIES.get_or_init(|| {
         let mut m: HashMap<AlgorithmType, Arc<dyn AlgorithmFactory>> = HashMap::new();
         m.insert(AlgorithmType::Snowflake, Arc::new(SnowflakeFactory));
-        m.insert(AlgorithmType::UuidV7, Arc::new(UuidV7Factory));
-        m.insert(AlgorithmType::UuidV4, Arc::new(UuidV4Factory));
+        m.insert(AlgorithmType::UuidV8, Arc::new(UuidV8Factory));
         m.insert(AlgorithmType::Segment, Arc::new(SegmentFactory));
         m
     })

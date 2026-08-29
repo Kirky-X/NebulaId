@@ -479,7 +479,7 @@ pub struct AlgorithmConfigInfo {
     pub default: String,
     pub segment: SegmentConfigInfo,
     pub snowflake: SnowflakeConfigInfo,
-    pub uuid_v7: UuidV7ConfigInfo,
+    pub uuid_v8: UuidV8ConfigInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -499,7 +499,7 @@ pub struct SnowflakeConfigInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct UuidV7ConfigInfo {
+pub struct UuidV8ConfigInfo {
     pub enabled: bool,
 }
 

@@ -542,13 +542,13 @@ pub(crate) mod mock_tests {
             workspace: "test-ws".to_string(),
             group: "test-group".to_string(),
             biz_tag: "test-biz".to_string(),
-            algorithm: "uuid_v7".to_string(),
+            algorithm: "uuid_v8".to_string(),
         };
         let result = handlers.parse(req).await;
         assert!(result.is_ok());
         let response = result.unwrap();
         assert_eq!(response.original_id, uuid_str);
-        assert_eq!(response.algorithm, "uuid_v7");
+        assert_eq!(response.algorithm, "uuid_v8");
     }
 
     #[tokio::test]

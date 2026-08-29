@@ -185,12 +185,12 @@ impl AlgorithmRouter {
         match config.algorithm.get_default_algorithm() {
             AlgorithmType::Segment => {
                 fallback_chain.push(AlgorithmType::Snowflake);
-                fallback_chain.push(AlgorithmType::UuidV7);
-                fallback_chain.push(AlgorithmType::UuidV4);
+                fallback_chain.push(AlgorithmType::UuidV8);
+                fallback_chain.push(AlgorithmType::UuidV8);
             }
             AlgorithmType::Snowflake => {
-                fallback_chain.push(AlgorithmType::UuidV7);
-                fallback_chain.push(AlgorithmType::UuidV4);
+                fallback_chain.push(AlgorithmType::UuidV8);
+                fallback_chain.push(AlgorithmType::UuidV8);
             }
             _ => {}
         }
@@ -236,8 +236,8 @@ impl AlgorithmRouter {
         for alg_type in [
             AlgorithmType::Segment,
             AlgorithmType::Snowflake,
-            AlgorithmType::UuidV7,
-            AlgorithmType::UuidV4,
+            AlgorithmType::UuidV8,
+            AlgorithmType::UuidV8,
         ] {
             #[allow(unused_mut)]
             let mut builder = AlgorithmBuilder::new(alg_type);
@@ -912,9 +912,9 @@ mod tests {
         );
         insert_mock(
             &router,
-            AlgorithmType::UuidV7,
+            AlgorithmType::UuidV8,
             Arc::new(
-                MockConfigurableAlgorithm::new(AlgorithmType::UuidV7)
+                MockConfigurableAlgorithm::new(AlgorithmType::UuidV8)
                     .with_health(MockHealthKind::Unhealthy),
             ),
         );
@@ -990,14 +990,14 @@ mod tests {
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
             &router,
-            AlgorithmType::UuidV7,
+            AlgorithmType::UuidV8,
             Arc::new(MockHealthyAlgorithm {
-                alg_type: AlgorithmType::UuidV7,
+                alg_type: AlgorithmType::UuidV8,
             }),
         );
         let ids = IdGenerator::batch_generate_with_algorithm(
             &router,
-            AlgorithmType::UuidV7,
+            AlgorithmType::UuidV8,
             "ws",
             "g",
             "bt",
@@ -1018,8 +1018,8 @@ mod tests {
             router.fallback_chain.to_vec(),
             vec![
                 AlgorithmType::Snowflake,
-                AlgorithmType::UuidV7,
-                AlgorithmType::UuidV4,
+                AlgorithmType::UuidV8,
+                AlgorithmType::UuidV8,
             ]
         );
     }
@@ -1031,14 +1031,14 @@ mod tests {
         let router = AlgorithmRouter::new(config, None);
         assert_eq!(
             router.fallback_chain.to_vec(),
-            vec![AlgorithmType::UuidV7, AlgorithmType::UuidV4]
+            vec![AlgorithmType::UuidV8, AlgorithmType::UuidV8]
         );
     }
 
     #[tokio::test]
-    async fn test_new_with_uuid_v7_default_builds_empty_fallback_chain() {
+    async fn test_new_with_uuid_v8_default_builds_empty_fallback_chain() {
         let mut config = Config::default();
-        config.algorithm.default = "uuid_v7".to_string();
+        config.algorithm.default = "uuid_v8".to_string();
         let router = AlgorithmRouter::new(config, None);
         assert!(router.fallback_chain.is_empty());
     }
@@ -1071,7 +1071,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_generate_with_algorithm_inherent_unknown_algorithm_falls_back() {
-        // 请求 UuidV4（不在 map），fallback chain = [Snowflake, UuidV7, UuidV4]
+        // 请求 UuidV8（不在 map），fallback chain = [Snowflake, UuidV8, UuidV8]
         // Snowflake 在 map 中且成功 → 返回 Ok
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
@@ -1082,7 +1082,7 @@ mod tests {
             }),
         );
         let id = router
-            .generate_with_algorithm(AlgorithmType::UuidV4, "ws", "g", "bt")
+            .generate_with_algorithm(AlgorithmType::UuidV8, "ws", "g", "bt")
             .await
             .unwrap();
         assert_eq!(id.as_u128(), 42);
@@ -1134,7 +1134,7 @@ mod tests {
             }),
         );
         let batch = router
-            .batch_generate_with_algorithm(AlgorithmType::UuidV4, "ws", "g", "bt", 2)
+            .batch_generate_with_algorithm(AlgorithmType::UuidV8, "ws", "g", "bt", 2)
             .await
             .unwrap();
         assert_eq!(batch.ids.len(), 2);
@@ -1223,13 +1223,13 @@ mod tests {
         );
         insert_mock(
             &router,
-            AlgorithmType::UuidV7,
-            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::UuidV7).with_generate_failure()),
+            AlgorithmType::UuidV8,
+            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::UuidV8).with_generate_failure()),
         );
         insert_mock(
             &router,
-            AlgorithmType::UuidV4,
-            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::UuidV4).with_generate_failure()),
+            AlgorithmType::UuidV8,
+            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::UuidV8).with_generate_failure()),
         );
         let ctx = make_ctx("bt");
         let result = router.generate(&ctx).await;
@@ -1274,7 +1274,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_generate_internal_primary_not_in_map_some_fallbacks_missing() {
-        // Segment 不在 map，Snowflake 在 map 但失败，UuidV7 不在 map，UuidV4 成功
+        // Segment 不在 map，Snowflake 在 map 但失败，UuidV8 不在 map，UuidV8 成功
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
             &router,
@@ -1285,9 +1285,9 @@ mod tests {
         );
         insert_mock(
             &router,
-            AlgorithmType::UuidV4,
+            AlgorithmType::UuidV8,
             Arc::new(MockHealthyAlgorithm {
-                alg_type: AlgorithmType::UuidV4,
+                alg_type: AlgorithmType::UuidV8,
             }),
         );
         let ctx = make_ctx("bt");
@@ -1349,13 +1349,13 @@ mod tests {
         );
         insert_mock(
             &router,
-            AlgorithmType::UuidV7,
-            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::UuidV7).with_batch_failure()),
+            AlgorithmType::UuidV8,
+            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::UuidV8).with_batch_failure()),
         );
         insert_mock(
             &router,
-            AlgorithmType::UuidV4,
-            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::UuidV4).with_batch_failure()),
+            AlgorithmType::UuidV8,
+            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::UuidV8).with_batch_failure()),
         );
         let ctx = make_ctx("bt");
         let result = router.batch_generate(&ctx, 2).await;
@@ -1417,9 +1417,9 @@ mod tests {
         );
         insert_mock(
             &router,
-            AlgorithmType::UuidV7,
+            AlgorithmType::UuidV8,
             Arc::new(
-                MockConfigurableAlgorithm::new(AlgorithmType::UuidV7)
+                MockConfigurableAlgorithm::new(AlgorithmType::UuidV8)
                     .with_health(MockHealthKind::Degraded),
             ),
         );
@@ -1430,11 +1430,11 @@ mod tests {
             .find(|(t, _)| *t == AlgorithmType::Snowflake)
             .map(|(_, s)| s);
         assert!(matches!(snowflake_status, Some(HealthStatus::Healthy)));
-        let uuid_v7_status = statuses
+        let uuid_v8_status = statuses
             .iter()
-            .find(|(t, _)| *t == AlgorithmType::UuidV7)
+            .find(|(t, _)| *t == AlgorithmType::UuidV8)
             .map(|(_, s)| s);
-        assert!(matches!(uuid_v7_status, Some(HealthStatus::Degraded(_))));
+        assert!(matches!(uuid_v8_status, Some(HealthStatus::Degraded(_))));
     }
 
     // ============== metrics (inherent) 测试 ==============
@@ -1458,16 +1458,16 @@ mod tests {
         );
         insert_mock(
             &router,
-            AlgorithmType::UuidV7,
+            AlgorithmType::UuidV8,
             Arc::new(MockHealthyAlgorithm {
-                alg_type: AlgorithmType::UuidV7,
+                alg_type: AlgorithmType::UuidV8,
             }),
         );
         let snapshots = router.metrics().await;
         assert_eq!(snapshots.len(), 2);
         let algorithm_types: Vec<_> = snapshots.iter().map(|(t, _)| *t).collect();
         assert!(algorithm_types.contains(&AlgorithmType::Snowflake));
-        assert!(algorithm_types.contains(&AlgorithmType::UuidV7));
+        assert!(algorithm_types.contains(&AlgorithmType::UuidV8));
     }
 
     // ============== get_degradation_manager (inherent) 测试 ==============
@@ -1508,9 +1508,9 @@ mod tests {
         );
         insert_mock(
             &router,
-            AlgorithmType::UuidV7,
+            AlgorithmType::UuidV8,
             Arc::new(MockHealthyAlgorithm {
-                alg_type: AlgorithmType::UuidV7,
+                alg_type: AlgorithmType::UuidV8,
             }),
         );
         router.shutdown().await;
@@ -1529,9 +1529,9 @@ mod tests {
         );
         insert_mock(
             &router,
-            AlgorithmType::UuidV7,
+            AlgorithmType::UuidV8,
             Arc::new(MockHealthyAlgorithm {
-                alg_type: AlgorithmType::UuidV7,
+                alg_type: AlgorithmType::UuidV8,
             }),
         );
         router.shutdown().await;

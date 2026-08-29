@@ -388,7 +388,7 @@ worker_id_bits = 8
 sequence_bits = 10
 clock_drift_threshold_ms = 1000
 
-[algorithm.uuid_v7]
+[algorithm.uuid_v8]
 enabled = true
 
 [monitoring]
@@ -485,7 +485,7 @@ worker_id_bits = 8
 sequence_bits = 10
 clock_drift_threshold_ms = 1000
 
-[algorithm.uuid_v7]
+[algorithm.uuid_v8]
 enabled = true
 
 [monitoring]
@@ -705,10 +705,10 @@ max_batch_size = 100
         let hot_config = HotReloadConfig::new(Config::default(), "config/config.toml".to_string());
 
         hot_config.set_algorithm("tag-b", AlgorithmType::Segment);
-        hot_config.set_algorithm("tag-b", AlgorithmType::UuidV7);
+        hot_config.set_algorithm("tag-b", AlgorithmType::UuidV8);
 
         let retrieved = hot_config.get_algorithm("tag-b");
-        assert_eq!(retrieved.unwrap(), AlgorithmType::UuidV7);
+        assert_eq!(retrieved.unwrap(), AlgorithmType::UuidV8);
     }
 
     /// `set_algorithm` on different biz_tags must not interfere.
@@ -876,7 +876,7 @@ worker_id_bits = 8
 sequence_bits = 10
 clock_drift_threshold_ms = 1000
 
-[algorithm.uuid_v7]
+[algorithm.uuid_v8]
 enabled = true
 
 [monitoring]

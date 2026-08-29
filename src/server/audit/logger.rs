@@ -1617,7 +1617,7 @@ mod tests {
             .log_degradation_event(
                 Some("ws-1".to_string()),
                 "recovered".to_string(),
-                "uuid_v7".to_string(),
+                "uuid_v8".to_string(),
                 "Critical".to_string(),
                 "Normal".to_string(),
                 serde_json::json!({"recovered_at": "2026-07-20"}),

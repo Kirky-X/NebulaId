@@ -16,7 +16,7 @@
 //!
 //! Hosts the production [`SnowflakeAlgorithm`] and its [`IdAlgorithm`]
 //! implementation. UUID-style generation lives in the dedicated
-//! `uuid_v7.rs` module; the previously test-only UUID generators and
+//! `uuid_v8.rs` module; the previously test-only UUID generators and
 //! DI builder that lived here were removed as dead code.
 
 use crate::core::algorithm::{

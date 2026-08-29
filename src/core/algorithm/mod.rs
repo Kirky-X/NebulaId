@@ -18,7 +18,7 @@ pub mod router;
 pub(crate) mod segment;
 pub(crate) mod snowflake;
 pub(crate) mod traits;
-pub(crate) mod uuid_v7;
+pub(crate) mod uuid_v8;
 
 pub use traits::*;
 

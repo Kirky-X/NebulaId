@@ -25,7 +25,7 @@ use crate::server::models::{
     GroupListResponse, GroupResponse, LoggingConfigInfo, MonitoringConfigInfo, RateLimitConfigInfo,
     SecureConfigResponse, SegmentConfigInfo, SetAlgorithmRequest, SetAlgorithmResponse,
     SnowflakeConfigInfo, TlsConfigInfo, UpdateConfigResponse, UpdateLoggingRequest,
-    UpdateRateLimitRequest, UuidV7ConfigInfo, WorkspaceListResponse, WorkspaceResponse,
+    UpdateRateLimitRequest, UuidV8ConfigInfo, WorkspaceListResponse, WorkspaceResponse,
 };
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -176,8 +176,8 @@ impl ConfigManager {
                     sequence_bits: config.algorithm.snowflake.sequence_bits,
                     clock_drift_threshold_ms: config.algorithm.snowflake.clock_drift_threshold_ms,
                 },
-                uuid_v7: UuidV7ConfigInfo {
-                    enabled: config.algorithm.uuid_v7.enabled,
+                uuid_v8: UuidV8ConfigInfo {
+                    enabled: config.algorithm.uuid_v8.enabled,
                 },
             },
             monitoring: MonitoringConfigInfo {
@@ -228,8 +228,8 @@ impl ConfigManager {
                     sequence_bits: config.algorithm.snowflake.sequence_bits,
                     clock_drift_threshold_ms: config.algorithm.snowflake.clock_drift_threshold_ms,
                 },
-                uuid_v7: UuidV7ConfigInfo {
-                    enabled: config.algorithm.uuid_v7.enabled,
+                uuid_v8: UuidV8ConfigInfo {
+                    enabled: config.algorithm.uuid_v8.enabled,
                 },
             },
             monitoring: MonitoringConfigInfo {
@@ -353,14 +353,14 @@ impl ConfigManagementService for ConfigManager {
         let algorithm_type = match req.algorithm.to_lowercase().as_str() {
             "segment" => AlgorithmType::Segment,
             "snowflake" => AlgorithmType::Snowflake,
-            "uuid_v7" => AlgorithmType::UuidV7,
+            "uuid_v8" => AlgorithmType::UuidV8,
             _ => {
                 return SetAlgorithmResponse {
                     success: false,
                     biz_tag: req.biz_tag.clone(),
                     algorithm: req.algorithm.clone(),
                     message: format!(
-                        "Invalid algorithm '{}'. Valid options: segment, snowflake, uuid_v7",
+                        "Invalid algorithm '{}'. Valid options: segment, snowflake, uuid_v8",
                         req.algorithm
                     ),
                 };
@@ -1082,7 +1082,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_algorithm_uuid_v7() {
+    async fn test_set_algorithm_uuid_v8() {
         let hot_config = Arc::new(HotReloadConfig::new(
             test_config(),
             "config/config.toml".to_string(),
@@ -1092,11 +1092,11 @@ mod tests {
 
         let req = SetAlgorithmRequest {
             biz_tag: "uuid-tag".to_string(),
-            algorithm: "uuid_v7".to_string(),
+            algorithm: "uuid_v8".to_string(),
         };
         let response = service.set_algorithm(req).await;
         assert!(response.success);
-        assert_eq!(response.algorithm, "uuid_v7");
+        assert_eq!(response.algorithm, "uuid_v8");
     }
 
     /// `set_algorithm` is case-insensitive (lowercases the input).

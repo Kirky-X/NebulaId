@@ -203,7 +203,7 @@ impl super::ApiHandlers {
 
         let metadata = match algorithm.as_str() {
             "snowflake" => self.extract_snowflake_metadata(id.clone()),
-            "uuid_v7" => self.extract_uuid_v7_metadata(id.clone()),
+            "uuid_v8" => self.extract_uuid_v8_metadata(id.clone()),
             "segment" => self.extract_segment_metadata(id.clone(), req.biz_tag),
             _ => IdMetadataResponse {
                 timestamp: 0,
@@ -243,8 +243,8 @@ impl super::ApiHandlers {
         }
     }
 
-    fn extract_uuid_v7_metadata(&self, id: Id) -> IdMetadataResponse {
-        let uuid = id.to_uuid_v7();
+    fn extract_uuid_v8_metadata(&self, id: Id) -> IdMetadataResponse {
+        let uuid = id.to_uuid_v8();
         let timestamp = uuid
             .get_timestamp()
             .map(|ts| {
@@ -258,7 +258,7 @@ impl super::ApiHandlers {
             datacenter_id: 0,
             worker_id: 0,
             sequence: 0,
-            algorithm: "uuid_v7".to_string(),
+            algorithm: "uuid_v8".to_string(),
             biz_tag: String::new(),
         }
     }

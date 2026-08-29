@@ -96,7 +96,7 @@ impl Default for DegradationConfig {
             fallback_chain: vec![
                 AlgorithmType::Segment,
                 AlgorithmType::Snowflake,
-                AlgorithmType::UuidV7,
+                AlgorithmType::UuidV8,
             ],
             circuit_breaker_timeout_ms: DEFAULT_CIRCUIT_BREAKER_TIMEOUT_MS,
             half_open_success_threshold: DEFAULT_HALF_OPEN_SUCCESS_THRESHOLD,
@@ -1134,7 +1134,7 @@ mod tests {
     async fn test_determine_effective_algorithm_returns_degraded_when_primary_down() {
         let manager = DegradationManager::new(None, None);
         manager.set_primary_algorithm(AlgorithmType::Segment);
-        manager.set_fallback_chain(vec![AlgorithmType::Snowflake, AlgorithmType::UuidV7]);
+        manager.set_fallback_chain(vec![AlgorithmType::Snowflake, AlgorithmType::UuidV8]);
 
         manager.register_algorithm(
             AlgorithmType::Segment,
@@ -1156,7 +1156,7 @@ mod tests {
     async fn test_determine_effective_algorithm_returns_critical_when_all_down() {
         let manager = DegradationManager::new(None, None);
         manager.set_primary_algorithm(AlgorithmType::Segment);
-        manager.set_fallback_chain(vec![AlgorithmType::Snowflake, AlgorithmType::UuidV7]);
+        manager.set_fallback_chain(vec![AlgorithmType::Snowflake, AlgorithmType::UuidV8]);
 
         manager.register_algorithm(
             AlgorithmType::Segment,
@@ -1167,13 +1167,13 @@ mod tests {
             Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
         );
         manager.register_algorithm(
-            AlgorithmType::UuidV7,
-            Arc::new(MockIdAlgorithm::new(AlgorithmType::UuidV7)) as Arc<dyn IdAlgorithm>,
+            AlgorithmType::UuidV8,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::UuidV8)) as Arc<dyn IdAlgorithm>,
         );
 
         manager.manual_degrade(AlgorithmType::Segment);
         manager.manual_degrade(AlgorithmType::Snowflake);
-        manager.manual_degrade(AlgorithmType::UuidV7);
+        manager.manual_degrade(AlgorithmType::UuidV8);
 
         let state = manager.determine_effective_algorithm().await;
         assert_eq!(state, DegradationState::Critical);
@@ -1200,7 +1200,7 @@ mod tests {
     fn test_get_algorithm_state_returns_none_for_unregistered() {
         let manager = DegradationManager::new(None, None);
 
-        let info = manager.get_algorithm_state(AlgorithmType::UuidV7);
+        let info = manager.get_algorithm_state(AlgorithmType::UuidV8);
         assert!(info.is_none());
     }
 

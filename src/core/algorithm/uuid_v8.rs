@@ -59,9 +59,6 @@ const RAND_MASK: u64 = (1u64 << RAND_BITS) - 1;
 const COUNTER_TOTAL_BITS: u64 = (COUNTER_HI_BITS + COUNTER_LO_BITS) as u64;
 const COUNTER_TOTAL_MASK: u64 = (1u64 << COUNTER_TOTAL_BITS) - 1;
 
-/// 时间回拨最大容忍（毫秒）。超过则视为严重异常�?
-const MAX_CLOCK_BACKWARD_MS: u64 = 5000;
-
 fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -103,11 +100,12 @@ pub struct UuidV8Impl {
     counter: AtomicU64,
     dc_id: u64,
     worker_id: u64,
+    clock_drift_threshold_ms: u64,
     shard_cache: Mutex<HashMap<(String, String, String), u64>>,
 }
 
 impl UuidV8Impl {
-    pub fn new(dc_id: u64, worker_id: u64) -> Self {
+    pub fn new(dc_id: u64, worker_id: u64, clock_drift_threshold_ms: u64) -> Self {
         let dc = dc_id & NODE_DC_MAX;
         let worker = worker_id & NODE_WORKER_MAX;
         let seed = fast_rand_26() << (COUNTER_LO_BITS + NODE_WORKER_BITS + NODE_DC_BITS);
@@ -116,6 +114,7 @@ impl UuidV8Impl {
             counter: AtomicU64::new(seed & COUNTER_TOTAL_MASK),
             dc_id: dc,
             worker_id: worker,
+            clock_drift_threshold_ms,
             shard_cache: Mutex::new(HashMap::new()),
         }
     }
@@ -140,9 +139,10 @@ impl UuidV8Impl {
 
         let mut last = self.last_timestamp.load(Ordering::Acquire);
         let mut effective_ts = ts;
+        let mut rollover = false;
         loop {
             if effective_ts < last {
-                if last - effective_ts > MAX_CLOCK_BACKWARD_MS {
+                if last - effective_ts > self.clock_drift_threshold_ms {
                     return Err(CoreError::ClockMovedBackward {
                         last_timestamp: last - effective_ts,
                     });
@@ -155,11 +155,22 @@ impl UuidV8Impl {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => break,
+                Ok(_) => {
+                    rollover = effective_ts > last;
+                    break;
+                }
                 Err(x) => {
                     last = x;
                 }
             }
+        }
+
+        // UUIDP Cluster：跨毫秒时计数器重置为新的随机起点，仅由 CAS 胜者执行。
+        // 已知限制：毫秒切换瞬间的并发生成中，同毫秒内 counter 顺序性不作保证；
+        // 全局唯一性由随机起点 + 21 位计数器 + 26 位随机熵共同保证。
+        if rollover {
+            self.counter
+                .store(fast_rand_26() & COUNTER_TOTAL_MASK, Ordering::Release);
         }
 
         let counter = self.counter.fetch_add(1, Ordering::Relaxed) & COUNTER_TOTAL_MASK;
@@ -202,7 +213,7 @@ impl UuidV8Impl {
 
 impl Default for UuidV8Impl {
     fn default() -> Self {
-        Self::new(0, 0)
+        Self::new(0, 0, 1000)
     }
 }
 
@@ -260,6 +271,7 @@ impl AlgorithmFactory for UuidV8Factory {
         Ok(Box::new(UuidV8Impl::new(
             _config.app.dc_id as u64,
             _config.app.worker_id as u64,
+            _config.algorithm.snowflake.clock_drift_threshold_ms,
         )))
     }
 }
@@ -280,7 +292,7 @@ mod tests {
 
     #[test]
     fn test_uuid_v8_is_time_ordered_and_v8() {
-        let algo = UuidV8Impl::new(1, 1);
+        let algo = UuidV8Impl::new(1, 1, 1000);
         let a = algo.generate_inner(&ctx()).unwrap();
         let b = algo.generate_inner(&ctx()).unwrap();
         assert_eq!(a.to_uuid_v8().get_version(), Some(uuid::Version::Custom));
@@ -293,7 +305,7 @@ mod tests {
     #[test]
     fn test_uuid_v8_layout_fields() {
         // 直接验证位布局：custom_a = ts, version=v8, variant=10
-        let algo = UuidV8Impl::new(1, 1);
+        let algo = UuidV8Impl::new(1, 1, 1000);
         let id = algo.generate_inner(&ctx()).unwrap();
         let v = id.to_uuid_v8().as_u128();
         // version bits 48..52
@@ -311,7 +323,7 @@ mod tests {
         const N: usize = 1000;
         let mut all: std::collections::HashSet<u128> = std::collections::HashSet::new();
         for w in 0..K {
-            let algo = UuidV8Impl::new((w % 2) as u64, w as u64);
+            let algo = UuidV8Impl::new((w % 2) as u64, w as u64, 1000);
             let mut last: u128 = 0;
             for _ in 0..N {
                 let id = algo.generate_inner(&ctx()).unwrap();
@@ -333,7 +345,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        let algo = UuidV8Impl::new(1, 1);
+        let algo = UuidV8Impl::new(1, 1, 1000);
         let id = algo.generate_inner(&ctx()).unwrap();
         let v = id.to_uuid_v8().as_u128();
         // custom_a 位于最高 48 位
@@ -346,7 +358,7 @@ mod tests {
 
     #[test]
     fn test_uuid_v8_batch_generate_unique() {
-        let algo = UuidV8Impl::new(3, 7);
+        let algo = UuidV8Impl::new(3, 7, 1000);
         let ids = algo.batch_inner(&ctx(), 500).unwrap();
         let mut set: std::collections::HashSet<u128> = std::collections::HashSet::new();
         let mut last: u128 = 0;
@@ -357,5 +369,54 @@ mod tests {
             last = v;
         }
         assert_eq!(set.len(), 500);
+    }
+
+    #[test]
+    fn test_uuid_v8_counter_resets_on_millisecond_rollover() {
+        // 同毫秒内：counter 连续递增（Cluster 单调语义）
+        let algo = UuidV8Impl::new(1, 1, 1000);
+        let _a = algo.generate_inner(&ctx()).unwrap();
+        let c1 = algo.counter.load(Ordering::Relaxed);
+        let _b = algo.generate_inner(&ctx()).unwrap();
+        let c2 = algo.counter.load(Ordering::Relaxed);
+        assert_eq!(
+            c2,
+            (c1 + 1) & COUNTER_TOTAL_MASK,
+            "same-ms counter must increment by 1"
+        );
+
+        // 跨毫秒：注入 last_timestamp 回退 10ms，下次生成 effective_ts > last
+        // → counter 必须重置为新的随机起点（UUIDP Cluster），而非旧值连续递增
+        let before = algo.counter.load(Ordering::Relaxed);
+        algo.last_timestamp
+            .store(now_unix_ms() - 10, Ordering::Release);
+        let _c = algo.generate_inner(&ctx()).unwrap();
+        let c3 = algo.counter.load(Ordering::Relaxed);
+        assert_ne!(
+            c3,
+            (before + 1) & COUNTER_TOTAL_MASK,
+            "counter must reset to a fresh random start on ms rollover"
+        );
+    }
+
+    #[test]
+    fn test_uuid_v8_clock_drift_threshold_configurable() {
+        let now = now_unix_ms();
+        // 阈值 10ms：模拟时钟回退 50ms（last_timestamp 落在"未来"）→ 必须报错
+        let strict = UuidV8Impl::new(1, 1, 10);
+        strict.last_timestamp.store(now + 50, Ordering::Release);
+        let err = strict.generate_inner(&ctx()).unwrap_err();
+        assert!(
+            matches!(err, CoreError::ClockMovedBackward { .. }),
+            "backward drift 50ms must exceed threshold 10ms"
+        );
+
+        // 阈值 200ms：同样回退 50ms → 容忍（effective_ts 卡到 last 等待追平）
+        let tolerant = UuidV8Impl::new(1, 1, 200);
+        tolerant.last_timestamp.store(now + 50, Ordering::Release);
+        assert!(
+            tolerant.generate_inner(&ctx()).is_ok(),
+            "backward drift 50ms must be tolerated under threshold 200ms"
+        );
     }
 }

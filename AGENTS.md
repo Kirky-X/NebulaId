@@ -15,8 +15,12 @@ cargo build --package nebulaid
 # Production release build
 cargo build --package nebulaid --release
 
-# Build with all features (postgresql + sqlite + etcd)
-cargo build --package nebulaid --all-features
+# Build with default + etcd (maximal buildable feature set)
+# NOTE: --all-features is INVALID here — dbnexus forbids mixing the sqlite
+# and postgres features (compile_error), and limiteron hard-depends on
+# dbnexus/postgres, so the `sqlite` feature is currently unbuildable.
+# default already enables postgresql; etcd is the only safe add-on.
+cargo build --package nebulaid --features etcd
 
 # Build with specific feature
 cargo build --package nebulaid --features etcd
@@ -77,25 +81,31 @@ pip install --user --upgrade pre-commit
 
 ## Test Commands
 
+> **Feature exclusivity**: dbnexus forbids mixing `sqlite` with `postgresql`
+> (`compile_error!`), and `limiteron` hard-depends on `dbnexus/postgres`, so
+> `--all-features` and the standalone `sqlite` feature are currently
+> unbuildable. Use `--features etcd` (default includes postgresql) for the
+> full buildable feature set.
+
 ```bash
 # Run all tests with 4 threads
-cargo test --package nebulaid --all-features -- --test-threads=4
+cargo test --package nebulaid --features etcd -- --test-threads=4
 
 # Run all tests including slow tests
-cargo test --package nebulaid --all-features
+cargo test --package nebulaid --features etcd
 
 # Run specific test by name
-cargo test --package nebulaid --all-features test_segment
+cargo test --package nebulaid --features etcd test_segment
 
 # Run tests in a specific module
-cargo test --package nebulaid --all-features --lib algorithm::segment
+cargo test --package nebulaid --features etcd --lib algorithm::segment
 
 # Run tests matching a pattern
-cargo test --package nebulaid --all-features -- segment_
-cargo test --package nebulaid --all-features -- degradation_
+cargo test --package nebulaid --features etcd -- segment_
+cargo test --package nebulaid --features etcd -- degradation_
 
 # Run with output capture disabled
-cargo test --package nebulaid --all-features -- --nocapture
+cargo test --package nebulaid --features etcd -- --nocapture
 
 # Test coverage
 cargo tarpaulin --out Html
@@ -124,10 +134,11 @@ GitHub Actions workflows are located in `.github/workflows/`:
 - Clippy lint (lib + bins only): `cargo clippy --lib --bins`
 
 **Build Job:**
-- Compile the package: `cargo build --package nebulaid --all-features`
+- Compile the package: `cargo build --package nebulaid --features etcd`
+  (never `--all-features` — dbnexus forbids sqlite+postgres mixing)
 
 **Test Job:**
-- Run all tests: `cargo test --package nebulaid --all-features`
+- Run all tests: `cargo test --package nebulaid --features etcd`
 - Generate coverage for PRs (codecov)
 
 **Security Audit Job:**

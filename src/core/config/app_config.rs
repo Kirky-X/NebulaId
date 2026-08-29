@@ -171,12 +171,9 @@ impl Config {
             }
         }
 
-        if !["segment", "snowflake", "uuid_v7", "uuid_v4"]
-            .contains(&self.algorithm.default.as_str())
-        {
+        if !["segment", "snowflake", "uuid_v8"].contains(&self.algorithm.default.as_str()) {
             return Err(ConfigError::InvalidValue(
-                "Default algorithm must be one of: segment, snowflake, uuid_v7, uuid_v4"
-                    .to_string(),
+                "Default algorithm must be one of: segment, snowflake, uuid_v8".to_string(),
             ));
         }
 
@@ -333,7 +330,7 @@ impl Config {
         }
         self.algorithm.segment = other.algorithm.segment;
         self.algorithm.snowflake = other.algorithm.snowflake;
-        self.algorithm.uuid_v7 = other.algorithm.uuid_v7;
+        self.algorithm.uuid_v8 = other.algorithm.uuid_v8;
 
         if other.monitoring.metrics_path != "/metrics" {
             self.monitoring.metrics_path = other.monitoring.metrics_path;
@@ -666,7 +663,7 @@ mod tests {
         config.algorithm.default = "invalid_algo".to_string();
         assert_invalid_value(
             config.validate(),
-            "Default algorithm must be one of: segment, snowflake, uuid_v7, uuid_v4",
+            "Default algorithm must be one of: segment, snowflake, uuid_v8",
         );
     }
 
@@ -989,7 +986,7 @@ mod tests {
         other.algorithm.default = "snowflake".to_string();
         other.algorithm.segment.base_step = 9999;
         other.algorithm.snowflake.sequence_bits = 12;
-        other.algorithm.uuid_v7.enabled = false;
+        other.algorithm.uuid_v8.enabled = false;
         other.monitoring.metrics_path = "/custom_metrics".to_string();
         other.monitoring.tracing_enabled = true;
         other.monitoring.otlp_endpoint = "http://otlp:4317".to_string();
@@ -1013,7 +1010,7 @@ mod tests {
         assert_eq!(base.algorithm.default, "snowflake");
         assert_eq!(base.algorithm.segment.base_step, 9999);
         assert_eq!(base.algorithm.snowflake.sequence_bits, 12);
-        assert!(!base.algorithm.uuid_v7.enabled);
+        assert!(!base.algorithm.uuid_v8.enabled);
         assert_eq!(base.monitoring.metrics_path, "/custom_metrics");
         assert!(base.monitoring.tracing_enabled);
         assert_eq!(base.monitoring.otlp_endpoint, "http://otlp:4317");
@@ -1034,7 +1031,7 @@ mod tests {
         base.app.dc_id = 5;
         base.app.worker_id = 10;
         base.database.max_connections = 50;
-        base.algorithm.default = "uuid_v7".to_string();
+        base.algorithm.default = "uuid_v8".to_string();
         base.monitoring.metrics_path = "/custom".to_string();
         base.monitoring.tracing_enabled = true;
         base.monitoring.otlp_endpoint = "http://custom".to_string();
@@ -1060,7 +1057,7 @@ mod tests {
         assert_eq!(base.app.dc_id, 5);
         assert_eq!(base.app.worker_id, 10);
         assert_eq!(base.database.max_connections, 50);
-        assert_eq!(base.algorithm.default, "uuid_v7");
+        assert_eq!(base.algorithm.default, "uuid_v8");
         assert_eq!(base.monitoring.metrics_path, "/custom");
         assert!(base.monitoring.tracing_enabled);
         assert_eq!(base.monitoring.otlp_endpoint, "http://custom");

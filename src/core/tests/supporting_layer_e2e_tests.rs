@@ -19,7 +19,7 @@
 //! - Config 所有 validate 失败路径（端口/dc_id/连接数/限流/算法位数/batch 上限）
 //! - Config::merge 优先级语义（非默认值字段覆盖）
 //! - Id 类型跨格式端到端转换（u128 ↔ UUID 字符串 ↔ prefixed/hex/base36）
-//! - AlgorithmType 别名解析（uuidv7/uuid7/uuidv4/uuid4 + 大小写不敏感）
+//! - AlgorithmType 别名解析（uuid_v8/uuid8/uuid_v7/uuid_v4 系列 + 大小写不敏感）
 //! - CoreError i18n 跨 locale 翻译链路
 //!
 //! 这些测试聚焦跨子模块协同，避免与 app_config.rs / id.rs / error.rs 内
@@ -371,7 +371,7 @@ fn e2e_id_from_string_uuid_v7_roundtrip() {
 fn e2e_id_from_string_uuid_v4_preserves_version() {
     let uuid = Uuid::new_v4();
     let id = Id::from_string(&uuid.to_string()).expect("E2E: parse UUID v4 string");
-    let back = id.to_uuid_v7();
+    let back = id.to_uuid_v8();
     assert_eq!(back.get_version(), Some(uuid::Version::Random));
 }
 
@@ -410,7 +410,7 @@ fn e2e_id_batch_from_u64s_and_new_consistent() {
 ///
 /// 覆盖功能场景穷举分析第 2.7 节"算法类型解析"行：
 /// - 大小写不敏感
-/// - 支持 uuidv7 / uuid7 别名
+/// - uuid_v7 / uuid_v4 系列名称作为 UuidV8 的向后兼容别名保留
 #[test]
 fn e2e_algorithm_type_from_str_all_aliases_and_case_variants() {
     // 标准名称
@@ -423,30 +423,43 @@ fn e2e_algorithm_type_from_str_all_aliases_and_case_variants() {
         AlgorithmType::Snowflake
     );
     assert_eq!(
-        AlgorithmType::from_str("uuid_v7").unwrap(),
-        AlgorithmType::UuidV7
-    );
-    assert_eq!(
-        AlgorithmType::from_str("uuid_v4").unwrap(),
-        AlgorithmType::UuidV4
+        AlgorithmType::from_str("uuid_v8").unwrap(),
+        AlgorithmType::UuidV8
     );
 
-    // 别名
+    // 别名：uuid_v8 自身变体
+    assert_eq!(
+        AlgorithmType::from_str("uuidv8").unwrap(),
+        AlgorithmType::UuidV8
+    );
+    assert_eq!(
+        AlgorithmType::from_str("uuid8").unwrap(),
+        AlgorithmType::UuidV8
+    );
+    // 别名：迁移前的 v7 / v4 名称仍解析为 UuidV8
+    assert_eq!(
+        AlgorithmType::from_str("uuid_v7").unwrap(),
+        AlgorithmType::UuidV8
+    );
     assert_eq!(
         AlgorithmType::from_str("uuidv7").unwrap(),
-        AlgorithmType::UuidV7
+        AlgorithmType::UuidV8
     );
     assert_eq!(
         AlgorithmType::from_str("uuid7").unwrap(),
-        AlgorithmType::UuidV7
+        AlgorithmType::UuidV8
+    );
+    assert_eq!(
+        AlgorithmType::from_str("uuid_v4").unwrap(),
+        AlgorithmType::UuidV8
     );
     assert_eq!(
         AlgorithmType::from_str("uuidv4").unwrap(),
-        AlgorithmType::UuidV4
+        AlgorithmType::UuidV8
     );
     assert_eq!(
         AlgorithmType::from_str("uuid4").unwrap(),
-        AlgorithmType::UuidV4
+        AlgorithmType::UuidV8
     );
 
     // 大小写不敏感
@@ -460,11 +473,11 @@ fn e2e_algorithm_type_from_str_all_aliases_and_case_variants() {
     );
     assert_eq!(
         AlgorithmType::from_str("UUIDV7").unwrap(),
-        AlgorithmType::UuidV7
+        AlgorithmType::UuidV8
     );
     assert_eq!(
         AlgorithmType::from_str("Uuid7").unwrap(),
-        AlgorithmType::UuidV7
+        AlgorithmType::UuidV8
     );
 }
 
@@ -482,11 +495,11 @@ fn e2e_algorithm_config_get_default_algorithm_parses_string() {
     cfg.default = "snowflake".to_string();
     assert_eq!(cfg.get_default_algorithm(), AlgorithmType::Snowflake);
 
-    cfg.default = "uuid_v7".to_string();
-    assert_eq!(cfg.get_default_algorithm(), AlgorithmType::UuidV7);
+    cfg.default = "uuid_v8".to_string();
+    assert_eq!(cfg.get_default_algorithm(), AlgorithmType::UuidV8);
 
-    cfg.default = "uuidv4".to_string();
-    assert_eq!(cfg.get_default_algorithm(), AlgorithmType::UuidV4);
+    cfg.default = "uuidv8".to_string();
+    assert_eq!(cfg.get_default_algorithm(), AlgorithmType::UuidV8);
 
     cfg.default = "segment".to_string();
     assert_eq!(cfg.get_default_algorithm(), AlgorithmType::Segment);

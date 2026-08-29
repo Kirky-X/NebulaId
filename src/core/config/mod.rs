@@ -42,7 +42,7 @@ pub mod tls;
 // Re-export public types for backward compatibility (downstream uses
 // `crate::core::config::AppConfig` etc., which must continue to resolve).
 pub use algorithm::{
-    AlgorithmConfig, SegmentAlgorithmConfig, SnowflakeAlgorithmConfig, UuidV7Config,
+    AlgorithmConfig, SegmentAlgorithmConfig, SnowflakeAlgorithmConfig, UuidV8Config,
 };
 pub use app::{AppConfig, DatabaseConfig, DatabaseEngine, EtcdConfig};
 pub use app_config::Config;

@@ -5420,7 +5420,7 @@ mod tests {
         db.execute_raw(Statement::from_string(
             backend,
             r#"DO $$ BEGIN
-                CREATE TYPE public.algorithm_type AS ENUM ('segment', 'snowflake', 'uuid_v7', 'uuid_v4');
+                CREATE TYPE public.algorithm_type AS ENUM ('segment', 'snowflake', 'uuid_v8');
             EXCEPTION
                 WHEN duplicate_object THEN null;
             END $$"#,

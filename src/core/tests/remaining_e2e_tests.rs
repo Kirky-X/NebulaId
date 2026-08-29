@@ -834,7 +834,7 @@ fn make_algorithm_config_info() -> crate::server::models::AlgorithmConfigInfo {
             sequence_bits: 12,
             clock_drift_threshold_ms: 2000,
         },
-        uuid_v7: UuidV7ConfigInfo { enabled: true },
+        uuid_v8: UuidV8ConfigInfo { enabled: true },
     }
 }
 

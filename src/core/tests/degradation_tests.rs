@@ -199,7 +199,7 @@ async fn test_degradation_manager_algorithm_degradation() {
         failure_threshold: 3,
         recovery_threshold: 3,
         auto_recovery: true,
-        fallback_chain: vec![AlgorithmType::Snowflake, AlgorithmType::UuidV7],
+        fallback_chain: vec![AlgorithmType::Snowflake, AlgorithmType::UuidV8],
         ..Default::default()
     };
 
@@ -302,7 +302,7 @@ async fn test_fallback_algorithm_switching() {
         failure_threshold: 3,
         recovery_threshold: 3,
         auto_recovery: true,
-        fallback_chain: vec![AlgorithmType::Snowflake, AlgorithmType::UuidV7],
+        fallback_chain: vec![AlgorithmType::Snowflake, AlgorithmType::UuidV8],
         ..Default::default()
     };
 
@@ -310,13 +310,13 @@ async fn test_fallback_algorithm_switching() {
 
     let primary_alg = Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment));
     let fallback1 = Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake));
-    let fallback2 = Arc::new(MockIdAlgorithm::new(AlgorithmType::UuidV7));
+    let fallback2 = Arc::new(MockIdAlgorithm::new(AlgorithmType::UuidV8));
 
     manager.register_algorithm(AlgorithmType::Segment, primary_alg.clone());
     manager.register_algorithm(AlgorithmType::Snowflake, fallback1.clone());
-    manager.register_algorithm(AlgorithmType::UuidV7, fallback2.clone());
+    manager.register_algorithm(AlgorithmType::UuidV8, fallback2.clone());
     manager.set_primary_algorithm(AlgorithmType::Segment);
-    manager.set_fallback_chain(vec![AlgorithmType::Snowflake, AlgorithmType::UuidV7]);
+    manager.set_fallback_chain(vec![AlgorithmType::Snowflake, AlgorithmType::UuidV8]);
 
     primary_alg.set_should_fail(true);
 
@@ -343,7 +343,7 @@ async fn test_fallback_algorithm_switching() {
     let state = manager.determine_effective_algorithm().await;
     assert!(matches!(
         state,
-        DegradationState::Degraded(AlgorithmType::UuidV7)
+        DegradationState::Degraded(AlgorithmType::UuidV8)
     ));
 }
 
@@ -473,7 +473,7 @@ async fn test_multiple_algorithm_degradation() {
         failure_threshold: 3,
         recovery_threshold: 3,
         auto_recovery: true,
-        fallback_chain: vec![AlgorithmType::Snowflake, AlgorithmType::UuidV7],
+        fallback_chain: vec![AlgorithmType::Snowflake, AlgorithmType::UuidV8],
         ..Default::default()
     };
 
@@ -481,13 +481,13 @@ async fn test_multiple_algorithm_degradation() {
 
     let alg1 = Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment));
     let alg2 = Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake));
-    let alg3 = Arc::new(MockIdAlgorithm::new(AlgorithmType::UuidV7));
+    let alg3 = Arc::new(MockIdAlgorithm::new(AlgorithmType::UuidV8));
 
     manager.register_algorithm(AlgorithmType::Segment, alg1.clone());
     manager.register_algorithm(AlgorithmType::Snowflake, alg2.clone());
-    manager.register_algorithm(AlgorithmType::UuidV7, alg3.clone());
+    manager.register_algorithm(AlgorithmType::UuidV8, alg3.clone());
     manager.set_primary_algorithm(AlgorithmType::Segment);
-    manager.set_fallback_chain(vec![AlgorithmType::Snowflake, AlgorithmType::UuidV7]);
+    manager.set_fallback_chain(vec![AlgorithmType::Snowflake, AlgorithmType::UuidV8]);
 
     alg1.set_should_fail(true);
 
@@ -514,7 +514,7 @@ async fn test_multiple_algorithm_degradation() {
     let state = manager.determine_effective_algorithm().await;
     assert!(matches!(
         state,
-        DegradationState::Degraded(AlgorithmType::UuidV7)
+        DegradationState::Degraded(AlgorithmType::UuidV8)
     ));
 
     alg1.set_should_fail(false);

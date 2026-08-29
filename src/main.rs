@@ -388,6 +388,7 @@ async fn start_http_server(
 async fn start_grpc_server(
     config: ServerConfig,
     handlers: Arc<ApiHandlers>,
+    auth: Arc<ApiKeyAuth>,
     tls_manager: Option<Arc<TlsManager>>,
 ) -> Result<()> {
     let grpc_addr = SocketAddr::from(([0, 0, 0, 0], config.grpc_port));
@@ -397,7 +398,8 @@ async fn start_grpc_server(
         t!("log.main.configured_grpc_port", port = config.grpc_port)
     );
 
-    let grpc_server = GrpcServer::new(handlers);
+    // wiring T006：gRPC 与 HTTP 使用同一认证器（共享 API key 仓储与失败限流）
+    let grpc_server = GrpcServer::with_auth(handlers, auth);
 
     let shutdown = async {
         tokio::signal::ctrl_c().await.ok();
@@ -814,7 +816,8 @@ async fn main() -> Result<()> {
             config_service.clone(),
             tls_manager.clone(),
         ));
-        let grpc_server = tokio::spawn(start_grpc_server(server_config, handlers, tls_manager));
+        let grpc_server =
+            tokio::spawn(start_grpc_server(server_config, handlers, auth.clone(), tls_manager));
 
         tokio::select! {
             http_result = http_server => {
@@ -969,7 +972,8 @@ async fn main() -> Result<()> {
             config_service.clone(),
             tls_manager.clone(),
         ));
-        let grpc_server = tokio::spawn(start_grpc_server(server_config, handlers, tls_manager));
+        let grpc_server =
+            tokio::spawn(start_grpc_server(server_config, handlers, auth.clone(), tls_manager));
 
         tokio::select! {
             http_result = http_server => {

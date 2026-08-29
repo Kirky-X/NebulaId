@@ -55,6 +55,11 @@ impl ApiKeyAuth {
         }
     }
 
+    /// 认证是否启用（wiring T006：gRPC 侧据此决定放行/校验）。
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
     /// Phase 9 T043 (HIGH H3) — set the list of trusted proxy IPs.
     /// Requests whose direct peer IP appears in this list will have
     /// their `X-Forwarded-For` / `X-Real-IP` headers honored when
@@ -340,6 +345,34 @@ impl ApiKeyAuth {
         }))
         .into_response();
         (StatusCode::UNAUTHORIZED, response).into_response()
+    }
+}
+
+/// wiring T006：Authorization 头解析的共享纯函数。
+///
+/// 支持 `Basic base64(key_id:key_secret)` 与 `ApiKey key_id:key_secret`
+/// 两种格式；任何格式/编码/空凭证问题统一返回 `None`。HTTP 中间件保留
+/// 自己带细粒度失败日志的内联解析路径（invalid_basic_format /
+/// base64_decode_failed 等分类审计），gRPC 侧使用本函数。
+pub fn parse_authorization_header(value: &str) -> Option<(String, String)> {
+    if let Some(credentials) = value.strip_prefix("Basic ") {
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(credentials)
+            .ok()?;
+        let cred_str = String::from_utf8(decoded).ok()?;
+        let parts: Vec<&str> = cred_str.splitn(2, ':').collect();
+        if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+            return Some((parts[0].to_string(), parts[1].to_string()));
+        }
+        None
+    } else if let Some(api_key) = value.strip_prefix("ApiKey ") {
+        let parts: Vec<&str> = api_key.splitn(2, ':').collect();
+        if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+            return Some((parts[0].to_string(), parts[1].to_string()));
+        }
+        None
+    } else {
+        None
     }
 }
 

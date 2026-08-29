@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::server::handlers::ApiHandlers;
+use crate::server::middleware::api_key_auth::{parse_authorization_header, ApiKeyAuth};
 use crate::server::models::{BatchGenerateRequest, GenerateRequest, ParseRequest};
 use async_trait::async_trait;
 use sdforge::tonic::{Request, Response, Status};
@@ -36,11 +37,57 @@ use v1::{
 
 pub struct GrpcServer {
     handlers: Arc<ApiHandlers>,
+    /// wiring T006：认证器。None = 不启用（既有测试/内网部署语义）。
+    auth: Option<Arc<ApiKeyAuth>>,
 }
 
 impl GrpcServer {
     pub fn new(handlers: Arc<ApiHandlers>) -> Self {
-        Self { handlers }
+        Self { handlers, auth: None }
+    }
+
+    /// wiring T006：启用 API key 认证。启用后每个 RPC 入口先经
+    /// [`Self::authenticate`] 校验 `authorization` metadata。
+    pub fn with_auth(handlers: Arc<ApiHandlers>, auth: Arc<ApiKeyAuth>) -> Self {
+        Self {
+            handlers,
+            auth: Some(auth),
+        }
+    }
+
+    /// 单点认证：校验 `authorization` metadata（Basic/ApiKey 双格式），成功时
+    /// 将 workspace_id 与角色注入 request extensions。覆盖全部 RPC（含双向流
+    /// —— request-init 先于流消费被校验）。失败映射：
+    /// - 缺失/格式无效/校验不通过 → `Status::unauthenticated`
+    /// - `auth.enabled=false` → 放行（对齐 HTTP Anonymous 语义）
+    ///
+    /// 注：设计稿原定 tonic `with_interceptor`，但 Interceptor::call 是同步
+    /// 签名而凭证校验必须异步查库（Argon2id + DB），在拦截器内 block_on 有
+    /// 运行时风险，故改为各 RPC 入口一行调用本助手 —— 单点实现不变。
+    pub(crate) async fn authenticate<T>(&self, request: Request<T>) -> Result<Request<T>, Status> {
+        let Some(auth) = self.auth.as_ref() else {
+            return Ok(request);
+        };
+        if !auth.is_enabled() {
+            return Ok(request);
+        }
+
+        let value = request
+            .metadata()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| Status::unauthenticated("missing authorization metadata"))?;
+        let (key_id, key_secret) = parse_authorization_header(value)
+            .ok_or_else(|| Status::unauthenticated("invalid authorization format"))?;
+        let (workspace_id, role) = auth
+            .validate_key(&key_id, &key_secret)
+            .await
+            .ok_or_else(|| Status::unauthenticated("invalid or unknown api key"))?;
+
+        let mut request = request;
+        request.extensions_mut().insert(workspace_id);
+        request.extensions_mut().insert(role);
+        Ok(request)
     }
 }
 
@@ -52,6 +99,7 @@ impl NebulaIdService for GrpcServer {
         &self,
         request: Request<GrpcGenerateRequest>,
     ) -> Result<Response<GrpcGenerateResponse>, Status> {
+        let request = self.authenticate(request).await?;
         let req = request.into_inner();
         let tag = req.tag.clone();
 
@@ -81,6 +129,7 @@ impl NebulaIdService for GrpcServer {
         &self,
         request: Request<GrpcBatchGenerateRequest>,
     ) -> Result<Response<GrpcBatchGenerateResponse>, Status> {
+        let request = self.authenticate(request).await?;
         let req = request.into_inner();
         let tag = req.tag.clone();
 
@@ -161,6 +210,8 @@ impl NebulaIdService for GrpcServer {
         &self,
         request: Request<sdforge::tonic::Streaming<BatchGenerateStreamRequest>>,
     ) -> Result<Response<Self::BatchGenerateStreamStream>, Status> {
+        // wiring T006：request-init 先于流消费被校验，流式入口同样受保护
+        let request = self.authenticate(request).await?;
         let mut stream = request.into_inner();
         let (tx, rx) = mpsc::channel(128);
 
@@ -238,6 +289,7 @@ impl NebulaIdService for GrpcServer {
         &self,
         request: Request<GrpcParseRequest>,
     ) -> Result<Response<GrpcParseResponse>, Status> {
+        let request = self.authenticate(request).await?;
         let req = request.into_inner();
 
         let parse_req = ParseRequest {
@@ -280,8 +332,12 @@ impl NebulaIdService for GrpcServer {
 
     async fn health_check(
         &self,
-        _request: Request<HealthCheckRequest>,
+        request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckResponse>, Status> {
+        // wiring T006：health_check 同样纳入认证（设计 D6 覆盖全部 5 个 RPC）。
+        // 编排探针请改用 HTTP 端口 /health（公开端点）。
+        let request = self.authenticate(request).await?;
+        let _request = request;
         let health = self.handlers.health().await;
         let status = if health.status == crate::server::models::HealthStatus::Healthy {
             v1::health_check_response::ServingStatus::Serving

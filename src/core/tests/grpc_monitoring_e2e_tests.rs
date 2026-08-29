@@ -133,7 +133,7 @@ worker_id_bits = 8
 sequence_bits = 10
 clock_drift_threshold_ms = 1000
 
-[algorithm.uuid_v7]
+[algorithm.uuid_v8]
 enabled = true
 
 [monitoring]
@@ -534,4 +534,242 @@ async fn e2e_hot_reload_config_reload_failure_handled() {
         "before-failure",
         "重载失败后内存配置不应改变"
     );
+}
+
+// =============================================================================
+// wiring T006: gRPC 认证 —— 全 RPC（含双向流）凭证校验
+// =============================================================================
+
+mod grpc_auth {
+    use super::*;
+    use crate::core::database::{
+        ApiKeyInfo, ApiKeyRepository, ApiKeyResponse, ApiKeyRole, ApiKeyWithSecret,
+        CreateApiKeyRequest,
+    };
+    use crate::server::middleware::api_key_auth::ApiKeyAuth;
+    use sdforge::tonic::{Code, Status};
+    use uuid::Uuid;
+
+    /// 固定凭证：grpc-key / grpc-secret → workspace ws-grpc + User 角色
+    #[derive(Clone)]
+    struct FixedKeyRepo;
+
+    #[async_trait::async_trait]
+    impl ApiKeyRepository for FixedKeyRepo {
+        async fn create_api_key(
+            &self,
+            _request: &CreateApiKeyRequest,
+        ) -> crate::core::types::Result<ApiKeyWithSecret> {
+            Err(crate::core::types::CoreError::NotFound("noop".into()))
+        }
+        async fn get_api_key_by_id(
+            &self,
+            _key_id: &str,
+        ) -> crate::core::types::Result<Option<ApiKeyInfo>> {
+            Ok(None)
+        }
+        async fn validate_api_key(
+            &self,
+            key_id: &str,
+            _key_secret: &str,
+        ) -> crate::core::types::Result<Option<(Option<Uuid>, ApiKeyRole)>> {
+            if key_id == "grpc-key" {
+                Ok(Some((Some(Uuid::new_v4()), ApiKeyRole::User)))
+            } else {
+                Ok(None)
+            }
+        }
+        async fn list_api_keys(
+            &self,
+            _workspace_id: Uuid,
+            _limit: Option<u32>,
+            _offset: Option<u32>,
+        ) -> crate::core::types::Result<Vec<ApiKeyInfo>> {
+            Ok(vec![])
+        }
+        async fn delete_api_key(&self, _id: Uuid) -> crate::core::types::Result<()> {
+            Ok(())
+        }
+        async fn revoke_api_key(&self, _id: Uuid) -> crate::core::types::Result<()> {
+            Ok(())
+        }
+        async fn update_last_used(&self, _id: Uuid) -> crate::core::types::Result<()> {
+            Ok(())
+        }
+        async fn get_admin_api_key(
+            &self,
+            _workspace_id: Uuid,
+        ) -> crate::core::types::Result<Option<ApiKeyInfo>> {
+            Ok(None)
+        }
+        async fn count_api_keys(&self, _workspace_id: Uuid) -> crate::core::types::Result<u64> {
+            Ok(0)
+        }
+        async fn rotate_api_key(
+            &self,
+            _key_id: &str,
+            _grace_period_seconds: u64,
+        ) -> crate::core::types::Result<ApiKeyWithSecret> {
+            Err(crate::core::types::CoreError::NotFound("noop".into()))
+        }
+        async fn get_keys_older_than(
+            &self,
+            _age_threshold_days: i64,
+        ) -> crate::core::types::Result<Vec<ApiKeyInfo>> {
+            Ok(vec![])
+        }
+    }
+
+    fn auth_server(auth: ApiKeyAuth) -> GrpcServer {
+        let config = Config::default();
+        let hot_config = Arc::new(HotReloadConfig::new(
+            config.clone(),
+            "config/config.toml".to_string(),
+        ));
+        let algorithm_router = Arc::new(AlgorithmRouter::new(config, None));
+        let config_service: Arc<dyn ConfigManagementService> =
+            Arc::new(ConfigManager::new(hot_config, algorithm_router));
+        let id_generator: Arc<dyn crate::core::algorithm::IdGenerator> =
+            Arc::new(MockIdGenerator::new());
+        let handlers = Arc::new(ApiHandlers::new(id_generator, config_service));
+        GrpcServer::with_auth(handlers, Arc::new(auth))
+    }
+
+    fn basic_header(key: &str, secret: &str) -> String {
+        use base64::Engine;
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("{key}:{secret}"))
+        )
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_authorization_metadata() {
+        let server = auth_server(ApiKeyAuth::new(Arc::new(FixedKeyRepo), true));
+        let req = Request::new(GrpcGenerateRequest {
+            namespace: "ns".to_string(),
+            tag: "tag".to_string(),
+            metadata: HashMap::new(),
+        });
+        let err: Status = NebulaIdService::generate(&server, req)
+            .await
+            .expect_err("无凭证必须被拒绝");
+        assert_eq!(err.code(), Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_credentials() {
+        let server = auth_server(ApiKeyAuth::new(Arc::new(FixedKeyRepo), true));
+        let mut req = Request::new(GrpcGenerateRequest {
+            namespace: "ns".to_string(),
+            tag: "tag".to_string(),
+            metadata: HashMap::new(),
+        });
+        req.metadata_mut()
+            .insert("authorization", basic_header("wrong", "creds").parse().unwrap());
+        let err = NebulaIdService::generate(&server, req)
+            .await
+            .expect_err("无效凭证必须被拒绝");
+        assert_eq!(err.code(), Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn accepts_valid_credentials_and_injects_identity() {
+        use sdforge::tonic::Status;
+
+        let server = auth_server(ApiKeyAuth::new(Arc::new(FixedKeyRepo), true));
+        let mut req = Request::new(GrpcGenerateRequest {
+            namespace: "ns".to_string(),
+            tag: "tag".to_string(),
+            metadata: HashMap::new(),
+        });
+        req.metadata_mut()
+            .insert("authorization", basic_header("grpc-key", "grpc-secret").parse().unwrap());
+
+        let authenticated: sdforge::tonic::Request<GrpcGenerateRequest> = server
+            .authenticate(req)
+            .await
+            .expect("合法凭证应通过认证");
+        let identity = authenticated
+            .extensions()
+            .get::<Option<Uuid>>()
+            .copied()
+            .flatten();
+        assert!(identity.is_some(), "workspace_id 必须注入 request extensions");
+        let role = authenticated.extensions().get::<ApiKeyRole>().unwrap();
+        assert_eq!(*role, ApiKeyRole::User);
+    }
+
+    #[tokio::test]
+    async fn bypasses_when_auth_disabled() {
+        let server = auth_server(ApiKeyAuth::new(Arc::new(FixedKeyRepo), false));
+        let req = Request::new(GrpcGenerateRequest {
+            namespace: "ns".to_string(),
+            tag: "tag".to_string(),
+            metadata: HashMap::new(),
+        });
+        let resp = NebulaIdService::generate(&server, req)
+            .await
+            .expect("auth.enabled=false 应放行（对齐 HTTP Anonymous 语义）");
+        assert_eq!(
+            resp.extensions().get::<ApiKeyRole>(),
+            None,
+            "禁用认证时不注入角色"
+        );
+    }
+
+    /// 流式 RPC 认证：起真实 tonic server（认证启用），客户端无凭证调用
+    /// BatchGenerateStream —— 必须收到 Unauthenticated。
+    /// （`Streaming<T>` 无法在测试侧凭空构造，必须走真实传输。）
+    #[tokio::test]
+    async fn stream_rpc_is_intercepted_over_real_transport() {
+        use sdforge::tonic::transport::Server;
+        use v1::nebula_id_service_server::NebulaIdServiceServer;
+
+        let server_impl = auth_server(ApiKeyAuth::new(Arc::new(FixedKeyRepo), true));
+
+        // 占位端口：绑定 :0 取可用端口后释放（测试场景可接受的微小竞态）
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
+        let addr = probe.local_addr().expect("probe addr");
+        drop(probe);
+
+        let jh = tokio::spawn(async move {
+            let _ = Server::builder()
+                .add_service(NebulaIdServiceServer::new(server_impl))
+                .serve(addr)
+                .await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let mut client = v1::nebula_id_service_client::NebulaIdServiceClient::connect(
+            format!("http://{addr}"),
+        )
+        .await
+        .expect("client connect");
+
+        let item = v1::BatchGenerateStreamRequest {
+            namespace: "ns".to_string(),
+            tag: "tag".to_string(),
+            count: 1,
+            metadata: HashMap::new(),
+        };
+        let result = client
+            .batch_generate_stream(tokio_stream::once(item))
+            .await;
+        match result {
+            Err(status) => assert_eq!(status.code(), Code::Unauthenticated),
+            Ok(resp) => {
+                let mut stream = resp.into_inner();
+                let first = tokio_stream::StreamExt::next(&mut stream).await;
+                match first {
+                    Some(Err(status)) => {
+                        assert_eq!(status.code(), Code::Unauthenticated)
+                    }
+                    other => panic!("流式 RPC 无凭证不应产出正常项: {other:?}"),
+                }
+            }
+        }
+
+        jh.abort();
+    }
 }

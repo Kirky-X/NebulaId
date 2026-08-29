@@ -13,11 +13,12 @@ pre-commit:
       glob: "*.rs"
       run: cargo fmt --package nebulaid -- --check
 
-    # 2. 静态分析
+    # 2. 静态分析（--all-features 不可用：dbnexus 禁止 sqlite+postgres 特性混用，
+    #    compile_error! 直接编译失败；默认特性已含 postgresql/http/grpc，叠加 etcd）
     cargo-clippy:
       tags: [rust, lint]
       glob: "*.rs"
-      run: cargo clippy --package nebulaid --all-features -- -D warnings
+      run: cargo clippy --package nebulaid --features etcd -- -D warnings
 
     # 3. 私钥/密钥扫描（gitleaks）
     private-key-scan:
@@ -36,10 +37,10 @@ pre-commit:
 pre-push:
   parallel: false
   commands:
-    # 1. 全特性测试
+    # 1. 全特性测试（特性互斥约束同上，用 etcd 叠加而非 all-features）
     cargo-test:
       tags: [rust, test]
-      run: cargo test --package nebulaid --all-features
+      run: cargo test --package nebulaid --features etcd
 
     # 2. 覆盖率门禁（≥80%）
     cargo-coverage:
@@ -50,4 +51,4 @@ pre-push:
           echo "安装: cargo install cargo-llvm-cov --locked"
           exit 0
         fi
-        cargo llvm-cov --package nebulaid --all-features --fail-under-lines 80
+        cargo llvm-cov --package nebulaid --features etcd --fail-under-lines 80

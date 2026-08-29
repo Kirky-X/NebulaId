@@ -729,14 +729,24 @@ async fn main() -> Result<()> {
         )
         .await?;
 
+        // wiring T003：限流器先于 ConfigManager 创建，经 with_rate_limiter
+        // 共享给运行时配置服务，使 POST /config/rate-limit 热更新作用于流量。
+        let rate_limiter = Arc::new(RateLimiter::new(
+            config.rate_limit.default_rps,
+            config.rate_limit.burst_size,
+        ));
+
         let (handlers, config_service) = if let Some(ref repo) = repository {
-            let cs = Arc::new(ConfigManager::with_repository(
-                hot_config.clone(),
-                id_generator.clone(),
-                repo.clone(),
-                repo.clone(),
-                repo.clone(),
-            ));
+            let cs = Arc::new(
+                ConfigManager::with_repository(
+                    hot_config.clone(),
+                    id_generator.clone(),
+                    repo.clone(),
+                    repo.clone(),
+                    repo.clone(),
+                )
+                .with_rate_limiter(rate_limiter.clone()),
+            );
             let h = Arc::new(build_api_handlers(
                 id_generator.clone(),
                 cs.clone(),
@@ -745,7 +755,10 @@ async fn main() -> Result<()> {
             ));
             (h, cs)
         } else {
-            let cs = Arc::new(ConfigManager::new(hot_config.clone(), id_generator.clone()));
+            let cs = Arc::new(
+                ConfigManager::new(hot_config.clone(), id_generator.clone())
+                    .with_rate_limiter(rate_limiter.clone()),
+            );
             // T011：仅当配置显式开启时启动文件监视；缺省 false 保持历史行为
             if config.hot_reload.auto_watch_enabled {
                 let watcher = hot_config.clone();
@@ -757,11 +770,6 @@ async fn main() -> Result<()> {
             let h = Arc::new(ApiHandlers::new(id_generator.clone(), cs.clone()));
             (h, cs)
         };
-
-        let rate_limiter = Arc::new(RateLimiter::new(
-            config.rate_limit.default_rps,
-            config.rate_limit.burst_size,
-        ));
 
         let mut tls_manager = TlsManager::new(config.tls.clone());
         if let Err(e) = tls_manager.initialize().await {
@@ -871,14 +879,23 @@ async fn main() -> Result<()> {
 
         let id_generator = create_id_generator(&config, audit_logger.clone(), None).await?;
 
+        // wiring T003：限流器先于 ConfigManager 创建并共享（同 etcd 分支）
+        let rate_limiter = Arc::new(RateLimiter::new(
+            config.rate_limit.default_rps,
+            config.rate_limit.burst_size,
+        ));
+
         let (handlers, config_service) = if let Some(ref repo) = repository {
-            let cs = Arc::new(ConfigManager::with_repository(
-                hot_config,
-                id_generator.clone(),
-                repo.clone(),
-                repo.clone(),
-                repo.clone(),
-            ));
+            let cs = Arc::new(
+                ConfigManager::with_repository(
+                    hot_config,
+                    id_generator.clone(),
+                    repo.clone(),
+                    repo.clone(),
+                    repo.clone(),
+                )
+                .with_rate_limiter(rate_limiter.clone()),
+            );
             let h = Arc::new(build_api_handlers(
                 id_generator.clone(),
                 cs.clone(),
@@ -887,15 +904,13 @@ async fn main() -> Result<()> {
             ));
             (h, cs)
         } else {
-            let cs = Arc::new(ConfigManager::new(hot_config, id_generator.clone()));
+            let cs = Arc::new(
+                ConfigManager::new(hot_config, id_generator.clone())
+                    .with_rate_limiter(rate_limiter.clone()),
+            );
             let h = Arc::new(ApiHandlers::new(id_generator.clone(), cs.clone()));
             (h, cs)
         };
-
-        let rate_limiter = Arc::new(RateLimiter::new(
-            config.rate_limit.default_rps,
-            config.rate_limit.burst_size,
-        ));
 
         let mut tls_manager = TlsManager::new(config.tls.clone());
         if let Err(e) = tls_manager.initialize().await {

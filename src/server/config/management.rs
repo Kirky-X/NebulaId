@@ -106,6 +106,9 @@ pub trait ConfigManagementService: Send + Sync {
 pub struct ConfigManager {
     hot_config: Arc<HotReloadConfig>,
     rate_limiter: Arc<RwLock<Option<(u32, u32)>>>,
+    /// wiring T003：运行中限流器的共享引用；`update_rate_limit` 同时
+    /// 更新其参数，使热更新作用于实际流量（None = 未接线，仅记录 override）。
+    live_rate_limiter: Option<Arc<crate::server::rate_limit::limiter::RateLimiter>>,
     algorithm_router: Arc<crate::core::algorithm::AlgorithmRouter>,
     repository: Option<Arc<dyn crate::core::database::BizTagRepository + Send + Sync>>,
     workspace_repository: Option<Arc<dyn crate::core::database::WorkspaceRepository + Send + Sync>>,
@@ -120,11 +123,22 @@ impl ConfigManager {
         Self {
             hot_config,
             rate_limiter: Arc::new(RwLock::new(None)),
+            live_rate_limiter: None,
             algorithm_router,
             repository: None,
             workspace_repository: None,
             group_repository: None,
         }
+    }
+
+    /// wiring T003：注入与 `create_router` 共享的限流器实例，
+    /// 使 `POST /config/rate-limit` 热更新作用于实际流量。
+    pub fn with_rate_limiter(
+        mut self,
+        limiter: Arc<crate::server::rate_limit::limiter::RateLimiter>,
+    ) -> Self {
+        self.live_rate_limiter = Some(limiter);
+        self
     }
 
     pub fn with_repository(
@@ -137,6 +151,7 @@ impl ConfigManager {
         Self {
             hot_config,
             rate_limiter: Arc::new(RwLock::new(None)),
+            live_rate_limiter: None,
             algorithm_router,
             repository: Some(repository),
             workspace_repository: Some(workspace_repository),
@@ -285,6 +300,12 @@ impl ConfigManagementService for ConfigManager {
             let mut rate_limiter_guard = self.rate_limiter.write().await;
             *rate_limiter_guard =
                 Some((config.rate_limit.default_rps, config.rate_limit.burst_size));
+        }
+
+        // wiring T003：同步更新运行中的限流器（清桶惰性重建），
+        // 使热更新立即作用于实际流量，而非仅记录 override。
+        if let Some(ref live) = self.live_rate_limiter {
+            live.update_config(config.rate_limit.default_rps, config.rate_limit.burst_size);
         }
 
         self.hot_config.update_config(config.clone());

@@ -341,6 +341,19 @@ impl RateLimiter {
         *defaults = (default_rps, default_burst);
     }
 
+    /// Update the default rate limit configuration at runtime (wiring T003).
+    ///
+    /// Unlike [`Self::update_defaults`], this also drops existing buckets so
+    /// they are lazily rebuilt with the new configuration on the next
+    /// `check_rate_limit` call — otherwise pre-existing keys keep their old
+    /// rate/capacity forever and hot updates never take effect on traffic.
+    /// Dropping buckets resets their token state (one-time grace window
+    /// immediately after an update); documented and accepted trade-off.
+    pub fn update_config(&self, default_rps: u32, default_burst: u32) {
+        self.update_defaults(default_rps, default_burst);
+        self.limiters.write().clear();
+    }
+
     /// Get the limiteron concurrency limiter for internal use.
     pub fn get_concurrency_limiter(max_concurrent: u64) -> ConcurrencyLimiter {
         ConcurrencyLimiter::new(max_concurrent)

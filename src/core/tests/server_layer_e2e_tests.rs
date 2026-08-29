@@ -1186,6 +1186,67 @@ async fn e2e_create_router_applies_global_rate_limit() {
 }
 
 // ============================================================================
+// E2E-RATE-008（wiring T003）: 限流热更新必须作用于实际流量
+//
+// 背景：POST /config/rate-limit 写入的 override 与运行中的 RateLimiter
+// 是两个独立实例，热更新曾不生效于流量。
+// ============================================================================
+
+#[tokio::test]
+async fn e2e_rate_limit_hot_update_takes_effect() {
+    use crate::core::algorithm::AlgorithmRouter;
+    use crate::core::config::Config;
+    use crate::server::config::hot_reload::HotReloadConfig;
+    use crate::server::config::management::{ConfigManager, ConfigManagementService};
+    use crate::server::models::UpdateRateLimitRequest;
+
+    let config = Config::default();
+    let alg_router = Arc::new(AlgorithmRouter::new(config.clone(), None));
+    let hot_config = Arc::new(HotReloadConfig::new(config, "config/config.toml".to_string()));
+    let limiter = Arc::new(RateLimiter::new(1, 2));
+    let cs = Arc::new(ConfigManager::new(hot_config, alg_router));
+
+    // 耗尽 burst：第 3 次被拒
+    for _ in 0..2 {
+        assert!(limiter.check_rate_limit("key-hot", None, None).await.allowed);
+    }
+    assert!(
+        !limiter
+            .check_rate_limit("key-hot", None, None)
+            .await
+            .allowed,
+        "热更新前超 burst 应被拒绝"
+    );
+
+    // 接线热更新：ConfigManager 持有 live limiter 并在 update 时同步参数
+    let wired = Arc::new(ConfigManager::new(
+        Arc::new(HotReloadConfig::new(
+            Config::default(),
+            "config/config.toml".to_string(),
+        )),
+        Arc::new(AlgorithmRouter::new(Config::default(), None)),
+    )
+    .with_rate_limiter(limiter.clone()));
+
+    let resp = wired
+        .update_rate_limit(UpdateRateLimitRequest {
+            default_rps: Some(1000),
+            burst_size: Some(1000),
+        })
+        .await;
+    assert!(resp.success, "热更新请求应成功：{:?}", resp.message);
+
+    // 热更新后同一 key 立即放行（桶按新配置重建）
+    assert!(
+        limiter
+            .check_rate_limit("key-hot", None, None)
+            .await
+            .allowed,
+        "热更新提额后必须立即作用于实际限流判定"
+    );
+}
+
+// ============================================================================
 // E2E-RATE-004: token 随时间恢复（rate=1/s，等待 1s 后应允许 1 次）
 // ============================================================================
 

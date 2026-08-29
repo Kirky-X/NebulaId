@@ -865,7 +865,7 @@ async fn e2e_audit_logger_file_persistence_redacts_ipv6_address() {
             "ws-v6".to_string(),
             "tag".to_string(),
             "1".to_string(),
-            "uuid_v7".to_string(),
+            "uuid_v8".to_string(),
             Some("2001:db8::1".to_string()),
             5,
             true,
@@ -1047,6 +1047,142 @@ async fn e2e_rate_limiter_per_key_isolation() {
     // key-B 应仍可使用
     let b_result = limiter.check_rate_limit("key-B", None, None).await;
     assert!(b_result.allowed, "key-B 应被允许（按 key 隔离）");
+}
+
+// ============================================================================
+// E2E-RATE-007（wiring T002）: create_router 必须真实挂载全局限流中间件
+//
+// 背景：RateLimitMiddleware 曾仅以 Extension 注入（从不执行），全局限流
+// 是死代码。本测试用真实 create_router（mock 依赖）验证：公开端点请求
+// 超过 burst 容量后返回 429 且带 Retry-After。
+// ============================================================================
+
+/// 仅用于路由装配的空实现仓储：本测试只打公开端点 `/health`（不经过
+/// 认证中间件），所有仓储方法返回空值即可。
+#[derive(Clone)]
+struct NoopApiKeyRepo;
+
+#[async_trait::async_trait]
+impl crate::core::database::ApiKeyRepository for NoopApiKeyRepo {
+    async fn create_api_key(
+        &self,
+        _request: &crate::core::database::CreateApiKeyRequest,
+    ) -> crate::core::types::Result<crate::core::database::ApiKeyWithSecret> {
+        Err(crate::core::types::CoreError::NotFound("noop".into()))
+    }
+    async fn get_api_key_by_id(
+        &self,
+        _key_id: &str,
+    ) -> crate::core::types::Result<Option<crate::core::database::ApiKeyInfo>> {
+        Ok(None)
+    }
+    async fn validate_api_key(
+        &self,
+        _key_id: &str,
+        _key_secret: &str,
+    ) -> crate::core::types::Result<Option<(Option<uuid::Uuid>, crate::core::database::ApiKeyRole)>> {
+        Ok(None)
+    }
+    async fn list_api_keys(
+        &self,
+        _workspace_id: uuid::Uuid,
+        _limit: Option<u32>,
+        _offset: Option<u32>,
+    ) -> crate::core::types::Result<Vec<crate::core::database::ApiKeyInfo>> {
+        Ok(vec![])
+    }
+    async fn delete_api_key(&self, _id: uuid::Uuid) -> crate::core::types::Result<()> {
+        Ok(())
+    }
+    async fn revoke_api_key(&self, _id: uuid::Uuid) -> crate::core::types::Result<()> {
+        Ok(())
+    }
+    async fn update_last_used(&self, _id: uuid::Uuid) -> crate::core::types::Result<()> {
+        Ok(())
+    }
+    async fn get_admin_api_key(
+        &self,
+        _workspace_id: uuid::Uuid,
+    ) -> crate::core::types::Result<Option<crate::core::database::ApiKeyInfo>> {
+        Ok(None)
+    }
+    async fn count_api_keys(&self, _workspace_id: uuid::Uuid) -> crate::core::types::Result<u64> {
+        Ok(0)
+    }
+    async fn rotate_api_key(
+        &self,
+        _key_id: &str,
+        _grace_period_seconds: u64,
+    ) -> crate::core::types::Result<crate::core::database::ApiKeyWithSecret> {
+        Err(crate::core::types::CoreError::NotFound("noop".into()))
+    }
+    async fn get_keys_older_than(
+        &self,
+        _age_threshold_days: i64,
+    ) -> crate::core::types::Result<Vec<crate::core::database::ApiKeyInfo>> {
+        Ok(vec![])
+    }
+}
+
+#[tokio::test]
+async fn e2e_create_router_applies_global_rate_limit() {
+    use crate::core::algorithm::AlgorithmRouter;
+    use crate::core::config::Config;
+    use crate::server::config::hot_reload::HotReloadConfig;
+    use crate::server::config::management::ConfigManager;
+    use crate::server::handlers::ApiHandlers;
+    use crate::server::middleware::api_key_auth::ApiKeyAuth;
+    use crate::server::router::create_router;
+
+    let config = Config::default();
+    let alg_router = Arc::new(AlgorithmRouter::new(config.clone(), None));
+    let hot_config = Arc::new(HotReloadConfig::new(config, "config/config.toml".to_string()));
+    let config_service = Arc::new(ConfigManager::new(hot_config, alg_router.clone()));
+    let handlers = Arc::new(ApiHandlers::new(alg_router, config_service));
+    let auth = Arc::new(ApiKeyAuth::new(Arc::new(NoopApiKeyRepo), true));
+    // rps=1 / burst=2：前 2 个请求放行，第 3 个确定性拒绝
+    let rate_limiter = Arc::new(RateLimiter::new(1, 2));
+    let audit_logger = Arc::new(AuditLogger::new(100));
+
+    let app = create_router(handlers, auth, rate_limiter, audit_logger).await;
+
+    for i in 0..2 {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "burst 容量内第 {} 个请求不应被限流",
+            i + 1
+        );
+    }
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "超过 burst 后 create_router 必须返回 429（限流中间件真实挂载）"
+    );
+    assert!(
+        resp.headers().get("retry-after").is_some(),
+        "429 响应必须携带 Retry-After 头"
+    );
 }
 
 // ============================================================================

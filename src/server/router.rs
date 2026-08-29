@@ -217,7 +217,13 @@ pub async fn create_router(
             HeaderValue::from_static("strict-origin-when-cross-origin"),
         ))
         .layer(cors)
-        .layer(axum::Extension(rate_limit_middleware))
+        // wiring T002：全局限流中间件真实挂载（此前仅 Extension 注入、
+        // 从不执行）。执行顺序上位于认证中间件（嵌套于 /api/v1 内层）
+        // 之前，未认证流量先被令牌桶约束。
+        .layer(axum::middleware::from_fn_with_state(
+            rate_limit_middleware,
+            crate::server::rate_limit::middleware::rate_limit_middleware_fn,
+        ))
         .layer(axum::Extension(audit_middleware.clone()))
         .layer(axum::middleware::from_fn_with_state(
             audit_middleware,

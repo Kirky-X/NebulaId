@@ -131,6 +131,19 @@ fn get_client_ip(req: &Request<Body>, trusted_proxies: &[IpAddr]) -> Option<Stri
     crate::server::middleware::utils::get_client_ip(req, trusted_proxies)
 }
 
+/// `from_fn_with_state` 兼容的自由函数包装（wiring T002）。
+///
+/// axum 0.8 的 `FromFnLayer` 要求 `F: FnMut + Clone + Send + 'static` 且
+/// 签名严格匹配 `async fn(State<S>, Request, Next) -> Response`；实例
+/// 方法无法直接挂载，必须经本包装器解构 State 后调用。
+pub async fn rate_limit_middleware_fn(
+    axum::extract::State(middleware): axum::extract::State<RateLimitMiddleware>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    middleware.rate_limit_middleware(req, next).await
+}
+
 // ============================================================================
 // Unit Tests
 // ============================================================================

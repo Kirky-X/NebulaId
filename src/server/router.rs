@@ -64,7 +64,7 @@ pub async fn create_router(
 
 /// 带显式限流开关的路由装配（converge T022③）。
 ///
-/// `rate_limit_enabled=false` 时不挂载限流层（此前 `auth.rate_limit.enabled`
+/// `rate_limit_enabled=false` 时不挂载限流层（此前 `[rate_limit].enabled`
 /// 无消费点，配置关不掉限流）。开关由调用方（main.rs 读真实 Config）传入，
 /// 而非在装配内部回读 config_service —— 避免 mock 服务被牵连出额外期望。
 pub async fn create_router_with_rate_limit(
@@ -210,7 +210,7 @@ pub async fn create_router_with_rate_limit(
         // wiring T002 + converge T022②③：全局限流真实挂载，且必须位于 CORS
         // **内侧**（axum 中先 `.layer()` 的是内层、后挂载的先执行）。此前挂在
         // CORS 外侧，导致 429 响应缺 CORS 头且 OPTIONS 预检消耗配额。
-        // `auth.rate_limit.enabled=false` 时不挂载该层。
+        // `[rate_limit].enabled = false` 时不挂载该层。
         ;
 
     let routes = if rate_limit_enabled {
@@ -1169,7 +1169,7 @@ mod tests {
             assert_ne!(
                 resp.status(),
                 axum::http::StatusCode::TOO_MANY_REQUESTS,
-                "auth.rate_limit.enabled=false 时不得挂载限流层"
+                "[rate_limit].enabled=false 时不得挂载限流层"
             );
         }
     }

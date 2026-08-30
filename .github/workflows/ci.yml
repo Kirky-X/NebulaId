@@ -118,7 +118,7 @@ jobs:
       - name: Test (feature=sdk)
         run: cargo test --package ${{ env.PKG }} --features sdk
 
-  # 阶段 5：多 feature matrix 测试 + 覆盖率门禁（≥80%）
+  # 阶段 5：多 feature matrix 测试 + 覆盖率门禁（≥95%）
   test:
     name: Test (${{ matrix.feature }})
     runs-on: ubuntu-latest

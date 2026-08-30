@@ -355,7 +355,7 @@ async fn start_http_server(
     tls_manager: Option<Arc<TlsManager>>,
 ) -> Result<()> {
     // converge T022③：限流开关来自真实配置（此前该参数被忽略，
-    // auth.rate_limit.enabled=false 也照样挂限流层）。
+    // `[rate_limit].enabled=false` 也照样挂限流层）。
     let rate_limit_enabled = config_service.get_config().rate_limit.enabled;
     let router = create_router_with_rate_limit(
         handlers,

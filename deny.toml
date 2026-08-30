@@ -95,16 +95,11 @@ skip = [
 ]
 
 [advisories]
-# Ignore known issues without current fixes
+# Ignore known issues without current fixes.
+# 只保留"当前依赖图里确实命中"的条目：失效的忽略项既会触发 cargo-deny 的
+# advisory-not-detected 警告，也会让注释描述与现状不符（若将来重新引入
+# 受影响版本，宁可让门禁红起来再显式评估）。
 ignore = [
-    # Marvin Attack: potential key recovery through timing sidechannels
-    # rustls has implemented mitigations, but we use a version that still triggers this warning
-    "RUSTSEC-2024-0386",
-
-    # RSA timing sidechannel vulnerability in rsa crate (used by jsonwebtoken)
-    # No safe upgrade available - this is acceptable for non-production use
-    "RUSTSEC-2023-0071",
-
     # rustls-pemfile is unmaintained but still widely used and compatible
     # No safe upgrade available - we use it for TLS certificate parsing which is a stable use case
     "RUSTSEC-2025-0134",

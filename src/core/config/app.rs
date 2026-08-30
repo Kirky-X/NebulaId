@@ -191,9 +191,11 @@ impl Default for DatabaseConfig {
             };
         }
 
-        // SECURITY: Require environment variable for password in production
-        let password = std::env::var("NEBULA_DATABASE_PASSWORD")
-            .expect("NEBULA_DATABASE_PASSWORD environment variable must be set in production. For development, set this variable or use DATABASE_URL.");
+        // SECURITY: 密码来自环境变量；缺失时置空而非 panic —— `Default` 不应因
+        // 环境变量缺失而 panic（嵌入式 SDK 使用 `Config::default()` 且不连数据库）。
+        // 服务端安全性不受弱化：`create_connection` 在建连时对空密码显性返回
+        // `ConfigurationError`，忘设密码仍在启动时报错（时机从构造默认配置后移到建连）。
+        let password = std::env::var("NEBULA_DATABASE_PASSWORD").unwrap_or_default();
 
         if password == "idgen123" || password.is_empty() {
             tracing::warn!(

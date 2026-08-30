@@ -70,6 +70,11 @@ impl super::ApiHandlers {
                     status: crate::server::models::HealthStatus::Healthy,
                     total_generated: snapshot.total_generated,
                     total_failed: snapshot.total_failed,
+                    // 路由层观测的 µs 样本 → 对外统一 ms 口径
+                    p50_latency_ms: snapshot.p50_latency_us as f64 / 1_000.0,
+                    p99_latency_ms: snapshot.p99_latency_us as f64 / 1_000.0,
+                    p999_latency_ms: snapshot.p999_latency_us as f64 / 1_000.0,
+                    clock_backwards: snapshot.clock_backwards,
                     cache_hit_rate: snapshot.cache_hit_rate,
                 },
             )
@@ -638,6 +643,41 @@ mod tests {
         let response = handlers.metrics().await;
         assert_eq!(response.database.status, HealthStatus::Unhealthy);
         assert!(response.database.last_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_metrics_exposes_percentiles_and_clock_backwards() {
+        // T021：路由层观测值必须出现在 /metrics 的逐算法条目里
+        let mut mock_config = MockSysMockConfigService::new();
+        mock_config
+            .expect_get_database_metrics()
+            .returning(healthy_db_metrics);
+        mock_config
+            .expect_get_cache_metrics()
+            .returning(healthy_cache_metrics);
+        mock_config.expect_get_algorithm_metrics().returning(|| {
+            vec![(
+                crate::core::types::AlgorithmType::Snowflake,
+                crate::core::algorithm::AlgorithmMetricsSnapshot {
+                    total_generated: 10,
+                    p50_latency_us: 1_500,
+                    p99_latency_us: 9_900,
+                    p999_latency_us: 15_000,
+                    clock_backwards: 2,
+                    ..Default::default()
+                },
+            )]
+        });
+
+        let handlers = create_handlers_with_mock_config(mock_config);
+        let response = handlers.metrics().await;
+
+        assert_eq!(response.algorithms.len(), 1);
+        let alg = &response.algorithms[0];
+        assert_eq!(alg.p50_latency_ms, 1.5);
+        assert_eq!(alg.p99_latency_ms, 9.9);
+        assert_eq!(alg.p999_latency_ms, 15.0);
+        assert_eq!(alg.clock_backwards, 2);
     }
 
     // ===== start_key_rotation_task() =====

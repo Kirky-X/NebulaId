@@ -146,12 +146,17 @@ pub struct AlgorithmMetricsSnapshot {
     pub total_generated: u64,
     pub total_failed: u64,
     pub current_qps: u64,
-    /// 暂未实现 latency histogram；所有算法当前返回 0。
-    /// 0 表示"未实现"，不是"延迟为 0 微秒"。
+    /// 最近请求延迟 p50（微秒）。由 `AlgorithmRouter::metrics()` 从路由层
+    /// 观测环形缓冲合并填充；算法自身实现返回 0（表示尚未经路由层观测），
+    /// 而不是"延迟为 0 微秒"。
     pub p50_latency_us: u64,
-    /// 暂未实现 latency histogram；所有算法当前返回 0。
-    /// 0 表示"未实现"，不是"延迟为 0 微秒"。
+    /// p99（微秒），填充语义同 [`Self::p50_latency_us`]。
     pub p99_latency_us: u64,
+    /// p99.9（微秒），填充语义同 [`Self::p50_latency_us`]。
+    pub p999_latency_us: u64,
+    /// 累计观测到的时钟回拨次数。由路由层观测（算法返回
+    /// `CoreError::ClockMovedBackward`）合并填充，供 `/metrics` 与告警使用。
+    pub clock_backwards: u64,
     /// L15 修复：`None` 表示该算法无缓存概念（如 Snowflake/UUID），
     /// `Some(rate)` 表示真实缓存命中率（如 Segment）。
     /// 原为 `f64`，UUID/Snowflake 返回 `0.0` 会被

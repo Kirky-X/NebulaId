@@ -34,6 +34,9 @@ pub struct AlgorithmMetrics {
     pub cache_hit_rate: AtomicU64,
     /// 累计记录的延迟样本数（单调递增，不随环形缓冲回绕）。
     latency_samples: AtomicU64,
+    /// 累计观测到的时钟回拨次数（T021：由 `AlgorithmRouter::observe` 在
+    /// 算法返回 `ClockMovedBackward` 时递增，告警规则据此判定）。
+    clock_backwards: AtomicU64,
     /// 最近 [`LATENCY_RING_SIZE`] 个延迟样本（纳秒），`record_latency` 环写。
     #[serde(skip)]
     latency_ring: Box<[AtomicU64]>,
@@ -62,6 +65,7 @@ impl Clone for AlgorithmMetrics {
             current_qps: AtomicU64::new(self.current_qps.load(Ordering::Relaxed)),
             cache_hit_rate: AtomicU64::new(self.cache_hit_rate.load(Ordering::Relaxed)),
             latency_samples: AtomicU64::new(self.latency_samples.load(Ordering::Relaxed)),
+            clock_backwards: AtomicU64::new(self.clock_backwards.load(Ordering::Relaxed)),
             latency_ring: ring,
             ring_cursor: AtomicUsize::new(self.ring_cursor.load(Ordering::Relaxed)),
         }
@@ -77,6 +81,7 @@ impl Default for AlgorithmMetrics {
             current_qps: AtomicU64::new(0),
             cache_hit_rate: AtomicU64::new(0),
             latency_samples: AtomicU64::new(0),
+            clock_backwards: AtomicU64::new(0),
             latency_ring: empty_latency_ring(),
             ring_cursor: AtomicUsize::new(0),
         }
@@ -133,15 +138,24 @@ impl AlgorithmMetrics {
         self.latency_samples.load(Ordering::Relaxed)
     }
 
-    /// 快照最近 `min(样本数, LATENCY_RING_SIZE)` 个延迟，排序后按
-    /// nearest-rank 取分位数（`permille`：500=p50 / 990=p99 / 999=p99.9）。
+    /// 记录一次观测到的时钟回拨（路由层在算法返回
+    /// `CoreError::ClockMovedBackward` 时调用）。
+    pub fn record_clock_backward(&self) {
+        self.clock_backwards.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn get_clock_backwards(&self) -> u64 {
+        self.clock_backwards.load(Ordering::Relaxed)
+    }
+
+    /// 快照最近 `min(样本数, LATENCY_RING_SIZE)` 个延迟并升序排序。
     ///
-    /// 读侧拷贝排序可接受：仅低频 metrics 端点调用；写侧保持无锁。
+    /// 读侧拷贝排序可接受：仅低频 metrics 端点与告警评估调用；写侧保持无锁。
     /// 并发快照期间个别槽位可能读到旧值，对统计量无实质影响。
-    fn percentile_ns(&self, permille: u64) -> u64 {
+    fn sorted_latency_samples(&self) -> Option<Vec<u64>> {
         let total = self.latency_samples.load(Ordering::Relaxed) as usize;
         if total == 0 {
-            return 0;
+            return None;
         }
         let n = total.min(LATENCY_RING_SIZE);
         let mut samples: Vec<u64> = self
@@ -151,9 +165,35 @@ impl AlgorithmMetrics {
             .map(|slot| slot.load(Ordering::Relaxed))
             .collect();
         samples.sort_unstable();
-        // nearest-rank：rank = ceil(permille/1000 * n)，钳制在 [1, n]
-        let rank = ((permille * n as u64).div_ceil(1000)).clamp(1, n as u64) as usize;
-        samples[rank - 1]
+        Some(samples)
+    }
+
+    /// nearest-rank：`rank = ceil(permille/1000 * n)`，钳制在 `[1, n]`
+    /// （`permille`：500=p50 / 990=p99 / 999=p99.9）。
+    fn rank_ns(sorted: &[u64], permille: u64) -> u64 {
+        let n = sorted.len() as u64;
+        let rank = ((permille * n).div_ceil(1000)).clamp(1, n) as usize;
+        sorted[rank - 1]
+    }
+
+    fn percentile_ns(&self, permille: u64) -> u64 {
+        self.sorted_latency_samples()
+            .map(|samples| Self::rank_ns(&samples, permille))
+            .unwrap_or(0)
+    }
+
+    /// 一次排序同时取 p50 / p99 / p999（纳秒）。
+    ///
+    /// 三档共用同一快照：逐档调用 `percentile_ns` 会各排序一次。
+    pub fn latency_percentiles_ns(&self) -> (u64, u64, u64) {
+        match self.sorted_latency_samples() {
+            Some(samples) => (
+                Self::rank_ns(&samples, 500),
+                Self::rank_ns(&samples, 990),
+                Self::rank_ns(&samples, 999),
+            ),
+            None => (0, 0, 0),
+        }
     }
 
     pub fn get_p50_latency_ms(&self) -> f64 {
@@ -308,19 +348,24 @@ pub struct MetricsSnapshot {
     pub p50_latency_ms: f64,
     pub p99_latency_ms: f64,
     pub p999_latency_ms: f64,
+    /// 累计观测到的时钟回拨次数（告警规则 `clock_backward` 的判定依据）。
+    pub clock_backwards: u64,
     pub cache_hit_rate: f64,
 }
 
 impl From<&AlgorithmMetrics> for MetricsSnapshot {
     fn from(m: &AlgorithmMetrics) -> Self {
+        // 单次排序取三档分位数（逐档 getter 会各排序一次）
+        let (p50_ns, p99_ns, p999_ns) = m.latency_percentiles_ns();
         Self {
             algorithm: m.algorithm,
             total_generated: m.get_generated(),
             total_failed: m.get_failed(),
             current_qps: m.get_qps(),
-            p50_latency_ms: m.get_p50_latency_ms(),
-            p99_latency_ms: m.get_p99_latency_ms(),
-            p999_latency_ms: m.get_p999_latency_ms(),
+            p50_latency_ms: p50_ns as f64 / 1_000_000.0,
+            p99_latency_ms: p99_ns as f64 / 1_000_000.0,
+            p999_latency_ms: p999_ns as f64 / 1_000_000.0,
+            clock_backwards: m.get_clock_backwards(),
             cache_hit_rate: m.get_cache_hit_rate(),
         }
     }
@@ -638,6 +683,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_latency_percentiles_ns_matches_per_rank_getters() {
+        let m = AlgorithmMetrics::new(AlgorithmType::Snowflake);
+        for i in 1..=100u64 {
+            m.record_latency(i * 1_000_000); // 1..=100 ms
+        }
+        let (p50, p99, p999) = m.latency_percentiles_ns();
+        // 单次排序结果必须与逐档实现完全一致（两者共用同一 nearest-rank 口径）
+        assert_eq!(p50, m.get_p50_latency_ms() as u64 * 1_000_000);
+        assert_eq!(p99, m.get_p99_latency_ms() as u64 * 1_000_000);
+        assert_eq!(p999, m.get_p999_latency_ms() as u64 * 1_000_000);
+        assert_eq!((p50, p99, p999), (50_000_000, 99_000_000, 100_000_000));
+
+        // 无样本 → 三档均为 0（表示"未观测"，不是"延迟 0"）
+        let empty = AlgorithmMetrics::new(AlgorithmType::UuidV8);
+        assert_eq!(empty.latency_percentiles_ns(), (0, 0, 0));
+    }
+
+    #[test]
+    fn test_clock_backward_counter_is_incremental_and_snapshot_visible() {
+        let m = AlgorithmMetrics::new(AlgorithmType::Snowflake);
+        assert_eq!(m.get_clock_backwards(), 0);
+
+        m.record_clock_backward();
+        m.record_clock_backward();
+        assert_eq!(m.get_clock_backwards(), 2);
+        // Clone 语义：计数随快照复制保留
+        assert_eq!(m.clone().get_clock_backwards(), 2);
+
+        let snap = MetricsSnapshot::from(&m);
+        assert_eq!(snap.clock_backwards, 2);
+        // 未记录延迟时不得伪造分位数
+        assert_eq!((snap.p50_latency_ms, snap.p99_latency_ms), (0.0, 0.0));
+    }
+
     // ---- QpsWindow ----
 
     #[test]
@@ -770,6 +850,7 @@ mod tests {
             p50_latency_ms: 1.5,
             p99_latency_ms: 9.99,
             p999_latency_ms: 15.001,
+            clock_backwards: 3,
             cache_hit_rate: 87.65,
         };
 
@@ -784,6 +865,7 @@ mod tests {
         assert!((restored.p50_latency_ms - original.p50_latency_ms).abs() < f64::EPSILON);
         assert!((restored.p99_latency_ms - original.p99_latency_ms).abs() < f64::EPSILON);
         assert!((restored.p999_latency_ms - original.p999_latency_ms).abs() < f64::EPSILON);
+        assert_eq!(restored.clock_backwards, original.clock_backwards);
         assert!((restored.cache_hit_rate - original.cache_hit_rate).abs() < f64::EPSILON);
     }
 
@@ -797,6 +879,7 @@ mod tests {
             p50_latency_ms: 0.0,
             p99_latency_ms: 0.0,
             p999_latency_ms: 0.0,
+            clock_backwards: 0,
             cache_hit_rate: 0.0,
         };
 
@@ -817,6 +900,7 @@ mod tests {
                 p50_latency_ms: 0.1,
                 p99_latency_ms: 0.2,
                 p999_latency_ms: 0.3,
+                clock_backwards: 1,
                 cache_hit_rate: 100.0,
             };
             let json = serde_json::to_string(&original).expect("serialize");

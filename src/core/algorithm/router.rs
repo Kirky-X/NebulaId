@@ -19,12 +19,13 @@ use crate::core::algorithm::{
 use crate::core::config::Config;
 #[cfg(feature = "etcd")]
 use crate::core::coordinator::EtcdClusterHealthMonitor;
-use crate::core::types::{AlgorithmType, CoreError, Id, IdBatch, Result};
+use crate::core::types::{AlgorithmType, CoreError, GlobalMetrics, Id, IdBatch, Result};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
 #[async_trait]
@@ -164,6 +165,9 @@ pub struct AlgorithmRouter {
     fallback_chain: SmallVec<[AlgorithmType; 8]>,
     current_algorithm: Arc<ArcSwap<HashMap<String, AlgorithmType>>>,
     degradation_manager: Arc<DegradationManager>,
+    /// 路由层观测面：逐算法延迟环形样本、请求/错误计数与时钟回拨计数。
+    /// 单一观测点覆盖 HTTP / gRPC / SDK 三条入口（T021）。
+    global_metrics: Arc<GlobalMetrics>,
     cpu_monitor: Option<Arc<crate::core::algorithm::segment::CpuMonitor>>,
     #[cfg(feature = "etcd")]
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
@@ -205,6 +209,7 @@ impl AlgorithmRouter {
             fallback_chain,
             current_algorithm: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             degradation_manager,
+            global_metrics: Arc::new(GlobalMetrics::new()),
             cpu_monitor: None,
             #[cfg(feature = "etcd")]
             etcd_health_monitor: None,
@@ -377,7 +382,9 @@ impl AlgorithmRouter {
     ) -> Option<Result<R::Out>> {
         for fallback in &self.fallback_chain {
             if let Some(fallback_alg) = algorithms.get(fallback).cloned() {
+                let start = Instant::now();
                 let result = runner.run(&fallback_alg, ctx).await;
+                self.observe(*fallback, start, &result);
                 match result {
                     Ok(value) => {
                         self.degradation_manager
@@ -402,6 +409,32 @@ impl AlgorithmRouter {
             }
         }
         None
+    }
+
+    /// 路由层唯一观测点：记录一次算法执行的延迟、成败与时钟回拨信号（T021）。
+    ///
+    /// 放在路由层而非 HTTP handler，使 HTTP / gRPC / SDK 三条入口共用同一份
+    /// 数据；`algorithm` 传入的是**实际服务**该请求的算法（fallback 命中时
+    /// 为回退算法），保证分位数按算法正确归因。
+    fn observe<T>(&self, algorithm: AlgorithmType, start: Instant, outcome: &Result<T>) {
+        let metrics = self.global_metrics.get_or_create_metrics(algorithm);
+        metrics.record_latency(start.elapsed().as_nanos() as u64);
+        self.global_metrics.increment_requests();
+        match outcome {
+            Ok(_) => metrics.increment_generated(1),
+            Err(e) => {
+                metrics.increment_failed();
+                self.global_metrics.increment_errors();
+                if matches!(e, CoreError::ClockMovedBackward { .. }) {
+                    metrics.record_clock_backward();
+                }
+            }
+        }
+    }
+
+    /// 路由层观测面对象；告警评估等消费方应复用同一实例而非另建。
+    pub fn global_metrics(&self) -> Arc<GlobalMetrics> {
+        self.global_metrics.clone()
     }
 
     async fn generate_with_algorithm_internal(
@@ -430,7 +463,10 @@ impl AlgorithmRouter {
                 "{}",
                 t!("log.core.algorithm.router.algorithm_found")
             );
-            match alg.generate(ctx).await {
+            let start = Instant::now();
+            let result = alg.generate(ctx).await;
+            self.observe(effective_algorithm, start, &result);
+            match result {
                 Ok(id) => {
                     self.degradation_manager
                         .record_generation_result(effective_algorithm, true)
@@ -502,7 +538,10 @@ impl AlgorithmRouter {
         let alg_opt = algorithms.get(&effective_algorithm).cloned();
 
         if let Some(alg) = alg_opt {
-            match alg.batch_generate(ctx, size).await {
+            let start = Instant::now();
+            let result = alg.batch_generate(ctx, size).await;
+            self.observe(effective_algorithm, start, &result);
+            match result {
                 Ok(batch) => {
                     self.degradation_manager
                         .record_generation_result(effective_algorithm, true)
@@ -550,7 +589,21 @@ impl AlgorithmRouter {
 
     pub async fn metrics(&self) -> Vec<(AlgorithmType, AlgorithmMetricsSnapshot)> {
         let algs = self.algorithms.load_full();
-        algs.iter().map(|(k, v)| (*k, v.metrics())).collect()
+        let observed = self.global_metrics.algorithms.read();
+        algs.iter()
+            .map(|(kind, alg)| {
+                let mut snapshot = alg.metrics();
+                // 延迟分位数与时钟回拨来自路由层观测（算法自身不测端到端耗时）
+                if let Some(metrics) = observed.get(kind) {
+                    let (p50_ns, p99_ns, p999_ns) = metrics.latency_percentiles_ns();
+                    snapshot.p50_latency_us = p50_ns / 1_000;
+                    snapshot.p99_latency_us = p99_ns / 1_000;
+                    snapshot.p999_latency_us = p999_ns / 1_000;
+                    snapshot.clock_backwards = metrics.get_clock_backwards();
+                }
+                (*kind, snapshot)
+            })
+            .collect()
     }
 
     pub fn get_degradation_manager(&self) -> &Arc<DegradationManager> {
@@ -720,6 +773,10 @@ mod tests {
         fail_generate: bool,
         fail_batch: bool,
         fail_shutdown: bool,
+        /// generate 返回 `ClockMovedBackward`（T021 观测路径测试）
+        clock_backward: bool,
+        /// generate 前睡眠毫秒数，使延迟分位数可被观测（T021）
+        delay_ms: u64,
         health_kind: MockHealthKind,
     }
 
@@ -737,6 +794,8 @@ mod tests {
                 fail_generate: false,
                 fail_batch: false,
                 fail_shutdown: false,
+                clock_backward: false,
+                delay_ms: 0,
                 health_kind: MockHealthKind::Healthy,
             }
         }
@@ -752,6 +811,14 @@ mod tests {
             self.fail_shutdown = true;
             self
         }
+        fn with_clock_backward(mut self) -> Self {
+            self.clock_backward = true;
+            self
+        }
+        fn with_delay_ms(mut self, ms: u64) -> Self {
+            self.delay_ms = ms;
+            self
+        }
         fn with_health(mut self, kind: MockHealthKind) -> Self {
             self.health_kind = kind;
             self
@@ -761,6 +828,12 @@ mod tests {
     #[async_trait]
     impl IdAlgorithm for MockConfigurableAlgorithm {
         async fn generate(&self, _ctx: &GenerateContext) -> Result<Id> {
+            if self.clock_backward {
+                return Err(CoreError::ClockMovedBackward { last_timestamp: 1 });
+            }
+            if self.delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            }
             if self.fail_generate {
                 Err(CoreError::InternalError(
                     "mock generate failure".to_string(),
@@ -823,6 +896,86 @@ mod tests {
             format: crate::core::types::IdFormat::Numeric,
             prefix: None,
         }
+    }
+
+    // ============== 路由层观测（T021） ==============
+
+    #[tokio::test]
+    async fn test_router_observes_latency_and_merges_percentiles() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::Segment).with_delay_ms(2)),
+        );
+
+        for _ in 0..3 {
+            router.generate(&make_ctx("bt")).await.unwrap();
+        }
+
+        // 观测面确实收到样本（此前 record_latency 在生产无任何调用点）
+        let observed = router.global_metrics().get_all_snapshots();
+        let seg = observed
+            .iter()
+            .find(|s| s.algorithm == AlgorithmType::Segment)
+            .expect("segment observed");
+        assert_eq!(seg.total_generated, 3);
+        assert_eq!(seg.total_failed, 0);
+
+        // 分位数经 router.metrics() 合并到对外快照（2ms 睡眠 → ≥1000µs）
+        let snapshots = router.metrics().await;
+        let (_, snapshot) = snapshots
+            .iter()
+            .find(|(k, _)| *k == AlgorithmType::Segment)
+            .expect("segment snapshot");
+        assert!(
+            snapshot.p50_latency_us >= 1_000,
+            "p50 应为真实观测值，实际 {}µs",
+            snapshot.p50_latency_us
+        );
+        assert!(snapshot.p99_latency_us >= snapshot.p50_latency_us);
+        assert!(snapshot.p999_latency_us >= snapshot.p99_latency_us);
+    }
+
+    #[tokio::test]
+    async fn test_router_records_clock_backward_signal_into_snapshot() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::Segment).with_clock_backward()),
+        );
+
+        let err = router
+            .generate(&make_ctx("bt"))
+            .await
+            .expect_err("mock 应返回时钟回拨错误");
+        assert!(
+            matches!(err, CoreError::ClockMovedBackward { .. }),
+            "实际错误: {err:?}"
+        );
+
+        let snapshots = router.metrics().await;
+        let (_, snapshot) = snapshots
+            .iter()
+            .find(|(k, _)| *k == AlgorithmType::Segment)
+            .expect("segment snapshot");
+        assert_eq!(snapshot.clock_backwards, 1, "时钟回拨必须计入快照");
+
+        let global = router.global_metrics().get_all_snapshots();
+        let seg = global
+            .iter()
+            .find(|s| s.algorithm == AlgorithmType::Segment)
+            .expect("segment observed");
+        assert_eq!(seg.clock_backwards, 1);
+        assert_eq!(seg.total_failed, 1);
+        assert_eq!(
+            router
+                .global_metrics()
+                .total_errors
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
     }
 
     // ============== IdGenerator trait impl 测试 ==============

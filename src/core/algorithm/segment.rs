@@ -630,11 +630,11 @@ impl IdAlgorithm for SegmentAlgorithm {
         AlgorithmMetricsSnapshot {
             total_generated: self.metrics.total_generated.load(Ordering::Relaxed),
             total_failed: self.metrics.total_failed.load(Ordering::Relaxed),
-            current_qps: 0,
-            p50_latency_us: 0,
-            p99_latency_us: 0,
             // L15 修复：Segment 算法有段缓存，返回真实命中率。
             cache_hit_rate: Some(hit_rate),
+            // 延迟分位数与时钟回拨计数由路由层观测后在
+            // AlgorithmRouter::metrics() 合并填充（T021）。
+            ..Default::default()
         }
     }
 

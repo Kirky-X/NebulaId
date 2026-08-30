@@ -376,6 +376,13 @@ pub struct AlgorithmMetrics {
     pub status: HealthStatus,
     pub total_generated: u64,
     pub total_failed: u64,
+    /// 最近请求延迟分位数（毫秒），由路由层观测的环形样本计算。
+    /// `0.0` 表示该算法尚未经过路由层观测，不是"延迟为 0"。
+    pub p50_latency_ms: f64,
+    pub p99_latency_ms: f64,
+    pub p999_latency_ms: f64,
+    /// 累计观测到的时钟回拨次数（雪花算法时钟回拨告警的真实信号）。
+    pub clock_backwards: u64,
     /// L15 修复：`None` 表示该算法无缓存概念，`Some(rate)` 表示真实命中率。
     pub cache_hit_rate: Option<f64>,
 }

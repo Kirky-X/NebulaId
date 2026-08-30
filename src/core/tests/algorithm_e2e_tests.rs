@@ -162,11 +162,7 @@ impl IdAlgorithm for MockIdAlgorithm {
     fn metrics(&self) -> crate::core::algorithm::traits::AlgorithmMetricsSnapshot {
         crate::core::algorithm::traits::AlgorithmMetricsSnapshot {
             total_generated: self.call_count.load(Ordering::Relaxed),
-            total_failed: 0,
-            current_qps: 0,
-            p50_latency_us: 0,
-            p99_latency_us: 0,
-            cache_hit_rate: None,
+            ..Default::default()
         }
     }
 
@@ -246,15 +242,15 @@ async fn e2e_snowflake_full_lifecycle_via_builder() {
         .expect("E2E: shutdown should succeed");
 }
 
-/// E2E-SF-002: Snowflake 时钟回拨 → health_check Unhealthy 路径已由单元测试覆盖。
-///
-/// 原计划通过访问 `SnowflakeAlgorithm` 私有字段 `last_timestamp` / `clock_drift_ms`
-/// 模拟时钟回拨并断言 health_check 反映状态，但这些字段对模块外私有。修改源码
-/// 仅为了启用测试违反规则 6（外科手术式修改），因此移除该 e2e 测试。
-///
-/// 覆盖保持不变——以下 snowflake.rs 单元测试已完整覆盖该场景：
-/// - `test_generate_id_clock_backward_exceeds_threshold_returns_error`
-/// - `test_health_check_unhealthy_when_drift_exceeds_threshold`
+// E2E-SF-002: Snowflake 时钟回拨 → health_check Unhealthy 路径已由单元测试覆盖。
+//
+// 原计划通过访问 `SnowflakeAlgorithm` 私有字段 `last_timestamp` / `clock_drift_ms`
+// 模拟时钟回拨并断言 health_check 反映状态，但这些字段对模块外私有。修改源码
+// 仅为了启用测试违反规则 6（外科手术式修改），因此移除该 e2e 测试。
+//
+// 覆盖保持不变——以下 snowflake.rs 单元测试已完整覆盖该场景：
+// - `test_generate_id_clock_backward_exceeds_threshold_returns_error`
+// - `test_health_check_unhealthy_when_drift_exceeds_threshold`
 
 /// E2E-SF-003: Snowflake 批量生成在 size=0 时返回空批次（边界场景）。
 ///

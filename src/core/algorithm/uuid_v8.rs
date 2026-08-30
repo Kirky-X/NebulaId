@@ -239,12 +239,9 @@ impl IdAlgorithm for UuidV8Impl {
 
     fn metrics(&self) -> AlgorithmMetricsSnapshot {
         AlgorithmMetricsSnapshot {
-            total_generated: 0,
-            total_failed: 0,
-            current_qps: 0,
-            p50_latency_us: 0,
-            p99_latency_us: 0,
-            cache_hit_rate: None,
+            // 延迟分位数与时钟回拨计数由路由层观测后在
+            // AlgorithmRouter::metrics() 合并填充（T021）。
+            ..Default::default()
         }
     }
 
@@ -321,7 +318,7 @@ mod tests {
         const N: usize = 1000;
         let mut all: std::collections::HashSet<u128> = std::collections::HashSet::new();
         for w in 0..K {
-            let algo = UuidV8Impl::new((w % 2) as u64, w as u64, 1000);
+            let algo = UuidV8Impl::new(w % 2, w, 1000);
             let mut last: u128 = 0;
             for _ in 0..N {
                 let id = algo.generate_inner(&ctx()).unwrap();

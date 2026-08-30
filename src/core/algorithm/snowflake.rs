@@ -370,11 +370,11 @@ impl IdAlgorithm for SnowflakeAlgorithm {
         AlgorithmMetricsSnapshot {
             total_generated: self.metrics.total_generated.load(Ordering::Relaxed),
             total_failed: self.metrics.total_failed.load(Ordering::Relaxed),
-            current_qps: 0,
-            p50_latency_us: 0,
-            p99_latency_us: 0,
             // L15 修复：Snowflake/UUID 算法无缓存概念，返回 None。
             cache_hit_rate: None,
+            // 延迟分位数与时钟回拨计数由路由层观测后在
+            // AlgorithmRouter::metrics() 合并填充（T021）。
+            ..Default::default()
         }
     }
 

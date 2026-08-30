@@ -395,10 +395,11 @@ impl AlertEvaluator for DefaultEvaluator {
             }
 
             e if e.starts_with("clock_backward") => {
+                // 真实信号：路由层观测到算法返回 ClockMovedBackward 才计数
                 for alg_metrics in metrics.algorithms.read().values() {
-                    // 该算法处理过请求（有延迟样本）才可能观测到时钟回拨。
-                    if alg_metrics.latency_sample_count() > 0 {
-                        return (true, Some("clock_backward_detected".to_string()));
+                    let count = alg_metrics.get_clock_backwards();
+                    if count > 0 {
+                        return (true, Some(format!("clock_backward_count: {}", count)));
                     }
                 }
                 (false, None)
@@ -1771,23 +1772,38 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_clock_backward_fires_when_any_algorithm_has_p999_latency() {
+    fn test_evaluate_clock_backward_fires_when_clock_backward_recorded() {
         let evaluator = DefaultEvaluator;
         let metrics = GlobalMetrics::new();
         let alg = metrics.get_or_create_metrics(crate::core::types::AlgorithmType::Snowflake);
-        alg.record_latency(1_000_000); // 产生延迟样本，使该算法被视为"处理过请求"
+        alg.record_clock_backward();
+        alg.record_clock_backward();
 
         let rule = AlertRule::new("clock", "clock_backward", AlertSeverity::Critical);
         let (firing, value) = evaluator.evaluate(&rule, &metrics);
         assert!(firing);
-        assert_eq!(value.as_deref(), Some("clock_backward_detected"));
+        assert_eq!(value.as_deref(), Some("clock_backward_count: 2"));
     }
 
     #[test]
-    fn test_evaluate_clock_backward_does_not_fire_when_no_algorithm_has_p999() {
+    fn test_evaluate_clock_backward_does_not_fire_on_latency_samples_only() {
+        // 回归钉桩：旧实现用"有延迟样本"当时钟回拨证据，只要跑过请求就恒真。
         let evaluator = DefaultEvaluator;
         let metrics = GlobalMetrics::new();
-        // Register an algorithm but never record latency → p999 stays 0.
+        let alg = metrics.get_or_create_metrics(crate::core::types::AlgorithmType::Snowflake);
+        alg.record_latency(1_000_000);
+
+        let rule = AlertRule::new("clock", "clock_backward", AlertSeverity::Critical);
+        let (firing, value) = evaluator.evaluate(&rule, &metrics);
+        assert!(!firing, "仅有延迟样本、无时钟回拨时不得告警");
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_clock_backward_does_not_fire_when_nothing_recorded() {
+        let evaluator = DefaultEvaluator;
+        let metrics = GlobalMetrics::new();
+        // 注册算法但未记录任何回拨事件
         let _ = metrics.get_or_create_metrics(crate::core::types::AlgorithmType::Segment);
 
         let rule = AlertRule::new("clock", "clock_backward", AlertSeverity::Critical);

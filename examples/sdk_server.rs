@@ -1,0 +1,177 @@
+// Copyright © 2026 Kirky.X
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! sdforge `#[forge]` 多协议封装示例（wiring T014）。
+//!
+//! 用 sdforge 的 `#[forge]` 属性宏把嵌入式 [`NebulaIdClient`] 的
+//! `generate` / `batch_generate` 声明为 HTTP 端点（`POST /generate`、
+//! `POST /generate/batch`），并由 sdforge 自动产出 OpenAPI 文档
+//! （`GET /api-docs/openapi.json`）。纯算法（snowflake），零 DB 零网络。
+//!
+//! 参考 `src/server/sdforge_adapter.rs` 的 `init_sdforge` /
+//! `merge_sdforge_routes` 装配模式。
+//!
+//! 运行：
+//! ```bash
+//! cargo run --package nebulaid --example sdk_server --features sdk,http
+//! # 另开终端：
+//! curl -X POST http://127.0.0.1:3000/generate \
+//!      -H 'Content-Type: application/json' \
+//!      -d '{"workspace":"ws","group":"g","biz_tag":"order"}'
+//! curl -X POST http://127.0.0.1:3000/generate/batch \
+//!      -H 'Content-Type: application/json' \
+//!      -d '{"workspace":"ws","group":"g","biz_tag":"order","size":5}'
+//! curl http://127.0.0.1:3000/api-docs/openapi.json
+//! ```
+
+use std::sync::{Arc, OnceLock};
+
+use axum::response::IntoResponse;
+use axum::routing::get;
+use axum::{Json, Router};
+use nebulaid::core::Config;
+use nebulaid::sdk::{NebulaIdClient, NebulaIdClientBuilder};
+use nebulaid::server::sdforge_adapter::{init_sdforge, merge_sdforge_routes};
+use sdforge::prelude::*;
+use sdforge::serde::{Deserialize, Serialize};
+
+/// 进程级共享客户端：`#[forge]` 处理器为自由函数，经此静态句柄访问客户端。
+static CLIENT: OnceLock<Arc<NebulaIdClient>> = OnceLock::new();
+
+fn client() -> &'static Arc<NebulaIdClient> {
+    CLIENT
+        .get()
+        .expect("NebulaIdClient 未初始化（main 应先调用 build 并 set）")
+}
+
+/// 把 `CoreError` 映射为 sdforge `ApiError`（500 内部错误）。
+fn to_api_error(e: nebulaid::core::CoreError) -> ApiError {
+    ApiError::internal_error(e.to_string(), "nebulaid_sdk_error")
+}
+
+/// 单条生成请求体。
+#[derive(Debug, Clone, Deserialize)]
+pub struct SdkGenerateRequest {
+    pub workspace: String,
+    pub group: String,
+    pub biz_tag: String,
+}
+
+/// 单条生成响应体。
+#[derive(Debug, Serialize)]
+pub struct SdkGenerateResponse {
+    pub id: String,
+}
+
+/// 批量生成请求体。
+#[derive(Debug, Clone, Deserialize)]
+pub struct SdkBatchGenerateRequest {
+    pub workspace: String,
+    pub group: String,
+    pub biz_tag: String,
+    pub size: usize,
+}
+
+/// 批量生成响应体。
+#[derive(Debug, Serialize)]
+pub struct SdkBatchGenerateResponse {
+    pub ids: Vec<String>,
+    pub count: usize,
+}
+
+/// POST /generate —— 生成单个 ID。
+#[forge(
+    name = "sdk_generate",
+    version = "v1",
+    path = "/generate",
+    method = "POST",
+    no_prefix = true,
+    tool_name = "sdk_generate",
+    description = "通过嵌入式 SDK 生成单个 ID（snowflake，零 DB）"
+)]
+async fn sdk_generate(req: SdkGenerateRequest) -> Result<SdkGenerateResponse, ApiError> {
+    let id = client()
+        .generate(&req.workspace, &req.group, &req.biz_tag)
+        .await
+        .map_err(to_api_error)?;
+    Ok(SdkGenerateResponse { id: id.to_string() })
+}
+
+/// POST /generate/batch —— 批量生成 ID。
+#[forge(
+    name = "sdk_batch_generate",
+    version = "v1",
+    path = "/generate/batch",
+    method = "POST",
+    no_prefix = true,
+    tool_name = "sdk_batch_generate",
+    description = "通过嵌入式 SDK 批量生成 ID（snowflake，零 DB）"
+)]
+async fn sdk_batch_generate(
+    req: SdkBatchGenerateRequest,
+) -> Result<SdkBatchGenerateResponse, ApiError> {
+    let batch = client()
+        .batch_generate(&req.workspace, &req.group, &req.biz_tag, req.size)
+        .await
+        .map_err(to_api_error)?;
+    let ids = batch
+        .ids
+        .iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>();
+    let count = ids.len();
+    Ok(SdkBatchGenerateResponse { ids, count })
+}
+
+/// GET /api-docs/openapi.json —— 由 `#[forge]` 注册路由自动收集的 OpenAPI 文档。
+///
+/// 不使用 `sdforge::swagger_ui_router`（其依赖 sdforge `docs` 特性，
+/// nebulaid 未启用）；此处直接以 axum 路由提供
+/// `sdforge::openapi::generate_openapi_spec()` 生成的 spec。
+async fn serve_openapi_json() -> impl IntoResponse {
+    Json(sdforge::openapi::generate_openapi_spec())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 构建嵌入式客户端：默认算法 snowflake（纯算法，零 DB 零网络）。
+    let mut config = Config::default();
+    config.algorithm.default = "snowflake".to_string();
+    let client = NebulaIdClientBuilder::new(config).build().await?;
+    CLIENT
+        .set(Arc::new(client))
+        .map_err(|_| "client already initialized")?;
+
+    // 初始化 sdforge 插件并合并 #[forge] 注册的 HTTP 路由（参考
+    // src/server/sdforge_adapter.rs 的装配模式），再挂载 Swagger/OpenAPI 路由。
+    let counts = init_sdforge();
+    println!(
+        "sdforge plugins initialized: {} http route(s)",
+        counts.routes
+    );
+
+    let app: Router = merge_sdforge_routes(Router::new())
+        .route("/api-docs/openapi.json", get(serve_openapi_json));
+
+    let addr: std::net::SocketAddr = "127.0.0.1:3000".parse()?;
+    println!("sdk_server listening on http://{addr}");
+    println!("  POST /generate            生成单个 ID");
+    println!("  POST /generate/batch      批量生成 ID");
+    println!("  GET  /api-docs/openapi.json  OpenAPI 文档");
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}

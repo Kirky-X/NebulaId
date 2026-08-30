@@ -25,15 +25,19 @@ sqlite = ["dbnexus/sqlite"]
 etcd = ["dep:etcd-client"]
 # integration-tests: 门控需要真实数据库的 #[ignore] 集成测试
 integration-tests = []
-# sdforge 宏在 #[forge] 展开时 emit #[cfg(feature = "http"/"grpc")]，
-# 这里声明空镜像 feature 使其在 nebulaid crate 上下文中求值为 true
+# sdforge 宏在 #[forge] 展开时 emit #[cfg(feature = "http"/"grpc"/"openapi")]，
+# 这里声明空镜像 feature 使其在 nebulaid crate 上下文中求值为 true。
+# 缺 openapi 镜像 feature 时，#[forge] 的 OpenAPI 路由信息不注册，
+# /api-docs/openapi.json 的 paths 为空。
 http = []
 grpc = []
+openapi = []
 # garrison-auth: 启用 garrison 接管 API key 验证（替代手写 Argon2id + key_id:key_secret 方案）
 garrison-auth = ["dep:garrison"]
 # sdk: 门控嵌入式 SDK facade（src/sdk/，NebulaIdClient/Builder）。
 # 纯标记特性，不引入额外依赖（复用 core 算法/路由/降级能力）。
-sdk = []
+# 蕴含 openapi：SDK 示例（sdk_server）需产出含路径的 OpenAPI 文档。
+sdk = ["openapi"]
 
 # sdforge 宏还 emit 其他内部 feature 的 cfg gate，声明为已知 cfg 值以消除 check-cfg 警告
 [lints.rust]

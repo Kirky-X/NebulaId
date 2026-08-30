@@ -309,7 +309,7 @@ mod tests {
     fn test_cached_identity_serialization_contains_no_secret_material() {
         // R-auth-001：缓存值仅含授权决策三要素。字段集合用穷举断言钉死，
         // 未来给 CachedIdentity 加字段时此测试强制评审是否引入敏感数据。
-        let value = serde_json::to_value(&identity(Some(Uuid::new_v4()), Some(42))).unwrap();
+        let value = serde_json::to_value(identity(Some(Uuid::new_v4()), Some(42))).unwrap();
         let obj = value
             .as_object()
             .expect("cached identity serializes to object");

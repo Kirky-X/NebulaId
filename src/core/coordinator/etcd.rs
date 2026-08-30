@@ -1605,8 +1605,10 @@ mod tests {
         // 用 HangingPingClient 让 ping 永不 resolve，必然被 50ms timeout 打断
         let client: Arc<dyn EtcdClientOps> = Arc::new(HangingPingClient);
 
-        let mut config = EtcdConfig::default();
-        config.connect_timeout_ms = 50;
+        let config = EtcdConfig {
+            connect_timeout_ms: 50,
+            ..Default::default()
+        };
         let cache_file = NamedTempFile::new().expect("Failed to create temp file");
         let cache_path = cache_file.path().to_string_lossy().to_string();
         let monitor = EtcdClusterHealthMonitor::new_with_client(config, cache_path, client);
@@ -1634,8 +1636,10 @@ mod tests {
     /// `Client::connect` 尝试，避免测试依赖真实 etcd。
     #[tokio::test]
     async fn test_health_monitor_check_default_path_empty_endpoints() {
-        let mut config = EtcdConfig::default();
-        config.endpoints = vec![];
+        let config = EtcdConfig {
+            endpoints: vec![],
+            ..Default::default()
+        };
         let cache_file = NamedTempFile::new().expect("Failed to create temp file");
         let cache_path = cache_file.path().to_string_lossy().to_string();
         let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
@@ -1649,15 +1653,15 @@ mod tests {
         );
     }
 
-    /// 生产默认路径连接不可达 endpoint 应触发 record_failure（连接错误分支）。
-    ///
-    /// **已删除**：`etcd_client::Client::connect` 在 Windows 上是 lazy connection，
-    /// 对不可达 endpoint 也立即返回 `Ok(Client)`，无法触发 `Ok(Err(e))` 分支。
-    /// 该分支逻辑（record_failure）由注入路径测试
-    /// `test_health_monitor_check_with_client_recovered` 等覆盖（mock ping
-    /// 返回 `Err(EtcdError::Network(...))`）。生产路径的 `Ok(Err(e))` 分支
-    /// 仅在真实网络故障时触发，由集成测试（`--features integration-tests`）
-    /// 或真实 etcd 环境覆盖。详见 `check_etcd_health` 生产路径注释。
+    // 生产默认路径连接不可达 endpoint 应触发 record_failure（连接错误分支）。
+    //
+    // **已删除**：`etcd_client::Client::connect` 在 Windows 上是 lazy connection，
+    // 对不可达 endpoint 也立即返回 `Ok(Client)`，无法触发 `Ok(Err(e))` 分支。
+    // 该分支逻辑（record_failure）由注入路径测试
+    // `test_health_monitor_check_with_client_recovered` 等覆盖（mock ping
+    // 返回 `Err(EtcdError::Network(...))`）。生产路径的 `Ok(Err(e))` 分支
+    // 仅在真实网络故障时触发，由集成测试（`--features integration-tests`）
+    // 或真实 etcd 环境覆盖。详见 `check_etcd_health` 生产路径注释。
 
     /// EtcdClusterHealthMonitor::clone 应复制所有原子状态与缓存。
     ///
@@ -1952,8 +1956,11 @@ mod tests {
     /// 使用空 endpoints 让 check_etcd_health 走 early-return，避免依赖真实 etcd。
     #[tokio::test]
     async fn test_start_health_check_spawns_and_runs_loop_body() {
-        let mut config = EtcdConfig::default();
-        config.endpoints = vec![]; // 空 endpoints → check_etcd_health early-return
+        // 空 endpoints → check_etcd_health early-return
+        let config = EtcdConfig {
+            endpoints: vec![],
+            ..Default::default()
+        };
         let cache_file = NamedTempFile::new().expect("Failed to create temp file");
         let cache_path = cache_file.path().to_string_lossy().to_string();
         let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
@@ -2000,9 +2007,13 @@ mod tests {
     /// → record_success；或超时 → record_failure。无论哪个分支都被覆盖。
     #[tokio::test]
     async fn test_check_etcd_health_production_path_non_empty_endpoints() {
-        let mut config = EtcdConfig::default();
-        config.endpoints = vec!["http://127.0.0.1:1".to_string()]; // 不可达端口
-        config.connect_timeout_ms = 100; // 短超时避免测试卡死
+        let config = EtcdConfig {
+            // 不可达端口
+            endpoints: vec!["http://127.0.0.1:1".to_string()],
+            // 短超时避免测试卡死
+            connect_timeout_ms: 100,
+            ..Default::default()
+        };
         let cache_file = NamedTempFile::new().expect("Failed to create temp file");
         let cache_path = cache_file.path().to_string_lossy().to_string();
         let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
@@ -2024,9 +2035,11 @@ mod tests {
     /// 覆盖 etcd.rs 第 456-461 行（Err 超时分支）+ record_failure 逻辑。
     #[tokio::test]
     async fn test_check_etcd_health_production_path_multiple_checks() {
-        let mut config = EtcdConfig::default();
-        config.endpoints = vec!["http://127.0.0.1:1".to_string()];
-        config.connect_timeout_ms = 50;
+        let config = EtcdConfig {
+            endpoints: vec!["http://127.0.0.1:1".to_string()],
+            connect_timeout_ms: 50,
+            ..Default::default()
+        };
         let cache_file = NamedTempFile::new().expect("Failed to create temp file");
         let cache_path = cache_file.path().to_string_lossy().to_string();
         let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
@@ -2405,8 +2418,10 @@ mod tests {
     /// `warn!(no_endpoints_configured)` + return，不进入 Client::connect 路径。
     #[tokio::test]
     async fn test_check_etcd_health_production_path_empty_endpoints() {
-        let mut config = EtcdConfig::default();
-        config.endpoints = vec![];
+        let config = EtcdConfig {
+            endpoints: vec![],
+            ..Default::default()
+        };
         let cache_file = NamedTempFile::new().expect("Failed to create temp file");
         let cache_path = cache_file.path().to_string_lossy().to_string();
         let monitor = EtcdClusterHealthMonitor::new(config, cache_path);

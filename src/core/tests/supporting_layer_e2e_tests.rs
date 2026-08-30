@@ -491,8 +491,10 @@ fn e2e_algorithm_type_from_str_unknown_returns_error() {
 /// E2E-ALG-003: AlgorithmConfig::get_default_algorithm 解析配置字符串为枚举。
 #[test]
 fn e2e_algorithm_config_get_default_algorithm_parses_string() {
-    let mut cfg = AlgorithmConfig::default();
-    cfg.default = "snowflake".to_string();
+    let mut cfg = AlgorithmConfig {
+        default: "snowflake".to_string(),
+        ..Default::default()
+    };
     assert_eq!(cfg.get_default_algorithm(), AlgorithmType::Snowflake);
 
     cfg.default = "uuid_v8".to_string();
@@ -508,8 +510,10 @@ fn e2e_algorithm_config_get_default_algorithm_parses_string() {
 /// E2E-ALG-004: AlgorithmConfig::get_default_algorithm 在无效字符串时回退到 Segment。
 #[test]
 fn e2e_algorithm_config_get_default_algorithm_invalid_falls_back_to_segment() {
-    let mut cfg = AlgorithmConfig::default();
-    cfg.default = "invalid".to_string();
+    let cfg = AlgorithmConfig {
+        default: "invalid".to_string(),
+        ..Default::default()
+    };
     assert_eq!(cfg.get_default_algorithm(), AlgorithmType::Segment);
 }
 

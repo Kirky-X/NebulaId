@@ -118,6 +118,12 @@ pub struct SnowflakeAlgorithm {
     rotation_count: AtomicU8,
     metrics: Arc<SnowflakeMetrics>,
     clock_drift_ms: AtomicU64,
+    /// 串行化 `(last_timestamp, sequence)` 状态迁移（修复并发重复 ID 竞态）。
+    /// 「新毫秒复位」与「同毫秒递增」必须互斥，否则两线程可同时复位
+    /// sequence 并领取相同 seq，产生重复 ID。临界区可能跨越
+    /// `wait_for_next_ms` 的 `.await`，故使用可安全跨 await 持有的
+    /// `tokio::sync::Mutex`（而非 parking_lot）。
+    gen_lock: tokio::sync::Mutex<()>,
 }
 
 struct SnowflakeMetrics {
@@ -149,6 +155,7 @@ impl SnowflakeAlgorithm {
             rotation_count: AtomicU8::new(0),
             metrics: Arc::new(SnowflakeMetrics::new()),
             clock_drift_ms: AtomicU64::new(0),
+            gen_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -198,6 +205,11 @@ impl SnowflakeAlgorithm {
     }
 
     async fn generate_id(&self) -> Result<Id> {
+        // 串行化 (last_timestamp, sequence) 状态迁移：若不加锁，两个线程可同时
+        // 观察到 timestamp > last_ts，各自复位 sequence 并领取相同 seq，产生重复
+        // ID。锁内包含 wait_for_next_ms 的 .await（tokio Mutex 可安全跨 await）。
+        let _guard = self.gen_lock.lock().await;
+
         let timestamp = Self::get_timestamp();
         let last_ts = self.last_timestamp.load(Ordering::SeqCst);
         let sequence_mask = self.config.sequence_mask();

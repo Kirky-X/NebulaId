@@ -26,6 +26,7 @@
   - [分布式协调](#分布式协调)
   - [健康监控](#健康监控)
   - [性能优化](#性能优化)
+  - [SDK 嵌入](#sdk-嵌入)
 - [最佳实践](#最佳实践)
 - [故障排除](#故障排除)
 - [后续步骤](#后续步骤)
@@ -405,6 +406,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+```
+
+---
+
+### SDK 嵌入
+
+Nebula ID 提供一等公民的嵌入式 SDK（feature `sdk`），无需自行拼装
+分布式锁 / 路由 / 降级后台任务等装配细节，`NebulaIdClientBuilder::build()`
+内部统一收拢。
+
+启用特性：
+
+```toml
+[dependencies]
+nebulaid = { version = "0.2", features = ["sdk"] }
+```
+
+**纯算法嵌入（零 DB 零网络）** —— 对照 `examples/embedded.rs`：
+
+```rust
+use nebulaid::core::Config;
+use nebulaid::sdk::NebulaIdClientBuilder;
+
+#[tokio::main]
+async fn main() -> nebulaid::core::Result<()> {
+    // 纯算法嵌入：默认算法设为 snowflake，避开需要数据库的 segment
+    let mut config = Config::default();
+    config.algorithm.default = "snowflake".to_string();
+
+    let client = NebulaIdClientBuilder::new(config).build().await?;
+    let id = client.generate("workspace", "group", "biz_tag").await?;
+    println!("{id}");
+
+    client.shutdown().await;
+    Ok(())
+}
+```
+
+> **注意**：Segment 算法需要数据库做号段分配。未通过
+> `with_repository(...)` 注入仓储时，Segment 请求返回
+> `CoreError::ConfigurationError`；Snowflake / UuidV8 为纯算法，零 DB 可用。
+
+**封装为 Web 服务（sdforge `#[forge]`）** —— 对照 `examples/sdk_server.rs`：
+用 `#[forge]` 把 `generate` / `batch_generate` 声明为 `POST /generate`、
+`POST /generate/batch`，并自动产出 OpenAPI（`GET /api-docs/openapi.json`）。
+
+```bash
+cargo run --package nebulaid --example embedded   --features sdk
+cargo run --package nebulaid --example sdk_server --features sdk,http
 ```
 
 ---

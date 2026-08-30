@@ -79,7 +79,10 @@ docker run -d \
   nebula-id:latest
 ```
 
-> **注意：** `docker/Dockerfile` 当前引用了 `crates/` 目录与 `nebula-server` 包名，与项目实际结构（单包 `nebulaid`，源码在 `src/`）存在历史遗留不一致。构建镜像前可能需要手动调整 Dockerfile 中的 `COPY` 与 `cargo build -p` 参数。后续将修复此问题。
+> **说明：** `docker/Dockerfile` 已适配单包 `nebulaid` 构建 —— builder 阶段
+> `COPY . .` 后 `cargo build --release --package nebulaid`，runtime 阶段拷贝
+> `target/release/nebula-id` 与 `config/`、`locales/`（已不再引用已移除的
+> `crates/` 目录与 `nebula-server` 包名）。
 
 ## 3. 配置说明
 

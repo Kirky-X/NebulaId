@@ -129,7 +129,7 @@ graph LR
 <br>
 
 ```rust
-use nebula_core::algorithm::{SegmentAlgorithm, SnowflakeAlgorithm};
+use nebulaid::core::algorithm::{SegmentAlgorithm, SnowflakeAlgorithm};
 
 // Segment algorithm for ordered, high-throughput ID generation
 let segment = SegmentAlgorithm::new(1);
@@ -150,7 +150,7 @@ Perfect for large-scale distributed systems requiring unique, ordered identifier
 <br>
 
 ```rust
-use nebula_core::types::Id;
+use nebulaid::core::types::Id;
 use uuid::Uuid;
 
 // Generate UUID v7 for time-ordered identifiers
@@ -173,7 +173,7 @@ Ideal for microservices requiring unique identifiers with different ordering gua
 <br>
 
 ```rust
-use nebula_core::algorithm::SegmentAlgorithm;
+use nebulaid::core::algorithm::SegmentAlgorithm;
 
 // Double buffering for maximum throughput
 let segment = SegmentAlgorithm::new(1);
@@ -273,13 +273,13 @@ url = "redis://localhost"
 **Step 2: Initialize Service**
 
 ```rust
-use nebula_core::Config;
+use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load_from_file("config.toml")?;
     
-    let service = nebula_server::NebulaIdService::new(config).await?;
+    let service = nebulaid::server::NebulaIdService::new(config).await?;
     service.start().await?;
     
     Ok(())
@@ -296,7 +296,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 <br>
 
 ```rust
-use nebula_core::algorithm::SegmentAlgorithm;
+use nebulaid::core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -374,7 +374,7 @@ Package registry
 #### 📝 Example 1: Segment Algorithm
 
 ```rust
-use nebula_core::algorithm::SegmentAlgorithm;
+use nebulaid::core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -404,7 +404,7 @@ Segment ID generated: 1000001
 #### 🔥 Example 2: Snowflake Algorithm
 
 ```rust
-use nebula_core::algorithm::SnowflakeAlgorithm;
+use nebulaid::core::algorithm::SnowflakeAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

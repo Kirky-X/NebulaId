@@ -673,19 +673,26 @@ async fn main() -> Result<()> {
         t!("log.main.auth_enabled", enabled = config.auth.enabled)
     );
 
-    // wiring T008：认证决策缓存 —— ApiKeyAuth 与 ApiHandlers 共享同一实例：
-    // 前者读缓存加速校验，后者在吊销/轮换/重置时失效条目。
+    // wiring T008 + converge T024②：认证决策缓存 —— ApiKeyAuth 与 ApiHandlers
+    // 共享同一实例：前者读缓存加速校验，后者在吊销/轮换/重置时失效条目。
+    // `cache_ttl_seconds = 0` 表示禁用，此时不再装配实例（装配了也不会写入，
+    // 却仍要在每次校验后多打一次 get_api_key_by_id 判因，纯空转开销）。
     #[cfg(feature = "garrison-auth")]
     let auth_cache: Option<Arc<nebulaid::server::auth::AuthCache>> =
-        repository.as_ref().map(|_| {
-            info!(
-                ttl_seconds = config.auth.cache_ttl_seconds,
-                "auth cache enabled (garrison cache-memory)"
-            );
-            Arc::new(nebulaid::server::auth::AuthCache::new(
-                config.auth.cache_ttl_seconds,
-            ))
-        });
+        match (repository.as_ref(), config.auth.cache_ttl_seconds) {
+            (Some(_), ttl @ 1..) => {
+                info!(
+                    ttl_seconds = ttl,
+                    "auth decision cache enabled (in-process GarrisonDao impl)"
+                );
+                Some(Arc::new(nebulaid::server::auth::AuthCache::new(ttl)))
+            }
+            (Some(_), 0) => {
+                info!("auth decision cache disabled (auth.cache_ttl_seconds = 0)");
+                None
+            }
+            (None, _) => None,
+        };
 
     // Create API key auth with repository for database-backed storage
     // Phase 9 T043 (HIGH H3) — configure trusted proxies so the auth

@@ -237,6 +237,12 @@ EOF
 - 启用 TLS（`[tls].enabled = true`），配置证书路径
 - 限制 PostgreSQL/Redis/Etcd 端口仅对内网开放
 - 定期轮换 API Key
+- **认证缓存的失效窗口**（`[auth].cache_ttl_seconds`）：缓存是进程内的，
+  吊销 / 轮换 / 禁用只对**处理该管理请求的节点**即时生效，其余节点最长滞后
+  一个 `cache_ttl_seconds`（默认 300 秒）才会停止放行旧决策。多副本部署且要求
+  吊销近实时时，把 `cache_ttl_seconds` 设为 `0` 关闭缓存（代价：每请求回源
+  DB + Argon2id）。另注：命中缓存的请求不回写数据库，`last_used_at` 同样最多
+  滞后一个 TTL，不能作为实时活跃度依据。
 
 ### 7.2 性能
 

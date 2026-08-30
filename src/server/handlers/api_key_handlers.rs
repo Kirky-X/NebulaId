@@ -257,7 +257,8 @@ impl super::ApiHandlers {
         }
 
         repo.delete_api_key(id).await.map_err(map_db_error)?;
-        // wiring T008：吊销必须即时生效，不能等 TTL 自然过期。
+        // wiring T008：吊销后本进程的缓存必须立即失效，不能等 TTL 自然过期。
+        // 多节点部署时其他节点最长滞后一个 cache_ttl（口径见 docs/DEPLOYMENT.md 7.1）。
         self.clear_auth_cache().await;
 
         Ok(RevokeApiKeyResponse {

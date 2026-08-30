@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! 认证决策缓存门面（wiring T008）—— 复用 garrison `cache-memory` KV。
+//! 认证决策缓存门面（wiring T008）—— garrison `GarrisonDao` 接口的进程内实现。
+//!
+//! 存储是 `MemoryGarrisonDao`（本项目自研的进程内 HashMap），不是 garrison
+//! 上游 `cache-memory` 特性提供的组件；这里只借用 garrison 的 DAO trait 形状，
+//! 以便将来换后端时接口不变。
 //!
 //! 目标：消除「每个请求都走 DB + Argon2id」的认证热点。缓存的只是**认证决策
 //! 结果**（workspace_id + role + key 自身过期时间），因此必须解决两个正确性
@@ -25,6 +29,9 @@
 //!
 //! 吊销（revoke）只有行 `id` 而无 `key_id`，无法精确定位条目，故走 `clear()`
 //! 全量失效；轮换（rotate）与 `key_id` 已知的路径走 `invalidate(key_id)`。
+//! **失效语义只对本进程即时生效**：缓存是进程内的，多节点部署时其他节点最长
+//! 滞后一个 `cache_ttl` 才会停止放行旧决策（运维口径见 docs/DEPLOYMENT.md）。
+//! 同理，命中缓存的请求不回写 DB，`last_used_at` 最多滞后一个 `cache_ttl`。
 //! 缓存是尽力而为的加速层：任何 KV 读写失败都退回 DB 校验并记录日志，绝不影响
 //! 认证结论。
 
@@ -99,9 +106,14 @@ impl AuthCache {
         )
     }
 
-    /// 前缀匹配键，用于按 `key_id` 清除其名下所有凭证变体（轮换后旧 secret 等）。
-    fn key_id_pattern(key_id: &str) -> String {
-        format!("{}{}:*", CACHE_KEY_PREFIX, key_id)
+    /// 按 `key_id` 定位条目时的精确前缀（轮换后同一 key_id 可能有多个 secret 变体）。
+    fn key_id_prefix(key_id: &str) -> String {
+        format!("{}{}:", CACHE_KEY_PREFIX, key_id)
+    }
+
+    /// 本命名空间下的全量扫描模式。
+    fn namespace_pattern() -> String {
+        format!("{}*", CACHE_KEY_PREFIX)
     }
 
     /// 查缓存；命中但 key 已过期时删除条目并返回 `None`（回源 DB）。
@@ -164,9 +176,12 @@ impl AuthCache {
     }
 
     /// 失效指定 `key_id` 名下的全部条目（轮换、禁用、删除 key 时调用）。
+    ///
+    /// 扫描用整命名空间模式再按精确前缀过滤：`key_id` 源自客户端提交的凭证，
+    /// 若直接拼进 glob，含 `*`/`?` 的 key_id 会越界删除他人条目。
     pub async fn invalidate(&self, key_id: &str) {
-        let pattern = Self::key_id_pattern(key_id);
-        let keys = match self.dao.keys(&pattern).await {
+        let prefix = Self::key_id_prefix(key_id);
+        let keys = match self.dao.keys(&Self::namespace_pattern()).await {
             Ok(keys) => keys,
             Err(e) => {
                 // 无法枚举就不敢保留：整体清空，避免残留有效条目。
@@ -175,8 +190,8 @@ impl AuthCache {
                 return;
             }
         };
-        for key in keys {
-            if let Err(e) = self.dao.delete(&key).await {
+        for key in keys.iter().filter(|key| key.starts_with(&prefix)) {
+            if let Err(e) = self.dao.delete(key).await {
                 tracing::warn!(error = %e, "auth cache entry delete failed");
             }
         }
@@ -184,8 +199,7 @@ impl AuthCache {
 
     /// 清空全部认证缓存（吊销路径：只持有行 `id`，无法定位 `key_id`）。
     pub async fn clear(&self) {
-        let pattern = format!("{}*", CACHE_KEY_PREFIX);
-        let keys = match self.dao.keys(&pattern).await {
+        let keys = match self.dao.keys(&Self::namespace_pattern()).await {
             Ok(keys) => keys,
             Err(e) => {
                 tracing::warn!(error = %e, "auth cache scan failed; entries may persist until TTL");
@@ -253,6 +267,33 @@ mod tests {
         assert!(
             cache.dao.get(&key).await.unwrap().is_none(),
             "过期条目应被顺手清理"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_does_not_treat_glob_chars_in_key_id_as_pattern() {
+        // 回归钉桩：key_id 源自客户端凭证串，含 `*`/`?` 时不得被当作 glob 通配，
+        // 否则一次 invalidate 就能清掉他人全部缓存条目（放大为拒绝服务）。
+        let cache = AuthCache::new(300);
+        cache.put("*", "s-star", &identity(None, None)).await;
+        cache.put("k2", "s2", &identity(None, None)).await;
+        cache.put("k3", "s3", &identity(None, None)).await;
+
+        cache.invalidate("*").await;
+
+        assert!(
+            cache.get("*", "s-star").await.is_none(),
+            "自己的条目应被删除"
+        );
+        assert!(
+            cache.get("k2", "s2").await.is_some() && cache.get("k3", "s3").await.is_some(),
+            "glob 元字符不得越界命中其他 key_id"
+        );
+
+        cache.invalidate("k?").await;
+        assert!(
+            cache.get("k2", "s2").await.is_some(),
+            "`?` 同样必须按字面量处理"
         );
     }
 

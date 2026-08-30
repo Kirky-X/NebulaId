@@ -35,6 +35,10 @@ pub mod core;
 // Server namespace - HTTP/gRPC 服务
 pub mod server;
 
+// SDK namespace - 嵌入式一等公民入口（wiring T012，feature `sdk` 门控）
+#[cfg(feature = "sdk")]
+pub mod sdk;
+
 // Phase 8 ICU i18n — load locale files at compile time.
 // `i18n!` embeds all `locales/*.yml` as static data; `t!()` macro becomes
 // available crate-wide via `#[macro_use] extern crate rust_i18n`.

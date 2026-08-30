@@ -31,6 +31,9 @@ http = []
 grpc = []
 # garrison-auth: 启用 garrison 接管 API key 验证（替代手写 Argon2id + key_id:key_secret 方案）
 garrison-auth = ["dep:garrison"]
+# sdk: 门控嵌入式 SDK facade（src/sdk/，NebulaIdClient/Builder）。
+# 纯标记特性，不引入额外依赖（复用 core 算法/路由/降级能力）。
+sdk = []
 
 # sdforge 宏还 emit 其他内部 feature 的 cfg gate，声明为已知 cfg 值以消除 check-cfg 警告
 [lints.rust]

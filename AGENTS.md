@@ -4,7 +4,7 @@ This file provides guidance for AI agents working in the Nebula ID repository.
 
 ## Project Overview
 
-Nebula ID is an enterprise-grade distributed ID generation system written in Rust, supporting multiple ID generation algorithms (Segment, Snowflake, UUID v7/v4) with high availability, distributed coordination, and monitoring capabilities.
+Nebula ID is an enterprise-grade distributed ID generation system written in Rust, supporting multiple ID generation algorithms (Segment, Snowflake, UUID v8 — `uuid_v7` / `uuid_v4` are accepted only as input aliases of `AlgorithmType::from_str`) with high availability, distributed coordination, and monitoring capabilities.
 
 ## Build Commands
 
@@ -29,18 +29,28 @@ cargo build --package nebulaid --features etcd
 ## Lint & Format Commands
 
 ```bash
-# Check code formatting
-cargo fmt --all -- --check
+# Check code formatting (what the gates actually run)
+cargo fmt --package nebulaid -- --check
 
 # Format code
-cargo fmt --all
+cargo fmt --package nebulaid
 
-# Run Clippy lints
+# Run Clippy lints — CI (`ci.yml` fmt-clippy job) and lefthook pre-commit
+cargo clippy --package nebulaid --features etcd -- -D warnings
+
+# Run Clippy lints — `.pre-commit-config.yaml` (cargo-clippy hook)
+cargo clippy --package nebulaid --features "postgresql,http,grpc,etcd,integration-tests" -- -D warnings
+
+# Run Clippy lints — `./scripts/run.sh pre-commit` (the ONLY place this form runs)
 cargo clippy --lib --bins -- -D warnings
 
-# Run pre-commit checks (format, clippy, build, tests)
+# Run pre-commit checks (fmt, clippy, build, test --lib, deny, doc, coverage)
 ./scripts/run.sh pre-commit
 ```
+
+> There is no single canonical lint command. The four gates (CI / lefthook /
+> pre-commit / `run.sh pre-commit`) deliberately use different target and feature
+> sets — see the table under **Hooks Configuration** below for the exact mapping.
 
 ## Pre-commit Hooks
 
@@ -62,11 +72,31 @@ pre-commit autoupdate
 
 ### Hooks Configuration (`.pre-commit-config.yaml` + `lefthook.yml`)
 
+The two managers do **not** run the same commands.
+
+`.pre-commit-config.yaml`:
+
 | Hook | Command | Purpose |
 |------|---------|---------|
-| cargo-fmt | `cargo fmt --all -- --check` | Code formatting |
-| cargo-clippy | `cargo clippy --lib --bins` | Static analysis |
-| cargo-check | `cargo check --package nebulaid` | Compilation check |
+| cargo-fmt | `cargo fmt --package nebulaid -- --check` | Code formatting |
+| cargo-clippy | `cargo clippy --package nebulaid --features "postgresql,http,grpc,etcd,integration-tests" -- -D warnings` | Static analysis |
+| cargo-check | `cargo check --package nebulaid --features "postgresql,http,grpc,etcd,integration-tests"` | Compilation check |
+
+`lefthook.yml`:
+
+| Stage | Command | Purpose |
+|-------|---------|---------|
+| pre-commit `cargo-fmt` | `cargo fmt --package nebulaid -- --check` | Code formatting |
+| pre-commit `cargo-clippy` | `cargo clippy --package nebulaid --features etcd -- -D warnings` | Static analysis |
+| pre-commit `private-key-scan` | `gitleaks protect --staged --redact --config .gitleaks.toml` | Secret scan (skipped if gitleaks absent) |
+| pre-push `cargo-test` | `cargo test --package nebulaid --features etcd` | Tests |
+| pre-push `cargo-coverage` | `cargo llvm-cov --package nebulaid --features etcd --fail-under-lines 80` | Coverage gate (skipped if cargo-llvm-cov absent) |
+
+`./scripts/run.sh pre-commit` (`scripts/_pre_commit_impl.sh`) is a third, independent
+口径 and runs no `--package` / `--features` flags:
+`cargo fmt -- --check` → `cargo clippy --lib --bins -- -D warnings` → `cargo build` →
+`cargo test --lib` → `cargo deny check` → `cargo doc --no-deps` → optional
+`cargo tarpaulin`.
 
 ### Troubleshooting
 
@@ -126,23 +156,33 @@ GitHub Actions workflows are located in `.github/workflows/`:
 ### CI Pipeline (ci.yml)
 
 ```bash
-# Jobs run in sequence: quick-check → build → test → security-audit
+# Job graph: fmt-clippy ─┬─> deny ─┬─> test (matrix) ─> summary
+#                        ├─> audit ┘
+#                        └─> sdk
+# `deny` and `audit` declare no `needs`, so they start immediately in parallel.
 ```
 
-**Quick Check Job:**
-- Format validation: `cargo fmt --all -- --check`
-- Clippy lint (lib + bins only): `cargo clippy --lib --bins`
+**fmt-clippy Job (the lint gate):**
+- Format validation: `cargo fmt --package nebulaid -- --check`
+- Clippy: `cargo clippy --package nebulaid --features etcd -- -D warnings`
 
-**Build Job:**
-- Compile the package: `cargo build --package nebulaid --features etcd`
-  (never `--all-features` — dbnexus forbids sqlite+postgres mixing)
+**sdk Job:**
+- `cargo clippy --package nebulaid --features sdk -- -D warnings`
+- `cargo test --package nebulaid --features sdk` (no coverage gate; only proves the
+  SDK surface and its examples compile)
 
-**Test Job:**
-- Run all tests: `cargo test --package nebulaid --features etcd`
-- Generate coverage for PRs (codecov)
+**test Job (build + test + coverage, matrix `default` / `postgresql` / `etcd`):**
+- Build: `cargo build --package nebulaid` for `default`, otherwise
+  `cargo build --package nebulaid --features <feature>`
+- Coverage gate: `cargo llvm-cov --package nebulaid [--features <feature>]
+  --fail-under-lines 95 --lcov --output-path lcov.info`, uploaded to codecov
+- The matrix excludes `sqlite` — limiteron hard-depends on `dbnexus/postgres`, so that
+  feature is unbuildable; `--all-features` is likewise never used
 
-**Security Audit Job:**
-- Vulnerability scanning: `cargo deny check security`
+**Security Jobs:**
+- `deny`: `EmbarkStudios/cargo-deny-action@v2` with `command: check` (covers advisories,
+  bans, licenses, sources; `check security` is not a valid subcommand on cargo-deny 0.20)
+- `audit`: `cargo audit --deny warnings`
 - CodeQL semantic analysis (separate `codeql.yml` workflow)
 
 ### Pre-commit Check Script
@@ -153,7 +193,11 @@ Use the local CI script before committing:
 ./scripts/run.sh pre-commit
 ```
 
-This runs the same checks as the CI pipeline locally.
+This is **not** identical to the CI pipeline: the script runs `cargo fmt -- --check`,
+`cargo clippy --lib --bins -- -D warnings`, `cargo build`, `cargo test --lib`,
+`cargo deny check`, `cargo doc --no-deps` and an optional tarpaulin step — none with
+`--package nebulaid`, none with `--features etcd`, and the coverage threshold is not
+enforced. Only lefthook's pre-push hook mirrors the CI feature set.
 
 ## Code Style Guidelines
 
@@ -297,7 +341,7 @@ graph TD
     Root --> Main["main.rs"]
     Root --> Build["build.rs"]
 
-    Core --> Algo["algorithm/<br/>segment, snowflake, uuid_v7,<br/>circuit_breaker, router, degradation_manager"]
+    Core --> Algo["algorithm/<br/>segment, snowflake, uuid_v8,<br/>router, degradation_manager, traits"]
     Core --> Auth["auth/"]
     Core --> Config["config/"]
     Core --> Container["container/<br/>app_container (DI)"]
@@ -325,7 +369,7 @@ graph TD
 ```
 
 **Key modules:**
-- `src/core/algorithm/` - ID generation algorithms (Segment, Snowflake, UUID v7/v4) with circuit breaker, degradation manager, and router
+- `src/core/algorithm/` - ID generation algorithms (Segment, Snowflake, UUID v8) with degradation manager, and router
 - `src/core/container/app_container.rs` - Dependency injection container
 - `src/core/coordinator/` - Etcd-based distributed coordination (leader election, worker allocation, cluster health)
 - `src/core/database/` - SeaORM entities and repository layer

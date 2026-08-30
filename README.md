@@ -58,7 +58,7 @@
 
 ### 🎯 Core Features
 
-- ✅ **Multiple ID Algorithms** - Segment, Snowflake, UUID v7, UUID v4
+- ✅ **Multiple ID Algorithms** - Segment, Snowflake, UUID v8
 - ✅ **Distributed Coordination** - Etcd-based leader election and coordination
 - ✅ **High Availability** - Datacenter health monitoring and automatic failover
 - ✅ **Type-Safe Design** - Full Rust type safety with async/await patterns
@@ -111,7 +111,7 @@ graph LR
     B --> C[Algorithm Router]
     C --> D[Segment Algorithm]
     C --> E[Snowflake Algorithm]
-    C --> F[UUID v7/v4]
+    C --> F[UUID v8 Algorithm]
     B --> G[Distributed Coordination]
     G --> H[Etcd]
     B --> I[Monitoring]
@@ -153,14 +153,15 @@ Perfect for large-scale distributed systems requiring unique, ordered identifier
 use nebulaid::core::types::Id;
 use uuid::Uuid;
 
-// Generate UUID v7 for time-ordered identifiers
-let uuid_v7 = Uuid::now_v7();
-let id = Id::from_uuid_v7(uuid_v7);
-let id_string = id.to_string();
+// Wrap any Uuid into a Nebula `Id` (the only constructor is `from_uuid_v8`)
+let id = Id::from_uuid_v8(Uuid::now_v7());
+let id_string = id.to_string(); // renders as a standard 36-char UUID string
 
-// Generate UUID v4 for random identifiers
-let uuid_v4 = Uuid::new_v4();
-let id_v4 = Id::from_uuid_v4(uuid_v4);
+// Random identifiers use the same constructor
+let id_v4 = Id::from_uuid_v8(Uuid::new_v4());
+
+// And convert back losslessly
+let uuid = id_v4.to_uuid_v8();
 ```
 
 Ideal for microservices requiring unique identifiers with different ordering guarantees.
@@ -466,7 +467,7 @@ graph TB
     D --> E
     E --> F[Segment Algorithm]
     E --> G[Snowflake Algorithm]
-    E --> H[UUID v7/v4]
+    E --> H[UUID v8]
     F --> I[(Database)]
     G --> J[Distributed Coordination]
     J --> K[Etcd]
@@ -495,7 +496,7 @@ graph TB
 | **Algorithm Router** | Routes ID generation requests to appropriate algorithm | ✅ Stable |
 | **Segment Algorithm** | Database-based segment ID generation with double buffering | ✅ Stable |
 | **Snowflake Algorithm** | Twitter Snowflake variant for distributed unique IDs | ✅ Stable |
-| **UUID Generator** | UUID v7 and v4 implementation | ✅ Stable |
+| **UUID Generator** | UUID v8 (RFC 9562 §5.8 custom structured) implementation | ✅ Stable |
 | **Distributed Coordination** | Etcd-based leader election and coordination | ✅ Stable |
 | **Monitoring** | Health checks, metrics collection, and alerting | ✅ Stable |
 | **API Gateway** | HTTP/HTTPS and gRPC/gRPCS endpoint management | ✅ Stable |
@@ -541,7 +542,9 @@ endpoints = ["http://localhost:2379"]
 api_key = "your-api-key-here"
 
 [rate_limit]
-requests_per_second = 1000
+enabled = true
+default_rps = 1000
+burst_size = 100
 
 [tls]
 enabled = false
@@ -581,7 +584,9 @@ export NEBULA_AUTH_API_KEY="your-api-key-here"
 | `redis.url` | String | - | Redis connection URL |
 | `etcd.endpoints` | Vec&lt;String&gt; | [] | Etcd server endpoints |
 | `auth.api_key` | String | - | API key for authentication |
-| `rate_limit.requests_per_second` | u32 | 1000 | Rate limit threshold |
+| `rate_limit.enabled` | Boolean | code: true; repo `config/config.toml`: false | Enable rate limiting |
+| `rate_limit.default_rps` | u32 | 10000 | Requests per second |
+| `rate_limit.burst_size` | u32 | code: 100; repo sample: 5000 | Burst size |
 | `tls.enabled` | Boolean | false | Enable TLS/SSL |
 </td>
 </tr>
@@ -683,8 +688,7 @@ cargo test --test integration
 ```
 Segment: 100,000+ IDs/sec
 Snowflake: 1,000,000+ IDs/sec
-UUID v7: 500,000+ IDs/sec
-UUID v4: 1,000,000+ IDs/sec
+UUID v8: 500,000+ IDs/sec
 ```
 
 </td>
@@ -695,8 +699,7 @@ UUID v4: 1,000,000+ IDs/sec
 ```
 Segment: ~0.5ms
 Snowflake: ~0.1ms
-UUID v7: ~0.05ms
-UUID v4: ~0.05ms
+UUID v8: ~0.05ms
 ```
 
 </td>
@@ -709,15 +712,12 @@ UUID v4: ~0.05ms
 <br>
 
 ```bash
-# Run benchmarks
-cargo bench
-
-# Sample output:
-test segment_next_id    ... bench: 500 ns/iter (+/- 50)
-test snowflake_next_id  ... bench: 100 ns/iter (+/- 10)
-test uuid_v7_next_id    ... bench: 50 ns/iter (+/- 5)
-test uuid_v4_next_id    ... bench: 50 ns/iter (+/- 5)
+# Run the benchmarks shipped by this repository
+cargo bench --bench i18n
 ```
+
+The only Criterion target declared in `Cargo.toml` is `i18n` (`benches/i18n.rs`);
+there is no ID-generation benchmark harness, so no `*_next_id` numbers are published here.
 
 </details>
 
@@ -901,7 +901,7 @@ See [Deployment Guide  scripts/run.sh Subcommands](docs/DEPLOYMENT.md#8-scriptsr
 - [x] Core ID generation algorithms
 - [x] Segment algorithm with double buffering
 - [x] Snowflake algorithm
-- [x] UUID v7/v4 implementation
+- [x] UUID v8 implementation
 - [x] Distributed coordination with Etcd
 
 </td>

@@ -26,6 +26,9 @@
 - [Error Handling](#error-handling)
 - [HTTP Request Headers](#http-request-headers)
   - [Accept-Language Header](#accept-language-header)
+- [HTTP Response Headers](#http-response-headers)
+  - [Rate Limit Headers](#rate-limit-headers)
+- [gRPC Status Codes](#grpc-status-codes)
 - [HTTP Endpoints](#http-endpoints)
   - [/health/sdforge](#healthsdforge)
 - [Examples](#examples)
@@ -720,11 +723,17 @@ pub struct Id {
 
 ```rust
 pub fn from_u128(value: u128) -> Self
+pub fn as_u128(&self) -> u128
+pub fn from_i64(value: i64) -> Self
+pub fn as_i64(&self) -> i64
+pub fn from_string(s: &str) -> Result<Self, CoreError>
 pub fn from_uuid_v8(uuid: Uuid) -> Self
 pub fn to_uuid_v8(&self) -> Uuid
-pub fn to_u128(&self) -> u128
-pub fn to_string(&self) -> String
+pub fn to_prefixed(&self, prefix: &str) -> String
 pub fn to_hex(&self) -> String
+pub fn to_base36(&self) -> String
+// `Display` renders a standard UUID string when the version nibble is 4/7/8,
+// otherwise the plain u128 (`src/core/types/id.rs:55-70`).
 ```
 
 > `Id` has no `from_uuid_v7` / `from_uuid_v4` — `uuid_v7` / `uuid_v4` exist only as input aliases of
@@ -737,18 +746,19 @@ A batch of generated IDs.
 ```rust
 pub struct IdBatch {
     pub ids: Vec<Id>,
-    pub algorithm_type: AlgorithmType,
-    pub trace_id: String,
+    pub algorithm: AlgorithmType,
+    pub biz_tag: String,
+    pub generated_at: chrono::DateTime<chrono::Utc>,
 }
 ```
 
 **Methods:**
 
 ```rust
-pub fn new(ids: Vec<Id>, algorithm_type: AlgorithmType, trace_id: String) -> Self
+pub fn new(ids: Vec<Id>, algorithm: AlgorithmType, biz_tag: String) -> Self
+pub fn from_u64s(values: &[u64]) -> Self
 pub fn len(&self) -> usize
 pub fn is_empty(&self) -> bool
-pub fn into_vec(self) -> Vec<Id>
 ```
 
 ### `AlgorithmType`
@@ -831,9 +841,18 @@ pub struct AlgorithmMetricsSnapshot {
     pub current_qps: u64,
     pub p50_latency_us: u64,
     pub p99_latency_us: u64,
-    pub cache_hit_rate: f64,
+    pub p999_latency_us: u64,
+    pub clock_backwards: u64,
+    pub cache_hit_rate: Option<f64>,
 }
 ```
+
+> `p50/p99/p999_latency_us` and `clock_backwards` are filled by
+> `AlgorithmRouter::metrics()` from the router-level observation ring buffer; the algorithms
+> themselves return `0`, which means "not yet observed by the router", not "latency is 0".
+> `cache_hit_rate = None` means the algorithm has no cache concept (Snowflake / UUID v8) —
+> using `Option` keeps "no cache" from being averaged in as a 0% hit rate
+> (`src/core/algorithm/traits.rs:144-166`).
 
 ### `SegmentInfo`
 
@@ -1020,6 +1039,65 @@ The locale middleware applies only to `/api/v1/*` routes. The root
 `/health`, `/ready`, `/metrics`, and `/api-docs/openapi.json` endpoints do
 not consume `Extension<Locale>` and therefore skip the `Accept-Language`
 parse cost.
+
+---
+
+## HTTP Response Headers
+
+### Rate Limit Headers
+
+Written by `RateLimitMiddleware` on **every** response it handles. The names are the
+canonical lowercase constants in `src/server/rate_limit/middleware.rs:35-36`:
+
+| Header | Written on allow (2xx/4xx/5xx) | Written on reject (429) |
+|--------|--------------------------------|--------------------------|
+| `x-ratelimit-limit` | quota window size (`result.limit`) | quota window size (`result.limit`) |
+| `x-ratelimit-remaining` | remaining quota (`result.remaining`) | literal `0` |
+| `Retry-After` | not written | seconds, `retry_after.unwrap_or(1)` |
+
+The 429 body is JSON: `{"code": 429, "message": "Rate limit exceeded", "retry_after": <n|null>}`.
+
+**CORS exposure matters.** `EXPOSED_HEADERS` in `src/server/config/cors.rs:36` is
+`["x-request-id", "x-ratelimit-remaining"]`. A browser can therefore read
+`x-ratelimit-remaining` only; `x-ratelimit-limit` and `Retry-After` are present on the
+response but are **not** exposed to scripts — read them server-side.
+
+**Rate limit key precedence** (`middleware.rs:78-83`): `workspace_id` from request
+extensions → client IP → `"anonymous"`. The client IP falls back to `X-Forwarded-For`
+only for peers listed in `with_trusted_proxies`; with no trusted proxy configured every
+unauthenticated request shares the single `"anonymous"` bucket.
+
+**Scope**: the limiter is mounted on the HTTP stack only. gRPC traffic is currently
+served without the rate-limit layer (see `src/server/grpc.rs` T023 note), so gRPC clients
+get no equivalent of HTTP 429.
+
+---
+
+## gRPC Status Codes
+
+Authentication is performed once per RPC by `GrpcServer::authenticate`
+(`src/server/grpc.rs:85`). Mapping per spec R-auth-003:
+
+| Situation | Status code | Message |
+|-----------|-------------|---------|
+| No `authorization` metadata | `Unauthenticated` | `missing authorization metadata` |
+| Unsupported authorization format | `Unauthenticated` | `invalid authorization format` |
+| Key exists but `enabled = false` | `PermissionDenied` | `CoreError::ApiKeyDisabled` |
+| Key exists but past its expiry | `PermissionDenied` | `CoreError::ApiKeyExpired` |
+| Secret mismatch, or key not found | `Unauthenticated` | `invalid or unknown api key` |
+| `auth.enabled = false` | (allowed through) | logs `auth_disabled_request` at warn |
+
+Request-level validation and failures:
+
+| Situation | Status code |
+|-----------|-------------|
+| `count == 0` on batch generate | `InvalidArgument` |
+| `count > batch_generate.max_batch_size` | `InvalidArgument` |
+| `parse_id` on an unparseable ID | `InvalidArgument` |
+| Generator/handler error returned by the core | `Internal` |
+
+The "secret mismatch" and "key not found" cases deliberately share one message so the
+response does not leak which `key_id` values are valid.
 
 ---
 

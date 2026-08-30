@@ -272,7 +272,7 @@ nebula-id = { version = "0.1.0", features = ["monitoring", "audit", "grpc"] }
 **Verification:**
 
 ```rust
-use nebula_core::algorithm::SegmentAlgorithm;
+use nebulaid::core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -435,7 +435,9 @@ endpoints = ["http://localhost:2379"]
 api_key = "your-api-key-here"
 
 [rate_limit]
-requests_per_second = 1000
+enabled = true
+default_rps = 1000
+burst_size = 100
 ```
 
 **Environment Variables:**
@@ -468,7 +470,7 @@ export NEBULA_AUTH_API_KEY="your-api-key-here"
 **5-Minute Quick Start：**
 
 ```rust
-use nebula_core::algorithm::SegmentAlgorithm;
+use nebulaid::core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -561,7 +563,7 @@ The Segment algorithm pre-allocates ID ranges from the database for efficient ba
 **Code Example:**
 
 ```rust
-use nebula_core::algorithm::SegmentAlgorithm;
+use nebulaid::core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -603,7 +605,7 @@ The Snowflake algorithm generates 64-bit IDs with configurable bit allocation:
 **Code Example:**
 
 ```rust
-use nebula_core::algorithm::SnowflakeAlgorithm;
+use nebulaid::core::algorithm::SnowflakeAlgorithm;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let snowflake = SnowflakeAlgorithm::new(1, 1); // datacenter, worker
@@ -713,9 +715,9 @@ Nebula ID uses etcd for distributed coordination:
 **Code Example:**
 
 ```rust
-use nebula_core::algorithm::segment::{SegmentAlgorithm, DcFailureDetector};
-use nebula_core::coordinator::EtcdClusterHealthMonitor;
-use nebula_core::config::EtcdConfig;
+use nebulaid::core::algorithm::segment::{SegmentAlgorithm, DcFailureDetector};
+use nebulaid::core::coordinator::EtcdClusterHealthMonitor;
+use nebulaid::core::config::EtcdConfig;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -752,7 +754,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 **Recommended Pattern:**
 
 ```rust
-use nebula_core::error::CoreError;
+use nebulaid::core::types::CoreError;
 
 #[tokio::main]
 async fn main() {
@@ -797,7 +799,7 @@ async fn main() {
 **Yes!** Nebula ID is designed for async/await from the ground up.
 
 ```rust
-use nebula_core::algorithm::SegmentAlgorithm;
+use nebulaid::core::algorithm::SegmentAlgorithm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -965,7 +967,7 @@ Nebula ID is designed for high concurrency:
 **Best Practices:**
 
 ```rust
-use nebula_core::algorithm::SnowflakeAlgorithm;
+use nebulaid::core::algorithm::SnowflakeAlgorithm;
 use std::sync::Arc;
 use tokio::task;
 
@@ -1064,26 +1066,26 @@ api_key = "your-secure-api-key-here"
 token_expiry_hours = 24
 
 [rate_limit]
-requests_per_second = 1000
+enabled = true
+default_rps = 1000
 burst_size = 100
+
+[batch_generate]
 max_batch_size = 100  # Maximum batch size to prevent DoS attacks
 ```
 
 **Usage:**
 
 ```rust
-use nebula_core::server::NebulaIdServer;
-use nebula_core::Config;
+use nebulaid::core::Config;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Config::load_from_file("config.toml")?;
-    
-    let server = NebulaIdServer::new(config);
-    
-    // Server validates API key on each request
-    server.start().await?;
-    
+// API key validation happens inside the HTTP/gRPC server wired up by `src/main.rs`.
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = Config::load_from_file("config/config.toml")?;
+
+    // `auth.enabled` is the switch that gates the middleware.
+    println!("auth enabled: {}", config.auth.enabled);
+
     Ok(())
 }
 ```
@@ -1128,7 +1130,8 @@ Nebula ID includes built-in rate limiting:
 
 ```toml
 [rate_limit]
-requests_per_second = 1000
+enabled = true
+default_rps = 1000
 burst_size = 100
 ```
 

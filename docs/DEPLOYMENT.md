@@ -102,8 +102,16 @@ docker run -d \
 | `[algorithm.snowflake]` | `sequence_bits` | 序列号位数 | 10 |
 | `[tls]` | `enabled` | 启用 TLS | false |
 | `[auth]` | `enabled` | 启用 API Key 认证 | true |
-| `[rate_limit]` | `enabled` | 启用限流 | false |
+| `[rate_limit]` | `enabled` | 启用限流 | 代码默认 true / 仓库样例 false |
 | `[etcd]` | `endpoints` | Etcd 端点列表 | `["http://localhost:2379"]` |
+
+> ⚠️ **全局限流默认不启用（仓库样例口径）**：限流开关是**顶层** `[rate_limit].enabled`
+> （不是 `auth.rate_limit.enabled`），由 `src/main.rs` 读取 `config.rate_limit.enabled`
+> 决定是否挂载 `RateLimitMiddleware`。`RateLimitConfig::default()` 的 `enabled` 是 `true`，
+> 但仓库自带的 `config/config.toml` 里 `[rate_limit].enabled = false`，
+> 因此**直接使用该样例配置启动时全局限流不会生效**，需要限流请显式改为 `true`。
+> 注意 `[rate_limit]` 段三个字段（`enabled` / `default_rps` / `burst_size`）都没有
+> `#[serde(default)]`，整段或单字段缺失都会导致配置解析失败。
 
 ### 3.2 算法位分配（Snowflake）
 

@@ -26,7 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **限流层序、开关与响应头（含破坏性变更）**：
   - 限流层移到 CORS / 安全头**内侧**：旧顺序下 429 由最外层短路生成，客户端拿不到
     CORS 头，且 OPTIONS 预检会消耗真实配额。
-  - `auth.rate_limit.enabled = false` 现在真的不挂限流层（此前该配置无消费点）。
+  - `[rate_limit].enabled = false`（顶层段，非 `auth.rate_limit.enabled`）现在真的不挂
+    限流层（`src/main.rs` 读取 `config.rate_limit.enabled`；此前该配置无消费点）。
   - `POST /config/rate-limit` 复用启动期 `Config::validate`，`burst > 10×rps`
     这类运行期不一致组合被拒绝（此前只有单字段 range 校验）。
   - 限流响应头名单源统一：此前 CORS 暴露 `x-rate-limit-remaining`，而中间件写出的

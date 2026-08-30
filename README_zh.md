@@ -58,7 +58,7 @@
 
 ### 🎯 核心功能
 
-- ✅ **多种ID算法** - Segment、Snowflake、UUID v7、UUID v4
+- ✅ **多种ID算法** - Segment、Snowflake、UUID v8
 - ✅ **分布式协调** - 基于Etcd的leader选举和协调
 - ✅ **高可用性** - 数据中心健康监控和自动故障转移
 - ✅ **类型安全设计** - 完整的Rust类型安全与async/await模式
@@ -111,7 +111,7 @@ graph LR
     B --> C[算法路由]
     C --> D[Segment算法]
     C --> E[Snowflake算法]
-    C --> F[UUID v7/v4]
+    C --> F[UUID v8算法]
     B --> G[分布式协调]
     G --> H[Etcd]
     B --> I[监控]
@@ -154,14 +154,15 @@ let id = snowflake.generate_id()?;
 use nebulaid::core::types::Id;
 use uuid::Uuid;
 
-// 生成UUID v7用于时间排序的标识符
-let uuid_v7 = Uuid::now_v7();
-let id = Id::from_uuid_v7(uuid_v7);
-let id_string = id.to_string();
+// 任意 Uuid 都用同一个构造函数包装为 Nebula `Id`（仅有 `from_uuid_v8`）
+let id = Id::from_uuid_v8(Uuid::now_v7());
+let id_string = id.to_string(); // 输出标准 36 字符 UUID 字符串
 
-// 生成UUID v4用于随机标识符
-let uuid_v4 = Uuid::new_v4();
-let id_v4 = Id::from_uuid_v4(uuid_v4);
+// 随机标识符使用同一构造函数
+let id_v4 = Id::from_uuid_v8(Uuid::new_v4());
+
+// 可无损转回 Uuid
+let uuid = id_v4.to_uuid_v8();
 ```
 
 适用于需要不同排序保证的唯一标识符的微服务。
@@ -468,7 +469,7 @@ graph TB
     D --> E
     E --> F[Segment算法]
     E --> G[Snowflake算法]
-    E --> H[UUID v7/v4]
+    E --> H[UUID v8]
     F --> I[(数据库)]
     G --> J[分布式协调]
     J --> K[Etcd]
@@ -497,7 +498,7 @@ graph TB
 | **算法路由** | 将ID生成请求路由到合适的算法 | ✅ 稳定 |
 | **Segment算法** | 基于数据库的Segment ID生成，支持双缓冲 | ✅ 稳定 |
 | **Snowflake算法** | Twitter Snowflake变体，用于分布式唯一ID | ✅ 稳定 |
-| **UUID生成器** | UUID v7和v4实现 | ✅ 稳定 |
+| **UUID生成器** | UUID v8（RFC 9562 §5.8 自定义结构化）实现 | ✅ 稳定 |
 | **分布式协调** | 基于Etcd的leader选举和协调 | ✅ 稳定 |
 | **监控** | 健康检查、指标收集和告警 | ✅ 稳定 |
 | **API网关** | HTTP/HTTPS和gRPC/gRPCS端点管理 | ✅ 稳定 |
@@ -543,7 +544,9 @@ endpoints = ["http://localhost:2379"]
 api_key = "your-api-key-here"
 
 [rate_limit]
-requests_per_second = 1000
+enabled = true
+default_rps = 1000
+burst_size = 100
 
 [tls]
 enabled = false
@@ -583,7 +586,9 @@ export NEBULA_AUTH_API_KEY="your-api-key-here"
 | `redis.url` | String | - | Redis连接URL |
 | `etcd.endpoints` | Vec&lt;String&gt; | [] | Etcd服务器端点 |
 | `auth.api_key` | String | - | 用于认证的API密钥 |
-| `rate_limit.requests_per_second` | u32 | 1000 | 限流阈值 |
+| `rate_limit.enabled` | Boolean | 代码默认 true；仓库 `config/config.toml` 为 false | 启用限流 |
+| `rate_limit.default_rps` | u32 | 10000 | 每秒请求数 |
+| `rate_limit.burst_size` | u32 | 代码默认 100；仓库样例 5000 | 突发流量上限 |
 | `tls.enabled` | Boolean | false | 启用TLS/SSL |
 </td>
 </tr>
@@ -685,8 +690,7 @@ cargo test --test integration
 ```
 Segment: 100,000+ IDs/秒
 Snowflake: 1,000,000+ IDs/秒
-UUID v7: 500,000+ IDs/秒
-UUID v4: 1,000,000+ IDs/秒
+UUID v8: 500,000+ IDs/秒
 ```
 
 </td>
@@ -697,8 +701,7 @@ UUID v4: 1,000,000+ IDs/秒
 ```
 Segment: ~0.5ms
 Snowflake: ~0.1ms
-UUID v7: ~0.05ms
-UUID v4: ~0.05ms
+UUID v8: ~0.05ms
 ```
 
 </td>
@@ -711,15 +714,12 @@ UUID v4: ~0.05ms
 <br>
 
 ```bash
-# 运行基准测试
-cargo bench
-
-# 示例输出:
-test segment_next_id    ... bench: 500 ns/iter (+/- 50)
-test snowflake_next_id  ... bench: 100 ns/iter (+/- 10)
-test uuid_v7_next_id    ... bench: 50 ns/iter (+/- 5)
-test uuid_v4_next_id    ... bench: 50 ns/iter (+/- 5)
+# 运行本仓库实际提供的基准测试
+cargo bench --bench i18n
 ```
+
+`Cargo.toml` 中唯一声明的 Criterion 基准是 `i18n`（`benches/i18n.rs`）；
+本仓库没有 ID 生成基准框架，因此这里不发布任何 `*_next_id` 数值。
 
 </details>
 
@@ -903,7 +903,7 @@ CI 也通过同一入口调用（见 `.github/workflows/ci.yml`、`release.yml`�
 - [x] 核心ID生成算法
 - [x] 支持双缓冲的Segment算法
 - [x] Snowflake算法
-- [x] UUID v7/v4实现
+- [x] UUID v8实现
 - [x] 基于Etcd的分布式协调
 
 </td>

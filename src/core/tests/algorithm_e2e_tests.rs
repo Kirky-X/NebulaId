@@ -276,18 +276,17 @@ async fn e2e_snowflake_batch_generate_zero_size_returns_empty_batch() {
 // 跨算法端到端
 // =============================================================================
 
-/// E2E-XALG-001: 4 种算法均通过 AlgorithmBuilder 成功构建并生成唯一 ID。
+/// E2E-XALG-001: 全部 3 种算法均通过 AlgorithmBuilder 成功构建并生成唯一 ID。
 ///
-/// 覆盖功能场景穷举分析第 1 节 UUID v7 / UUID v4 / Snowflake / Segment 行：
-/// 验证工厂注册表 (`algorithm_factories()`) 中所有 4 个 Factory 都能正确构建
-/// 并通过 trait 接口生成有效 ID。
+/// 覆盖功能场景穷举分析第 1 节各算法行：验证工厂注册表 (`algorithm_factories()`)
+/// 中每个 Factory 都能正确构建并通过 trait 接口生成有效 ID，且跨算法不撞号。
+/// （原写"4 种"是 uuid_v4 时代的遗留，数组里 UuidV8 被重复列了两次。）
 #[tokio::test]
 async fn e2e_all_algorithm_types_built_via_builder_generate_unique_ids() {
     let config = Config::default();
     let algorithm_types = [
         AlgorithmType::Segment,
         AlgorithmType::Snowflake,
-        AlgorithmType::UuidV8,
         AlgorithmType::UuidV8,
     ];
 
@@ -330,19 +329,20 @@ async fn e2e_all_algorithm_types_built_via_builder_generate_unique_ids() {
         }
     }
 
-    assert_eq!(all_ids.len(), 4 + 4 * 5);
+    assert_eq!(all_ids.len(), 3 + 3 * 5);
 }
 
 // =============================================================================
 // AlgorithmRouter 端到端
 // =============================================================================
 
-/// E2E-RT-001: Router.initialize 在默认配置下应注册所有 4 种算法。
+/// E2E-RT-001: Router.initialize 在默认配置下应注册全部 3 种算法。
 ///
 /// 覆盖功能场景穷举分析第 1 节算法路由行的"按 biz_tag 选算法"前置条件：
-/// 主算法 + fallback chain 全部就绪。
+/// 主算法 + fallback chain 全部就绪。`AlgorithmType` 现有 Segment / Snowflake /
+/// UuidV8 三个变体（UuidV4 已按 spec R-ar-002 约束移除，不再兜底）。
 #[tokio::test]
-async fn e2e_router_initialize_registers_all_four_algorithms() {
+async fn e2e_router_initialize_registers_three_algorithms() {
     let config = Config::default();
     let router = AlgorithmRouter::new(config, None);
 
@@ -365,8 +365,8 @@ async fn e2e_router_initialize_registers_all_four_algorithms() {
 
     for (alg_type, status) in &health_statuses {
         // Segment 在没有数据库连接时 health_check 返回 Degraded("No active buffers")
-        // 这是设计行为——Segment 需要数据库加载号段。其他三种算法（Snowflake/
-        // UuidV8/UuidV8）不依赖外部状态，应返回 Healthy。
+        // 这是设计行为——Segment 需要数据库加载号段。其他两种算法（Snowflake /
+        // UuidV8）不依赖外部状态，应返回 Healthy。
         match alg_type {
             AlgorithmType::Segment => {
                 assert!(

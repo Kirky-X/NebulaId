@@ -327,7 +327,18 @@ async fn e2e_rate_limiter_cleanup_removes_idle_buckets() {
 
     assert_eq!(limiter.bucket_count(), 0, "空闲桶应被后台清理任务移除");
 
+    // R-rl-003「停机后清理任务停止」：abort 必须真正终止后台 task。
+    // tokio 语义：task 在 `.await` 点被取消后，JoinHandle::await 返回
+    // Err(Cancelled)。两种假绿场景都会在这里被抓住：
+    //   1) task 提前自行退出（loop 意外 return）→ await 返回 Ok；
+    //   2) task 阻塞在不响应取消的位置 → await 永不返回（测试超时）。
     handle.abort();
+    let joined = handle.await;
+    assert!(
+        joined.is_err(),
+        "E2E-CLEANUP-001: abort 后清理任务必须终止（await 应返回 Err/Cancelled），实际为 {:?}",
+        joined
+    );
 }
 
 /// E2E-CLEANUP-002: start_cleanup 后台任务应保留持续访问的活跃桶。
@@ -350,7 +361,14 @@ async fn e2e_rate_limiter_cleanup_keeps_active_buckets() {
         "活跃桶应仍可查询 usage"
     );
 
+    // R-rl-003「停机后清理任务停止」：与 001 同理，abort 必须使 task 真正终止。
     handle.abort();
+    let joined = handle.await;
+    assert!(
+        joined.is_err(),
+        "E2E-CLEANUP-002: abort 后清理任务必须终止（await 应返回 Err/Cancelled），实际为 {:?}",
+        joined
+    );
 }
 
 // E2E-DB 组：数据库连接端到端

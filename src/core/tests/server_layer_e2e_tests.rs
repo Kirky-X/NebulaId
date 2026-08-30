@@ -1150,7 +1150,10 @@ async fn e2e_create_router_applies_global_rate_limit() {
 
     let app = create_router(handlers, auth, rate_limiter, audit_logger).await;
 
-    for i in 0..2 {
+    // R-rl-001 / T002：同一 key 连发 5 个请求 —— burst 容量内的前 2 个必须
+    // 严格 200（原 `assert_ne!(429)` 会让 500/503 一并放行，属假绿），
+    // 第 3 个起必须 429 且带 Retry-After，证明限流层真实挂在 create_router 栈上。
+    for i in 0..5 {
         let resp = app
             .clone()
             .oneshot(
@@ -1161,32 +1164,28 @@ async fn e2e_create_router_applies_global_rate_limit() {
             )
             .await
             .unwrap();
-        assert_ne!(
-            resp.status(),
-            StatusCode::TOO_MANY_REQUESTS,
-            "burst 容量内第 {} 个请求不应被限流",
-            i + 1
-        );
+        if i < 2 {
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "burst 容量内第 {} 个请求必须 200，实际 {}",
+                i + 1,
+                resp.status()
+            );
+        } else {
+            assert_eq!(
+                resp.status(),
+                StatusCode::TOO_MANY_REQUESTS,
+                "超过 burst 后第 {} 个请求必须 429（限流中间件真实挂载）",
+                i + 1
+            );
+            assert!(
+                resp.headers().get("retry-after").is_some(),
+                "第 {} 个 429 响应必须携带 Retry-After 头",
+                i + 1
+            );
+        }
     }
-
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/health")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::TOO_MANY_REQUESTS,
-        "超过 burst 后 create_router 必须返回 429（限流中间件真实挂载）"
-    );
-    assert!(
-        resp.headers().get("retry-after").is_some(),
-        "429 响应必须携带 Retry-After 头"
-    );
 }
 
 // ============================================================================

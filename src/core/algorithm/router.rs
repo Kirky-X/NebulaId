@@ -634,9 +634,13 @@ impl AlgorithmRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::algorithm::degradation_manager::{
+        CircuitBreakerState, DegradationConfig, DegradationState,
+    };
     use crate::core::config::Config;
     use async_trait::async_trait;
     use std::collections::HashSet;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn test_fallback_chain_dedup() {
@@ -875,6 +879,64 @@ mod tests {
             } else {
                 Ok(())
             }
+        }
+    }
+
+    /// 可在运行时切换 `health_check` 返回值的 Mock。
+    ///
+    /// R-ar-002 全流程用例需要「失败达阈值 → Open → 探测窗口 → HalfOpen →
+    /// 连续成功 → Closed」在同一趟里走完，而既有 mock 的健康状态在构造期固定；
+    /// 中途改健康只能重新 `register_algorithm`，但那会重建 `AlgorithmHealthState`
+    /// 并清空熔断状态。故用原子开关做内部可变。
+    #[derive(Debug)]
+    struct MockFlippableHealthAlgorithm {
+        alg_type: AlgorithmType,
+        unhealthy: AtomicBool,
+    }
+
+    impl MockFlippableHealthAlgorithm {
+        fn new(alg_type: AlgorithmType) -> Self {
+            Self {
+                alg_type,
+                unhealthy: AtomicBool::new(false),
+            }
+        }
+        fn force_unhealthy(&self) {
+            self.unhealthy.store(true, Ordering::SeqCst);
+        }
+        fn recover(&self) {
+            self.unhealthy.store(false, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl IdAlgorithm for MockFlippableHealthAlgorithm {
+        async fn generate(&self, _ctx: &GenerateContext) -> Result<Id> {
+            Ok(Id::from_u128(42))
+        }
+        async fn batch_generate(&self, _ctx: &GenerateContext, size: usize) -> Result<IdBatch> {
+            Ok(IdBatch {
+                ids: vec![Id::from_u128(42); size],
+                algorithm: self.alg_type,
+                biz_tag: String::new(),
+                generated_at: chrono::Utc::now(),
+            })
+        }
+        fn health_check(&self) -> HealthStatus {
+            if self.unhealthy.load(Ordering::SeqCst) {
+                HealthStatus::Unhealthy("mock flipped unhealthy".to_string())
+            } else {
+                HealthStatus::Healthy
+            }
+        }
+        fn metrics(&self) -> AlgorithmMetricsSnapshot {
+            AlgorithmMetricsSnapshot::default()
+        }
+        fn algorithm_type(&self) -> AlgorithmType {
+            self.alg_type
+        }
+        async fn shutdown(&self) -> Result<()> {
+            Ok(())
         }
     }
 
@@ -1399,11 +1461,6 @@ mod tests {
             AlgorithmType::UuidV8,
             Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::UuidV8).with_generate_failure()),
         );
-        insert_mock(
-            &router,
-            AlgorithmType::UuidV8,
-            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::UuidV8).with_generate_failure()),
-        );
         let ctx = make_ctx("bt");
         let result = router.generate(&ctx).await;
         // 当主算法失败 + 所有 fallback 失败时，返回主算法的原始错误
@@ -1447,7 +1504,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_generate_internal_primary_not_in_map_some_fallbacks_missing() {
-        // Segment 不在 map，Snowflake 在 map 但失败，UuidV8 不在 map，UuidV8 成功
+        // Segment 不在 map，Snowflake 在 map 但失败，UuidV8 在 map 且成功
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
             &router,
@@ -1659,6 +1716,134 @@ mod tests {
         let router = AlgorithmRouter::new(Config::default(), None);
         // 应当不 panic
         router.check_health_and_update_degradation().await;
+    }
+
+    /// R-ar-002 第一条：熔断全流程回归（单一用例走完 Closed→Open→HalfOpen→Closed）。
+    ///
+    /// 全部状态迁移仅经路由层既有公开入口 `AlgorithmRouter::check_health_and_update_degradation`
+    /// 驱动（生产里由后台健康检查 task 调用同一入口），阈值经既有
+    /// `DegradationManager::update_config` 注入——不为测试新增 pub API。
+    ///
+    /// 期望语义：
+    /// 1. 连续失败达 `failure_threshold` → 熔断 Open，并降级到 fallback 链下一算法；
+    /// 2. 主算法恢复且探测窗口（此处 timeout=0）到期 → HalfOpen；
+    /// 3. HalfOpen 探测成功数未达 `half_open_success_threshold` → 保持 HalfOpen 并累计；
+    /// 4. 达到阈值 → Closed + 清除降级标记，整体状态回到 Normal。
+    #[tokio::test]
+    async fn test_check_health_and_update_degradation_full_circuit_breaker_lifecycle() {
+        let mut router = AlgorithmRouter::new(Config::default(), None);
+        // 生产默认 circuit_breaker_timeout_ms=60_000 无法在用例内跨越探测窗口，
+        // 故注入显式阈值：失败 2 次打开 / 探测窗口 0ms / 半开需 2 次探测成功。
+        Arc::get_mut(&mut router.degradation_manager)
+            .expect("新建 router 应独占 DegradationManager 的 Arc")
+            .update_config(DegradationConfig {
+                failure_threshold: 2,
+                circuit_breaker_timeout_ms: 0,
+                half_open_success_threshold: 2,
+                enable_circuit_breaker: true,
+                ..Default::default()
+            });
+
+        // `check_all_health` 读取的是 DegradationManager 自己的算法注册表
+        // （生产路径由 `initialize()` 同时写入 router.algorithms 与 manager）。
+        let dm = router.get_degradation_manager();
+        let primary = Arc::new(MockFlippableHealthAlgorithm::new(AlgorithmType::Segment));
+        primary.force_unhealthy();
+        dm.register_algorithm(AlgorithmType::Segment, primary.clone());
+        dm.register_algorithm(
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+
+        let circuit_state = |algo: AlgorithmType| {
+            let metrics = dm.get_algorithm_metrics();
+            metrics
+                .get(&algo.to_string())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "期望 {:?} 存在熔断指标条目（健康状态未建立，全流程断言无从校验）",
+                        algo
+                    )
+                })
+                .circuit_breaker_state
+                .clone()
+        };
+
+        // --- 阶段 1：失败未达阈值 → 仍 Closed ---
+        router.check_health_and_update_degradation().await;
+        assert_eq!(
+            circuit_state(AlgorithmType::Segment),
+            CircuitBreakerState::Closed,
+            "失败 1 次未达 failure_threshold(2)，期望熔断仍为 Closed"
+        );
+
+        // --- 阶段 2：失败达阈值 → Open + 降级到链中下一算法 ---
+        router.check_health_and_update_degradation().await;
+        assert_eq!(
+            circuit_state(AlgorithmType::Segment),
+            CircuitBreakerState::Open,
+            "连续失败达 failure_threshold(2)，期望熔断打开为 Open"
+        );
+        assert_eq!(
+            dm.get_current_state(),
+            DegradationState::Degraded(AlgorithmType::Snowflake),
+            "熔断打开后期望降级到 fallback 链中的 Snowflake（链去重后唯一后继）"
+        );
+        assert!(
+            dm.get_algorithm_state(AlgorithmType::Segment)
+                .expect("期望 Segment 健康状态条目存在")
+                .is_degraded,
+            "期望主算法 Segment 被标记为已降级"
+        );
+
+        // --- 阶段 3：主算法恢复 + 探测窗口到期 → HalfOpen ---
+        primary.recover();
+        router.check_health_and_update_degradation().await;
+        assert_eq!(
+            circuit_state(AlgorithmType::Segment),
+            CircuitBreakerState::HalfOpen,
+            "Open 且 circuit_breaker_timeout 已到期，期望本轮切换到 HalfOpen"
+        );
+
+        // --- 阶段 4：HalfOpen 探测成功未达阈值 → 保持 HalfOpen 并累计 ---
+        router.check_health_and_update_degradation().await;
+        assert_eq!(
+            circuit_state(AlgorithmType::Segment),
+            CircuitBreakerState::HalfOpen,
+            "探测成功 1 次未达 half_open_success_threshold(2)，期望仍为 HalfOpen"
+        );
+        router.check_health_and_update_degradation().await;
+        assert_eq!(
+            circuit_state(AlgorithmType::Segment),
+            CircuitBreakerState::HalfOpen,
+            "探测成功累计到阈值当轮仍按「已达标则关闭」在下一轮生效，期望仍为 HalfOpen"
+        );
+
+        // --- 阶段 5：探测成功达阈值 → Closed + 恢复 Normal ---
+        router.check_health_and_update_degradation().await;
+        assert_eq!(
+            circuit_state(AlgorithmType::Segment),
+            CircuitBreakerState::Closed,
+            "HalfOpen 连续探测成功达阈值后期望关闭熔断器回到 Closed"
+        );
+        let recovered = dm
+            .get_algorithm_state(AlgorithmType::Segment)
+            .expect("期望 Segment 健康状态条目存在");
+        assert!(
+            !recovered.is_degraded,
+            "熔断关闭时期望 Segment 的降级标记被清除"
+        );
+        assert_eq!(
+            recovered.consecutive_failures, 0,
+            "恢复后期望连续失败计数被清零"
+        );
+        assert_eq!(
+            dm.get_current_state(),
+            DegradationState::Normal,
+            "主算法恢复后期望整体降级状态回到 Normal"
+        );
     }
 
     // ============== shutdown 测试 ==============

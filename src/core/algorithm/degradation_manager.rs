@@ -1114,6 +1114,25 @@ mod tests {
         DegradationManager::new(Some(config), None)
     }
 
+    /// 取回 `register_algorithm` 建立的 `AlgorithmHealthState`。
+    ///
+    /// 前置操作与断言都必须建立在「健康状态条目确实存在」之上：条目缺失时
+    /// 立即 panic 并说明期望，取代原先的 `if let Some(state) = ... { assert!.. }`
+    /// 写法 —— 后者在条目缺失时会跳过整个断言块，测试静默通过（假绿）。
+    fn health_state_of(
+        manager: &DegradationManager,
+        alg_type: AlgorithmType,
+    ) -> Arc<AlgorithmHealthState> {
+        match manager.health_states.load().get(&alg_type).cloned() {
+            Some(state) => state,
+            None => panic!(
+                "期望 {:?} 的 AlgorithmHealthState 条目存在（register_algorithm 是否生效？），\
+                 否则本用例的熔断状态断言无从校验",
+                alg_type
+            ),
+        }
+    }
+
     #[tokio::test]
     async fn test_determine_effective_algorithm_returns_normal_when_primary_healthy() {
         let manager = DegradationManager::new(None, None);
@@ -1555,10 +1574,13 @@ mod tests {
             manager.get_current_state(),
             DegradationState::Degraded(AlgorithmType::Snowflake)
         );
-        // circuit breaker 应被打开
-        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
-            assert_eq!(state.get_circuit_breaker_state(), CircuitBreakerState::Open);
-        }
+        // circuit breaker 应被打开（条目缺失时 panic，不再静默跳过断言）
+        let state = health_state_of(&manager, AlgorithmType::Segment);
+        assert_eq!(
+            state.get_circuit_breaker_state(),
+            CircuitBreakerState::Open,
+            "连续失败达 failure_threshold 后，Segment 熔断器期望为 Open"
+        );
     }
 
     #[tokio::test]
@@ -1589,12 +1611,12 @@ mod tests {
         let info = manager.get_algorithm_state(AlgorithmType::Segment).unwrap();
         assert!(info.is_degraded);
         // enable_circuit_breaker=false → 不打开 circuit breaker
-        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
-            assert_eq!(
-                state.get_circuit_breaker_state(),
-                CircuitBreakerState::Closed
-            );
-        }
+        let state = health_state_of(&manager, AlgorithmType::Segment);
+        assert_eq!(
+            state.get_circuit_breaker_state(),
+            CircuitBreakerState::Closed,
+            "enable_circuit_breaker=false 时，Segment 熔断器期望始终为 Closed"
+        );
     }
 
     #[tokio::test]
@@ -1651,17 +1673,18 @@ mod tests {
             Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
         );
 
-        // 打开 circuit breaker
-        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
-            state.open_circuit_breaker();
-        }
+        // 打开 circuit breaker（条目缺失时立即失败，不允许静默跳过前置）
+        health_state_of(&manager, AlgorithmType::Segment).open_circuit_breaker();
 
         manager.check_all_health().await;
 
         // 仍在 timeout 内 → 状态保持 Open，未 half_open
-        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
-            assert_eq!(state.get_circuit_breaker_state(), CircuitBreakerState::Open);
-        }
+        let state = health_state_of(&manager, AlgorithmType::Segment);
+        assert_eq!(
+            state.get_circuit_breaker_state(),
+            CircuitBreakerState::Open,
+            "circuit_breaker_timeout 未到期时，Segment 熔断器期望保持 Open（不得提前半开）"
+        );
     }
 
     #[tokio::test]
@@ -1678,20 +1701,18 @@ mod tests {
             Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
         );
 
-        // 打开 circuit breaker
-        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
-            state.open_circuit_breaker();
-        }
+        // 打开 circuit breaker（条目缺失时立即失败，不允许静默跳过前置）
+        health_state_of(&manager, AlgorithmType::Segment).open_circuit_breaker();
 
         manager.check_all_health().await;
 
         // 已超时 → 切换到 HalfOpen
-        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
-            assert_eq!(
-                state.get_circuit_breaker_state(),
-                CircuitBreakerState::HalfOpen
-            );
-        }
+        let state = health_state_of(&manager, AlgorithmType::Segment);
+        assert_eq!(
+            state.get_circuit_breaker_state(),
+            CircuitBreakerState::HalfOpen,
+            "circuit_breaker_timeout_ms=0 时首轮健康检查后，Segment 熔断器期望进入 HalfOpen"
+        );
     }
 
     #[tokio::test]
@@ -1708,21 +1729,23 @@ mod tests {
             Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
         );
 
-        // 切到 HalfOpen
-        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
-            state.half_open_circuit_breaker();
-        }
+        // 切到 HalfOpen（条目缺失时立即失败，不允许静默跳过前置）
+        health_state_of(&manager, AlgorithmType::Segment).half_open_circuit_breaker();
 
         manager.check_all_health().await;
 
         // Healthy 但 successes(0) < threshold(5) → 仅记录 success，不关闭 circuit
-        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
-            assert_eq!(
-                state.get_circuit_breaker_state(),
-                CircuitBreakerState::HalfOpen
-            );
-            assert_eq!(state.consecutive_successes.load(Ordering::SeqCst), 1);
-        }
+        let state = health_state_of(&manager, AlgorithmType::Segment);
+        assert_eq!(
+            state.get_circuit_breaker_state(),
+            CircuitBreakerState::HalfOpen,
+            "成功数未达 half_open_success_threshold 时，Segment 熔断器期望仍为 HalfOpen"
+        );
+        assert_eq!(
+            state.consecutive_successes.load(Ordering::SeqCst),
+            1,
+            "HalfOpen 下单次 Healthy 期望只累计 1 次探测成功"
+        );
     }
 
     #[tokio::test]
@@ -1739,25 +1762,27 @@ mod tests {
             Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
         );
 
-        // 切到 HalfOpen 并预先累积 successes 到阈值
-        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
-            state.half_open_circuit_breaker();
-            state.record_success();
-            state.record_success();
-            // 标记为 degraded 以验证 mark_recovered 被调用
-            state.mark_degraded();
-        }
+        // 切到 HalfOpen 并预先累积 successes 到阈值（条目缺失时立即失败）
+        let state = health_state_of(&manager, AlgorithmType::Segment);
+        state.half_open_circuit_breaker();
+        state.record_success();
+        state.record_success();
+        // 标记为 degraded 以验证 mark_recovered 被调用
+        state.mark_degraded();
 
         manager.check_all_health().await;
 
         // Healthy 且 successes >= threshold(2) → 关闭 circuit + mark_recovered
-        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
-            assert_eq!(
-                state.get_circuit_breaker_state(),
-                CircuitBreakerState::Closed
-            );
-            assert!(!state.is_degraded.load(Ordering::SeqCst));
-        }
+        let state = health_state_of(&manager, AlgorithmType::Segment);
+        assert_eq!(
+            state.get_circuit_breaker_state(),
+            CircuitBreakerState::Closed,
+            "HalfOpen 探测成功数达 half_open_success_threshold(2) 后期望关闭熔断器"
+        );
+        assert!(
+            !state.is_degraded.load(Ordering::SeqCst),
+            "熔断关闭时期望 mark_recovered 已清除 is_degraded 标记"
+        );
     }
 
     #[tokio::test]
@@ -1772,18 +1797,23 @@ mod tests {
             )) as Arc<dyn IdAlgorithm>,
         );
 
-        // 切到 HalfOpen
-        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
-            state.half_open_circuit_breaker();
-        }
+        // 切到 HalfOpen（条目缺失时立即失败，不允许静默跳过前置）
+        health_state_of(&manager, AlgorithmType::Segment).half_open_circuit_breaker();
 
         manager.check_all_health().await;
 
         // HalfOpen + Degraded → 重新打开 circuit breaker
-        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
-            assert_eq!(state.get_circuit_breaker_state(), CircuitBreakerState::Open);
-            assert_eq!(state.consecutive_failures.load(Ordering::SeqCst), 1);
-        }
+        let state = health_state_of(&manager, AlgorithmType::Segment);
+        assert_eq!(
+            state.get_circuit_breaker_state(),
+            CircuitBreakerState::Open,
+            "HalfOpen 探测到 Degraded 期望立即重新打开熔断器"
+        );
+        assert_eq!(
+            state.consecutive_failures.load(Ordering::SeqCst),
+            1,
+            "HalfOpen + Degraded 期望记入 1 次连续失败"
+        );
     }
 
     #[tokio::test]
@@ -1798,18 +1828,23 @@ mod tests {
             )) as Arc<dyn IdAlgorithm>,
         );
 
-        // 切到 HalfOpen
-        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
-            state.half_open_circuit_breaker();
-        }
+        // 切到 HalfOpen（条目缺失时立即失败，不允许静默跳过前置）
+        health_state_of(&manager, AlgorithmType::Segment).half_open_circuit_breaker();
 
         manager.check_all_health().await;
 
         // HalfOpen + Unhealthy → 重新打开 circuit breaker
-        if let Some(state) = manager.health_states.load().get(&AlgorithmType::Segment) {
-            assert_eq!(state.get_circuit_breaker_state(), CircuitBreakerState::Open);
-            assert_eq!(state.consecutive_failures.load(Ordering::SeqCst), 1);
-        }
+        let state = health_state_of(&manager, AlgorithmType::Segment);
+        assert_eq!(
+            state.get_circuit_breaker_state(),
+            CircuitBreakerState::Open,
+            "HalfOpen 探测到 Unhealthy 期望立即重新打开熔断器"
+        );
+        assert_eq!(
+            state.consecutive_failures.load(Ordering::SeqCst),
+            1,
+            "HalfOpen + Unhealthy 期望记入 1 次连续失败"
+        );
     }
 
     #[tokio::test]

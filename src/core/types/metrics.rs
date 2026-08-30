@@ -404,6 +404,12 @@ impl GlobalMetrics {
     }
 
     pub fn get_or_create_metrics(&self, algorithm: AlgorithmType) -> Arc<AlgorithmMetrics> {
+        // 快路径：算法集合在 initialize() 后即固定，而路由层每请求都要取一次
+        // 观测对象（AlgorithmRouter::observe）。原先无条件写锁会把并发的原子
+        // 写入串行化成一队，与 R-obs-002「记录路径无锁」的意图相反。
+        if let Some(metrics) = self.algorithms.read().get(&algorithm) {
+            return metrics.clone();
+        }
         let mut algorithms = self.algorithms.write();
         algorithms
             .entry(algorithm)
@@ -890,23 +896,24 @@ mod tests {
     }
 
     #[test]
-    fn test_metrics_snapshot_serde_roundtrip_uuid_variants() {
-        for alg in [AlgorithmType::UuidV8, AlgorithmType::UuidV8] {
-            let original = MetricsSnapshot {
-                algorithm: alg,
-                total_generated: 1,
-                total_failed: 0,
-                current_qps: 1,
-                p50_latency_ms: 0.1,
-                p99_latency_ms: 0.2,
-                p999_latency_ms: 0.3,
-                clock_backwards: 1,
-                cache_hit_rate: 100.0,
-            };
-            let json = serde_json::to_string(&original).expect("serialize");
-            let restored: MetricsSnapshot = serde_json::from_str(&json).expect("deserialize");
-            assert_eq!(restored.algorithm, alg);
-        }
+    fn test_metrics_snapshot_serde_roundtrip_uuid_variant() {
+        // uuid 工作线合并后 AlgorithmType 只有 UuidV8 一个 uuid 变体
+        let alg = AlgorithmType::UuidV8;
+        let original = MetricsSnapshot {
+            algorithm: alg,
+            total_generated: 1,
+            total_failed: 0,
+            current_qps: 1,
+            p50_latency_ms: 0.1,
+            p99_latency_ms: 0.2,
+            p999_latency_ms: 0.3,
+            clock_backwards: 1,
+            cache_hit_rate: 100.0,
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let restored: MetricsSnapshot = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored.algorithm, alg);
+        assert_eq!(restored.clock_backwards, 1);
     }
 
     // ---- GlobalMetrics ----
@@ -942,6 +949,39 @@ mod tests {
         let m3 = g.get_or_create_metrics(AlgorithmType::UuidV8);
         assert!(!Arc::ptr_eq(&m1, &m3));
         assert_eq!(m3.algorithm, AlgorithmType::UuidV8);
+    }
+
+    #[test]
+    fn test_get_or_create_metrics_hit_path_does_not_block_on_write_lock() {
+        // 回归钉桩：观测路径每请求都会调用本方法。旧实现无条件取写锁，只要有人
+        // 持读锁（如 metrics 端点正在排序快照），并发请求就被串行化成一队。
+        let g = Arc::new(GlobalMetrics::new());
+        let registered = g.get_or_create_metrics(AlgorithmType::Snowflake);
+        assert_eq!(registered.algorithm, AlgorithmType::Snowflake);
+
+        let (start_tx, start_rx) = std::sync::mpsc::channel::<()>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let probe = {
+            let g = Arc::clone(&g);
+            std::thread::spawn(move || {
+                // 等主线程真的持上读锁再发起，否则测不到阻塞
+                start_rx.recv().ok();
+                let metrics = g.get_or_create_metrics(AlgorithmType::Snowflake);
+                let _ = done_tx.send(metrics.algorithm);
+            })
+        };
+
+        let read_guard = g.algorithms.read();
+        let _ = start_tx.send(());
+        let outcome = done_rx.recv_timeout(std::time::Duration::from_secs(2));
+        drop(read_guard);
+        probe.join().expect("probe thread panicked");
+
+        assert_eq!(
+            outcome.ok(),
+            Some(AlgorithmType::Snowflake),
+            "命中已注册算法时不应等待写锁（超时即说明退化为写锁路径）"
+        );
     }
 
     #[test]

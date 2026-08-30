@@ -323,4 +323,42 @@ mod tests {
             "Unknown error"
         );
     }
+
+    /// locale 键集对齐守卫：两份语言文件必须拥有完全相同的顶格键。
+    /// 单侧缺键不会编译报错，只会在该语言下静默回退成 key 本身或另一语言
+    /// 文案（本仓库实际发生过：删 en 键时漏删 zh 键）。
+    #[test]
+    fn test_locale_key_sets_are_identical_across_languages() {
+        fn top_level_keys(path: &str) -> Vec<String> {
+            let full = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+            let text =
+                std::fs::read_to_string(&full).unwrap_or_else(|e| panic!("读取 {path} 失败: {e}"));
+            let mut keys: Vec<String> = text
+                .lines()
+                // 只取顶格行：缩进行属于嵌套值或续行，两侧同样忽略
+                .filter(|line| !line.starts_with(' ') && !line.starts_with('\t'))
+                .filter_map(|line| line.split_once(':'))
+                .map(|(key, _)| key.trim().to_string())
+                .filter(|key| !key.is_empty() && !key.starts_with('#'))
+                .collect();
+            keys.sort();
+            keys
+        }
+
+        let en = top_level_keys("locales/en.yml");
+        let zh = top_level_keys("locales/zh-CN.yml");
+        assert!(
+            en.len() > 100 && zh.len() > 100,
+            "键数量异常（en={}、zh={}），解析逻辑可能失效",
+            en.len(),
+            zh.len()
+        );
+
+        let only_en: Vec<&String> = en.iter().filter(|k| !zh.contains(k)).collect();
+        let only_zh: Vec<&String> = zh.iter().filter(|k| !en.contains(k)).collect();
+        assert!(
+            only_en.is_empty() && only_zh.is_empty(),
+            "locale 键集不对齐：仅 en 有 {only_en:?}；仅 zh 有 {only_zh:?}"
+        );
+    }
 }

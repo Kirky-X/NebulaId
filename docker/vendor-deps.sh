@@ -3,7 +3,8 @@
 #
 # Cargo.toml 的 [patch.crates-io] 把 sdforge / inklog 钉在本地兄弟目录 ../，
 # 而 Docker 构建上下文无法越过仓库边界。本脚本把这两个仓库（排除 target/、
-# .git/、logs/ 等构建产物）打包进 .docker-vendor/，随后由 build.sh 通过
+# .git/、logs/ 等构建产物，以及 .env* / local_settings* 等本机凭据文件）
+# 打包进 .docker-vendor/，随后由 build.sh 通过
 # BuildKit 命名上下文（--build-context）注入，使镜像内的相对路径
 # ../sdforge、../inklog 可解析（Dockerfile 将它们放在 /sdforge、/inklog）。
 #
@@ -24,10 +25,16 @@ vendor_one() {
   fi
   rm -rf "$dst"
   mkdir -p "$dst"
+  # 排除项含 .env* 与 local_settings*：这两类是开发者本机凭据/私有覆盖文件，
+  # 一旦被带进 .docker-vendor/ 就会进入 Docker 构建上下文（镜像层可读取）。
+  # 模式不加 './' 前缀：GNU tar 的 --exclude 对无斜杠模式同时匹配任意层级的
+  # 同名条目（已用探针目录验证 ./config/.env 也被排除）。
   tar -C "$src" \
     --exclude='./target' \
     --exclude='./.git' \
     --exclude='./logs' \
+    --exclude='.env*' \
+    --exclude='local_settings*' \
     -cf - . | tar -C "$dst" -xf -
   echo "[vendor-deps] vendored $name -> $dst"
 }

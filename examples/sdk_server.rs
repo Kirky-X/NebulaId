@@ -45,6 +45,7 @@ use nebulaid::sdk::{NebulaIdClient, NebulaIdClientBuilder};
 use sdforge::core::Registration;
 use sdforge::prelude::*;
 use sdforge::serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// 初始化 sdforge 插件（HTTP/MCP/WebSocket 等 inventory 提交）。
 ///
@@ -80,8 +81,17 @@ fn client() -> &'static Arc<NebulaIdClient> {
 }
 
 /// 把 `CoreError` 映射为 sdforge `ApiError`（500 内部错误）。
+///
+/// 对外**只**给稳定的概要文案 + 一次性 `error_id`；内部错误细节经
+/// `tracing::warn!` 留在服务端日志。`CoreError` 的 `Display` 会带出实现细节
+/// （如 `ClockMovedBackward` 的内部 `last_timestamp`、数据库/驱动错误文本），
+/// 原样回显等于向调用方泄露内部状态——示例是嵌入方照抄的模板，必须示范
+/// "细节进日志、摘要出网关" 的边界。`error_id` 同时出现在日志与响应的
+/// error_id 字段里，让排障可关联而不暴露原因。
 fn to_api_error(e: nebulaid::core::CoreError) -> ApiError {
-    ApiError::internal_error(e.to_string(), "nebulaid_sdk_error")
+    let error_id = Uuid::now_v7().to_string();
+    tracing::warn!(error = %e, error_id = %error_id, "embedded sdk request failed");
+    ApiError::internal_error("ID generation failed, please retry", error_id)
 }
 
 /// 单条生成请求体。

@@ -176,10 +176,10 @@ impl RateLimiter {
                 interval_timer.tick().await;
 
                 let now = Instant::now();
-                let mut removed_count = 0;
-
-                // Find and remove expired limiters
-                {
+                // 锁内只做「收集 key + 从 map 摘除」：摘下的桶（内含
+                // TokenBucketLimiter 与 last_accessed 锁）先移出写锁作用域，
+                // 统一在锁外释放，避免 drop 成本随待删桶数量线性放大独占写锁。
+                let (removed_count, removed_buckets) = {
                     let mut limiters_guard = limiters.write();
                     let keys_to_remove: Vec<String> = limiters_guard
                         .iter()
@@ -189,11 +189,12 @@ impl RateLimiter {
                         .map(|(key, _)| key.clone())
                         .collect();
 
-                    for key in keys_to_remove {
-                        limiters_guard.remove(&key);
-                        removed_count += 1;
-                    }
-                }
+                    let buckets = keys_to_remove
+                        .into_iter()
+                        .filter_map(|key| limiters_guard.remove(&key))
+                        .collect::<Vec<_>>();
+                    (buckets.len(), buckets)
+                };
 
                 if removed_count > 0 {
                     debug!(
@@ -206,6 +207,8 @@ impl RateLimiter {
                         )
                     );
                 }
+
+                drop(removed_buckets);
             }
         })
     }
@@ -292,18 +295,23 @@ impl RateLimiter {
     /// Number of limiters removed
     pub fn cleanup(&self, max_idle: Duration) -> usize {
         let now = Instant::now();
-        let mut limiters = self.limiters.write();
 
-        let keys_to_remove: Vec<String> = limiters
-            .iter()
-            .filter(|(_, limiter)| now.duration_since(limiter.last_accessed()) > max_idle)
-            .map(|(key, _)| key.clone())
-            .collect();
+        // 锁内只做「收集 key + 从 map 摘除」；摘下的桶带出写锁作用域后才释放，
+        // 使独占写锁的持有时长与 drop 成本解耦（与后台清理循环同一边界）。
+        let (removed_count, removed_buckets) = {
+            let mut limiters = self.limiters.write();
+            let keys_to_remove: Vec<String> = limiters
+                .iter()
+                .filter(|(_, limiter)| now.duration_since(limiter.last_accessed()) > max_idle)
+                .map(|(key, _)| key.clone())
+                .collect();
 
-        let removed_count = keys_to_remove.len();
-        for key in keys_to_remove {
-            limiters.remove(&key);
-        }
+            let buckets = keys_to_remove
+                .into_iter()
+                .filter_map(|key| limiters.remove(&key))
+                .collect::<Vec<_>>();
+            (buckets.len(), buckets)
+        };
 
         if removed_count > 0 {
             debug!(
@@ -317,6 +325,7 @@ impl RateLimiter {
             );
         }
 
+        drop(removed_buckets);
         removed_count
     }
 
@@ -351,7 +360,16 @@ impl RateLimiter {
     /// immediately after an update); documented and accepted trade-off.
     pub fn update_config(&self, default_rps: u32, default_burst: u32) {
         self.update_defaults(default_rps, default_burst);
-        self.limiters.write().clear();
+
+        // 写锁内只做一次 O(1) 换表；旧表连同其全部桶（TokenBucketLimiter 状态、
+        // last_accessed 锁）在锁外释放。此前用 `write().clear()`，逐个 drop
+        // 发生在持锁期间，锁持有时间随桶数量线性放大。
+        let old_buckets = {
+            let mut limiters = self.limiters.write();
+            std::mem::take(&mut *limiters)
+        };
+
+        drop(old_buckets);
     }
 
     /// Get the limiteron concurrency limiter for internal use.

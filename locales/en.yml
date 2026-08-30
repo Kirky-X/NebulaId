@@ -292,8 +292,6 @@ log.server.config.hot_reload.read_lock_failed_algorithm_map: "Failed to acquire 
 # src/server/config/tls.rs
 log.server.config.tls.tls12_min_configured: "TLS 1.2 minimum version configured - acceptable for compatibility"
 log.server.config.tls.tls13_min_configured: "TLS 1.3 minimum version configured - recommended for production"
-log.server.config.tls.tls12_configured_rustls_default: "TLS 1.2+ configured (rustls default minimum)"
-log.server.config.tls.tls13_only_requested_auto_negotiate: "TLS 1.3 only requested, but rustls auto-negotiates minimum version based on client support"
 log.server.config.tls.tls_initialized: "TLS configuration initialized"
 
 # src/server/grpc.rs
@@ -359,7 +357,6 @@ log.main.no_database_connection: "No database connection, API keys cannot be sto
 log.main.id_generators_initializing: "Initializing ID generators..."
 log.main.id_generators_initialized: "ID generators initialized successfully"
 log.main.id_generators_initializing_etcd_disabled: "Initializing ID generators (etcd disabled)..."
-log.main.https_enabled_http_fallback: "HTTPS is enabled but using HTTP fallback for now"
 log.main.starting_http_server: "Starting HTTP server on %{addr}"
 log.main.shutting_down_http_server: "Shutting down HTTP server..."
 log.main.starting_grpc_server: "Starting gRPC server on %{addr}"

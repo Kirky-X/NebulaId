@@ -985,145 +985,115 @@ mod auth_cache_wiring {
     use crate::core::database::ApiKey;
     use crate::server::auth::AuthCache;
     use crate::server::handlers::mock_generator::MockIdGenerator;
-    use crate::server::handlers::mock_tests::MockConfigManagementService;
+    use crate::server::handlers::mock_tests::{MockApiKeyRepository, MockConfigManagementService};
     use crate::server::handlers::ApiHandlers;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    /// 计数版仓储：记录 `validate_api_key` 调用次数，支持吊销翻转。
-    #[derive(Clone)]
-    struct CountingRepo {
+    /// 共享仓储 mock（T027⑧：替代手写 `CountingRepo` 的 11 个样板方法）。
+    ///
+    /// 只登记本组测试真正触及的两个方法：
+    /// - `validate_api_key`：合法凭证返回 User 身份并累计调用次数；`revoked`
+    ///   置位后一律未命中（模拟吊销已落库）。
+    /// - `delete_api_key`：置位 `revoked`（`ApiHandlers::revoke_api_key` 的副作用）。
+    ///
+    /// 其余方法不写期望：mockall 对未登记的调用直接 panic，与旧实现里
+    /// `"not implemented in CountingRepo"` 的桩等价，但不必付样板代码。
+    ///
+    /// `validate_times` **就是缓存语义断言本身**：多一次 = 缓存没命中，
+    /// 少一次 = 吊销 / TTL 过期后没回源（mock 释放时校验）。
+    /// 返回的计数器供测试在中间点位断言进度（旧实现的 `validate_calls()` 断言）。
+    fn mock_repo(
         workspace_id: Uuid,
-        validate_calls: Arc<AtomicUsize>,
-        revoked: Arc<AtomicBool>,
+        validate_times: usize,
+    ) -> (MockApiKeyRepository, Arc<AtomicUsize>, Arc<AtomicBool>) {
+        let validate_calls = Arc::new(AtomicUsize::new(0));
+        let revoked = Arc::new(AtomicBool::new(false));
+        let mut repo = MockApiKeyRepository::new();
+
+        let counter = validate_calls.clone();
+        let revoked_flag = revoked.clone();
+        repo.expect_validate_api_key()
+            .times(validate_times)
+            .returning(move |key_id, key_secret| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                if revoked_flag.load(Ordering::SeqCst) {
+                    return Ok(None);
+                }
+                if key_id == "cache-key" && key_secret == "cache-secret" {
+                    Ok(Some((Some(workspace_id), ApiKeyRole::User)))
+                } else {
+                    Ok(None)
+                }
+            });
+
+        let revoked_flag = revoked.clone();
+        repo.expect_delete_api_key().returning(move |_| {
+            revoked_flag.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+
+        (repo, validate_calls, revoked)
     }
 
-    impl CountingRepo {
-        fn new(workspace_id: Uuid) -> Self {
-            Self {
-                workspace_id,
-                validate_calls: Arc::new(AtomicUsize::new(0)),
-                revoked: Arc::new(AtomicBool::new(false)),
-            }
-        }
-
-        fn validate_calls(&self) -> usize {
-            self.validate_calls.load(Ordering::SeqCst)
-        }
-
-        fn make_key_info(&self, key_id: &str) -> ApiKey {
-            ApiKey {
-                id: Uuid::new_v4(),
-                key_id: key_id.to_string(),
-                key_prefix: "nino_".to_string(),
-                role: ApiKeyRole::User,
-                workspace_id: Some(self.workspace_id),
-                name: "counting key".to_string(),
-                description: None,
-                rate_limit: 100,
-                enabled: true,
-                expires_at: None,
-                last_used_at: None,
-                created_at: chrono::Utc::now().naive_utc(),
-            }
-        }
+    /// 登记「校验成功 → 写缓存」路径要读的 key 行（仅 `key_id == "cache-key"`）。
+    ///
+    /// 次数即"缓存被写入了几次"的断言；其他 key_id 不匹配本期望，
+    /// 由调用方按需另登记（未登记的 key_id 会 panic）。
+    fn expect_cache_key_row(repo: &mut MockApiKeyRepository, times: usize, workspace_id: Uuid) {
+        let info = ApiKey {
+            id: Uuid::new_v4(),
+            key_id: "cache-key".to_string(),
+            key_prefix: "nino_".to_string(),
+            role: ApiKeyRole::User,
+            workspace_id: Some(workspace_id),
+            name: "cache key".to_string(),
+            description: None,
+            rate_limit: 100,
+            enabled: true,
+            expires_at: None,
+            last_used_at: None,
+            created_at: chrono::Utc::now().naive_utc(),
+        };
+        repo.expect_get_api_key_by_id()
+            .withf(|key_id: &str| key_id == "cache-key")
+            .times(times)
+            .returning(move |_| Ok(Some(info.clone())));
     }
 
-    #[async_trait]
-    impl ApiKeyRepository for CountingRepo {
-        async fn validate_api_key(
-            &self,
-            key_id: &str,
-            key_secret: &str,
-        ) -> Result<Option<(Option<Uuid>, ApiKeyRole)>> {
-            self.validate_calls.fetch_add(1, Ordering::SeqCst);
-            if self.revoked.load(Ordering::SeqCst) {
-                return Ok(None);
-            }
-            if key_id == "cache-key" && key_secret == "cache-secret" {
-                Ok(Some((Some(self.workspace_id), ApiKeyRole::User)))
-            } else {
-                Ok(None)
-            }
-        }
-
-        async fn get_api_key_by_id(&self, key_id: &str) -> Result<Option<ApiKeyInfo>> {
-            // 真实吊销路径用行 id 查询（查不到）；缓存写入路径用 key_id 查询。
-            if key_id == "cache-key" && !self.revoked.load(Ordering::SeqCst) {
-                Ok(Some(self.make_key_info(key_id)))
-            } else {
-                Ok(None)
-            }
-        }
-
-        async fn delete_api_key(&self, _id: Uuid) -> Result<()> {
-            self.revoked.store(true, Ordering::SeqCst);
-            Ok(())
-        }
-
-        async fn create_api_key(&self, _request: &CreateApiKeyRequest) -> Result<ApiKeyWithSecret> {
-            Err(crate::core::types::CoreError::InternalError(
-                "not implemented in CountingRepo".to_string(),
-            ))
-        }
-        async fn list_api_keys(
-            &self,
-            _workspace_id: Uuid,
-            _limit: Option<u32>,
-            _offset: Option<u32>,
-        ) -> Result<Vec<ApiKeyInfo>> {
-            Ok(vec![])
-        }
-        async fn revoke_api_key(&self, _id: Uuid) -> Result<()> {
-            self.revoked.store(true, Ordering::SeqCst);
-            Ok(())
-        }
-        async fn update_last_used(&self, _id: Uuid) -> Result<()> {
-            Ok(())
-        }
-        async fn get_admin_api_key(&self, _workspace_id: Uuid) -> Result<Option<ApiKeyInfo>> {
-            Ok(None)
-        }
-        async fn count_api_keys(&self, _workspace_id: Uuid) -> Result<u64> {
-            Ok(0)
-        }
-        async fn rotate_api_key(
-            &self,
-            _key_id: &str,
-            _grace_period_seconds: u64,
-        ) -> Result<ApiKeyWithSecret> {
-            Err(crate::core::types::CoreError::InternalError(
-                "not implemented in CountingRepo".to_string(),
-            ))
-        }
-        async fn get_keys_older_than(&self, _age_threshold_days: i64) -> Result<Vec<ApiKeyInfo>> {
-            Ok(vec![])
-        }
-    }
-
-    fn make_cached_auth(repo: CountingRepo, ttl_seconds: u64) -> (ApiKeyAuth, Arc<AuthCache>) {
+    fn make_cached_auth(
+        repo: Arc<MockApiKeyRepository>,
+        ttl_seconds: u64,
+    ) -> (ApiKeyAuth, Arc<AuthCache>) {
         let cache = Arc::new(AuthCache::new(ttl_seconds));
-        let auth = ApiKeyAuth::new(Arc::new(repo), true).with_cache(cache.clone());
+        let auth = ApiKeyAuth::new(repo, true).with_cache(cache.clone());
         (auth, cache)
     }
 
     /// R-auth-001 (a)：同一合法凭证第二次校验命中缓存，不再调用仓储。
     #[tokio::test]
     async fn second_validation_hits_cache_without_repository_call() {
-        let repo = CountingRepo::new(Uuid::new_v4());
-        let (auth, _cache) = make_cached_auth(repo.clone(), 300);
-
-        assert!(auth
-            .validate_key("cache-key", "cache-secret")
-            .await
-            .is_some());
-        assert_eq!(repo.validate_calls(), 1, "首次校验必须回源仓储");
+        let workspace_id = Uuid::new_v4();
+        // 整个测试只允许 1 次回源：第二次必须走缓存
+        let (mut repo, validate_calls, _revoked) = mock_repo(workspace_id, 1);
+        expect_cache_key_row(&mut repo, 1, workspace_id);
+        let (auth, _cache) = make_cached_auth(Arc::new(repo), 300);
 
         assert!(auth
             .validate_key("cache-key", "cache-secret")
             .await
             .is_some());
         assert_eq!(
-            repo.validate_calls(),
+            validate_calls.load(Ordering::SeqCst),
+            1,
+            "首次校验必须回源仓储"
+        );
+
+        assert!(auth
+            .validate_key("cache-key", "cache-secret")
+            .await
+            .is_some());
+        assert_eq!(
+            validate_calls.load(Ordering::SeqCst),
             1,
             "第二次校验必须命中缓存，仓储调用计数不得增加"
         );
@@ -1132,18 +1102,36 @@ mod auth_cache_wiring {
     /// 错误凭证永不命中缓存（每次都要回源，防止 key_id 枚举绕过）。
     #[tokio::test]
     async fn wrong_secret_always_falls_back_to_repository() {
-        let repo = CountingRepo::new(Uuid::new_v4());
-        let (auth, _cache) = make_cached_auth(repo.clone(), 300);
+        let workspace_id = Uuid::new_v4();
+        let (mut repo, validate_calls, _revoked) = mock_repo(workspace_id, 2);
+        // 校验未通过 → 不得写缓存 → 不得读 key 行
+        repo.expect_get_api_key_by_id().never();
+        let (auth, _cache) = make_cached_auth(Arc::new(repo), 300);
 
         assert!(auth.validate_key("cache-key", "bad-secret").await.is_none());
         assert!(auth.validate_key("cache-key", "bad-secret").await.is_none());
-        assert_eq!(repo.validate_calls(), 2, "无效凭证不得写入或命中缓存");
+        assert_eq!(
+            validate_calls.load(Ordering::SeqCst),
+            2,
+            "无效凭证不得写入或命中缓存"
+        );
     }
 
     /// R-auth-002：吊销后立即再校验返回 401（经真实中间件，不等待 TTL）。
     #[tokio::test]
     async fn revoked_key_is_rejected_immediately_via_middleware() {
-        let repo = CountingRepo::new(Uuid::new_v4());
+        let workspace_id = Uuid::new_v4();
+        // 2 次回源 = 吊销前首次校验 + 吊销后即时回源；
+        // 缓存若失效（第二次请求也回源）或吊销后仍命中缓存都会违反 .times(2)
+        let (mut repo, validate_calls, revoked) = mock_repo(workspace_id, 2);
+        // 真实吊销路径按行 id 查询（查不到）；缓存写入路径按 key_id 查询
+        expect_cache_key_row(&mut repo, 1, workspace_id);
+        repo.expect_get_api_key_by_id()
+            .withf(|key_id: &str| key_id != "cache-key")
+            .times(1)
+            .returning(|_| Ok(None));
+        let repo = Arc::new(repo);
+
         let (auth, cache) = make_cached_auth(repo.clone(), 300);
 
         let config_service: Arc<dyn crate::server::config::management::ConfigManagementService> =
@@ -1152,7 +1140,7 @@ mod auth_cache_wiring {
             ApiHandlers::with_api_key_repository(
                 Arc::new(MockIdGenerator::new()),
                 config_service,
-                Arc::new(repo.clone()),
+                repo,
             )
             .with_auth_cache(cache),
         );
@@ -1173,13 +1161,21 @@ mod auth_cache_wiring {
             .await
             .unwrap();
         assert_eq!(ok2.status(), StatusCode::OK);
-        assert_eq!(repo.validate_calls(), 1, "第二次请求应命中缓存");
+        assert_eq!(
+            validate_calls.load(Ordering::SeqCst),
+            1,
+            "第二次请求应命中缓存"
+        );
 
         // 吊销（模拟 DELETE /api-keys/{id} 的服务端副作用）
         handlers
             .revoke_api_key(Uuid::new_v4())
             .await
             .expect("吊销应成功");
+        assert!(
+            revoked.load(Ordering::SeqCst),
+            "吊销必须经仓储 delete_api_key 落库"
+        );
 
         // 吊销后立即再请求：401，且必须回源仓储确认
         let denied = app.oneshot(make_request(Some(&header))).await.unwrap();
@@ -1188,20 +1184,27 @@ mod auth_cache_wiring {
             StatusCode::UNAUTHORIZED,
             "吊销必须即时生效，不得等 TTL 过期"
         );
-        assert_eq!(repo.validate_calls(), 2, "吊销后校验必须回源仓储");
+        assert_eq!(
+            validate_calls.load(Ordering::SeqCst),
+            2,
+            "吊销后校验必须回源仓储"
+        );
     }
 
     /// R-auth-001：TTL 过期后下一次校验回源仓储。
     #[tokio::test]
     async fn ttl_expiry_forces_repository_revalidation() {
-        let repo = CountingRepo::new(Uuid::new_v4());
-        let (auth, _cache) = make_cached_auth(repo.clone(), 1);
+        let workspace_id = Uuid::new_v4();
+        // 两次回源 + 两次写缓存（过期后重新写回）
+        let (mut repo, validate_calls, _revoked) = mock_repo(workspace_id, 2);
+        expect_cache_key_row(&mut repo, 2, workspace_id);
+        let (auth, _cache) = make_cached_auth(Arc::new(repo), 1);
 
         assert!(auth
             .validate_key("cache-key", "cache-secret")
             .await
             .is_some());
-        assert_eq!(repo.validate_calls(), 1);
+        assert_eq!(validate_calls.load(Ordering::SeqCst), 1);
 
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
@@ -1209,14 +1212,21 @@ mod auth_cache_wiring {
             .validate_key("cache-key", "cache-secret")
             .await
             .is_some());
-        assert_eq!(repo.validate_calls(), 2, "TTL 过期后必须回源");
+        assert_eq!(
+            validate_calls.load(Ordering::SeqCst),
+            2,
+            "TTL 过期后必须回源"
+        );
     }
 
     /// cache_ttl_seconds=0：缓存禁用，每次校验都回源。
     #[tokio::test]
     async fn zero_ttl_disables_caching() {
-        let repo = CountingRepo::new(Uuid::new_v4());
-        let (auth, _cache) = make_cached_auth(repo.clone(), 0);
+        let workspace_id = Uuid::new_v4();
+        let (mut repo, validate_calls, _revoked) = mock_repo(workspace_id, 2);
+        // 缓存条目不会被命中，但写路径仍会读 key 行（ttl=0 时 put 为空操作）
+        expect_cache_key_row(&mut repo, 2, workspace_id);
+        let (auth, _cache) = make_cached_auth(Arc::new(repo), 0);
 
         assert!(auth
             .validate_key("cache-key", "cache-secret")
@@ -1226,6 +1236,6 @@ mod auth_cache_wiring {
             .validate_key("cache-key", "cache-secret")
             .await
             .is_some());
-        assert_eq!(repo.validate_calls(), 2);
+        assert_eq!(validate_calls.load(Ordering::SeqCst), 2);
     }
 }

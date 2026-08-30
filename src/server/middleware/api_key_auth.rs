@@ -418,9 +418,9 @@ pub fn parse_authorization_header_detailed(
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(credentials)
             .map_err(|_| AuthHeaderError::Base64DecodeFailed)?;
-        let cred_str =
-            String::from_utf8(decoded).map_err(|_| AuthHeaderError::InvalidEncoding)?;
-        let (key_id, key_secret) = split_pair(&cred_str).ok_or(AuthHeaderError::InvalidBasicFormat)?;
+        let cred_str = String::from_utf8(decoded).map_err(|_| AuthHeaderError::InvalidEncoding)?;
+        let (key_id, key_secret) =
+            split_pair(&cred_str).ok_or(AuthHeaderError::InvalidBasicFormat)?;
         require_non_empty(key_id, key_secret)
     } else if let Some(api_key) = value.strip_prefix("ApiKey ") {
         let (key_id, key_secret) =
@@ -1077,15 +1077,13 @@ mod tests {
             Err(AuthHeaderError::Base64DecodeFailed)
         );
         // base64 合法但解出的字节不是 UTF-8
-        let bad_utf8 =
-            base64::engine::general_purpose::STANDARD.encode([0xff_u8, 0xfe_u8]);
+        let bad_utf8 = base64::engine::general_purpose::STANDARD.encode([0xff_u8, 0xfe_u8]);
         assert_eq!(
             parse_authorization_header_detailed(&format!("Basic {bad_utf8}")),
             Err(AuthHeaderError::InvalidEncoding)
         );
         // "hello"：无冒号 ⇒ Basic 结构错
-        let no_colon =
-            base64::engine::general_purpose::STANDARD.encode(b"hello");
+        let no_colon = base64::engine::general_purpose::STANDARD.encode(b"hello");
         assert_eq!(
             parse_authorization_header_detailed(&format!("Basic {no_colon}")),
             Err(AuthHeaderError::InvalidBasicFormat)

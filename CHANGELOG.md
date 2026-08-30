@@ -64,6 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`DatabaseConfig::default` 不再 panic**：默认值不再 `.expect()` 环境变量
   `NEBULA_DATABASE_PASSWORD`（纯算法嵌入方只需 `Config::default()`）；建立连接时
   仍 fail-fast 返回 `ConfigurationError`。
+- **`tls.min_tls_version` 现在真实强制**：此前该配置只写日志、不进 `ServerConfig`，
+  实际恒为 rustls 默认的 TLS 1.2+1.3（旧注释已承认"延后到 v0.3.0"）。HTTP 侧改用
+  `ServerConfig::builder_with_protocol_versions`，`tls13` 时低于 TLS 1.3 的
+  ClientHello 被直接拒绝（**行为变更**：老客户端可能开始握手失败）。gRPC 侧的
+  `ServerConfig` 由 tonic 装配、无法注入版本集合，启动时按 `warn` 如实标界。
 - **`algorithm_type` ENUM 与代码对齐（需 DB 迁移）**：`scripts/init.sql` 此前仍建
   `('segment','snowflake','uuid_v7','uuid_v4')`，而代码侧只有
   `segment/snowflake/uuid_v8`，新库写入 `uuid_v8` 会被拒绝。存量库按
@@ -81,6 +86,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **停机不再泄漏后台任务**：`rate_limit_cleanup` 与降级巡检任务此前只在
+  `shutdown_signal` 分支回收；服务器先退出（正常停止或错误返回）时二者泄漏，
+  且 tokio 运行时 drop 会一直等这个永不自退的循环任务。改为 select 各分支只产出
+  结果、退出后统一回收（etcd / 非 etcd 两块同构）。
+- **矛盾 TLS 配置不再静默明文**：`tls.enabled = false` 且
+  `http_enabled`/`grpc_enabled = true` 时，per-port 开关被忽略、端口按明文启动，
+  此前无任何提示；现按 `tls_config_conflict` 显式 warn。启动日志里
+  "HTTPS is enabled but using HTTP fallback for now" 的误导文案改为如实描述
+  （wiring T005 后该端口确实做 TLS 终结）。
+- **`docker/vendor-deps.sh` 不再打包凭据**：向 `.docker-vendor/` 打依赖副本时
+  增加 `.env*` / `local_settings*` 排除（修复前实测确实带入了依赖仓库的
+  `.env.test` / `.env.example`）。
+- **SDK 示例不回显内部错误**：`to_api_error` 此前把 `e.to_string()` 直接发给客户端
+  （sdforge 将 message 原样下发）；改为对外固定概要 + `error_id`，内部细节只进日志。
+- **locale 键集对齐守卫**：新增测试断言 `locales/en.yml` 与 `locales/zh-CN.yml`
+  顶层键完全一致（单侧缺键只会在该语言下静默回退）；同时删除 `min_tls_version`
+  改造后成为孤儿的三个键（en + zh）。
 - **snowflake 并发重复 ID 竞态**：串行化 `(last_timestamp, sequence)` 迁移，
   并发下不再产生重复。
 - **降级链去重**：fallback 链 `[Snowflake, UuidV8]`（去除重复占位）。

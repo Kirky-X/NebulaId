@@ -288,8 +288,6 @@ log.server.config.hot_reload.read_lock_failed_algorithm_map: "获取 algorithm m
 # src/server/config/tls.rs
 log.server.config.tls.tls12_min_configured: "已配置 TLS 1.2 最低版本 - 兼容性可接受"
 log.server.config.tls.tls13_min_configured: "已配置 TLS 1.3 最低版本 - 推荐用于生产环境"
-log.server.config.tls.tls12_configured_rustls_default: "已配置 TLS 1.2+（rustls 默认最低版本）"
-log.server.config.tls.tls13_only_requested_auto_negotiate: "请求仅使用 TLS 1.3，但 rustls 会根据客户端支持自动协商最低版本"
 log.server.config.tls.tls_initialized: "TLS 配置已初始化"
 
 # src/server/grpc.rs
@@ -355,7 +353,6 @@ log.main.no_database_connection: "无数据库连接，API 密钥无法持久化
 log.main.id_generators_initializing: "正在初始化 ID 生成器..."
 log.main.id_generators_initialized: "ID 生成器初始化成功"
 log.main.id_generators_initializing_etcd_disabled: "正在初始化 ID 生成器（etcd 已禁用）..."
-log.main.https_enabled_http_fallback: "HTTPS 已启用，但当前使用 HTTP 兜底"
 log.main.starting_http_server: "正在 %{addr} 上启动 HTTP 服务器"
 log.main.shutting_down_http_server: "正在关闭 HTTP 服务器..."
 log.main.starting_grpc_server: "正在 %{addr} 上启动 gRPC 服务器"

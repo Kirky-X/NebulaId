@@ -21,6 +21,14 @@ path = "src/main.rs"
 [features]
 default = ["postgresql", "http", "grpc", "garrison-auth"]
 postgresql = ["dbnexus/postgres"]
+# sqlite: 当前不可构建（保留定义但不受支持，勿在 CI/文档中启用）。
+# 原因是必然的后端混用：limiteron 是非可选依赖且固定 features = ["postgres"]
+# → dbnexus/postgres 恒被启用，此时无论是否显式开 postgresql，
+# 只要再开 sqlite 就同时命中 dbnexus/sqlite + dbnexus/postgres，
+# 触发 dbnexus/src/lib.rs 的 compile_error!("Cannot mix embedded
+# (sqlite/duckdb) and server-side (postgres/mysql) database features")。
+# 同理 --all-features 不可用：本项目可构建的最大集合是 default + etcd。
+# 恢复路径：limiteron 放开后端约束，或把限流与数据库后端解耦（改为可选依赖）。
 sqlite = ["dbnexus/sqlite"]
 etcd = ["dep:etcd-client"]
 # integration-tests: 门控需要真实数据库的 #[ignore] 集成测试

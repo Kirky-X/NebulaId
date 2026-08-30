@@ -372,7 +372,10 @@ async fn start_http_server(
     // 不消费，HTTPS 宣称启用却恒为明文）。
     let tls_acceptor = tls_manager.as_ref().and_then(|tls| {
         if tls.is_http_enabled() {
-            info!("{}", t!("log.main.https_enabled_http_fallback"));
+            // T027④：文案纠偏 —— wiring T005 后 DualListener 用 TlsAcceptor 在
+            // 该端口做真实 TLS 终结，不存在旧文案宣称的 "HTTP fallback"；
+            // 保留旧文案会让运维误判加密端口仍是明文。
+            info!("HTTPS enabled: HTTP port terminates TLS (rustls acceptor)");
             tls.http_acceptor().cloned()
         } else {
             None
@@ -870,74 +873,49 @@ async fn main() -> Result<()> {
             tls_manager,
         ));
 
-        tokio::select! {
-            http_result = http_server => {
-                match http_result {
-                    Ok(Ok(())) => info!(
-                        "{}",
-                        t!("log.main.http_server_stopped")
-                    ),
-                    Ok(Err(e)) => {
-                        error!(
-                            "{}",
-                            t!(
-                                "log.main.http_server_error",
-                                error = e
-                            )
-                        );
-                        return Err(e);
-                    }
-                    Err(e) => {
-                        error!(
-                            "{}",
-                            t!(
-                                "log.main.http_server_panic",
-                                error = e
-                            )
-                        );
-                        return Err(nebulaid::core::types::CoreError::InternalError(format!("HTTP server panic: {}", e)));
-                    }
+        // T027③：http / grpc / 停机信号任一路径先就绪时，统一在 select 之后回收
+        // 后台任务（降级巡检 + 限流桶清理）再返回。原实现只在 shutdown_signal
+        // 分支 abort：服务器先退出（正常停止或错误退出）时清理任务泄漏，
+        // tokio 运行时 drop 还会一直等这个永不自退的循环任务。
+        let server_result: Result<()> = tokio::select! {
+            http_result = http_server => match http_result {
+                Ok(Ok(())) => {
+                    info!("{}", t!("log.main.http_server_stopped"));
+                    Ok(())
                 }
-            }
-            grpc_result = grpc_server => {
-                match grpc_result {
-                    Ok(Ok(())) => info!(
-                        "{}",
-                        t!("log.main.grpc_server_stopped")
-                    ),
-                    Ok(Err(e)) => {
-                        error!(
-                            "{}",
-                            t!(
-                                "log.main.grpc_server_error",
-                                error = e
-                            )
-                        );
-                        return Err(e);
-                    }
-                    Err(e) => {
-                        error!(
-                            "{}",
-                            t!(
-                                "log.main.grpc_server_panic",
-                                error = e
-                            )
-                        );
-                        return Err(nebulaid::core::types::CoreError::InternalError(format!("gRPC server panic: {}", e)));
-                    }
+                Ok(Err(e)) => {
+                    error!("{}", t!("log.main.http_server_error", error = e));
+                    Err(e)
                 }
-            }
+                Err(e) => {
+                    error!("{}", t!("log.main.http_server_panic", error = e));
+                    Err(nebulaid::core::types::CoreError::InternalError(format!("HTTP server panic: {}", e)))
+                }
+            },
+            grpc_result = grpc_server => match grpc_result {
+                Ok(Ok(())) => {
+                    info!("{}", t!("log.main.grpc_server_stopped"));
+                    Ok(())
+                }
+                Ok(Err(e)) => {
+                    error!("{}", t!("log.main.grpc_server_error", error = e));
+                    Err(e)
+                }
+                Err(e) => {
+                    error!("{}", t!("log.main.grpc_server_panic", error = e));
+                    Err(nebulaid::core::types::CoreError::InternalError(format!("gRPC server panic: {}", e)))
+                }
+            },
             _ = shutdown_signal() => {
-                info!(
-                    "{}",
-                    t!("log.main.shutdown_signal_received")
-                );
-                degradation_manager.stop_background_check().await;
-                rate_limit_cleanup.abort();
+                info!("{}", t!("log.main.shutdown_signal_received"));
+                Ok(())
             }
-        }
+        };
 
-        Ok(())
+        degradation_manager.stop_background_check().await;
+        rate_limit_cleanup.abort();
+
+        server_result
     }
 
     #[cfg(not(feature = "etcd"))]
@@ -1031,74 +1009,49 @@ async fn main() -> Result<()> {
             tls_manager,
         ));
 
-        tokio::select! {
-            http_result = http_server => {
-                match http_result {
-                    Ok(Ok(())) => info!(
-                        "{}",
-                        t!("log.main.http_server_stopped")
-                    ),
-                    Ok(Err(e)) => {
-                        error!(
-                            "{}",
-                            t!(
-                                "log.main.http_server_error",
-                                error = e
-                            )
-                        );
-                        return Err(e);
-                    }
-                    Err(e) => {
-                        error!(
-                            "{}",
-                            t!(
-                                "log.main.http_server_panic",
-                                error = e
-                            )
-                        );
-                        return Err(nebulaid::core::types::CoreError::InternalError(format!("HTTP server panic: {}", e)));
-                    }
+        // T027③：http / grpc / 停机信号任一路径先就绪时，统一在 select 之后回收
+        // 后台任务（降级巡检 + 限流桶清理）再返回。原实现只在 shutdown_signal
+        // 分支 abort：服务器先退出（正常停止或错误退出）时清理任务泄漏，
+        // tokio 运行时 drop 还会一直等这个永不自退的循环任务。
+        let server_result: Result<()> = tokio::select! {
+            http_result = http_server => match http_result {
+                Ok(Ok(())) => {
+                    info!("{}", t!("log.main.http_server_stopped"));
+                    Ok(())
                 }
-            }
-            grpc_result = grpc_server => {
-                match grpc_result {
-                    Ok(Ok(())) => info!(
-                        "{}",
-                        t!("log.main.grpc_server_stopped")
-                    ),
-                    Ok(Err(e)) => {
-                        error!(
-                            "{}",
-                            t!(
-                                "log.main.grpc_server_error",
-                                error = e
-                            )
-                        );
-                        return Err(e);
-                    }
-                    Err(e) => {
-                        error!(
-                            "{}",
-                            t!(
-                                "log.main.grpc_server_panic",
-                                error = e
-                            )
-                        );
-                        return Err(nebulaid::core::types::CoreError::InternalError(format!("gRPC server panic: {}", e)));
-                    }
+                Ok(Err(e)) => {
+                    error!("{}", t!("log.main.http_server_error", error = e));
+                    Err(e)
                 }
-            }
+                Err(e) => {
+                    error!("{}", t!("log.main.http_server_panic", error = e));
+                    Err(nebulaid::core::types::CoreError::InternalError(format!("HTTP server panic: {}", e)))
+                }
+            },
+            grpc_result = grpc_server => match grpc_result {
+                Ok(Ok(())) => {
+                    info!("{}", t!("log.main.grpc_server_stopped"));
+                    Ok(())
+                }
+                Ok(Err(e)) => {
+                    error!("{}", t!("log.main.grpc_server_error", error = e));
+                    Err(e)
+                }
+                Err(e) => {
+                    error!("{}", t!("log.main.grpc_server_panic", error = e));
+                    Err(nebulaid::core::types::CoreError::InternalError(format!("gRPC server panic: {}", e)))
+                }
+            },
             _ = shutdown_signal() => {
-                info!(
-                    "{}",
-                    t!("log.main.shutdown_signal_received")
-                );
-                degradation_manager.stop_background_check().await;
-                rate_limit_cleanup.abort();
+                info!("{}", t!("log.main.shutdown_signal_received"));
+                Ok(())
             }
-        }
+        };
 
-        Ok(())
+        degradation_manager.stop_background_check().await;
+        rate_limit_cleanup.abort();
+
+        server_result
     }
 }
 

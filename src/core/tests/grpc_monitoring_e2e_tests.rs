@@ -545,6 +545,7 @@ mod grpc_auth {
     use crate::core::database::{
         ApiKeyInfo, ApiKeyRepository, ApiKeyRole, ApiKeyWithSecret, CreateApiKeyRequest,
     };
+    use crate::core::types::CoreError;
     use crate::server::middleware::api_key_auth::ApiKeyAuth;
     use sdforge::tonic::{Code, Status};
     use uuid::Uuid;
@@ -672,6 +673,273 @@ mod grpc_auth {
             .await
             .expect_err("无效凭证必须被拒绝");
         assert_eq!(err.code(), Code::Unauthenticated);
+    }
+
+    // ===== T023：R-auth-003 失败判因（禁用/过期 vs 凭证无效）=====
+
+    /// 按 key 状态建模的仓储。
+    ///
+    /// `validate_api_key` 复刻真实仓储 `repository.rs:1018-1026` 的语义：
+    /// 禁用或已过期的 key 一律返回 `None`（不区分原因）。正因如此 gRPC 侧
+    /// 必须靠 `get_api_key_by_id` 回查 key 行才能判因 —— 本 mock 提供该回查
+    /// 数据，使「禁用/过期 → permission_denied」与「凭证无效 →
+    /// unauthenticated」两条路径可分别验证。
+    struct StatefulKeyRepo;
+
+    /// 构造 key 行（`ApiKeyInfo = ApiKey`，字段见 `api_key_entity.rs`）
+    fn key_row(
+        key_id: &str,
+        enabled: bool,
+        expires_at: Option<chrono::NaiveDateTime>,
+    ) -> ApiKeyInfo {
+        ApiKeyInfo {
+            id: Uuid::new_v4(),
+            key_id: key_id.to_string(),
+            key_prefix: "nino_".to_string(),
+            role: ApiKeyRole::User,
+            workspace_id: Some(Uuid::new_v4()),
+            name: key_id.to_string(),
+            description: None,
+            rate_limit: 1000,
+            enabled,
+            expires_at,
+            last_used_at: None,
+            created_at: chrono::Utc::now().naive_utc(),
+        }
+    }
+
+    /// 昨天 —— 已过期；明天 —— 未过期
+    fn yesterday() -> chrono::NaiveDateTime {
+        chrono::Utc::now().naive_utc() - chrono::Duration::days(1)
+    }
+
+    fn tomorrow() -> chrono::NaiveDateTime {
+        chrono::Utc::now().naive_utc() + chrono::Duration::days(1)
+    }
+
+    #[async_trait::async_trait]
+    impl ApiKeyRepository for StatefulKeyRepo {
+        async fn create_api_key(
+            &self,
+            _request: &CreateApiKeyRequest,
+        ) -> crate::core::types::Result<ApiKeyWithSecret> {
+            Err(crate::core::types::CoreError::NotFound("noop".into()))
+        }
+        async fn get_api_key_by_id(
+            &self,
+            key_id: &str,
+        ) -> crate::core::types::Result<Option<ApiKeyInfo>> {
+            match key_id {
+                "live-key" => Ok(Some(key_row(key_id, true, None))),
+                "disabled-key" => Ok(Some(key_row(key_id, false, None))),
+                "expired-key" => Ok(Some(key_row(key_id, true, Some(yesterday())))),
+                // 有效期内的 key 但 secret 不符 —— 用于验证「凭证无效」不会被
+                // 误判为 permission_denied
+                "future-key" => Ok(Some(key_row(key_id, true, Some(tomorrow())))),
+                _ => Ok(None),
+            }
+        }
+        async fn validate_api_key(
+            &self,
+            key_id: &str,
+            key_secret: &str,
+        ) -> crate::core::types::Result<Option<(Option<Uuid>, ApiKeyRole)>> {
+            let row = self.get_api_key_by_id(key_id).await?;
+            let Some(row) = row else {
+                return Ok(None);
+            };
+            // 与真实仓储一致：禁用 / 过期都直接 miss，不透露原因
+            if !row.enabled {
+                return Ok(None);
+            }
+            if let Some(expires_at) = row.expires_at {
+                if expires_at < chrono::Utc::now().naive_utc() {
+                    return Ok(None);
+                }
+            }
+            if key_secret != "grpc-secret" {
+                return Ok(None);
+            }
+            Ok(Some((row.workspace_id, row.role)))
+        }
+        async fn list_api_keys(
+            &self,
+            _workspace_id: Uuid,
+            _limit: Option<u32>,
+            _offset: Option<u32>,
+        ) -> crate::core::types::Result<Vec<ApiKeyInfo>> {
+            Ok(vec![])
+        }
+        async fn delete_api_key(&self, _id: Uuid) -> crate::core::types::Result<()> {
+            Ok(())
+        }
+        async fn revoke_api_key(&self, _id: Uuid) -> crate::core::types::Result<()> {
+            Ok(())
+        }
+        async fn update_last_used(&self, _id: Uuid) -> crate::core::types::Result<()> {
+            Ok(())
+        }
+        async fn get_admin_api_key(
+            &self,
+            _workspace_id: Uuid,
+        ) -> crate::core::types::Result<Option<ApiKeyInfo>> {
+            Ok(None)
+        }
+        async fn count_api_keys(&self, _workspace_id: Uuid) -> crate::core::types::Result<u64> {
+            Ok(0)
+        }
+        async fn rotate_api_key(
+            &self,
+            _key_id: &str,
+            _grace_period_seconds: u64,
+        ) -> crate::core::types::Result<ApiKeyWithSecret> {
+            Err(crate::core::types::CoreError::NotFound("noop".into()))
+        }
+        async fn get_keys_older_than(
+            &self,
+            _age_threshold_days: i64,
+        ) -> crate::core::types::Result<Vec<ApiKeyInfo>> {
+            Ok(vec![])
+        }
+    }
+
+    /// 用 `StatefulKeyRepo` 构造启用认证的 gRPC server
+    fn stateful_server() -> GrpcServer {
+        auth_server(ApiKeyAuth::new(Arc::new(StatefulKeyRepo), true))
+    }
+
+    /// 携带指定 Basic 凭证的 GenerateRequest
+    fn generate_request_with(key_id: &str, key_secret: &str) -> Request<GrpcGenerateRequest> {
+        let mut req = Request::new(GrpcGenerateRequest {
+            namespace: "ns".to_string(),
+            tag: "tag".to_string(),
+            metadata: HashMap::new(),
+        });
+        req.metadata_mut().insert(
+            "authorization",
+            basic_header(key_id, key_secret).parse().unwrap(),
+        );
+        req
+    }
+
+    #[tokio::test]
+    async fn disabled_key_returns_permission_denied() {
+        // key 行存在但 enabled=false：身份可识别，属授权层拒绝
+        let server = stateful_server();
+        let err = NebulaIdService::generate(&server, generate_request_with("disabled-key", "x"))
+            .await
+            .expect_err("禁用 key 必须被拒绝");
+        assert_eq!(
+            err.code(),
+            Code::PermissionDenied,
+            "禁用 key 应是 permission_denied 而非 unauthenticated，实际: {:?}",
+            err
+        );
+        assert_eq!(
+            err.message(),
+            CoreError::ApiKeyDisabled.to_string(),
+            "permission_denied 必须携带 ApiKeyDisabled 语义文案"
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_key_returns_permission_denied() {
+        // key 行存在且 enabled，但 expires_at 已过
+        let server = stateful_server();
+        let err = NebulaIdService::generate(&server, generate_request_with("expired-key", "x"))
+            .await
+            .expect_err("过期 key 必须被拒绝");
+        assert_eq!(
+            err.code(),
+            Code::PermissionDenied,
+            "过期 key 应是 permission_denied，实际: {:?}",
+            err
+        );
+        assert_eq!(
+            err.message(),
+            CoreError::ApiKeyExpired.to_string(),
+            "permission_denied 必须携带 ApiKeyExpired 语义文案"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_key_returns_unauthenticated() {
+        // 判因回查返回 None（key 行不存在）→ 凭证本身无效，不得给 403
+        let server = stateful_server();
+        let err = NebulaIdService::generate(&server, generate_request_with("ghost-key", "x"))
+            .await
+            .expect_err("不存在的 key 必须被拒绝");
+        assert_eq!(err.code(), Code::Unauthenticated);
+        assert_eq!(err.message(), "invalid or unknown api key");
+    }
+
+    #[tokio::test]
+    async fn wrong_secret_on_existing_valid_key_returns_unauthenticated() {
+        // key 行存在、enabled、未过期，但 secret 不符 → 判因必须落回
+        // unauthenticated（否则任何 secret 猜错都会变成 403）
+        let server = stateful_server();
+        let err = NebulaIdService::generate(&server, generate_request_with("live-key", "nope"))
+            .await
+            .expect_err("secret 不符必须被拒绝");
+        assert_eq!(err.code(), Code::Unauthenticated);
+        assert_eq!(err.message(), "invalid or unknown api key");
+        // 边界：expires_at 有值但未到期 ⇒ 同样只是凭证不符，不得判成过期
+        let err = NebulaIdService::generate(&server, generate_request_with("future-key", "nope"))
+            .await
+            .expect_err("未到期 key 的 secret 不符必须被拒绝");
+        assert_eq!(
+            err.code(),
+            Code::Unauthenticated,
+            "expires_at 未到期不应判为 permission_denied，实际: {:?}",
+            err
+        );
+        // 对照组：同一 key 用正确 secret 应通过认证（证明差异只在凭证）
+        let ok =
+            NebulaIdService::generate(&server, generate_request_with("live-key", "grpc-secret"))
+                .await
+                .expect("活 key + 正确 secret 应通过认证");
+        assert!(!ok.into_inner().id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn health_check_enforces_auth_and_passes_valid_key() {
+        // T023 清理 health_check 死绑定的回归：认证副作用与错误传播都不能丢，
+        // 且判因映射在 health_check 入口同样生效
+        let server = stateful_server();
+        let no_creds = Request::new(HealthCheckRequest {
+            service: String::new(),
+        });
+        let err = NebulaIdService::health_check(&server, no_creds)
+            .await
+            .expect_err("health_check 无凭证必须被拒绝");
+        assert_eq!(err.code(), Code::Unauthenticated);
+
+        let mut disabled = Request::new(HealthCheckRequest {
+            service: String::new(),
+        });
+        disabled.metadata_mut().insert(
+            "authorization",
+            basic_header("disabled-key", "x").parse().unwrap(),
+        );
+        let err = NebulaIdService::health_check(&server, disabled)
+            .await
+            .expect_err("health_check 禁用 key 必须被拒绝");
+        assert_eq!(err.code(), Code::PermissionDenied);
+
+        let mut live = Request::new(HealthCheckRequest {
+            service: String::new(),
+        });
+        live.metadata_mut().insert(
+            "authorization",
+            basic_header("live-key", "grpc-secret").parse().unwrap(),
+        );
+        let resp = NebulaIdService::health_check(&server, live)
+            .await
+            .expect("合法凭证下 health_check 应正常返回");
+        assert_eq!(
+            resp.into_inner().status,
+            v1::health_check_response::ServingStatus::Serving as i32
+        );
     }
 
     #[tokio::test]

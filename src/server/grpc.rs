@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::core::types::CoreError;
 use crate::server::handlers::ApiHandlers;
 use crate::server::middleware::api_key_auth::{parse_authorization_header, ApiKeyAuth};
 use crate::server::models::{BatchGenerateRequest, GenerateRequest, ParseRequest};
@@ -60,13 +61,26 @@ impl GrpcServer {
 
     /// 单点认证：校验 `authorization` metadata（Basic/ApiKey 双格式），成功时
     /// 将 workspace_id 与角色注入 request extensions。覆盖全部 RPC（含双向流
-    /// —— request-init 先于流消费被校验）。失败映射：
-    /// - 缺失/格式无效/校验不通过 → `Status::unauthenticated`
+    /// —— request-init 先于流消费被校验）。失败映射（规格 R-auth-003）：
+    /// - 缺失/格式无效/凭证无效 → `Status::unauthenticated`
+    /// - key 存在但被禁用或已过期 → `Status::permission_denied`
     /// - `auth.enabled=false` → 放行（对齐 HTTP Anonymous 语义）
     ///
     /// 注：设计稿原定 tonic `with_interceptor`，但 Interceptor::call 是同步
     /// 签名而凭证校验必须异步查库（Argon2id + DB），在拦截器内 block_on 有
     /// 运行时风险，故改为各 RPC 入口一行调用本助手 —— 单点实现不变。
+    ///
+    /// 偏差（T023）：HTTP 侧的「按 IP 认证失败限流」（5 分钟 10 次）尚未在
+    /// gRPC 接线。对端 IP 本身拿得到 —— tonic 0.14 的 `MakeSvc::call` 用
+    /// `ConnectInfoLayer` 把 `TcpConnectInfo`（TLS 下为
+    /// `TlsConnectInfo<TcpConnectInfo>`）注入 request extensions，
+    /// [`Request::remote_addr`] 已封装两种情况，故此处已按直连 IP 打审计
+    /// 日志。缺的是共享计数器本身：`ApiKeyAuth::check_auth_failure_rate` /
+    /// `record_auth_failure` 及其 `auth_failures` 字段是 `api_key_auth`
+    /// 模块私有，gRPC 无法复用；而 gRPC 侧另建一份计数器既违反「复用同一套
+    /// 限流」的要求，也在本任务变更范围之外（且当前 delta spec 把「gRPC 限流」
+    /// 列为 Out of Scope）。要接线需 `api_key_auth.rs` 把上述两个方法提为
+    /// `pub(crate)`（HTTP 的 429 对应 gRPC `Code::ResourceExhausted`）。
     pub(crate) async fn authenticate<T>(&self, request: Request<T>) -> Result<Request<T>, Status> {
         let Some(auth) = self.auth.as_ref() else {
             return Ok(request);
@@ -75,23 +89,164 @@ impl GrpcServer {
             return Ok(request);
         }
 
-        let value = request
+        let client_ip = peer_ip(&request);
+
+        let Some(value) = request
             .metadata()
             .get("authorization")
             .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| Status::unauthenticated("missing authorization metadata"))?;
-        let (key_id, key_secret) = parse_authorization_header(value)
-            .ok_or_else(|| Status::unauthenticated("invalid authorization format"))?;
-        let (workspace_id, role) = auth
-            .validate_key(&key_id, &key_secret)
-            .await
-            .ok_or_else(|| Status::unauthenticated("invalid or unknown api key"))?;
+        else {
+            return Err(reject(
+                &client_ip,
+                "",
+                "missing_authorization",
+                &t!("log.server.middleware.api_key_auth.missing_auth_header"),
+                Status::unauthenticated("missing authorization metadata"),
+            ));
+        };
+        let Some((key_id, key_secret)) = parse_authorization_header(value) else {
+            return Err(reject(
+                &client_ip,
+                "",
+                "unsupported_auth_format",
+                &t!("log.server.middleware.api_key_auth.unsupported_auth_format"),
+                Status::unauthenticated("invalid authorization format"),
+            ));
+        };
 
-        let mut request = request;
-        request.extensions_mut().insert(workspace_id);
-        request.extensions_mut().insert(role);
-        Ok(request)
+        match auth.validate_key(&key_id, &key_secret).await {
+            Some((workspace_id, role)) => {
+                let mut request = request;
+                request.extensions_mut().insert(workspace_id);
+                request.extensions_mut().insert(role);
+                Ok(request)
+            }
+            // 校验 miss：回查 key 行区分「凭证无效」与「key 被禁用/已过期」
+            None => Err(classify_miss(auth, &key_id, &client_ip).await),
+        }
     }
+}
+
+/// 取 gRPC 对端 IP（直连地址，不可被头部伪造）。非 TCP 传输（如单测里直接
+/// 调用 trait 方法）取不到地址，兜底 `"unknown"` —— 与 HTTP 侧
+/// `api_key_auth.rs::get_client_ip` 的兜底语义一致。
+fn peer_ip<T>(request: &Request<T>) -> String {
+    request
+        .remote_addr()
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// 认证拒绝的统一出口：先打一条与 HTTP 侧同 schema 的 `auth_failure` 审计
+/// 日志（`reason` 机器可读 + `client_ip` + 掩码 `key_id_prefix`），再返回
+/// 调用方给定的 Status。日志与 Status 缺一不可 —— 只返 Status 会让 gRPC
+/// 侧的暴力猜 key 行为在审计里隐身。
+///
+/// 日志文案复用 `log.server.middleware.api_key_auth.*` 既有键：语义完全对应
+/// （缺少 authorization / 不支持的格式 / 无效凭据），新增 grpc 专属键只会在
+/// 两个 locale 里造出同义重复条目。
+fn reject(
+    client_ip: &str,
+    key_id_prefix: &str,
+    reason: &str,
+    log_message: &str,
+    status: Status,
+) -> Status {
+    tracing::warn!(
+        event = "auth_failure",
+        reason = reason,
+        client_ip = %client_ip,
+        key_id_prefix = %key_id_prefix,
+        "{}",
+        log_message
+    );
+    status
+}
+
+/// `validate_key` miss 的判因结果。用显式枚举而非字符串匹配，避免把
+/// 「哪种失败给哪个 code」这一确定性决策写成隐式约定。
+enum KeyMiss {
+    /// key 行存在但 `enabled = false`
+    Disabled,
+    /// key 行存在且启用，但绝对过期时间已过
+    Expired,
+    /// key 行存在且有效 ⇒ 是 secret 不符
+    BadSecret,
+    /// key 行不存在，或判因回查本身失败
+    Unknown,
+}
+
+impl KeyMiss {
+    fn reject(&self, client_ip: &str, key_id: &str) -> Status {
+        let (reason, status) = match self {
+            // 身份可识别但被授权层拒绝 ⇒ permission_denied
+            Self::Disabled => (
+                "key_disabled",
+                Status::permission_denied(CoreError::ApiKeyDisabled.to_string()),
+            ),
+            Self::Expired => (
+                "key_expired",
+                Status::permission_denied(CoreError::ApiKeyExpired.to_string()),
+            ),
+            // 凭证本身无效 ⇒ unauthenticated（文案不区分 key 是否存在，
+            // 避免把「哪些 key_id 有效」泄露给探测者）
+            Self::BadSecret => (
+                "bad_secret",
+                Status::unauthenticated("invalid or unknown api key"),
+            ),
+            Self::Unknown => (
+                "unknown_key",
+                Status::unauthenticated("invalid or unknown api key"),
+            ),
+        };
+        reject(
+            client_ip,
+            &key_id.chars().take(8).collect::<String>(),
+            reason,
+            &t!("log.server.middleware.api_key_auth.invalid_credentials"),
+            status,
+        )
+    }
+}
+
+/// 回查 key 行完成判因（规格 R-auth-003）。HTTP 侧无此分类（一律 401），
+/// 故这里是唯一实现，不构成第二份重复逻辑；禁用/过期文案复用
+/// `CoreError::ApiKeyDisabled/ApiKeyExpired` 的 i18n 条目而非另写字面量。
+///
+/// 回查失败（DB 异常）时保守按 `unauthenticated` 拒绝：既不能确认 key 状态
+/// 就不得放行，也不能凭猜给 `permission_denied` 谎报语义；同时以 error 级
+/// 显性上报，避免 DB 故障被伪装成「凭证无效」。
+async fn classify_miss(auth: &ApiKeyAuth, key_id: &str, client_ip: &str) -> Status {
+    let info = match auth.repo.get_api_key_by_id(key_id).await {
+        Ok(info) => info,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                event = "auth_failure",
+                reason = "key_state_query_failed",
+                client_ip = %client_ip,
+                "failed to load api key state for auth failure classification"
+            );
+            return KeyMiss::Unknown.reject(client_ip, key_id);
+        }
+    };
+
+    let miss = match info {
+        None => KeyMiss::Unknown,
+        Some(info) => {
+            if !info.enabled {
+                KeyMiss::Disabled
+            } else if info
+                .expires_at
+                .is_some_and(|at| at < chrono::Utc::now().naive_utc())
+            {
+                KeyMiss::Expired
+            } else {
+                KeyMiss::BadSecret
+            }
+        }
+    };
+    miss.reject(client_ip, key_id)
 }
 
 #[async_trait]
@@ -339,8 +494,8 @@ impl NebulaIdService for GrpcServer {
     ) -> Result<Response<HealthCheckResponse>, Status> {
         // wiring T006：health_check 同样纳入认证（设计 D6 覆盖全部 5 个 RPC）。
         // 编排探针请改用 HTTP 端口 /health（公开端点）。
-        let request = self.authenticate(request).await?;
-        let _request = request;
+        // T023：健康状态不依赖租户身份，认证结果只需通过即可，故丢弃 request。
+        self.authenticate(request).await?;
         let health = self.handlers.health().await;
         let status = if health.status == crate::server::models::HealthStatus::Healthy {
             v1::health_check_response::ServingStatus::Serving
@@ -611,5 +766,34 @@ mod tests {
             resp.status,
             v1::health_check_response::ServingStatus::Serving as i32
         );
+    }
+
+    // ===== peer_ip（T023：认证失败按直连 IP 归因的前置能力）=====
+
+    #[test]
+    fn test_peer_ip_reads_connect_info_injected_by_tonic_transport() {
+        // tonic 0.14 的 transport server 在 MakeSvc::call 里用 ConnectInfoLayer
+        // 把 TcpConnectInfo 注入 request extensions。这里手工注入同一类型，
+        // 验证 peer_ip 取的是该真实扩展（而非自造字段或元数据）。
+        let mut req = Request::new(HealthCheckRequest {
+            service: String::new(),
+        });
+        req.extensions_mut()
+            .insert(sdforge::tonic::transport::server::TcpConnectInfo {
+                local_addr: None,
+                remote_addr: Some("203.0.113.7:5555".parse().unwrap()),
+            });
+        // 只取 IP：端口每次连接都变，归因桶必须按主机聚合
+        assert_eq!(peer_ip(&req), "203.0.113.7");
+    }
+
+    #[test]
+    fn test_peer_ip_falls_back_to_unknown_without_transport() {
+        // 无 ConnectInfo（单测直接调用 trait 方法 / 非 TCP 传输）时兜底
+        // "unknown"，与 HTTP 侧 get_client_ip 的兜底语义一致 —— 不伪造地址。
+        let req = Request::new(HealthCheckRequest {
+            service: String::new(),
+        });
+        assert_eq!(peer_ip(&req), "unknown");
     }
 }

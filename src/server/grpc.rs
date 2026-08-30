@@ -64,7 +64,8 @@ impl GrpcServer {
     /// —— request-init 先于流消费被校验）。失败映射（规格 R-auth-003）：
     /// - 缺失/格式无效/凭证无效 → `Status::unauthenticated`
     /// - key 存在但被禁用或已过期 → `Status::permission_denied`
-    /// - `auth.enabled=false` → 放行（对齐 HTTP Anonymous 语义）
+    /// - `auth.enabled=false` → 放行并记 `auth_disabled_request` 审计日志
+    ///   （对齐 HTTP Anonymous 语义）
     ///
     /// 注：设计稿原定 tonic `with_interceptor`，但 Interceptor::call 是同步
     /// 签名而凭证校验必须异步查库（Argon2id + DB），在拦截器内 block_on 有
@@ -85,11 +86,23 @@ impl GrpcServer {
         let Some(auth) = self.auth.as_ref() else {
             return Ok(request);
         };
+        // 对端 IP 提前解析：禁用放行的审计行与失败拒绝行共用同一取值，
+        // 避免为一条日志重复读一次扩展。
+        let client_ip = peer_ip(&request);
+
         if !auth.is_enabled() {
+            // `auth.enabled=false` 的放行不是「无事件」：HTTP 侧同语义
+            // （api_key_auth.rs 的 auth_disabled_request）会留一条 warn，gRPC
+            // 侧静默放行会让降级部署下的流量在审计里隐身。文案与 event 字段名
+            // 沿用 HTTP 侧既有 locale 键，跨传输可按同一 event 检索。
+            tracing::warn!(
+                event = "auth_disabled_request",
+                client_ip = %client_ip,
+                "{}",
+                t!("log.server.middleware.api_key_auth.auth_disabled_request")
+            );
             return Ok(request);
         }
-
-        let client_ip = peer_ip(&request);
 
         let Some(value) = request
             .metadata()

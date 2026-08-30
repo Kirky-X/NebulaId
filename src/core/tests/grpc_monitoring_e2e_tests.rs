@@ -643,6 +643,48 @@ mod grpc_auth {
         )
     }
 
+    /// `ApiKey key_id:key_secret` 格式头 —— 与 Basic 并列的第二种受支持格式
+    fn api_key_header(key: &str, secret: &str) -> String {
+        format!("ApiKey {key}:{secret}")
+    }
+
+    /// 携带指定 `ApiKey` 格式凭证的 GenerateRequest
+    fn api_key_request(key_id: &str, key_secret: &str) -> Request<GrpcGenerateRequest> {
+        let mut req = Request::new(GrpcGenerateRequest {
+            namespace: "ns".to_string(),
+            tag: "tag".to_string(),
+            metadata: HashMap::new(),
+        });
+        req.metadata_mut().insert(
+            "authorization",
+            api_key_header(key_id, key_secret).parse().unwrap(),
+        );
+        req
+    }
+
+    /// 在真实 tonic 传输上起一个启用认证的 gRPC server，返回监听地址与任务句柄。
+    /// 流式入口的 `Streaming<T>` 无法在测试侧凭空构造，只能走真实传输。
+    async fn spawn_auth_server() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        use sdforge::tonic::transport::Server;
+        use v1::nebula_id_service_server::NebulaIdServiceServer;
+
+        let server_impl = auth_server(ApiKeyAuth::new(Arc::new(FixedKeyRepo), true));
+
+        // 占位端口：绑定 :0 取可用端口后释放（测试场景可接受的微小竞态）
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
+        let addr = probe.local_addr().expect("probe addr");
+        drop(probe);
+
+        let jh = tokio::spawn(async move {
+            let _ = Server::builder()
+                .add_service(NebulaIdServiceServer::new(server_impl))
+                .serve(addr)
+                .await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        (addr, jh)
+    }
+
     #[tokio::test]
     async fn rejects_missing_authorization_metadata() {
         let server = auth_server(ApiKeyAuth::new(Arc::new(FixedKeyRepo), true));
@@ -993,23 +1035,7 @@ mod grpc_auth {
     /// （`Streaming<T>` 无法在测试侧凭空构造，必须走真实传输。）
     #[tokio::test]
     async fn stream_rpc_is_intercepted_over_real_transport() {
-        use sdforge::tonic::transport::Server;
-        use v1::nebula_id_service_server::NebulaIdServiceServer;
-
-        let server_impl = auth_server(ApiKeyAuth::new(Arc::new(FixedKeyRepo), true));
-
-        // 占位端口：绑定 :0 取可用端口后释放（测试场景可接受的微小竞态）
-        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-        let addr = probe.local_addr().expect("probe addr");
-        drop(probe);
-
-        let jh = tokio::spawn(async move {
-            let _ = Server::builder()
-                .add_service(NebulaIdServiceServer::new(server_impl))
-                .serve(addr)
-                .await;
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let (addr, jh) = spawn_auth_server().await;
 
         let mut client =
             v1::nebula_id_service_client::NebulaIdServiceClient::connect(format!("http://{addr}"))
@@ -1035,6 +1061,154 @@ mod grpc_auth {
                     other => panic!("流式 RPC 无凭证不应产出正常项: {other:?}"),
                 }
             }
+        }
+
+        jh.abort();
+    }
+
+    // ===== 第 3 轮：ApiKey 格式 / 禁用放行 / 5 RPC 全覆盖的证据缺口 =====
+
+    #[tokio::test]
+    async fn api_key_format_credentials_are_accepted() {
+        // gRPC 侧此前只走 Basic：ApiKey 分支一旦断裂只有 HTTP 侧能发现。
+        let server = stateful_server();
+        let resp = NebulaIdService::generate(&server, api_key_request("live-key", "grpc-secret"))
+            .await
+            .expect("ApiKey 格式 + 正确 secret 应通过认证");
+        assert!(!resp.into_inner().id.is_empty(), "认证通过后应正常返回 ID");
+    }
+
+    #[tokio::test]
+    async fn api_key_format_wrong_secret_returns_unauthenticated() {
+        // 格式正确不代表凭证正确：secret 不符必须仍落 unauthenticated，
+        // 不得因为走了另一条解析分支而变成 permission_denied 或直接放行
+        let server = stateful_server();
+        let err = NebulaIdService::generate(&server, api_key_request("live-key", "nope"))
+            .await
+            .expect_err("ApiKey 格式 secret 不符必须被拒绝");
+        assert_eq!(
+            err.code(),
+            Code::Unauthenticated,
+            "ApiKey 格式 secret 不符应是 unauthenticated，实际: {err:?}"
+        );
+        assert_eq!(err.message(), "invalid or unknown api key");
+    }
+
+    #[tokio::test]
+    async fn disabled_auth_passes_with_and_without_credentials() {
+        // `auth.enabled=false` 的放行必须与凭证内容无关，否则「禁用认证」
+        // 形同虚设（无效凭证反被拒）。同时不得注入真实角色 —— 对齐 HTTP 侧
+        // 降级为 Anonymous 的语义。断言只看行为（放行 + 不注入），不断日志。
+        let server = auth_server(ApiKeyAuth::new(Arc::new(FixedKeyRepo), false));
+
+        let anonymous = Request::new(GrpcGenerateRequest {
+            namespace: "ns".to_string(),
+            tag: "tag".to_string(),
+            metadata: HashMap::new(),
+        });
+        let resp = NebulaIdService::generate(&server, anonymous)
+            .await
+            .expect("禁用认证时无凭证应放行");
+        assert!(!resp.into_inner().id.is_empty());
+
+        let passed = server
+            .authenticate(generate_request_with("ghost-key", "wrong-secret"))
+            .await
+            .expect("禁用认证时凭证内容必须被忽略（无效凭证也放行）");
+        assert_eq!(
+            passed.extensions().get::<ApiKeyRole>(),
+            None,
+            "禁用认证不得注入角色（HTTP 侧对应 Anonymous）"
+        );
+
+        let resp = NebulaIdService::generate(&server, api_key_request("ghost-key", "wrong-secret"))
+            .await
+            .expect("禁用认证时 ApiKey 格式的无效凭证同样放行");
+        assert!(!resp.into_inner().id.is_empty());
+    }
+
+    /// R-auth-003 覆盖度：启用认证后 **全部 5 个 RPC 方法**（含双向流）缺
+    /// `authorization` metadata 时一律 `Code::Unauthenticated`。走真实传输而非
+    /// 直接调 trait —— 流式入口的 `Streaming<T>` 只能由传输层构造，只有这样才能
+    /// 把五个方法放进同一张参数化断言表，不给「某个入口漏调 authenticate」留死角。
+    #[tokio::test]
+    async fn every_rpc_method_rejects_missing_credentials() {
+        let (addr, jh) = spawn_auth_server().await;
+        let mut client =
+            v1::nebula_id_service_client::NebulaIdServiceClient::connect(format!("http://{addr}"))
+                .await
+                .expect("client connect");
+
+        for method in [
+            "generate",
+            "batch_generate",
+            "batch_generate_stream",
+            "parse",
+            "health_check",
+        ] {
+            let status: Status = match method {
+                "generate" => client
+                    .generate(GrpcGenerateRequest {
+                        namespace: "ns".to_string(),
+                        tag: "tag".to_string(),
+                        metadata: HashMap::new(),
+                    })
+                    .await
+                    .unwrap_err(),
+                "batch_generate" => client
+                    .batch_generate(GrpcBatchGenerateRequest {
+                        namespace: "ns".to_string(),
+                        tag: "tag".to_string(),
+                        count: 2,
+                        metadata: HashMap::new(),
+                    })
+                    .await
+                    .unwrap_err(),
+                "parse" => client
+                    .parse(GrpcParseRequest {
+                        id: "12345".to_string(),
+                    })
+                    .await
+                    .unwrap_err(),
+                "health_check" => client
+                    .health_check(HealthCheckRequest {
+                        service: String::new(),
+                    })
+                    .await
+                    .unwrap_err(),
+                // 双向流的拒绝可能发生在调用本身，也可能延后到首个流项
+                "batch_generate_stream" => {
+                    match client
+                        .batch_generate_stream(tokio_stream::once(v1::BatchGenerateStreamRequest {
+                            namespace: "ns".to_string(),
+                            tag: "tag".to_string(),
+                            count: 1,
+                            metadata: HashMap::new(),
+                        }))
+                        .await
+                    {
+                        Err(status) => status,
+                        Ok(resp) => {
+                            let mut stream = resp.into_inner();
+                            match tokio_stream::StreamExt::next(&mut stream).await {
+                                Some(Err(status)) => status,
+                                other => panic!("{method} 无凭证不应产出正常项: {other:?}"),
+                            }
+                        }
+                    }
+                }
+                other => panic!("参数化表外的方法名: {other}"),
+            };
+            assert_eq!(
+                status.code(),
+                Code::Unauthenticated,
+                "{method} 无凭证必须是 Unauthenticated，实际: {status:?}"
+            );
+            assert_eq!(
+                status.message(),
+                "missing authorization metadata",
+                "{method} 的拒绝原因必须是缺少 authorization metadata，实际: {status:?}"
+            );
         }
 
         jh.abort();

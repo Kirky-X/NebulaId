@@ -273,124 +273,101 @@ impl ApiKeyAuth {
 
         let auth_header = req.headers().get("authorization").cloned();
 
-        if let Some(header) = auth_header {
-            if let Ok(value) = header.to_str() {
-                // Support both "Basic base64(key_id:key_secret)" and "ApiKey key_id:key_secret"
-                let (key_id, key_secret) = if let Some(credentials) = value.strip_prefix("Basic ") {
-                    if let Ok(decoded) =
-                        base64::engine::general_purpose::STANDARD.decode(credentials)
-                    {
-                        if let Ok(cred_str) = String::from_utf8(decoded) {
-                            let parts: Vec<&str> = cred_str.splitn(2, ':').collect();
-                            if parts.len() == 2 {
-                                (parts[0].to_string(), parts[1].to_string())
-                            } else {
-                                tracing::warn!(
-                                    event = "auth_failure",
-                                    reason = "invalid_basic_format",
-                                    client_ip = %client_ip,
-                                    "{}",
-                                    t!("log.server.middleware.api_key_auth.invalid_basic_format")
-                                );
-                                return self.unauthorized_response(&client_ip);
-                            }
-                        } else {
-                            tracing::warn!(
-                                event = "auth_failure",
-                                reason = "invalid_encoding",
-                                client_ip = %client_ip,
-                                "{}",
-                                t!("log.server.middleware.api_key_auth.invalid_base64_encoding")
-                            );
-                            return self.unauthorized_response(&client_ip);
-                        }
-                    } else {
-                        tracing::warn!(
-                            event = "auth_failure",
-                            reason = "base64_decode_failed",
-                            client_ip = %client_ip,
-                            "{}",
-                            t!("log.server.middleware.api_key_auth.base64_decode_failed")
-                        );
-                        return self.unauthorized_response(&client_ip);
-                    }
-                } else if let Some(api_key) = value.strip_prefix("ApiKey ") {
-                    let parts: Vec<&str> = api_key.splitn(2, ':').collect();
-                    if parts.len() == 2 {
-                        (parts[0].to_string(), parts[1].to_string())
-                    } else {
-                        tracing::warn!(
-                            event = "auth_failure",
-                            reason = "invalid_apikey_format",
-                            client_ip = %client_ip,
-                            "{}",
-                            t!("log.server.middleware.api_key_auth.invalid_apikey_format")
-                        );
-                        return self.unauthorized_response(&client_ip);
-                    }
-                } else {
-                    tracing::warn!(
-                        event = "auth_failure",
-                        reason = "unsupported_format",
-                        client_ip = %client_ip,
-                        "{}",
-                        t!("log.server.middleware.api_key_auth.unsupported_auth_format")
-                    );
-                    return self.unauthorized_response(&client_ip);
-                };
+        // converge T026①：解析改调全仓唯一实现。此前这里是 Basic/ApiKey 的第二份
+        // 手写解析，且与共享函数已出现语义分歧（空凭证一处拒绝、一处延后判断），
+        // 修一边即漏一边。失败原因仍逐类打点，审计 reason 与 i18n 文案保持不变。
+        let parsed = auth_header
+            .as_ref()
+            .map(|header| {
+                header
+                    .to_str()
+                    .map_err(|_| AuthHeaderError::InvalidEncoding)
+                    .and_then(parse_authorization_header_detailed)
+            })
+            .transpose();
 
-                // Validate input lengths to prevent empty credentials
-                if key_id.is_empty() || key_secret.is_empty() {
-                    tracing::warn!(
-                        event = "auth_failure",
-                        reason = "empty_credentials",
-                        client_ip = %client_ip,
-                        "{}",
-                        t!("log.server.middleware.api_key_auth.empty_credentials")
-                    );
-                    return self.unauthorized_response(&client_ip);
-                }
-
-                if let Some((workspace_id, role)) = self.validate_key(&key_id, &key_secret).await {
-                    req.extensions_mut().insert(workspace_id);
-                    req.extensions_mut().insert(role.clone());
-
-                    // Log successful authentication
-                    let duration = start_time.elapsed().as_millis() as u64;
-                    let key_id_prefix = key_id.chars().take(8).collect::<String>();
-                    tracing::info!(
-                        event = "auth_success",
-                        key_id_prefix = %key_id_prefix,
-                        role = ?role,
-                        client_ip = %client_ip,
-                        duration_ms = duration,
-                        "{}",
-                        t!("log.server.middleware.api_key_auth.authentication_successful")
-                    );
-
-                    return next.run(req).await;
-                } else {
-                    // Log auth failure with key_id prefix (masked for security)
-                    let key_id_prefix = key_id.chars().take(8).collect::<String>();
-                    tracing::warn!(
-                        event = "auth_failure",
-                        reason = "invalid_credentials",
-                        key_id_prefix = %key_id_prefix,
-                        client_ip = %client_ip,
-                        "{}",
-                        t!("log.server.middleware.api_key_auth.invalid_credentials")
-                    );
-                }
+        let (key_id, key_secret) = match parsed {
+            Ok(Some(pair)) => pair,
+            Ok(None) => {
+                tracing::warn!(
+                    event = "auth_failure",
+                    reason = "missing_auth_header",
+                    client_ip = %client_ip,
+                    "{}",
+                    t!("log.server.middleware.api_key_auth.missing_auth_header")
+                );
+                return self.unauthorized_response(&client_ip);
             }
-        } else {
-            // Log missing auth header
-            tracing::warn!(
-                event = "auth_failure",
-                reason = "missing_auth_header",
-                client_ip = %client_ip,
-                "{}",
-                t!("log.server.middleware.api_key_auth.missing_auth_header")
-            );
+            Err(err) => {
+                let (reason, message) = match err {
+                    AuthHeaderError::UnsupportedFormat => (
+                        "unsupported_format",
+                        t!("log.server.middleware.api_key_auth.unsupported_auth_format"),
+                    ),
+                    AuthHeaderError::Base64DecodeFailed => (
+                        "base64_decode_failed",
+                        t!("log.server.middleware.api_key_auth.base64_decode_failed"),
+                    ),
+                    AuthHeaderError::InvalidEncoding => (
+                        "invalid_encoding",
+                        t!("log.server.middleware.api_key_auth.invalid_base64_encoding"),
+                    ),
+                    AuthHeaderError::InvalidBasicFormat => (
+                        "invalid_basic_format",
+                        t!("log.server.middleware.api_key_auth.invalid_basic_format"),
+                    ),
+                    AuthHeaderError::InvalidApikeyFormat => (
+                        "invalid_apikey_format",
+                        t!("log.server.middleware.api_key_auth.invalid_apikey_format"),
+                    ),
+                    AuthHeaderError::EmptyCredentials => (
+                        "empty_credentials",
+                        t!("log.server.middleware.api_key_auth.empty_credentials"),
+                    ),
+                };
+                tracing::warn!(
+                    event = "auth_failure",
+                    reason = %reason,
+                    client_ip = %client_ip,
+                    "{}",
+                    message
+                );
+                return self.unauthorized_response(&client_ip);
+            }
+        };
+
+        match self.validate_key(&key_id, &key_secret).await {
+            Some((workspace_id, role)) => {
+                req.extensions_mut().insert(workspace_id);
+                req.extensions_mut().insert(role.clone());
+
+                // Log successful authentication
+                let duration = start_time.elapsed().as_millis() as u64;
+                let key_id_prefix = key_id.chars().take(8).collect::<String>();
+                tracing::info!(
+                    event = "auth_success",
+                    key_id_prefix = %key_id_prefix,
+                    role = ?role,
+                    client_ip = %client_ip,
+                    duration_ms = duration,
+                    "{}",
+                    t!("log.server.middleware.api_key_auth.authentication_successful")
+                );
+
+                return next.run(req).await;
+            }
+            None => {
+                // Log auth failure with key_id prefix (masked for security)
+                let key_id_prefix = key_id.chars().take(8).collect::<String>();
+                tracing::warn!(
+                    event = "auth_failure",
+                    reason = "invalid_credentials",
+                    key_id_prefix = %key_id_prefix,
+                    client_ip = %client_ip,
+                    "{}",
+                    t!("log.server.middleware.api_key_auth.invalid_credentials")
+                );
+            }
         }
 
         // Return 401 for both unknown routes and missing auth to avoid information disclosure
@@ -409,32 +386,73 @@ impl ApiKeyAuth {
     }
 }
 
-/// wiring T006：Authorization 头解析的共享纯函数。
+/// `Authorization` 头解析失败原因（机器可读）。
+///
+/// 审计日志按本枚举分支输出 `reason`，与既有条目逐一对应，因此不合并成
+/// 一个笼统的「格式错误」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthHeaderError {
+    /// 前缀既不是 `Basic ` 也不是 `ApiKey `
+    UnsupportedFormat,
+    /// Basic 凭证不是合法 base64
+    Base64DecodeFailed,
+    /// base64 解出的字节流不是 UTF-8，或头部本身含非 UTF-8 字节
+    InvalidEncoding,
+    /// Basic 载荷缺少 `key_id:key_secret` 结构
+    InvalidBasicFormat,
+    /// ApiKey 值缺少 `key_id:key_secret` 结构
+    InvalidApikeyFormat,
+    /// 结构正确但 `key_id` 或 `key_secret` 为空
+    EmptyCredentials,
+}
+
+/// 解析 `Authorization` 头，失败时给出可审计的具体原因。
 ///
 /// 支持 `Basic base64(key_id:key_secret)` 与 `ApiKey key_id:key_secret`
-/// 两种格式；任何格式/编码/空凭证问题统一返回 `None`。HTTP 中间件保留
-/// 自己带细粒度失败日志的内联解析路径（invalid_basic_format /
-/// base64_decode_failed 等分类审计），gRPC 侧使用本函数。
-pub fn parse_authorization_header(value: &str) -> Option<(String, String)> {
+/// 两种格式。这是全仓唯一实现：HTTP 中间件与 gRPC 入口共用，避免两份解析
+/// 在某处修 bug 后另一份继续带着缺陷运行。
+pub fn parse_authorization_header_detailed(
+    value: &str,
+) -> Result<(String, String), AuthHeaderError> {
     if let Some(credentials) = value.strip_prefix("Basic ") {
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(credentials)
-            .ok()?;
-        let cred_str = String::from_utf8(decoded).ok()?;
-        let parts: Vec<&str> = cred_str.splitn(2, ':').collect();
-        if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-            return Some((parts[0].to_string(), parts[1].to_string()));
-        }
-        None
+            .map_err(|_| AuthHeaderError::Base64DecodeFailed)?;
+        let cred_str =
+            String::from_utf8(decoded).map_err(|_| AuthHeaderError::InvalidEncoding)?;
+        let (key_id, key_secret) = split_pair(&cred_str).ok_or(AuthHeaderError::InvalidBasicFormat)?;
+        require_non_empty(key_id, key_secret)
     } else if let Some(api_key) = value.strip_prefix("ApiKey ") {
-        let parts: Vec<&str> = api_key.splitn(2, ':').collect();
-        if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-            return Some((parts[0].to_string(), parts[1].to_string()));
-        }
-        None
+        let (key_id, key_secret) =
+            split_pair(api_key).ok_or(AuthHeaderError::InvalidApikeyFormat)?;
+        require_non_empty(key_id, key_secret)
     } else {
-        None
+        Err(AuthHeaderError::UnsupportedFormat)
     }
+}
+
+/// `key_id:key_secret` 结构切分（至多一段冒号）。
+fn split_pair(raw: &str) -> Option<(&str, &str)> {
+    let mut parts = raw.splitn(2, ':');
+    match (parts.next(), parts.next()) {
+        (Some(key_id), Some(key_secret)) => Some((key_id, key_secret)),
+        _ => None,
+    }
+}
+
+fn require_non_empty(key_id: &str, key_secret: &str) -> Result<(String, String), AuthHeaderError> {
+    if key_id.is_empty() || key_secret.is_empty() {
+        return Err(AuthHeaderError::EmptyCredentials);
+    }
+    Ok((key_id.to_string(), key_secret.to_string()))
+}
+
+/// wiring T006：Authorization 头解析的共享纯函数（不关心失败原因时的便捷版）。
+///
+/// 任何格式/编码/空凭证问题统一返回 `None`；需要区分原因（写审计日志）请用
+/// [`parse_authorization_header_detailed`]。
+pub fn parse_authorization_header(value: &str) -> Option<(String, String)> {
+    parse_authorization_header_detailed(value).ok()
 }
 
 pub async fn admin_required_middleware(req: Request<Body>, next: Next) -> Response {
@@ -1026,5 +1044,83 @@ mod tests {
         // User keys are bound to a workspace (Some(Uuid::nil()) per mock).
         assert!(workspace_id.is_some());
         assert_eq!(workspace_id.unwrap(), Uuid::nil());
+    }
+
+    // ===== 解析唯一实现（converge T026①）=====
+
+    #[test]
+    fn parse_detailed_accepts_both_schemes_and_classifies_every_failure() {
+        let ok_basic = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("k1:s1")
+        );
+        assert_eq!(
+            parse_authorization_header_detailed(&ok_basic).ok(),
+            Some(("k1".to_string(), "s1".to_string()))
+        );
+        assert_eq!(
+            parse_authorization_header_detailed("ApiKey k2:s3").ok(),
+            Some(("k2".to_string(), "s3".to_string()))
+        );
+        // secret 内含冒号时只按第一个冒号切分，剩余部分归 secret
+        assert_eq!(
+            parse_authorization_header_detailed("ApiKey k:s:t").ok(),
+            Some(("k".to_string(), "s:t".to_string()))
+        );
+
+        assert_eq!(
+            parse_authorization_header_detailed("Bearer xyz"),
+            Err(AuthHeaderError::UnsupportedFormat)
+        );
+        assert_eq!(
+            parse_authorization_header_detailed("Basic !!!not-base64"),
+            Err(AuthHeaderError::Base64DecodeFailed)
+        );
+        // base64 合法但解出的字节不是 UTF-8
+        let bad_utf8 =
+            base64::engine::general_purpose::STANDARD.encode([0xff_u8, 0xfe_u8]);
+        assert_eq!(
+            parse_authorization_header_detailed(&format!("Basic {bad_utf8}")),
+            Err(AuthHeaderError::InvalidEncoding)
+        );
+        // "hello"：无冒号 ⇒ Basic 结构错
+        let no_colon =
+            base64::engine::general_purpose::STANDARD.encode(b"hello");
+        assert_eq!(
+            parse_authorization_header_detailed(&format!("Basic {no_colon}")),
+            Err(AuthHeaderError::InvalidBasicFormat)
+        );
+        assert_eq!(
+            parse_authorization_header_detailed("ApiKey noseparator"),
+            Err(AuthHeaderError::InvalidApikeyFormat)
+        );
+        assert_eq!(
+            parse_authorization_header_detailed("ApiKey :secret"),
+            Err(AuthHeaderError::EmptyCredentials)
+        );
+        assert_eq!(
+            parse_authorization_header_detailed("ApiKey keyid:"),
+            Err(AuthHeaderError::EmptyCredentials)
+        );
+    }
+
+    #[test]
+    fn parse_wrapper_never_diverges_from_the_single_implementation() {
+        // 此前 HTTP 中间件另有一份内联解析，空凭证判定与共享函数不一致；
+        // 现在包装必须逐例同结论。
+        for value in [
+            "ApiKey k:s",
+            "ApiKey :s",
+            "ApiKey k:",
+            "ApiKey nope",
+            "Bearer nope",
+            "Basic !!!",
+        ] {
+            assert_eq!(
+                parse_authorization_header(value),
+                parse_authorization_header_detailed(value).ok(),
+                "包装与唯一实现在 {value:?} 上结论不一致"
+            );
+        }
     }
 }

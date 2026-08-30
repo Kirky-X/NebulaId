@@ -14,19 +14,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **HTTP TLS fail-fast**：`tls.enabled=true` 且证书缺失/解析失败时拒绝启动
   （不再静默降级明文）；仅 `enabled=false` 允许明文。
-- **gRPC 启用 API key 认证**：NebulaIdService 全 RPC（含双向流）经拦截器校验
-  `authorization`（Basic/ApiKey）。**未带凭证的 gRPC 客户端将收到
-  `Unauthenticated`**；`auth.enabled=false` 时放行。
+- **gRPC 启用 API key 认证**：NebulaIdService 全 RPC（含双向流）在各入口经
+  单点 `authenticate()` 校验 `authorization`（Basic/ApiKey）。设计稿原定 tonic
+  `with_interceptor`，但拦截器 `call` 是同步签名而凭证校验必须异步查库
+  （Argon2id + DB），故改为各 RPC 入口一行调用同一助手 —— 单点实现不变。
+  **未带凭证的 gRPC 客户端将收到 `Unauthenticated`**；`auth.enabled=false` 时放行。
+- **gRPC 认证失败码区分**：key 被禁用或已过期 → `PermissionDenied`；凭证本身
+  无效 / key 不存在 → `Unauthenticated`（落实 R-auth-003）。此前一律 401。
 - **全局限流真实生效**：`RateLimitMiddleware` 从"仅 Extension 注入（死代码）"
   改为真实挂载到 HTTP 栈；`POST /config/rate-limit` 热更新作用于实际流量。
-- **认证缓存（`auth.cache_ttl_seconds`）接线**：校验先查 garrison cache-memory
-  KV，未命中回源 DB；缓存值仅含 workspace_id/role/过期时间（不含 secret）。
-  吊销/轮换即时失效缓存。
+- **限流层序、开关与响应头（含破坏性变更）**：
+  - 限流层移到 CORS / 安全头**内侧**：旧顺序下 429 由最外层短路生成，客户端拿不到
+    CORS 头，且 OPTIONS 预检会消耗真实配额。
+  - `auth.rate_limit.enabled = false` 现在真的不挂限流层（此前该配置无消费点）。
+  - `POST /config/rate-limit` 复用启动期 `Config::validate`，`burst > 10×rps`
+    这类运行期不一致组合被拒绝（此前只有单字段 range 校验）。
+  - 限流响应头名单源统一：此前 CORS 暴露 `x-rate-limit-remaining`，而中间件写出的
+    是 `x-ratelimit-remaining`（header 名连字符敏感），浏览器永远读不到；两处现共用
+    `rate_limit::middleware` 常量，写出名为规范小写 `x-ratelimit-limit` /
+    `x-ratelimit-remaining`，429 额外带 `x-ratelimit-remaining: 0`。
+- **认证缓存（`auth.cache_ttl_seconds`）接线**：存储是本项目自研
+  `MemoryGarrisonDao`（实现 garrison `GarrisonDao` 接口的进程内 HashMap），
+  校验先查缓存、未命中回源 DB；缓存值仅含 workspace_id/role/过期时间（不含 secret）。
+  吊销/轮换/禁用对**本进程**即时失效；多节点部署时其他节点最长滞后一个
+  `cache_ttl`，`last_used_at` 同样滞后（运维口径见 docs/DEPLOYMENT.md 7.1）。
+  `cache_ttl_seconds = 0` 时不再装配缓存实例。
+- **认证缓存不再接受 glob 形态的 key_id**：`invalidate` 改为精确前缀匹配，
+  含 `*`/`?` 的 key_id 不再能一次清掉其他主体的全部条目。
+- **HTTP 认证头解析单源**：`Authorization` 的 Basic/ApiKey 解析合并为唯一实现
+  （新增带原因的 `parse_authorization_header_detailed`）；此前 HTTP 与 gRPC 各
+  一份，且空凭证判定不一致。审计 reason 与 i18n 文案保持不变。
 - **biz-tags 租户隔离（IDOR 修复）**：`GET /api/v1/biz-tags` User 角色仅见本
   workspace（忽略 workspace 参数覆盖）；Admin 按参数过滤；无仓储时不再静默
   回退 nil 查询。
-- **metrics p50/p99 语义**：由"历史最大值（只增不降）"改为最近 1024 样本环形
-  缓冲的真实分位数。
+- **请求归属真实到 IP**：HTTP serve 注入连接对端地址（DualListener 用本 crate
+  新类型 `PeerAddr` 承载 `ConnectInfo`）。此前 `get_client_ip` 在生产恒 `None`，
+  限流键、认证失败计数与审计 `client_ip` 全部落入共享 `anonymous` 单桶 ——
+  单个攻击者可把 `/health`、`/metrics` 等一并打成 429。
+- **TLS 握手不再串行**：每连接独立任务 + 10s 握手超时，未认证客户端"建连后不发
+  ClientHello"无法再冻结整个监听端口（未认证远程 DoS）；accept 错误增加退避。
+- **metrics 端到端闭环**：延迟样本改由路由层观测（HTTP / gRPC / SDK 三条入口共用
+  唯一记录点，按实际服务的算法归因），`/metrics` 逐算法暴露 p50/p99/p999 与
+  `clock_backwards`；告警规则 `clock_backward` 改用真实回拨计数（此前"该算法有延迟
+  样本"即触发，跑过请求就恒真）。**破坏性变更**：`AlgorithmMetrics` 的
+  `p50/p99/p999` 公开原子字段被移除，改由 `latency_percentiles_ns()` /
+  `get_p*_latency_ms()` 读取；`MetricsSnapshot` 新增 `clock_backwards` 字段。
+- **`p50/p99` 语义**：由"历史最大值（只增不降）"改为最近 1024 样本环形缓冲的
+  真实分位数（单次排序取三档）。
+- **`DatabaseConfig::default` 不再 panic**：默认值不再 `.expect()` 环境变量
+  `NEBULA_DATABASE_PASSWORD`（纯算法嵌入方只需 `Config::default()`）；建立连接时
+  仍 fail-fast 返回 `ConfigurationError`。
+- **`algorithm_type` ENUM 与代码对齐（需 DB 迁移）**：`scripts/init.sql` 此前仍建
+  `('segment','snowflake','uuid_v7','uuid_v4')`，而代码侧只有
+  `segment/snowflake/uuid_v8`，新库写入 `uuid_v8` 会被拒绝。存量库按
+  `docs/CONFIG_MIGRATION_GUIDE.md` 的 ENUM 迁移章节执行（含 NULL 回填与回滚）。
 
 ### Added
 

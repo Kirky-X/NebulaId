@@ -129,15 +129,31 @@ graph LR
 <br>
 
 ```rust
-use nebulaid::core::algorithm::{SegmentAlgorithm, SnowflakeAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
+use nebulaid::sdk::NebulaIdClientBuilder; // feature `sdk`
 
-// Segment algorithm for ordered, high-throughput ID generation
-let segment = SegmentAlgorithm::new(1);
-let id = segment.generate_id()?;
+#[tokio::main]
+async fn main() -> nebulaid::core::Result<()> {
+    // Segment allocates number ranges from the database and needs
+    // `NebulaIdClientBuilder::with_repository(..)`; pure algorithms do not.
+    let mut config = Config::default();
+    config.algorithm.default = "snowflake".to_string();
 
-// Snowflake algorithm for globally unique IDs
-let snowflake = SnowflakeAlgorithm::new(1, 1);
-let id = snowflake.generate_id()?;
+    let client = NebulaIdClientBuilder::new(config).build().await?;
+
+    // Default algorithm (`config.algorithm.default`)
+    let id = client.generate("prod", "core", "order").await?;
+
+    // Or pin one algorithm per call
+    let uuid = client
+        .generate_with_algorithm(AlgorithmType::UuidV8, "prod", "core", "trace")
+        .await?;
+
+    println!("snowflake={id} uuid_v8={uuid}");
+    client.shutdown().await;
+    Ok(())
+}
 ```
 
 Perfect for large-scale distributed systems requiring unique, ordered identifiers with high availability.
@@ -174,11 +190,23 @@ Ideal for microservices requiring unique identifiers with different ordering gua
 <br>
 
 ```rust
-use nebulaid::core::algorithm::SegmentAlgorithm;
+use nebulaid::core::Config;
+use nebulaid::sdk::NebulaIdClientBuilder;
 
-// Double buffering for maximum throughput
-let segment = SegmentAlgorithm::new(1);
-let id = segment.generate_id()?;
+#[tokio::main]
+async fn main() -> nebulaid::core::Result<()> {
+    let mut config = Config::default();
+    config.algorithm.default = "snowflake".to_string();
+    let client = NebulaIdClientBuilder::new(config).build().await?;
+
+    // One call, one batch. Segment's double buffering is internal — from the
+    // outside you just ask for N ids at a time (`IdAlgorithm::batch_generate`).
+    let batch = client.batch_generate("prod", "core", "order", 1000).await?;
+    println!("{} ids via {:?}", batch.len(), batch.algorithm);
+
+    client.shutdown().await;
+    Ok(())
+}
 ```
 
 Great for high-performance applications requiring millions of IDs per second with low latency.
@@ -264,36 +292,30 @@ cargo build --release --features sdk
 
 **Step 1: Create Configuration**
 
-```toml
-[algorithm]
-type = "segment"
+```bash
+# Start from the repository sample — it is the smallest config that parses.
+cp config/config.toml my-config.toml
 
-[database]
-url = "postgresql://user:pass@localhost/nebula"
-max_connections = 10
-
-[redis]
-url = "redis://localhost"
+# Then edit at least: [database].password (via ${NEBULA_DATABASE_PASSWORD}),
+# [database].url / host / port, and [algorithm].default
 ```
 
 </td>
 <td width="50%">
 
-**Step 2: Initialize Service**
+**Step 2: Start The Service**
 
-```rust
-use nebulaid::core::Config;
+```bash
+# The binary reads config/config.toml by default; --config overrides the path.
+./target/release/nebula-id --config my-config.toml &
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Config::load_from_file("config.toml")?;
-    
-    let service = nebulaid::server::NebulaIdService::new(config).await?;
-    service.start().await?;
-    
-    Ok(())
-}
+# Probe it
+curl -s http://localhost:8080/health
+curl -s http://localhost:8080/metrics
 ```
+
+Embedding the crate as a library instead of running the server is covered by the
+`examples/embedded.rs` snippet in the Complete Example below.
 
 </td>
 </tr>
@@ -305,14 +327,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 <br>
 
 ```rust
-use nebulaid::core::algorithm::SegmentAlgorithm;
+// Mirrors examples/embedded.rs — run it with:
+//   cargo run --package nebulaid --example embedded --features sdk
+use nebulaid::core::Config;
+use nebulaid::sdk::NebulaIdClientBuilder;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let segment = SegmentAlgorithm::new(1);
-    let id = segment.generate_id()?;
-    
-    println!("Generated ID: {}", id);
+async fn main() -> nebulaid::core::Result<()> {
+    // Pure algorithms only: `segment` would additionally require
+    // NebulaIdClientBuilder::with_repository(..) because it allocates
+    // number ranges from the database.
+    let mut config = Config::default();
+    config.algorithm.default = "snowflake".to_string();
+
+    let client = NebulaIdClientBuilder::new(config).build().await?;
+
+    for _ in 0..5 {
+        let id = client.generate("embedded", "demo", "order").await?;
+        println!("Generated ID: {id}");
+    }
+
+    client.shutdown().await;
     Ok(())
 }
 ```
@@ -383,16 +418,29 @@ Package registry
 #### 📝 Example 1: Segment Algorithm
 
 ```rust
-use nebulaid::core::algorithm::SegmentAlgorithm;
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize with local datacenter ID
-    let segment = SegmentAlgorithm::new(1);
-    
-    // Generate IDs
-    let id = segment.generate_id()?;
-    
+    // `dc_id` comes from [app]; the concrete SegmentAlgorithm type is
+    // crate-internal, so it is built through the public AlgorithmBuilder.
+    let mut config = Config::default();
+    config.app.dc_id = 1;
+
+    let segment = AlgorithmBuilder::new(AlgorithmType::Segment)
+        .build(&config)
+        .await?;
+
+    let ctx = GenerateContext {
+        workspace_id: "prod".into(),
+        group_id: "core".into(),
+        biz_tag: "order".into(),
+        ..Default::default()
+    };
+    let id = segment.generate(&ctx).await?;
+
     println!("Generated ID: {}", id);
     Ok(())
 }
@@ -402,8 +450,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 <summary>View output</summary>
 
 ```
-Segment ID generated: 1000001
+Generated ID: 17731488000000
 ```
+
+Without an injected repository the built-in loader starts each segment at
+`unix_seconds × 10000`; with a repository the ranges are allocated in the database.
 
 </details>
 
@@ -413,17 +464,32 @@ Segment ID generated: 1000001
 #### 🔥 Example 2: Snowflake Algorithm
 
 ```rust
-use nebulaid::core::algorithm::SnowflakeAlgorithm;
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize with datacenter and worker IDs
-    let snowflake = SnowflakeAlgorithm::new(1, 1);
-    
-    // Generate IDs
-    let id = snowflake.generate_id()?;
-    
+    // dc/worker come from [app]; the bit layout comes from [algorithm.snowflake]
+    let mut config = Config::default();
+    config.app.dc_id = 1;
+    config.app.worker_id = 1;
+
+    let snowflake = AlgorithmBuilder::new(AlgorithmType::Snowflake)
+        .build(&config)
+        .await?;
+
+    let id = snowflake.generate(&GenerateContext::default()).await?;
     println!("Generated Snowflake ID: {}", id);
+
+    let s = &config.algorithm.snowflake;
+    println!(
+        "layout: timestamp({}) | dc({}) | worker({}) | seq({})",
+        s.timestamp_bits(),
+        s.datacenter_id_bits,
+        s.worker_id_bits,
+        s.sequence_bits
+    );
     Ok(())
 }
 ```
@@ -432,8 +498,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 <summary>View output</summary>
 
 ```
-Datacenter: 1, Worker: 1
-Snowflake ID generated: 4200000000000000001
+Generated Snowflake ID: <64-bit numeric, grows with the clock>
+layout: timestamp(43) | dc(3) | worker(8) | seq(10)
 ```
 
 </details>
@@ -513,117 +579,206 @@ graph TB
 
 </div>
 
-<table>
-<tr>
-<td width="50%">
+**Minimal configuration that parses (`config.toml`)**
 
-**Basic Configuration (config.toml)**
+`Config` declares `app`, `database`, `etcd`, `auth`, `algorithm`, `monitoring`,
+`logging`, `rate_limit`, `tls` and `batch_generate` **without** `#[serde(default)]`
+(`src/core/config/app_config.rs:35-62`). A missing required field fails the whole file, and a
+failed parse degrades silently to `Config::default()` (`src/main.rs:535-541`) — copy this
+shape, do not trim it. Only `[redis]` and `[hot_reload]` may be omitted.
 
 ```toml
 [app]
 name = "nebula-id"
 host = "0.0.0.0"
-port = 8080
-
-[algorithm]
-type = "segment"
+http_port = 8080                 # there is no `app.port`
+grpc_port = 9091
+dc_id = 0                        # 0..=31
+worker_id = 0
+# shutdown_timeout_seconds = 30  # optional
 
 [database]
-url = "postgresql://user:pass@localhost/nebula"
-max_connections = 10
-
-[redis]
-url = "redis://localhost"
+engine = "postgresql"            # postgresql | postgres | mysql | sqlite
+host = "localhost"
+port = 5432
+username = "idgen"
+password = "${NEBULA_DATABASE_PASSWORD}"
+database = "idgen"
+max_connections = 100
+min_connections = 10
+acquire_timeout_seconds = 30
+idle_timeout_seconds = 300
+# url = "postgresql://idgen:pw@localhost:5432/idgen"   # optional alternative
 
 [etcd]
 endpoints = ["http://localhost:2379"]
+connect_timeout_ms = 5000
+watch_timeout_ms = 5000
 
 [auth]
-api_key = "your-api-key-here"
+enabled = true
+cache_ttl_seconds = 300
+# api_keys = []                  # optional; entries need key_id/key_secret/workspace/role/rate_limit/name
+# api_key_salt = "..."           # optional (falls back to $NEBULA_API_KEY_SALT)
+# key_rotation_grace_period_seconds = 604800   # optional
+
+[algorithm]
+default = "segment"              # segment | snowflake | uuid_v8 (no `type` key)
+
+[algorithm.segment]
+base_step = 1000
+min_step = 500
+max_step = 100000
+switch_threshold = 0.1
+
+[algorithm.snowflake]
+datacenter_id_bits = 3
+worker_id_bits = 8
+sequence_bits = 10
+clock_drift_threshold_ms = 1000
+
+[algorithm.uuid_v8]
+enabled = true
+
+[monitoring]
+metrics_enabled = true
+metrics_path = "/metrics"
+tracing_enabled = false
+otlp_endpoint = ""
+
+[logging]
+level = "info"                   # trace | debug | info | warn | error
+format = "json"                  # json | pretty
+include_location = true
 
 [rate_limit]
 enabled = true
-default_rps = 1000
-burst_size = 100
+default_rps = 10000
+burst_size = 100                 # validate(): must be <= 10 × default_rps
 
 [tls]
 enabled = false
+cert_path = ""
+key_path = ""
+http_enabled = false
+grpc_enabled = false
+# ca_path = ""                   # optional
+# min_tls_version = "tls13"      # optional: tls12 | tls13
+# alpn_protocols = ["h2", "http/1.1"]   # optional
+
+[batch_generate]
+max_batch_size = 100             # validate(): 1..=10000
+
+# Fully optional sections:
+# [redis]
+# url = "redis://localhost:6379"
+# pool_size = 16                 # optional
+# key_prefix = "nebula:id:"      # optional
+# ttl_seconds = 600              # optional
+# [hot_reload]
+# auto_watch_enabled = false
 ```
 
-</td>
-<td width="50%">
+> ⚠️ **Code reality check**: at server startup `Config::merge()` overwrites
+> `algorithm.segment` / `algorithm.snowflake` / `algorithm.uuid_v8` with the values of the
+> environment-derived config, which are always the defaults
+> (`src/core/config/app_config.rs:331-333`, called from `src/main.rs:544`). Only
+> `algorithm.default` survives; tune the three sub-tables in code until that merge is fixed.
 
 **Environment Variables**
 
-```bash
-export NEBULA_APP_NAME="nebula-id"
-export NEBULA_APP_PORT="8080"
-export NEBULA_DATABASE_URL="postgresql://user:pass@localhost/nebula"
-export NEBULA_REDIS_URL="redis://localhost"
-export NEBULA_ETCD_ENDPOINTS="http://localhost:2379"
-export NEBULA_AUTH_API_KEY="your-api-key-here"
-```
+There is no `NEBULA_APP_*` / `NEBULA_AUTH_API_KEY` family. Two mechanisms exist:
 
-</td>
-</tr>
-</table>
+```bash
+# 1. Overridden onto the file config by `Config::load_from_env()` at startup
+#    (only values that differ from the default are applied):
+export APP_HOST="0.0.0.0"
+export APP_HTTP_PORT="8080"
+export APP_GRPC_PORT="9091"
+export DC_ID="0"
+export WORKER_ID="0"
+export DATABASE_URL="postgresql://idgen:pass@localhost:5432/idgen"
+export ETCD_ENDPOINTS="http://localhost:2379,http://localhost:22379"
+export RUST_LOG="info"
+
+# 2. Referenced as ${VAR} inside the file; expanded before parsing
+#    (`Config::expand_env_vars`):
+export NEBULA_DATABASE_PASSWORD="..."   # [database].password / url
+export NEBULA_API_KEY_SALT="..."        # [auth].api_key_salt fallback
+```
 
 <details>
 <summary><b>🔧 All Configuration Options</b></summary>
 
 <br>
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `app.name` | String | "nebula-id" | Application name |
-| `app.host` | String | "0.0.0.0" | Server bind address |
-| `app.port` | u16 | 8080 | Server port |
-| `algorithm.type` | String | "segment" | ID generation algorithm |
-| `database.url` | String | - | Database connection URL |
-| `database.max_connections` | u32 | 1200 | Connection pool size |
-| `redis.url` | String | - | Redis connection URL |
-| `etcd.endpoints` | Vec&lt;String&gt; | [] | Etcd server endpoints |
-| `auth.api_key` | String | - | API key for authentication |
-| `rate_limit.enabled` | Boolean | code: true; repo `config/config.toml`: false | Enable rate limiting |
-| `rate_limit.default_rps` | u32 | 10000 | Requests per second |
-| `rate_limit.burst_size` | u32 | code: 100; repo sample: 5000 | Burst size |
-| `tls.enabled` | Boolean | false | Enable TLS/SSL |
-</td>
-</tr>
-</table>
+| Option | Type | `Config::default()` | Required in file | Description |
+|--------|------|---------------------|------------------|-------------|
+| `app.name` | String | `"nebula-id"` | ✅ | Application name |
+| `app.host` | String | `"0.0.0.0"` | ✅ | Server bind address |
+| `app.http_port` | u16 | `8080` | ✅ | HTTP port, must be > 0 |
+| `app.grpc_port` | u16 | `9091` | ✅ | gRPC port, must be > 0 |
+| `app.dc_id` | u8 | `0` | ✅ | Datacenter ID, must be ≤ 31 |
+| `app.worker_id` | u8 | `0` | ✅ | Worker ID |
+| `app.shutdown_timeout_seconds` | u64 | `30` | ➖ | Graceful shutdown timeout, must be > 0 |
+| `database.engine` | String | `"postgresql"` | ✅ | `postgresql` / `postgres` / `mysql` / `sqlite` |
+| `database.host` / `port` / `username` / `password` / `database` | — | `localhost` / `5432` / `idgen` / `$NEBULA_DATABASE_PASSWORD` / `idgen` | ✅ | Individual connection settings |
+| `database.url` | String | `""` | ➖ | Full-URL alternative to the fields above |
+| `database.max_connections` | u32 | `100` | ✅ | Pool size, must be > 0 |
+| `database.min_connections` | u32 | `10` | ✅ | Must be ≤ `max_connections` |
+| `database.acquire_timeout_seconds` | u64 | `30` | ✅ | Must be > 0 |
+| `database.idle_timeout_seconds` | u64 | `300` | ✅ | Idle connection timeout |
+| `redis` | table | — | ➖ | Whole section is optional |
+| `redis.url` | String | `redis://$REDIS_URL` or `redis://localhost:6379` | ✅ if `[redis]` is present | Redis connection URL |
+| `redis.pool_size` / `key_prefix` / `ttl_seconds` | u32 / String / u64 | `16` / `"nebula:id:"` / `600` | ➖ | Cache tuning |
+| `etcd.endpoints` | Vec&lt;String&gt; | `["etcd:2379"]` | ✅ | `[]` disables etcd → `LocalDistributedLock` |
+| `etcd.connect_timeout_ms` / `watch_timeout_ms` | u64 | `5000` / `5000` | ✅ | etcd timeouts |
+| `auth.enabled` | bool | `true` | ✅ | Gates the API-key middleware |
+| `auth.cache_ttl_seconds` | u64 | `300` | ✅ | Auth cache TTL |
+| `auth.api_keys` | array | `[]` | ➖ | Entry = `key_id`, `key_secret`, `workspace`, `role`, `rate_limit`, `name` (all required) |
+| `auth.api_key_salt` | String | `$NEBULA_API_KEY_SALT` or `""` | ➖ | Salt for key hashing |
+| `auth.key_rotation_grace_period_seconds` | u64 | `604800` (7 days) | ➖ | Old key stays valid during rotation |
+| `algorithm.default` | String | `"segment"` | ✅ | `segment` / `snowflake` / `uuid_v8` |
+| `algorithm.segment.base_step` / `min_step` / `max_step` / `switch_threshold` | u64 / u64 / u64 / f64 | `1000` / `500` / `100000` / `0.1` | ✅ | Dynamic step sizing (see note above about `merge`) |
+| `algorithm.snowflake.datacenter_id_bits` / `worker_id_bits` / `sequence_bits` / `clock_drift_threshold_ms` | u8 / u8 / u8 / u64 | `3` / `8` / `10` / `1000` | ✅ | Bit layout; remainder = timestamp bits |
+| `algorithm.uuid_v8.enabled` | bool | `true` | ✅ | UUID v8 switch |
+| `monitoring.metrics_enabled` / `metrics_path` / `tracing_enabled` / `otlp_endpoint` | bool / String / bool / String | `true` / `"/metrics"` / `false` / `""` | ✅ | Prometheus + OTLP |
+| `logging.level` / `format` / `include_location` | String / String / bool | `"info"` / `"json"` / `true` | ✅ | `level`: trace…error, `format`: json/pretty |
+| `rate_limit.enabled` | bool | `true` | ✅ | Enable rate limiting |
+| `rate_limit.default_rps` | u32 | `10000` | ✅ | Requests per second, must be > 0 when enabled |
+| `rate_limit.burst_size` | u32 | `100` | ✅ | Must be ≤ 10 × `default_rps` when enabled |
+| `hot_reload` | table | `auto_watch_enabled = false` | ➖ | Whole section is optional |
+| `tls.enabled` / `cert_path` / `key_path` / `http_enabled` / `grpc_enabled` | bool / String / String / bool / bool | `false` / `""` / `""` / `false` / `false` | ✅ | TLS for HTTP and gRPC |
+| `tls.ca_path` | String? | `null` | ➖ | Optional CA bundle |
+| `tls.min_tls_version` | String | `"tls13"` | ➖ | `tls12` / `tls13` |
+| `tls.alpn_protocols` | Vec&lt;String&gt; | `["h2", "http/1.1"]` | ➖ | ALPN list |
+| `batch_generate.max_batch_size` | u32 | `100` | ✅ | Must be in 1..=10000 |
 
-### Algorithm Configuration
+Defaults are the values of `Config::default()`; **required** columns show whether the key
+carries a serde default. Unknown keys are silently ignored (no `deny_unknown_fields`),
+but a missing required key fails parsing of the **entire** file.
 
-<table>
-<tr>
-<td width="50%">
+### Validation Rules
 
-**Segment Algorithm**
+`Config::validate()` (`src/core/config/app_config.rs:111-231`) runs right after parsing; a
+violation makes `Config::load_from_file` return `ConfigError::InvalidValue`, which at server
+startup means "log an error and fall back to `Config::default()`":
 
-```toml
-[algorithm.segment]
-name = "default"
-step = 1000
-max_retry = 3
-```
+| Rule | Source |
+|------|--------|
+| `http_port > 0`, `grpc_port > 0`, `shutdown_timeout_seconds > 0` | `Config::validate` |
+| `dc_id <= 31` | `Config::validate` |
+| `max_connections > 0`, `min_connections <= max_connections`, `acquire_timeout_seconds > 0` | `Config::validate` |
+| `rate_limit.enabled` ⇒ `default_rps > 0`, `burst_size > 0`, `burst_size <= 10 × default_rps` | `Config::validate` |
+| `algorithm.default ∈ {segment, snowflake, uuid_v8}` | `Config::validate` |
+| `segment.min_step <= segment.max_step` and `min_step <= base_step <= max_step` | `Config::validate` |
+| `0.0 <= segment.switch_threshold <= 1.0` | `Config::validate` |
+| `snowflake.datacenter_id_bits + worker_id_bits + sequence_bits < 64` (default ⇒ 43 timestamp bits) | `Config::validate` |
+| `snowflake.clock_drift_threshold_ms > 0` | `Config::validate` |
+| `1 <= batch_generate.max_batch_size <= 10000` | `Config::validate` |
 
-</td>
-<td width="50%">
-
-**Snowflake Algorithm**
-
-```toml
-[algorithm.snowflake]
-datacenter_id = 1
-worker_id = 1
-sequence_bits = 12
-```
-
-</td>
-</tr>
-</table>
-
-> **注意**: 详细配置说明请参考 [Configuration Guide](#-documentation)。
+> Full reference: [`config/config.toml`](config/config.toml) and
+> [CONFIG_MIGRATION_GUIDE.md](docs/CONFIG_MIGRATION_GUIDE.md).
 
 </details>
 
@@ -769,9 +924,13 @@ Track all ID generation operations
 ### Feature Flags
 
 ```toml
-[dependencies.nebula-id]
-version = "0.2.0"
-features = ["audit", "tls"]
+# Cargo package name is `nebulaid`; the audit logger and TLS are runtime
+# configuration ([auth] / [tls]), not Cargo features.
+[dependencies]
+nebulaid = { version = "0.2", features = ["sdk"] }      # embedded client facade
+# nebulaid = { version = "0.2", features = ["etcd"] }   # distributed coordination
+# Available features: postgresql (default), etcd, garrison-auth (default),
+# sdk, http/grpc/openapi (sdforge mirrors, http+grpc default), integration-tests.
 ```
 
 </details>
@@ -1046,12 +1205,10 @@ You may choose either license for your use.
 <td align="center" width="25%">
 <img src="https://img.icons8.com/fluency/96/000000/code.png" width="64" height="64"><br>
 <b>Open Source</b>
-</a>
 </td>
 <td align="center" width="25%">
 <img src="https://img.icons8.com/fluency/96/000000/community.png" width="64" height="64"><br>
 <b>Community</b>
-</a>
 </td>
 </tr>
 </table>

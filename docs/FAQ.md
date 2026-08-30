@@ -252,33 +252,42 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-nebula-id = "0.1.0"
+nebulaid = "0.2"                       # Cargo package name is `nebulaid`
 tokio = { version = "1.0", features = ["full"] }
-uuid = { version = "1.0", features = ["v7"] }
 ```
 
 Or using cargo:
 
 ```bash
-cargo add nebula-id tokio uuid
+cargo add nebulaid tokio
 ```
 
-**Optional Features:**
+**Optional Features** (`Cargo.toml` `[features]`):
 
 ```toml
-nebula-id = { version = "0.1.0", features = ["monitoring", "audit", "grpc"] }
+# default = ["postgresql", "http", "grpc", "garrison-auth"]
+nebulaid = { version = "0.2", features = ["etcd"] }  # distributed coordination
+# nebulaid = { version = "0.2", features = ["sdk"] } # NebulaIdClient facade
+# There is no `monitoring` / `audit` / `tls` feature: metrics, audit logging and
+# TLS are runtime configuration ([monitoring] / [auth] / [tls]).
 ```
 
 **Verification:**
 
 ```rust
-use nebulaid::core::algorithm::SegmentAlgorithm;
+use nebulaid::core::Config;
+use nebulaid::sdk::NebulaIdClientBuilder; // requires feature `sdk`
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let segment = SegmentAlgorithm::new(1);
-    let id = segment.generate_id().await?;
-    println!("✅ Generated ID: {}", id.to_u128());
+async fn main() -> nebulaid::core::Result<()> {
+    let mut config = Config::default();
+    config.algorithm.default = "snowflake".to_string();
+
+    let client = NebulaIdClientBuilder::new(config).build().await?;
+    let id = client.generate("verify", "install", "order").await?;
+    println!("✅ Generated ID: {id}");
+
+    client.shutdown().await;
     Ok(())
 }
 ```
@@ -342,9 +351,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
    # Should be 1.75.0 or higher
    ```
 
-2. **Ensure required features are enabled:**
+2. **Ensure required features are enabled** (default is
+   `["postgresql", "http", "grpc", "garrison-auth"]`; `sqlite` is currently
+   unbuildable because `limiteron` hard-depends on `dbnexus/postgres`):
    ```toml
-   nebula-id = "0.1.0"
+   nebulaid = "0.2"
    ```
 
 3. **Clean build artifacts:**
@@ -410,42 +421,116 @@ services:
 
 <br>
 
-**Configuration File (config.toml):**
+**Configuration File (`config.toml`):**
+
+All ten sections below are **required** — `Config` gives them no
+`#[serde(default)]` (`src/core/config/app_config.rs:35-62`), and a parse failure
+makes `src/main.rs` fall back to `Config::default()`, i.e. the whole file is
+discarded. Only `[redis]` and `[hot_reload]` may be omitted.
 
 ```toml
 [app]
 name = "nebula-id"
 host = "0.0.0.0"
-port = 8080
-
-[algorithm]
-type = "segment"
+http_port = 8080
+grpc_port = 9091
+dc_id = 0
+worker_id = 0
 
 [database]
-url = "postgresql://user:pass@localhost/nebula"
-max_connections = 10
-
-[redis]
-url = "redis://localhost"
+engine = "postgresql"
+host = "localhost"
+port = 5432
+username = "idgen"
+password = "${NEBULA_DATABASE_PASSWORD}"
+database = "idgen"
+max_connections = 100
+min_connections = 10
+acquire_timeout_seconds = 30
+idle_timeout_seconds = 300
 
 [etcd]
 endpoints = ["http://localhost:2379"]
+connect_timeout_ms = 5000
+watch_timeout_ms = 5000
 
 [auth]
-api_key = "your-api-key-here"
+enabled = true
+cache_ttl_seconds = 300
+
+[algorithm]
+default = "segment"
+
+[algorithm.segment]
+base_step = 1000
+min_step = 500
+max_step = 100000
+switch_threshold = 0.1
+
+[algorithm.snowflake]
+datacenter_id_bits = 3
+worker_id_bits = 8
+sequence_bits = 10
+clock_drift_threshold_ms = 1000
+
+[algorithm.uuid_v8]
+enabled = true
+
+[monitoring]
+metrics_enabled = true
+metrics_path = "/metrics"
+tracing_enabled = false
+otlp_endpoint = ""
+
+[logging]
+level = "info"
+format = "json"
+include_location = true
 
 [rate_limit]
 enabled = true
-default_rps = 1000
+default_rps = 10000
 burst_size = 100
+
+[tls]
+enabled = false
+cert_path = ""
+key_path = ""
+http_enabled = false
+grpc_enabled = false
+
+[batch_generate]
+max_batch_size = 100
+
+# optional:
+# [redis] url = "redis://localhost:6379"
+# [hot_reload] auto_watch_enabled = false
 ```
+
+> ⚠️ `Config::merge()` runs the environment config on top of the file at startup
+> and unconditionally replaces `algorithm.segment` / `algorithm.snowflake` /
+> `algorithm.uuid_v8` with it (`src/core/config/app_config.rs:331-333`,
+> `src/main.rs:544`) — in practice those three sub-tables always end up as
+> defaults. Only `algorithm.default` survives. Tune them in code for now.
 
 **Environment Variables:**
 
+There is no `NEBULA_DATABASE_URL` / `NEBULA_AUTH_API_KEY` family. The real ones are:
+
 ```bash
-export NEBULA_DATABASE_URL="postgresql://user:pass@localhost/nebula"
-export NEBULA_ETCD_ENDPOINTS="http://localhost:2379"
-export NEBULA_AUTH_API_KEY="your-api-key-here"
+# Merged over the file by `Config::load_from_env()`:
+export APP_HOST="0.0.0.0"
+export APP_HTTP_PORT="8080"
+export APP_GRPC_PORT="9091"
+export DC_ID="0"
+export WORKER_ID="0"
+export DATABASE_URL="postgresql://idgen:pass@localhost:5432/idgen"
+export ETCD_ENDPOINTS="http://localhost:2379"
+export RUST_LOG="info"
+
+# Expanded inside the file as ${VAR} before parsing:
+export NEBULA_DATABASE_PASSWORD="..."   # [database].password / url
+export NEBULA_API_KEY_SALT="..."        # [auth].api_key_salt fallback
 ```
 
 **See also:** [Configuration Guide](USER_GUIDE.md#configuration)
@@ -470,21 +555,27 @@ export NEBULA_AUTH_API_KEY="your-api-key-here"
 **5-Minute Quick Start：**
 
 ```rust
-use nebulaid::core::algorithm::SegmentAlgorithm;
+use nebulaid::core::Config;
+use nebulaid::sdk::NebulaIdClientBuilder; // feature `sdk`
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create a segment algorithm instance with datacenter ID
-    let segment = SegmentAlgorithm::new(1);
-    
+async fn main() -> nebulaid::core::Result<()> {
+    // Segment needs `NebulaIdClientBuilder::with_repository(..)` because it
+    // allocates ranges from the database; pure algorithms need nothing.
+    let mut config = Config::default();
+    config.algorithm.default = "snowflake".to_string();
+
+    let client = NebulaIdClientBuilder::new(config).build().await?;
+
     // Generate a single ID
-    let id = segment.generate_id().await?;
-    println!("Generated ID: {}", id.to_u128());
-    
+    let id = client.generate("prod", "core", "order").await?;
+    println!("Generated ID: {} (u128: {})", id, id.as_u128());
+
     // Generate a batch of IDs
-    let batch = segment.generate_batch(100).await?;
+    let batch = client.batch_generate("prod", "core", "order", 100).await?;
     println!("Generated {} IDs", batch.len());
-    
+
+    client.shutdown().await;
     Ok(())
 }
 ```
@@ -563,18 +654,31 @@ The Segment algorithm pre-allocates ID ranges from the database for efficient ba
 **Code Example:**
 
 ```rust
-use nebulaid::core::algorithm::SegmentAlgorithm;
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let segment = SegmentAlgorithm::new(1);
-    
-    // Generate single ID (from pre-allocated segment)
-    let id = segment.generate_id().await?;
-    
-    // Generate batch (optimized for throughput)
-    let batch = segment.generate_batch(1000).await?;
-    
+    // `dc_id` comes from [app]; the concrete SegmentAlgorithm type is
+    // crate-internal, so build it through the public AlgorithmBuilder.
+    let mut config = Config::default();
+    config.app.dc_id = 1;
+
+    let segment = AlgorithmBuilder::new(AlgorithmType::Segment)
+        .build(&config)
+        .await?;
+
+    let ctx = GenerateContext::default();
+
+    // Generate single ID (from the pre-allocated segment)
+    let id = segment.generate(&ctx).await?;
+    println!("Generated ID: {}", id);
+
+    // Generate a batch (one database round-trip for `size` IDs)
+    let batch = segment.batch_generate(&ctx, 1000).await?;
+    println!("Generated {} IDs", batch.ids.len());
+
     Ok(())
 }
 ```
@@ -586,37 +690,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 <br>
 
-The Snowflake algorithm generates 64-bit IDs with configurable bit allocation:
+The Snowflake algorithm generates 64-bit IDs with configurable bit allocation
+(`construct_id` in `src/core/algorithm/snowflake.rs` shifts
+`timestamp | datacenter | worker | sequence`, no sign bit):
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│                    Snowflake ID Structure                       │
+│              Snowflake ID Structure (defaults)                  │
 ├────────────────────────────────────────────────────────────────┤
-│  1 bit   │  41 bits    │  5 bits  │  5 bits  │  12 bits      │
-│  (sign)  │  timestamp  │  datacenter │  worker │  sequence    │
+│  43 bits   │  3 bits    │  8 bits  │  10 bits                   │
+│  timestamp │  datacenter│  worker  │  sequence                  │
 └────────────────────────────────────────────────────────────────┘
 ```
 
 **Key Benefits:**
 - 🚀 **Fast**: No database dependency
-- 📈 **Scalable**: Supports 32 datacenters × 32 workers
+- 📈 **Scalable**: With the default bit layout, 8 datacenters × 256 workers
+  (`datacenter_id_bits` / `worker_id_bits` / `sequence_bits` are configurable;
+  their sum must stay < 64)
 - 🎯 **Ordered**: Time-based ordering within millisecond
 
 **Code Example:**
 
 ```rust
-use nebulaid::core::algorithm::SnowflakeAlgorithm;
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let snowflake = SnowflakeAlgorithm::new(1, 1); // datacenter, worker
-    
-    let id = snowflake.generate_id()?;
-    println!("Snowflake ID: {}", id.to_u128());
-    
-    // Access components
-    println!("Datacenter: {}", snowflake.get_datacenter_id());
-    println!("Worker: {}", snowflake.get_worker_id());
-    
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // dc/worker come from [app]; the concrete SnowflakeAlgorithm type is
+    // crate-internal, so build it through the public AlgorithmBuilder.
+    let mut config = Config::default();
+    config.app.dc_id = 1;
+    config.app.worker_id = 1;
+
+    let snowflake = AlgorithmBuilder::new(AlgorithmType::Snowflake)
+        .build(&config)
+        .await?;
+
+    let id = snowflake.generate(&GenerateContext::default()).await?;
+    println!("Snowflake ID: {} (u128: {})", id, id.as_u128());
+
+    // The bit layout is readable from the config; the remainder of the 64 bits
+    // is the timestamp field.
+    let s = &config.algorithm.snowflake;
+    println!(
+        "timestamp({}) | dc({}) | worker({}) | seq({})",
+        s.timestamp_bits(),
+        s.datacenter_id_bits,
+        s.worker_id_bits,
+        s.sequence_bits
+    );
+
     Ok(())
 }
 ```
@@ -708,38 +834,40 @@ Nebula ID uses etcd for distributed coordination:
 
 **Components:**
 
-1. **EtcdClusterHealthMonitor**: Monitors etcd cluster health
-2. **DcFailureDetector**: Tracks datacenter health status
+1. **EtcdClusterHealthMonitor**: Monitors etcd cluster health (public, feature `etcd`)
+2. **DcFailureDetector**: Tracks datacenter health status — **internal to the crate**
+   (`src/core/algorithm/segment.rs`, reached only through `SegmentAlgorithm`); there is no
+   public constructor for it, so it cannot be wired up from outside
 3. **Automatic Failover**: Routes traffic to healthy datacenters
 
 **Code Example:**
 
 ```rust
-use nebulaid::core::algorithm::segment::{SegmentAlgorithm, DcFailureDetector};
-use nebulaid::core::coordinator::EtcdClusterHealthMonitor;
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::coordinator::EtcdClusterHealthMonitor; // feature `etcd`
 use nebulaid::core::config::EtcdConfig;
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 use std::sync::Arc;
-use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create failure detector
-    let dc_failure_detector = Arc::new(DcFailureDetector::new(
-        5,                              // failure_threshold
-        Duration::from_secs(300),       // recovery_timeout
-    ));
-    dc_failure_detector.add_dc(1);
-    
-    // Create health monitor
-    let etcd_config = EtcdConfig::default();
+    // new(config: EtcdConfig, cache_file_path: String) -> Self
+    // The cache file is used when etcd is unreachable.
     let health_monitor = Arc::new(EtcdClusterHealthMonitor::new(
-        etcd_config,
-        "./cache.json".to_string(),
+        EtcdConfig::default(),
+        "./etcd-cache.json".to_string(),
     ));
-    
-    // Create algorithm with coordination
-    let segment = SegmentAlgorithm::new(1);
-    
+
+    // Hand it to the algorithm through the public builder.
+    let segment = AlgorithmBuilder::new(AlgorithmType::Segment)
+        .with_etcd_health_monitor(health_monitor)
+        .build(&Config::default())
+        .await?;
+
+    let id = segment.generate(&GenerateContext::default()).await?;
+    println!("Generated ID: {}", id);
+
     Ok(())
 }
 ```
@@ -754,40 +882,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 **Recommended Pattern:**
 
 ```rust
-use nebulaid::core::types::CoreError;
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::{AlgorithmType, CoreError, Id};
+use nebulaid::core::Config;
+
+async fn run() -> Result<Id, CoreError> {
+    let snowflake = AlgorithmBuilder::new(AlgorithmType::Snowflake)
+        .build(&Config::default())
+        .await?;
+    snowflake.generate(&GenerateContext::default()).await
+}
 
 #[tokio::main]
 async fn main() {
     match run().await {
-        Ok(id) => println!("Generated ID: {}", id.to_u128()),
-        Err(e) => match e {
-            CoreError::ClockMovedBackward { .. } => {
-                eprintln!("❌ System clock issue detected");
-            }
-            CoreError::DatabaseConnectionFailed { .. } => {
-                eprintln!("❌ Database connection failed");
-            }
-            CoreError::SegmentExhausted { .. } => {
-                eprintln!("❌ ID segment exhausted, refreshing...");
-            }
-            CoreError::EtcdConnectionFailed { .. } => {
-                eprintln!("❌ Etcd connection failed, using cache");
-            }
-            _ => eprintln!("❌ Error: {}", e),
-        },
+        Ok(id) => println!("Generated ID: {}", id.as_u128()),
+        // Variant names and payload shapes are exactly as declared in
+        // src/core/types/error.rs.
+        Err(CoreError::ClockMovedBackward { last_timestamp }) => {
+            eprintln!("❌ System clock regressed to {last_timestamp}, NTP sync required");
+        }
+        Err(CoreError::DatabaseError(msg)) => {
+            eprintln!("❌ Database error: {msg}");
+        }
+        Err(CoreError::SegmentExhausted { max_id }) => {
+            eprintln!("❌ ID segment exhausted at {max_id}, refreshing…");
+        }
+        Err(CoreError::EtcdError(msg)) => {
+            eprintln!("❌ Etcd error: {msg} — falling back to the local cache");
+        }
+        Err(e) => eprintln!("❌ Error: {e}"),
     }
 }
 ```
 
 **Error Types:**
 
-| Error | Description | Recovery |
-|-------|-------------|----------|
-| `ClockMovedBackward` | System clock regression | NTP sync required |
-| `DatabaseConnectionFailed` | Database unavailable | Check connection, use cache |
-| `SegmentExhausted` | ID range depleted | Auto-refresh segment |
-| `EtcdConnectionFailed` | Etcd unavailable | Use local cache |
-| `SequenceOverflow` | Snowflake sequence overflow | Wait for next ms |
+| Error | Payload | Description | Recovery |
+|-------|---------|-------------|----------|
+| `ClockMovedBackward` | `{ last_timestamp }` | System clock regression | NTP sync required |
+| `DatabaseError` | `(String)` | Database unavailable or query failed | Check connection, use cache |
+| `SegmentExhausted` | `{ max_id }` | ID range depleted | Auto-refresh segment |
+| `EtcdError` | `(String)` | Etcd unavailable | Use local cache |
+| `SequenceOverflow` | `{ timestamp }` | Snowflake sequence overflow | Wait for next ms (the algorithm already sleeps 1 ms and retries) |
+| `ConfigurationError` | `(String)` | Required setting missing/invalid | Fix the config |
+
+There is no `DatabaseConnectionFailed` / `EtcdConnectionFailed` variant — those were
+stale names; the DB and etcd paths both report through `DatabaseError` / `EtcdError`.
 
 </details>
 
@@ -799,26 +940,37 @@ async fn main() {
 **Yes!** Nebula ID is designed for async/await from the ground up.
 
 ```rust
-use nebulaid::core::algorithm::SegmentAlgorithm;
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let segment = SegmentAlgorithm::new(1);
-    
+    let segment = AlgorithmBuilder::new(AlgorithmType::Segment)
+        .build(&Config::default())
+        .await?;
+
+    let ctx = GenerateContext::default();
+
     // Async ID generation
-    let id = segment.generate_id().await?;
-    
+    let id = segment.generate(&ctx).await?;
+    println!("Generated ID: {}", id);
+
     // Async batch generation
-    let batch = segment.generate_batch(100).await?;
-    
+    let batch = segment.batch_generate(&ctx, 100).await?;
+    println!("Generated {} IDs", batch.len());
+
     Ok(())
 }
 ```
 
-**Supported Runtimes:**
-- ✅ Tokio (recommended)
-- ✅ Async-Std
-- ✅ smol
+**Runtime requirement:**
+
+- ✅ **Tokio — required.** The algorithms spawn background tasks and use tokio
+  primitives internally (segment health checks, `tokio::sync` channels,
+  `tokio::time::sleep` on clock/sequence waits), so they must run inside a tokio
+  runtime.
+- ❌ Async-Std / smol: not supported; there is no runtime abstraction layer.
 
 </details>
 
@@ -888,15 +1040,23 @@ cargo bench
 
 2. **Use Batch Generation:**
    ```rust
-   // Instead of generating IDs one by one
-   let batch = segment.generate_batch(1000).await?;
+   // Instead of generating IDs one by one (`IdAlgorithm::batch_generate`)
+   let batch = segment.batch_generate(&ctx, 1000).await?;
    ```
 
 3. **Configure Appropriate Segment Size:**
    ```toml
+   # Keys of `SegmentAlgorithmConfig` — all four are required by the parser.
+   # base_step must stay within [min_step, max_step].
    [algorithm.segment]
-   step = 10000  # Larger step = fewer database round-trips
+   base_step = 10000  # Larger step = fewer database round-trips
+   min_step = 500
+   max_step = 100000
+   switch_threshold = 0.1
    ```
+   > ⚠️ At server startup `Config::merge()` resets this sub-table to the defaults
+   > (`src/core/config/app_config.rs:331-333`); until that is fixed, tune it in code
+   > (`Config { algorithm: AlgorithmConfig { segment: .. } }` before `AlgorithmBuilder::build`).
 
 4. **Use Snowflake for Speed:**
    - No database dependency
@@ -967,26 +1127,36 @@ Nebula ID is designed for high concurrency:
 **Best Practices:**
 
 ```rust
-use nebulaid::core::algorithm::SnowflakeAlgorithm;
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::{AlgorithmType, Id};
+use nebulaid::core::Config;
 use std::sync::Arc;
-use tokio::task;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let snowflake = Arc::new(SnowflakeAlgorithm::new(1, 1));
-    
+    // `IdAlgorithm: Send + Sync`, so one shared handle can serve many tasks.
+    let snowflake: Arc<dyn IdAlgorithm> = Arc::from(
+        AlgorithmBuilder::new(AlgorithmType::Snowflake)
+            .build(&Config::default())
+            .await?,
+    );
+
     // Spawn concurrent tasks
     let mut handles = Vec::new();
     for _ in 0..100 {
-        let snowflake = snowflake.clone();
-        handles.push(task::spawn(async move {
-            snowflake.generate_id()
+        let snowflake = Arc::clone(&snowflake);
+        handles.push(tokio::spawn(async move {
+            snowflake.generate(&GenerateContext::default()).await
         }));
     }
-    
-    // Collect results
-    let results: Vec<Result<_, _>> = futures::future::join_all(handles).await;
-    
+
+    // Collect results (JoinError and CoreError both widen to Box<dyn Error>)
+    let mut ids: Vec<Id> = Vec::with_capacity(handles.len());
+    for handle in handles {
+        ids.push(handle.await??);
+    }
+    println!("{} IDs generated concurrently", ids.len());
+
     Ok(())
 }
 ```
@@ -1062,17 +1232,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```toml
 [auth]
-api_key = "your-secure-api-key-here"
-token_expiry_hours = 24
+enabled = true                     # required
+cache_ttl_seconds = 300            # required
+# Static bootstrap keys; runtime keys live in the database / garrison.
+# Every ApiKeyEntry field is required.
+api_keys = [
+  { key_id = "svc-billing", key_secret = "replace-me", workspace = "billing",
+    role = "user", rate_limit = 1000, name = "Billing service" },
+]
+api_key_salt = "${NEBULA_API_KEY_SALT}"   # optional; production rejects an empty salt
+key_rotation_grace_period_seconds = 604800 # optional, default 7 days
 
 [rate_limit]
 enabled = true
 default_rps = 1000
-burst_size = 100
+burst_size = 100                   # validate(): <= 10 × default_rps
 
 [batch_generate]
-max_batch_size = 100  # Maximum batch size to prevent DoS attacks
+max_batch_size = 100               # Maximum batch size to prevent DoS attacks
 ```
+
+> There is no `[auth].api_key` string key and no `token_expiry_hours`; credentials are
+> always `key_id` + `key_secret` pairs, and expiry is not a config concept.
 
 **Usage:**
 
@@ -1092,8 +1273,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 **HTTP Header:**
 
+`parse_authorization_header_detailed` accepts exactly two schemes
+(`src/server/middleware/api_key_auth.rs:414-432`) — `Bearer` is rejected:
+
 ```
-Authorization: Bearer your-api-key-here
+Authorization: ApiKey <key_id>:<key_secret>
+Authorization: Basic base64(<key_id>:<key_secret>)
 ```
 
 </details>
@@ -1295,17 +1480,31 @@ Generated IDs are not monotonically increasing.
 **Enable Debug Logging:**
 
 ```rust
-fn main() {
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
-    
-    let segment = SegmentAlgorithm::new(1);
-    let id = segment.generate_id().unwrap();
+
+    // 具体算法结构体（SegmentAlgorithm / SnowflakeAlgorithm / UuidV8Impl）
+    // 是 crate 内部实现；公开入口只有 AlgorithmBuilder + IdAlgorithm trait。
+    let config = Config::default();
+    let algorithm = AlgorithmBuilder::new(AlgorithmType::Snowflake)
+        .build(&config)
+        .await?;
+    let id = algorithm.generate(&GenerateContext::default()).await?;
+    println!("generated: {id}");
+    Ok(())
 }
 ```
 
-Set environment variable:
+Set environment variable (the crate/module path is `nebulaid`, not the binary
+name `nebula-id`):
+
 ```bash
-RUST_LOG=nebula_id=debug
+RUST_LOG=nebulaid=debug
 ```
 
 **Common Debug Commands:**

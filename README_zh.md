@@ -117,7 +117,6 @@ graph LR
     B --> I[监控]
     I --> J[健康检查]
     I --> K[指标]
-
 ```
 
 ---
@@ -130,15 +129,31 @@ graph LR
 <br>
 
 ```rust
-use nebulaid::core::algorithm::{SegmentAlgorithm, SnowflakeAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
+use nebulaid::sdk::NebulaIdClientBuilder; // feature `sdk`
 
-// Segment算法用于有序、高吞吐量的ID生成
-let segment = SegmentAlgorithm::new(1);
-let id = segment.generate_id()?;
+#[tokio::main]
+async fn main() -> nebulaid::core::Result<()> {
+    // Segment 需要从数据库领取号段，必须先用
+    // `NebulaIdClientBuilder::with_repository(..)` 注入仓储；纯算法不需要。
+    let mut config = Config::default();
+    config.algorithm.default = "snowflake".to_string();
 
-// Snowflake算法用于全局唯一ID
-let snowflake = SnowflakeAlgorithm::new(1, 1);
-let id = snowflake.generate_id()?;
+    let client = NebulaIdClientBuilder::new(config).build().await?;
+
+    // 使用默认算法（`config.algorithm.default`）
+    let id = client.generate("prod", "core", "order").await?;
+
+    // 或按次指定算法
+    let uuid = client
+        .generate_with_algorithm(AlgorithmType::UuidV8, "prod", "core", "trace")
+        .await?;
+
+    println!("snowflake={id} uuid_v8={uuid}");
+    client.shutdown().await;
+    Ok(())
+}
 ```
 
 适用于需要高可用性、有序唯一标识符的大规模分布式系统。
@@ -175,11 +190,23 @@ let uuid = id_v4.to_uuid_v8();
 <br>
 
 ```rust
-use nebulaid::core::algorithm::SegmentAlgorithm;
+use nebulaid::core::Config;
+use nebulaid::sdk::NebulaIdClientBuilder;
 
-// 双缓冲机制实现最大吞吐量
-let segment = SegmentAlgorithm::new(1);
-let id = segment.generate_id()?;
+#[tokio::main]
+async fn main() -> nebulaid::core::Result<()> {
+    let mut config = Config::default();
+    config.algorithm.default = "snowflake".to_string();
+    let client = NebulaIdClientBuilder::new(config).build().await?;
+
+    // 一次调用拿一批。双缓冲是 Segment 的内部机制 —— 对外只需
+    // 一次申请 N 个 ID（`IdAlgorithm::batch_generate`）。
+    let batch = client.batch_generate("prod", "core", "order", 1000).await?;
+    println!("{} ids via {:?}", batch.len(), batch.algorithm);
+
+    client.shutdown().await;
+    Ok(())
+}
 ```
 
 适用于需要每秒生成数百万ID且低延迟的高性能应用。
@@ -265,36 +292,30 @@ cargo build --release --features sdk
 
 **步骤1：创建配置**
 
-```toml
-[algorithm]
-type = "segment"
+```bash
+# 以仓库示例为起点 —— 它是能被完整解析的最小配置。
+cp config/config.toml my-config.toml
 
-[database]
-url = "postgresql://user:pass@localhost/nebula"
-max_connections = 10
-
-[redis]
-url = "redis://localhost"
+# 至少修改：[database].password（经 ${NEBULA_DATABASE_PASSWORD}）、
+# [database].url / host / port，以及 [algorithm].default
 ```
 
 </td>
 <td width="50%">
 
-**步骤2：初始化服务**
+**步骤2：启动服务**
 
-```rust
-use nebulaid::core::Config;
+```bash
+# 二进制默认读取 config/config.toml，可用 --config 指定路径。
+./target/release/nebula-id --config my-config.toml &
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Config::load_from_file("config.toml")?;
-    
-    let service = nebulaid::server::NebulaIdService::new(config).await?;
-    service.start().await?;
-    
-    Ok(())
-}
+# 探活
+curl -s http://localhost:8080/health
+curl -s http://localhost:8080/metrics
 ```
+
+若要把本 crate 作为库嵌入而不是起服务，请看下文 Complete Example
+中的 `examples/embedded.rs` 片段。
 
 </td>
 </tr>
@@ -306,14 +327,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 <br>
 
 ```rust
-use nebulaid::core::algorithm::SegmentAlgorithm;
+// 与 examples/embedded.rs 一致 —— 运行方式：
+//   cargo run --package nebulaid --example embedded --features sdk
+use nebulaid::core::Config;
+use nebulaid::sdk::NebulaIdClientBuilder;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let segment = SegmentAlgorithm::new(1);
-    let id = segment.generate_id()?;
-    
-    println!("生成的ID: {}", id);
+async fn main() -> nebulaid::core::Result<()> {
+    // 仅纯算法：`segment` 还需
+    // NebulaIdClientBuilder::with_repository(..)，
+    // 因为它要从数据库领取号段。
+    let mut config = Config::default();
+    config.algorithm.default = "snowflake".to_string();
+
+    let client = NebulaIdClientBuilder::new(config).build().await?;
+
+    for _ in 0..5 {
+        let id = client.generate("embedded", "demo", "order").await?;
+        println!("生成的ID: {id}");
+    }
+
+    client.shutdown().await;
     Ok(())
 }
 ```
@@ -384,16 +418,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #### 📝 示例1：Segment算法
 
 ```rust
-use nebulaid::core::algorithm::SegmentAlgorithm;
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 使用本地数据中心ID初始化
-    let segment = SegmentAlgorithm::new(1);
-    
-    // 生成ID
-    let id = segment.generate_id()?;
-    
+    // `dc_id` 取自 [app]；具体的 SegmentAlgorithm 类型是 crate 内部的，
+    // 只能通过公开的 AlgorithmBuilder 构建。
+    let mut config = Config::default();
+    config.app.dc_id = 1;
+
+    let segment = AlgorithmBuilder::new(AlgorithmType::Segment)
+        .build(&config)
+        .await?;
+
+    let ctx = GenerateContext {
+        workspace_id: "prod".into(),
+        group_id: "core".into(),
+        biz_tag: "order".into(),
+        ..Default::default()
+    };
+    let id = segment.generate(&ctx).await?;
+
     println!("生成的ID: {}", id);
     Ok(())
 }
@@ -403,8 +450,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 <summary>查看输出</summary>
 
 ```
-生成的Segment ID: 1000001
+生成的ID: 17731488000000
 ```
+
+未注入仓储时内置加载器把每个号段起点设为 `unix_seconds × 10000`；
+注入仓储后号段由数据库分配。
 
 </details>
 
@@ -414,18 +464,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #### 🔥 示例2：Snowflake算法
 
 ```rust
-use nebulaid::core::algorithm::SnowflakeAlgorithm;
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 使用数据中心ID和工作节点ID初始化
-    let snowflake = SnowflakeAlgorithm::new(1, 1);
-    
-    // 生成ID
-    let id = snowflake.generate_id()?;
-    
-    println!("数据中心: 1, 工作节点: 1");
+    // dc/worker 取自 [app]；位布局取自 [algorithm.snowflake]
+    let mut config = Config::default();
+    config.app.dc_id = 1;
+    config.app.worker_id = 1;
+
+    let snowflake = AlgorithmBuilder::new(AlgorithmType::Snowflake)
+        .build(&config)
+        .await?;
+
+    let id = snowflake.generate(&GenerateContext::default()).await?;
     println!("生成的Snowflake ID: {}", id);
+
+    let s = &config.algorithm.snowflake;
+    println!(
+        "位布局: timestamp({}) | dc({}) | worker({}) | seq({})",
+        s.timestamp_bits(),
+        s.datacenter_id_bits,
+        s.worker_id_bits,
+        s.sequence_bits
+    );
     Ok(())
 }
 ```
@@ -434,8 +498,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 <summary>查看输出</summary>
 
 ```
-数据中心: 1, 工作节点: 1
-生成的Snowflake ID: 4200000000000000001
+生成的Snowflake ID: <64 位数值，随时钟递增>
+位布局: timestamp(43) | dc(3) | worker(8) | seq(10)
 ```
 
 </details>
@@ -515,117 +579,206 @@ graph TB
 
 </div>
 
-<table>
-<tr>
-<td width="50%">
+**能被完整解析的最小配置（`config.toml`）**
 
-**基本配置 (config.toml)**
+`Config` 对 `app`、`database`、`etcd`、`auth`、`algorithm`、`monitoring`、`logging`、
+`rate_limit`、`tls`、`batch_generate` 都**没有**标注 `#[serde(default)]`
+（`src/core/config/app_config.rs:35-62`）。缺任一必填字段会让**整份**文件解析失败，
+而解析失败会静默退回 `Config::default()`（`src/main.rs:535-541`）—— 所以请照抄，不要裁剪。
+只有 `[redis]` 与 `[hot_reload]` 可以整体省略。
 
 ```toml
 [app]
 name = "nebula-id"
 host = "0.0.0.0"
-port = 8080
-
-[algorithm]
-type = "segment"
+http_port = 8080                 # 不存在 `app.port`
+grpc_port = 9091
+dc_id = 0                        # 0..=31
+worker_id = 0
+# shutdown_timeout_seconds = 30  # 可选
 
 [database]
-url = "postgresql://user:pass@localhost/nebula"
-max_connections = 10
-
-[redis]
-url = "redis://localhost"
+engine = "postgresql"            # postgresql | postgres | mysql | sqlite
+host = "localhost"
+port = 5432
+username = "idgen"
+password = "${NEBULA_DATABASE_PASSWORD}"
+database = "idgen"
+max_connections = 100
+min_connections = 10
+acquire_timeout_seconds = 30
+idle_timeout_seconds = 300
+# url = "postgresql://idgen:pw@localhost:5432/idgen"   # 可选的整串写法
 
 [etcd]
 endpoints = ["http://localhost:2379"]
+connect_timeout_ms = 5000
+watch_timeout_ms = 5000
 
 [auth]
-api_key = "your-api-key-here"
+enabled = true
+cache_ttl_seconds = 300
+# api_keys = []                  # 可选；条目需 key_id/key_secret/workspace/role/rate_limit/name
+# api_key_salt = "..."           # 可选（回退到 $NEBULA_API_KEY_SALT）
+# key_rotation_grace_period_seconds = 604800   # 可选
+
+[algorithm]
+default = "segment"              # segment | snowflake | uuid_v8（没有 `type` 键）
+
+[algorithm.segment]
+base_step = 1000
+min_step = 500
+max_step = 100000
+switch_threshold = 0.1
+
+[algorithm.snowflake]
+datacenter_id_bits = 3
+worker_id_bits = 8
+sequence_bits = 10
+clock_drift_threshold_ms = 1000
+
+[algorithm.uuid_v8]
+enabled = true
+
+[monitoring]
+metrics_enabled = true
+metrics_path = "/metrics"
+tracing_enabled = false
+otlp_endpoint = ""
+
+[logging]
+level = "info"                   # trace | debug | info | warn | error
+format = "json"                  # json | pretty
+include_location = true
 
 [rate_limit]
 enabled = true
-default_rps = 1000
-burst_size = 100
+default_rps = 10000
+burst_size = 100                 # validate()：必须 <= 10 × default_rps
 
 [tls]
 enabled = false
+cert_path = ""
+key_path = ""
+http_enabled = false
+grpc_enabled = false
+# ca_path = ""                   # 可选
+# min_tls_version = "tls13"      # 可选：tls12 | tls13
+# alpn_protocols = ["h2", "http/1.1"]   # 可选
+
+[batch_generate]
+max_batch_size = 100             # validate()：1..=10000
+
+# 完全可选的段：
+# [redis]
+# url = "redis://localhost:6379"
+# pool_size = 16                 # 可选
+# key_prefix = "nebula:id:"      # 可选
+# ttl_seconds = 600              # 可选
+# [hot_reload]
+# auto_watch_enabled = false
 ```
 
-</td>
-<td width="50%">
+> ⚠️ **代码事实核对**：服务端启动时 `Config::merge()` 会用
+> 「环境变量配置」的 `algorithm.segment` / `algorithm.snowflake` /
+> `algorithm.uuid_v8` 覆盖文件值，而它们恒为默认值
+> （`src/core/config/app_config.rs:331-333`，由 `src/main.rs:544` 调用）。
+> 合并后只有 `algorithm.default` 保留；在该合并逻辑修正前，三个子表请在代码里调。
 
 **环境变量**
 
-```bash
-export NEBULA_APP_NAME="nebula-id"
-export NEBULA_APP_PORT="8080"
-export NEBULA_DATABASE_URL="postgresql://user:pass@localhost/nebula"
-export NEBULA_REDIS_URL="redis://localhost"
-export NEBULA_ETCD_ENDPOINTS="http://localhost:2379"
-export NEBULA_AUTH_API_KEY="your-api-key-here"
-```
+并不存在 `NEBULA_APP_*` / `NEBULA_AUTH_API_KEY` 这一族变量。真实机制只有两种：
 
-</td>
-</tr>
-</table>
+```bash
+# 1. 启动时由 `Config::load_from_env()` 覆盖到文件配置之上
+#    （只有与默认值不同的项才生效）：
+export APP_HOST="0.0.0.0"
+export APP_HTTP_PORT="8080"
+export APP_GRPC_PORT="9091"
+export DC_ID="0"
+export WORKER_ID="0"
+export DATABASE_URL="postgresql://idgen:pass@localhost:5432/idgen"
+export ETCD_ENDPOINTS="http://localhost:2379,http://localhost:22379"
+export RUST_LOG="info"
+
+# 2. 在文件里以 ${VAR} 引用，解析前先展开
+#    （`Config::expand_env_vars`）：
+export NEBULA_DATABASE_PASSWORD="..."   # [database].password / url
+export NEBULA_API_KEY_SALT="..."        # [auth].api_key_salt 回退值
+```
 
 <details>
 <summary><b>🔧 所有配置选项</b></summary>
 
 <br>
 
-| 选项 | 类型 | 默认值 | 描述 |
-|--------|------|---------|-------------|
-| `app.name` | String | "nebula-id" | 应用名称 |
-| `app.host` | String | "0.0.0.0" | 服务器绑定地址 |
-| `app.port` | u16 | 8080 | 服务器端口 |
-| `algorithm.type` | String | "segment" | ID生成算法 |
-| `database.url` | String | - | 数据库连接URL |
-| `database.max_connections` | u32 | 1200 | 连接池大小 |
-| `redis.url` | String | - | Redis连接URL |
-| `etcd.endpoints` | Vec&lt;String&gt; | [] | Etcd服务器端点 |
-| `auth.api_key` | String | - | 用于认证的API密钥 |
-| `rate_limit.enabled` | Boolean | 代码默认 true；仓库 `config/config.toml` 为 false | 启用限流 |
-| `rate_limit.default_rps` | u32 | 10000 | 每秒请求数 |
-| `rate_limit.burst_size` | u32 | 代码默认 100；仓库样例 5000 | 突发流量上限 |
-| `tls.enabled` | Boolean | false | 启用TLS/SSL |
-</td>
-</tr>
-</table>
+| 选项 | 类型 | `Config::default()` | 文件内必填 | 说明 |
+|--------|------|---------------------|--------------|------|
+| `app.name` | String | `"nebula-id"` | ✅ | 应用名称 |
+| `app.host` | String | `"0.0.0.0"` | ✅ | 服务器绑定地址 |
+| `app.http_port` | u16 | `8080` | ✅ | HTTP 端口，必须 > 0 |
+| `app.grpc_port` | u16 | `9091` | ✅ | gRPC 端口，必须 > 0 |
+| `app.dc_id` | u8 | `0` | ✅ | 数据中心 ID，必须 ≤ 31 |
+| `app.worker_id` | u8 | `0` | ✅ | 工作节点 ID |
+| `app.shutdown_timeout_seconds` | u64 | `30` | ➖ | 优雅停机超时，必须 > 0 |
+| `database.engine` | String | `"postgresql"` | ✅ | `postgresql` / `postgres` / `mysql` / `sqlite` |
+| `database.host` / `port` / `username` / `password` / `database` | — | `localhost` / `5432` / `idgen` / `$NEBULA_DATABASE_PASSWORD` / `idgen` | ✅ | 逐项连接参数 |
+| `database.url` | String | `""` | ➖ | 上面各项的整串替代写法 |
+| `database.max_connections` | u32 | `100` | ✅ | 连接池大小，必须 > 0 |
+| `database.min_connections` | u32 | `10` | ✅ | 必须 ≤ `max_connections` |
+| `database.acquire_timeout_seconds` | u64 | `30` | ✅ | 必须 > 0 |
+| `database.idle_timeout_seconds` | u64 | `300` | ✅ | 空闲连接超时 |
+| `redis` | 段 | — | ➖ | 整段可省略 |
+| `redis.url` | String | `$REDIS_URL` 或 `redis://localhost:6379` | ✅（写了 `[redis]` 就必填） | Redis 连接 URL |
+| `redis.pool_size` / `key_prefix` / `ttl_seconds` | u32 / String / u64 | `16` / `"nebula:id:"` / `600` | ➖ | 缓存调优 |
+| `etcd.endpoints` | Vec&lt;String&gt; | `["etcd:2379"]` | ✅ | `[]` 时退回 `LocalDistributedLock` |
+| `etcd.connect_timeout_ms` / `watch_timeout_ms` | u64 | `5000` / `5000` | ✅ | etcd 超时 |
+| `auth.enabled` | bool | `true` | ✅ | API Key 中间件总开关 |
+| `auth.cache_ttl_seconds` | u64 | `300` | ✅ | 认证缓存 TTL |
+| `auth.api_keys` | 数组 | `[]` | ➖ | 条目字段：`key_id`、`key_secret`、`workspace`、`role`、`rate_limit`、`name`（全部必填） |
+| `auth.api_key_salt` | String | `$NEBULA_API_KEY_SALT` 或 `""` | ➖ | 密钥哈希盐值 |
+| `auth.key_rotation_grace_period_seconds` | u64 | `604800`（7 天） | ➖ | 轮换期内旧密钥仍有效 |
+| `algorithm.default` | String | `"segment"` | ✅ | `segment` / `snowflake` / `uuid_v8` |
+| `algorithm.segment.base_step` / `min_step` / `max_step` / `switch_threshold` | u64 / u64 / u64 / f64 | `1000` / `500` / `100000` / `0.1` | ✅ | 动态步长（注意上文的 `merge` 说明） |
+| `algorithm.snowflake.datacenter_id_bits` / `worker_id_bits` / `sequence_bits` / `clock_drift_threshold_ms` | u8 / u8 / u8 / u64 | `3` / `8` / `10` / `1000` | ✅ | 位布局；余量为时间戳位 |
+| `algorithm.uuid_v8.enabled` | bool | `true` | ✅ | UUID v8 开关 |
+| `monitoring.metrics_enabled` / `metrics_path` / `tracing_enabled` / `otlp_endpoint` | bool / String / bool / String | `true` / `"/metrics"` / `false` / `""` | ✅ | Prometheus + OTLP |
+| `logging.level` / `format` / `include_location` | String / String / bool | `"info"` / `"json"` / `true` | ✅ | `level`: trace…error，`format`: json/pretty |
+| `rate_limit.enabled` | bool | `true` | ✅ | 限流总开关 |
+| `rate_limit.default_rps` | u32 | `10000` | ✅ | 每秒请求数，启用时必须 > 0 |
+| `rate_limit.burst_size` | u32 | `100` | ✅ | 启用时必须 ≤ 10 × `default_rps` |
+| `hot_reload` | 段 | `auto_watch_enabled = false` | ➖ | 整段可省略 |
+| `tls.enabled` / `cert_path` / `key_path` / `http_enabled` / `grpc_enabled` | bool / String / String / bool / bool | `false` / `""` / `""` / `false` / `false` | ✅ | HTTP 与 gRPC 的 TLS |
+| `tls.ca_path` | String? | `null` | ➖ | 可选 CA |
+| `tls.min_tls_version` | String | `"tls13"` | ➖ | `tls12` / `tls13` |
+| `tls.alpn_protocols` | Vec&lt;String&gt; | `["h2", "http/1.1"]` | ➖ | ALPN 列表 |
+| `batch_generate.max_batch_size` | u32 | `100` | ✅ | 必须在 1..=10000 |
 
-### 算法配置
+默认值即 `Config::default()` 的取值；「文件内必填」表示该字段
+是否带 serde 默认值。未知键会被静默忽略（没有 `deny_unknown_fields`），
+但缺必填键会让**整份**文件解析失败。
 
-<table>
-<tr>
-<td width="50%">
+### 校验规则
 
-**Segment算法**
+解析成功后立刻执行 `Config::validate()`（`src/core/config/app_config.rs:111-231`）；违反
+即 `Config::load_from_file` 返回 `ConfigError::InvalidValue`，服务端启动表现为
+「记一条 error 后退回 `Config::default()`」：
 
-```toml
-[algorithm.segment]
-name = "default"
-step = 1000
-max_retry = 3
-```
+| 约束 | 来源 |
+|------|------|
+| `http_port > 0`、`grpc_port > 0`、`shutdown_timeout_seconds > 0` | `Config::validate` |
+| `dc_id <= 31` | `Config::validate` |
+| `max_connections > 0`、`min_connections <= max_connections`、`acquire_timeout_seconds > 0` | `Config::validate` |
+| `rate_limit.enabled` ⇒ `default_rps > 0`、`burst_size > 0`、`burst_size <= 10 × default_rps` | `Config::validate` |
+| `algorithm.default ∈ {segment, snowflake, uuid_v8}` | `Config::validate` |
+| `segment.min_step <= segment.max_step` 且 `min_step <= base_step <= max_step` | `Config::validate` |
+| `0.0 <= segment.switch_threshold <= 1.0` | `Config::validate` |
+| `snowflake.datacenter_id_bits + worker_id_bits + sequence_bits < 64`（默认 ⇒ 43 位时间戳） | `Config::validate` |
+| `snowflake.clock_drift_threshold_ms > 0` | `Config::validate` |
+| `1 <= batch_generate.max_batch_size <= 10000` | `Config::validate` |
 
-</td>
-<td width="50%">
-
-**Snowflake算法**
-
-```toml
-[algorithm.snowflake]
-datacenter_id = 1
-worker_id = 1
-sequence_bits = 12
-```
-
-</td>
-</tr>
-</table>
-
-> **注意**: 详细配置说明请参考 [配置指南](#-文档)。
+> 完整参考：[`config/config.toml`](config/config.toml) 与
+> [CONFIG_MIGRATION_GUIDE.md](docs/CONFIG_MIGRATION_GUIDE.md)。
 
 </details>
 
@@ -771,9 +924,13 @@ cargo bench --bench i18n
 ### 功能标志
 
 ```toml
-[dependencies.nebula-id]
-version = "0.3.0"
-features = ["audit", "tls"]
+# Cargo 包名是 `nebulaid`；审计日志与 TLS 是运行时配置（[auth] / [tls]），
+# 不是 Cargo feature。
+[dependencies]
+nebulaid = { version = "0.2", features = ["sdk"] }      # 嵌入式客户端 facade
+# nebulaid = { version = "0.2", features = ["etcd"] }   # 分布式协调
+# 可用 feature：postgresql（默认）、etcd、garrison-auth（默认）、
+# sdk、http/grpc/openapi（sdforge 镜像，http+grpc 为默认）、integration-tests。
 ```
 
 </details>

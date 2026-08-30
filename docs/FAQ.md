@@ -1125,9 +1125,15 @@ burst_size = 100
 **Response Headers:**
 
 ```
-X-RateLimit-Limit: 1000
-X-RateLimit-Remaining: 999
-X-RateLimit-Reset: 1640995200
+x-ratelimit-limit: 1000
+x-ratelimit-remaining: 999
+```
+
+When a request is rate limited (HTTP 429), the response additionally carries:
+
+```
+x-ratelimit-remaining: 0
+retry-after: 1
 ```
 
 </details>

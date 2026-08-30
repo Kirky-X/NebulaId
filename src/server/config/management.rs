@@ -296,6 +296,17 @@ impl ConfigManagementService for ConfigManager {
             config.rate_limit.burst_size = burst;
         }
 
+        // converge T022④：跨字段约束复用启动期同一校验入口（Config::validate
+        // 校验 enabled 下 rps/burst 非 0 且 burst ≤ 10×rps）。单字段 range
+        // 校验挡不住"burst=1000 + rps=1"这类运行期不一致配置经热更新写入。
+        if let Err(e) = config.validate() {
+            return UpdateConfigResponse {
+                success: false,
+                message: format!("Validation error: {}", e),
+                config: None,
+            };
+        }
+
         {
             let mut rate_limiter_guard = self.rate_limiter.write().await;
             *rate_limiter_guard =
@@ -965,6 +976,35 @@ mod tests {
         // And hot_config must reflect the update.
         let hot_config_reflect = hot_config.get_config();
         assert_eq!(hot_config_reflect.rate_limit.default_rps, 5000);
+    }
+
+    /// converge T022④：热更新不得绕过启动期跨字段约束（burst ≤ 10×rps）。
+    #[tokio::test]
+    async fn test_update_rate_limit_rejects_burst_over_10x_rps() {
+        let hot_config = Arc::new(HotReloadConfig::new(
+            test_config(),
+            "config/config.toml".to_string(),
+        ));
+        let algorithm_router = create_test_algorithm_router();
+        let service = ConfigManager::new(hot_config.clone(), algorithm_router);
+        let burst_before = hot_config.get_config().rate_limit.burst_size;
+
+        let req = UpdateRateLimitRequest {
+            default_rps: Some(10),
+            burst_size: Some(1000),
+        };
+        let response = service.update_rate_limit(req).await;
+
+        assert!(!response.success, "burst=1000 对 rps=10 必须被拒绝");
+        assert!(
+            response.message.contains("burst_size"),
+            "错误信息应指出违规字段，实际: {}",
+            response.message
+        );
+        assert!(response.config.is_none());
+        // 失败的更新不得留下 override，也不得改动热配置
+        assert_eq!(service.get_rate_limit_override().await, None);
+        assert_eq!(hot_config.get_config().rate_limit.burst_size, burst_before);
     }
 
     /// `update_rate_limit` with only `default_rps` must leave `burst_size` unchanged.

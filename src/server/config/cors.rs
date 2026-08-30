@@ -21,6 +21,7 @@
 - 预检缓存配置
 */
 
+use crate::server::rate_limit::middleware::HEADER_RATE_LIMIT_REMAINING;
 use axum::http::{HeaderName, HeaderValue, Method};
 use sdforge::tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use std::time::Duration;
@@ -28,8 +29,11 @@ use std::time::Duration;
 /// CORS 预检请求缓存时间（1小时）
 const CORS_MAX_AGE: Duration = Duration::from_secs(3600);
 
-/// 暴露的响应头
-pub const EXPOSED_HEADERS: [&str; 2] = ["x-request-id", "x-rate-limit-remaining"];
+/// 暴露的响应头。
+///
+/// 限流相关条目必须引用中间件实际写出的常量 —— header 名连字符敏感，
+/// 拼写不一致会让浏览器静默读不到该响应头。
+pub const EXPOSED_HEADERS: [&str; 2] = ["x-request-id", HEADER_RATE_LIMIT_REMAINING];
 
 /// 支持的 HTTP 方法
 const ALLOWED_METHODS: [Method; 5] = [
@@ -210,7 +214,11 @@ mod tests {
     fn test_exposed_headers_const() {
         assert_eq!(EXPOSED_HEADERS.len(), 2);
         assert_eq!(EXPOSED_HEADERS[0], "x-request-id");
-        assert_eq!(EXPOSED_HEADERS[1], "x-rate-limit-remaining");
+        // 单一来源：暴露名必须等于限流中间件实际写出的 header 名
+        assert_eq!(
+            EXPOSED_HEADERS[1],
+            crate::server::rate_limit::middleware::HEADER_RATE_LIMIT_REMAINING
+        );
     }
 
     #[test]

@@ -1414,6 +1414,63 @@ async fn e2e_rate_limit_middleware_returns_429_on_reject() {
 }
 
 // ============================================================================
+// E2E-RATE-010（converge T022①）: burst=2 的严格序列契约
+// ============================================================================
+
+#[tokio::test]
+async fn e2e_rate_limit_burst_two_allows_two_then_rejects_with_headers() {
+    // rps=2、burst=2：同一 key 连发 4 次 → 前 2 次严格 200（remaining 递减），
+    // 第 3 次起严格 429 且带 x-ratelimit-remaining: 0 与 Retry-After。
+    let limiter = Arc::new(RateLimiter::new(2, 2));
+
+    let remaining_of = |resp: &axum::response::Response| {
+        resp.headers()
+            .get("X-RateLimit-Remaining")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+
+    for expected_remaining in ["1", "0"] {
+        let app = Router::new()
+            .route("/ping", get(|| async { "pong" }))
+            .layer(from_fn_with_state(
+                RateLimitMiddleware::new(limiter.clone()),
+                rate_limit_handler,
+            ));
+        let resp = app
+            .oneshot(Request::builder().uri("/ping").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            remaining_of(&resp).as_deref(),
+            Some(expected_remaining),
+            "剩余配额必须随请求递减（R-rl-001）"
+        );
+    }
+
+    for _ in 2..4 {
+        let app = Router::new()
+            .route("/ping", get(|| async { "pong" }))
+            .layer(from_fn_with_state(
+                RateLimitMiddleware::new(limiter.clone()),
+                rate_limit_handler,
+            ));
+        let resp = app
+            .oneshot(Request::builder().uri("/ping").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "burst 用尽后必须拒绝"
+        );
+        assert_eq!(remaining_of(&resp).as_deref(), Some("0"));
+        assert!(resp.headers().get("Retry-After").is_some());
+    }
+}
+
+// ============================================================================
 // E2E-ANON-001: Anonymous 角色被 anonymous_block_middleware 拒绝
 // ============================================================================
 

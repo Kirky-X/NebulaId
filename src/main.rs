@@ -28,7 +28,7 @@ use nebulaid::server::middleware::size_limit::create_size_limit_middleware;
 use nebulaid::server::middleware::ApiKeyAuth;
 use nebulaid::server::proto::nebula::id::v1::nebula_id_service_server::NebulaIdServiceServer;
 use nebulaid::server::rate_limit::limiter::RateLimiter;
-use nebulaid::server::router::create_router;
+use nebulaid::server::router::create_router_with_rate_limit;
 use nebulaid::server::sdforge_adapter::{init_sdforge, merge_sdforge_routes};
 use sdforge::tonic::transport::Server;
 use std::env;
@@ -351,13 +351,22 @@ async fn start_http_server(
     auth: Arc<ApiKeyAuth>,
     rate_limiter: Arc<RateLimiter>,
     audit_logger: Arc<AuditLogger>,
-    _config_service: Arc<dyn ConfigManagementService>,
+    config_service: Arc<dyn ConfigManagementService>,
     tls_manager: Option<Arc<TlsManager>>,
 ) -> Result<()> {
-    let router = create_router(handlers, auth, rate_limiter, audit_logger)
-        .await
-        .layer(create_size_limit_middleware())
-        .merge(merge_sdforge_routes(axum::Router::new()));
+    // converge T022③：限流开关来自真实配置（此前该参数被忽略，
+    // auth.rate_limit.enabled=false 也照样挂限流层）。
+    let rate_limit_enabled = config_service.get_config().rate_limit.enabled;
+    let router = create_router_with_rate_limit(
+        handlers,
+        auth,
+        rate_limiter,
+        audit_logger,
+        rate_limit_enabled,
+    )
+    .await
+    .layer(create_size_limit_middleware())
+    .merge(merge_sdforge_routes(axum::Router::new()));
 
     // wiring T005：按配置选择明文或 TLS 监听（此前 http_acceptor 只构造
     // 不消费，HTTPS 宣称启用却恒为明文）。
@@ -1244,7 +1253,9 @@ mod tests {
         let rate_limiter = Arc::new(RateLimiter::new(10000, 100));
         let audit_logger = Arc::new(AuditLogger::new(10000));
 
-        let _router = create_router(handlers, auth, rate_limiter, audit_logger).await;
+        let _router =
+            nebulaid::server::router::create_router(handlers, auth, rate_limiter, audit_logger)
+                .await;
     }
 
     #[tokio::test]

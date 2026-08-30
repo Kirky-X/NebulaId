@@ -21,12 +21,19 @@ use crate::server::rate_limit::limiter::RateLimiter;
 use axum::middleware::Next;
 use axum::{
     body::Body,
-    http::{Request, StatusCode},
+    http::{header::HeaderValue, Request, StatusCode},
     response::IntoResponse,
     response::Response,
 };
 use std::net::IpAddr;
 use std::sync::Arc;
+
+/// 限流响应头名（规范小写形式；`http` crate 会把 header 名统一规范化）。
+///
+/// 与 `server::config::cors::EXPOSED_HEADERS` 共用同一常量：暴露名单里写的
+/// 若是另一种拼写（例如少一个连字符），浏览器就永远读不到该响应头。
+pub const HEADER_RATE_LIMIT: &str = "x-ratelimit-limit";
+pub const HEADER_RATE_LIMIT_REMAINING: &str = "x-ratelimit-remaining";
 
 /// Rate limit middleware for Axum applications.
 ///
@@ -86,12 +93,12 @@ impl RateLimitMiddleware {
             if let Ok(limit_header) = result.limit.to_string().parse() {
                 response
                     .headers_mut()
-                    .insert("X-RateLimit-Limit", limit_header);
+                    .insert(HEADER_RATE_LIMIT, limit_header);
             }
             if let Ok(remaining_header) = result.remaining.to_string().parse() {
                 response
                     .headers_mut()
-                    .insert("X-RateLimit-Remaining", remaining_header);
+                    .insert(HEADER_RATE_LIMIT_REMAINING, remaining_header);
             }
             response
         } else {
@@ -108,8 +115,13 @@ impl RateLimitMiddleware {
             if let Ok(limit_header) = result.limit.to_string().parse() {
                 response
                     .headers_mut()
-                    .insert("X-RateLimit-Limit", limit_header);
+                    .insert(HEADER_RATE_LIMIT, limit_header);
             }
+            // R-rl-001：拒绝响应必须显式声明剩余配额为 0，
+            // 客户端无需再从 Retry-After 推断是否已被限流。
+            response
+                .headers_mut()
+                .insert(HEADER_RATE_LIMIT_REMAINING, HeaderValue::from_static("0"));
 
             let retry_after = result.retry_after.unwrap_or(1);
             if let Ok(retry_header) = retry_after.to_string().parse() {
@@ -345,6 +357,13 @@ mod tests {
             .get("X-RateLimit-Limit")
             .expect("X-RateLimit-Limit header should be present on 429 too");
         assert_eq!(limit_header.to_str().unwrap(), "1");
+
+        // R-rl-001：拒绝响应必须显式声明剩余配额为 0
+        let remaining = response
+            .headers()
+            .get("X-RateLimit-Remaining")
+            .expect("X-RateLimit-Remaining header should be present on 429");
+        assert_eq!(remaining.to_str().unwrap(), "0");
 
         // Should carry Retry-After header (limiter.rs sets retry_after=Some(1) on reject)
         let retry_after = response

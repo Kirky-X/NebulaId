@@ -58,6 +58,22 @@ pub async fn create_router(
     rate_limiter: Arc<RateLimiter>,
     audit_logger: Arc<AuditLogger>,
 ) -> Router {
+    // 默认启用全局限流（保持历史行为，兼容既有调用点）
+    create_router_with_rate_limit(handlers, auth, rate_limiter, audit_logger, true).await
+}
+
+/// 带显式限流开关的路由装配（converge T022③）。
+///
+/// `rate_limit_enabled=false` 时不挂载限流层（此前 `auth.rate_limit.enabled`
+/// 无消费点，配置关不掉限流）。开关由调用方（main.rs 读真实 Config）传入，
+/// 而非在装配内部回读 config_service —— 避免 mock 服务被牵连出额外期望。
+pub async fn create_router_with_rate_limit(
+    handlers: Arc<ApiHandlers>,
+    auth: Arc<ApiKeyAuth>,
+    rate_limiter: Arc<RateLimiter>,
+    audit_logger: Arc<AuditLogger>,
+    rate_limit_enabled: bool,
+) -> Router {
     // Configure CORS with environment-aware settings
     // In production, specify your actual frontend origins via ALLOWED_ORIGINS env var
     // Format: comma-separated list of allowed origins
@@ -181,7 +197,7 @@ pub async fn create_router(
 
     // ========== Root Routes ==========
     // Public router (no authentication) - includes health check and metrics
-    Router::new()
+    let routes = Router::new()
         .route("/health", get(handle_health))
         .route("/ready", get(handle_ready))
         .route("/metrics", get(handle_metrics))
@@ -191,6 +207,22 @@ pub async fn create_router(
         )
         .merge(api_v1_routes)
         .with_state(app_state)
+        // wiring T002 + converge T022②③：全局限流真实挂载，且必须位于 CORS
+        // **内侧**（axum 中先 `.layer()` 的是内层、后挂载的先执行）。此前挂在
+        // CORS 外侧，导致 429 响应缺 CORS 头且 OPTIONS 预检消耗配额。
+        // `auth.rate_limit.enabled=false` 时不挂载该层。
+        ;
+
+    let routes = if rate_limit_enabled {
+        routes.layer(axum::middleware::from_fn_with_state(
+            rate_limit_middleware,
+            crate::server::rate_limit::middleware::rate_limit_middleware_fn,
+        ))
+    } else {
+        routes
+    };
+
+    routes
         // Security headers
         .layer(SetResponseHeaderLayer::overriding(
             header::X_CONTENT_TYPE_OPTIONS,
@@ -217,13 +249,6 @@ pub async fn create_router(
             HeaderValue::from_static("strict-origin-when-cross-origin"),
         ))
         .layer(cors)
-        // wiring T002：全局限流中间件真实挂载（此前仅 Extension 注入、
-        // 从不执行）。执行顺序上位于认证中间件（嵌套于 /api/v1 内层）
-        // 之前，未认证流量先被令牌桶约束。
-        .layer(axum::middleware::from_fn_with_state(
-            rate_limit_middleware,
-            crate::server::rate_limit::middleware::rate_limit_middleware_fn,
-        ))
         .layer(axum::Extension(audit_middleware.clone()))
         .layer(axum::middleware::from_fn_with_state(
             audit_middleware,
@@ -1109,6 +1134,84 @@ mod tests {
 
         let router = create_router(handlers, auth, rate_limiter, audit_logger).await;
         let _router = router;
+    }
+
+    // ========== 限流层挂载契约（converge T022②③） ==========
+
+    fn make_plain_request(uri: &str) -> axum::http::Request<axum::body::Body> {
+        axum::http::Request::builder()
+            .uri(uri)
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_layer_is_skipped_when_disabled() {
+        let limiter = Arc::new(RateLimiter::new(1, 1));
+        // 预耗尽 anonymous 桶：限流层若仍挂载，后续请求必 429
+        limiter.check_rate_limit("anonymous", None, None).await;
+
+        let router = create_router_with_rate_limit(
+            create_test_api_handlers(),
+            create_test_auth(),
+            limiter,
+            create_test_audit_logger(),
+            false,
+        )
+        .await;
+
+        for _ in 0..3 {
+            let resp = router
+                .clone()
+                .oneshot(make_plain_request("/health"))
+                .await
+                .unwrap();
+            assert_ne!(
+                resp.status(),
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                "auth.rate_limit.enabled=false 时不得挂载限流层"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_429_generated_inside_security_header_layers() {
+        // 层序契约：限流必须在 CORS / 安全头内侧。若限流位于外侧（旧实现），
+        // 429 由最外层短路生成，不会带上内层注入的响应头。
+        let limiter = Arc::new(RateLimiter::new(1, 1));
+        limiter.check_rate_limit("anonymous", None, None).await;
+
+        let router = create_router_with_rate_limit(
+            create_test_api_handlers(),
+            create_test_auth(),
+            limiter,
+            create_test_audit_logger(),
+            true,
+        )
+        .await;
+
+        let resp = router.oneshot(make_plain_request("/health")).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "配额耗尽后应被限流"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("x-content-type-options")
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff"),
+            "429 必须穿过安全头与 CORS 层（CORS 与限流层序错误时丢失）"
+        );
+        // R-rl-001：拒绝响应显式声明剩余配额
+        assert_eq!(
+            resp.headers()
+                .get(crate::server::rate_limit::middleware::HEADER_RATE_LIMIT_REMAINING)
+                .and_then(|v| v.to_str().ok()),
+            Some("0"),
+            "实际响应头: {:?}",
+            resp.headers()
+        );
     }
 
     // ========== anonymous_block_middleware tests ==========

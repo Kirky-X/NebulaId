@@ -90,7 +90,7 @@
 
 ### 🎯 v0.2.0 Quality Gates
 
-- ✅ **0 warnings** on `cargo build --all-features` & `cargo clippy -D warnings`
+- ✅ **0 warnings** on `cargo build --package nebulaid --features etcd` & `cargo clippy --features etcd -D warnings`
 - ✅ **4000+ tests** with 89.91% line coverage (CI gate: `--fail-under-lines 95`)
 - ✅ **0 dead code** findings (`cargo udeps` + `cargo rustc -W dead_code`)
 - ✅ **mod.rs interface isolation** enforced (rule 25 — `mod.rs` only exposes traits + pub types)
@@ -201,8 +201,8 @@ Great for high-performance applications requiring millions of IDs per second wit
 git clone https://github.com/Kirky-X/NebulaId.git
 cd NebulaId
 
-# Build all features
-cargo build --all-features --release
+# Build (default features: postgresql + http + grpc + garrison-auth)
+cargo build --release
 
 # Run the server
 ./target/release/nebula-id
@@ -216,25 +216,33 @@ cargo build --all-features --release
 ```toml
 # Cargo.toml features
 [features]
-default = ["postgresql"]
-postgresql = ["sea-orm/sqlx-postgres", "sqlx/postgres"]
-sqlite    = ["sea-orm/sqlx-sqlite", "sqlx/sqlite"]
+default = ["postgresql", "http", "grpc", "garrison-auth"]
+postgresql = ["dbnexus/postgres"]
+sqlite    = ["dbnexus/sqlite"]   # 见下方说明：当前不可单独构建
 etcd      = ["dep:etcd-client"]
+garrison-auth = ["dep:garrison"]
+sdk       = ["openapi"]          # 嵌入式 SDK facade
+# 镜像 feature：sdforge #[forge] 宏在下游 crate 求值 cfg(feature=...)
+http = []
+grpc = []
+openapi = []
+integration-tests = []           # 需要真实数据库的 #[ignore] 测试
 ```
 
 **Build with specific features:**
 ```bash
-# Default (PostgreSQL)
+# Default (PostgreSQL + HTTP + gRPC + garrison auth)
 cargo build --release
 
-# With etcd distributed coordination
+# Maximal buildable feature set
 cargo build --release --features etcd
 
-# With SQLite (no PostgreSQL)
-cargo build --release --no-default-features --features sqlite
+# Embedded SDK facade (src/sdk + examples/{embedded,sdk_server})
+cargo build --release --features sdk
 
-# All features
-cargo build --all-features --release
+# NOTE: sqlite is currently NOT buildable — limiteron hard-depends on
+# dbnexus/postgres while dbnexus forbids mixing sqlite and postgres
+# (compile_error). The same constraint makes the all-features build invalid.
 ```
 
 </td>
@@ -626,7 +634,7 @@ sequence_bits = 12
 
 ```bash
 # Run all tests
-cargo test --all-features
+cargo test --features etcd
 
 # Run with coverage
 cargo tarpaulin --out Html
@@ -982,7 +990,7 @@ Want to contribute?<br>
 2. **Clone** your fork: `git clone https://github.com/yourusername/nebula-id.git`
 3. **Create** a branch: `git checkout -b feature/amazing-feature`
 4. **Make** your changes
-5. **Test** your changes: `cargo test --all-features`
+5. **Test** your changes: `cargo test --features etcd`
 6. **Commit** your changes: `git commit -m 'Add amazing feature'`
 7. **Push** to branch: `git push origin feature/amazing-feature`
 8. **Create** a Pull Request

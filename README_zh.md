@@ -90,7 +90,7 @@
 
 ### 🎯 v0.2.0 质量门禁
 
-- ✅ **0 警告**：`cargo build --all-features` 与 `cargo clippy -D warnings` 均无告警
+- ✅ **0 警告**：`cargo build --package nebulaid --features etcd` 与 `cargo clippy --features etcd -D warnings` 均无告警
 - ✅ **4000+ 测试**：行覆盖率 89.91%（CI 门禁 `--fail-under-lines 95`）
 - ✅ **0 死代码**：`cargo udeps` + `cargo rustc -W dead_code` 双重审计
 - ✅ **mod.rs 接口隔离**：强制执行规则 25（`mod.rs` 只暴露 trait + pub 类型）
@@ -202,8 +202,8 @@ let id = segment.generate_id()?;
 git clone https://github.com/Kirky-X/NebulaId.git
 cd NebulaId
 
-# 构建全部特性
-cargo build --all-features --release
+# 构建默认特性（postgresql + http + grpc + garrison-auth）
+cargo build --release
 
 # 运行服务
 ./target/release/nebula-id
@@ -217,25 +217,33 @@ cargo build --all-features --release
 ```toml
 # Cargo.toml features
 [features]
-default = ["postgresql"]
-postgresql = ["sea-orm/sqlx-postgres", "sqlx/postgres"]
-sqlite    = ["sea-orm/sqlx-sqlite", "sqlx/sqlite"]
+default = ["postgresql", "http", "grpc", "garrison-auth"]
+postgresql = ["dbnexus/postgres"]
+sqlite    = ["dbnexus/sqlite"]   # 见下方说明：当前不可单独构建
 etcd      = ["dep:etcd-client"]
+garrison-auth = ["dep:garrison"]
+sdk       = ["openapi"]          # 嵌入式 SDK facade
+# 镜像 feature：sdforge #[forge] 宏在下游 crate 求值 cfg(feature=...)
+http = []
+grpc = []
+openapi = []
+integration-tests = []           # 需要真实数据库的 #[ignore] 测试
 ```
 
 **按特性构建:**
 ```bash
-# 默认 (PostgreSQL)
+# 默认（PostgreSQL + HTTP + gRPC + garrison 认证）
 cargo build --release
 
-# 启用 etcd 分布式协调
+# 最大可构建特性集
 cargo build --release --features etcd
 
-# 使用 SQLite (不启用 PostgreSQL)
-cargo build --release --no-default-features --features sqlite
+# 嵌入式 SDK（src/sdk + examples/{embedded,sdk_server}）
+cargo build --release --features sdk
 
-# 全部特性
-cargo build --all-features --release
+# 说明：sqlite 当前不可构建 —— limiteron 硬依赖 dbnexus/postgres，
+# 而 dbnexus 禁止 sqlite 与 postgres 混用（compile_error）；
+# 同一约束也使「全特性」构建无效。
 ```
 
 </td>
@@ -628,7 +636,7 @@ sequence_bits = 12
 
 ```bash
 # 运行所有测试
-cargo test --all-features
+cargo test --features etcd
 
 # 运行覆盖率测试
 cargo tarpaulin --out Html
@@ -984,7 +992,7 @@ CI 也通过同一入口调用（见 `.github/workflows/ci.yml`、`release.yml`�
 2. **克隆** 你的fork: `git clone https://github.com/yourusername/nebula-id.git`
 3. **创建** 分支: `git checkout -b feature/amazing-feature`
 4. **进行** 你的修改
-5. **测试** 你的修改: `cargo test --all-features`
+5. **测试** 你的修改: `cargo test --features etcd`
 6. **提交** 你的修改: `git commit -m 'Add amazing feature'`
 7. **推送** 到分支: `git push origin feature/amazing-feature`
 8. **创建** Pull Request

@@ -189,14 +189,17 @@ git remote -v
 ### 构建与测试
 
 ```bash
-# 构建项目（默认 postgresql 特性）
+# 构建项目（default = postgresql + http + grpc + garrison-auth）
 cargo build --package nebulaid
 
-# 构建全部特性（postgresql + sqlite + etcd）
-cargo build --package nebulaid --all-features
+# 最大可构建特性集（default + etcd）
+# 注意：不存在「全特性」构建 —— dbnexus 禁止 sqlite 与 postgres 混用
+# （compile_error），且 limiteron 硬依赖 dbnexus/postgres，
+# 因此 sqlite 特性当前不可构建。
+cargo build --package nebulaid --features etcd
 
 # 运行全部测试
-cargo test --package nebulaid --all-features
+cargo test --package nebulaid --features etcd
 
 # 构建文档
 cargo doc --no-deps --package nebulaid
@@ -285,14 +288,14 @@ lefthook install              # 推荐：使用 lefthook
 cargo fmt --all
 
 # 运行 Clippy 静态分析 (必须无警告)
-cargo clippy --package nebulaid --all-features -- -D warnings
+cargo clippy --package nebulaid --features etcd -- -D warnings
 
 # 运行所有测试
-cargo test --package nebulaid --all-features
+cargo test --package nebulaid --features etcd
 
 # 运行特定模块的测试
-cargo test --package nebulaid --all-features --lib algorithm::segment
-cargo test --package nebulaid --all-features --lib algorithm::snowflake
+cargo test --package nebulaid --features etcd --lib algorithm::segment
+cargo test --package nebulaid --features etcd --lib algorithm::snowflake
 ```
 
 **预提交检查脚本**会自动执行以下检查：

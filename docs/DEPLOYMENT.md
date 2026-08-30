@@ -304,13 +304,17 @@ scripts/run.sh <subcommand> [args...]
 
 内部调用 `_pre_commit_impl.sh`，按以下顺序运行检查（任一失败即停止）：
 
-1. **格式化检查**：`cargo fmt --check`
-2. **静态分析**：`cargo clippy --all-features --all-targets -- -D warnings`
-3. **构建**：`cargo build --all-features`
-4. **测试**：`cargo test --all-features`
-5. **安全审计**：`cargo audit`（若已安装）
-6. **文档构建**：`cargo doc --no-deps --all-features`
-7. **覆盖率**：`cargo llvm-cov --all-features --fail-under-lines 95`
+1. **格式化检查**：`cargo fmt -- --check`
+2. **静态分析**：`cargo clippy --lib --bins -- -D warnings`
+3. **构建**：`cargo build`
+4. **测试**：`cargo test --lib`
+5. **安全审计**：`cargo deny check`（若已安装）
+6. **文档构建**：`cargo doc --no-deps`
+7. **覆盖率**：`cargo tarpaulin`（若已安装）
+
+需要覆盖可选特性（etcd 协调）或集成测试时，用最大可构建特性集手动补跑：
+`cargo test --package nebulaid --features etcd`。不存在「全特性」构建 ——
+dbnexus 禁止 sqlite 与 postgres 混用，limiteron 硬依赖 dbnexus/postgres。
 
 GitHub Actions CI（`.github/workflows/ci.yml`）通过同一入口调用此子命令，确保本地与 CI 行为一致。
 

@@ -56,7 +56,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy Lint
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --package nebulaid --all-targets --features etcd -- -D warnings
 
   # 构建检查
   build:
@@ -80,7 +80,7 @@ jobs:
           cache-targets: false
 
       - name: Build Project
-        run: cargo build --all-targets --all-features
+        run: cargo build --package nebulaid --all-targets --features etcd
 
   # 测试
   test:
@@ -104,7 +104,7 @@ jobs:
           cache-targets: false
 
       - name: Run Tests
-        run: cargo test --all-targets --all-features
+        run: cargo test --package nebulaid --all-targets --features etcd
 
       - name: Generate Code Coverage
         if: github.event_name == 'pull_request'

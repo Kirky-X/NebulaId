@@ -88,7 +88,37 @@ jobs:
       - name: Security Audit
         run: cargo audit --deny warnings
 
-  # 阶段 4：多 feature matrix 测试 + 覆盖率门禁（≥80%）
+  # 阶段 4：SDK 特性构建（src/sdk + examples/{embedded,sdk_server}）
+  # 独立 job：不进覆盖率门禁，只保证 SDK 面可编译且其单测通过。
+  sdk:
+    name: Test (sdk)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [fmt-clippy]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "nebula-ci-sdk"
+          cache-targets: false
+
+      - name: Clippy (feature=sdk)
+        run: cargo clippy --package ${{ env.PKG }} --features sdk -- -D warnings
+
+      - name: Test (feature=sdk)
+        run: cargo test --package ${{ env.PKG }} --features sdk
+
+  # 阶段 5：多 feature matrix 测试 + 覆盖率门禁（≥80%）
   test:
     name: Test (${{ matrix.feature }})
     runs-on: ubuntu-latest

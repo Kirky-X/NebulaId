@@ -61,7 +61,9 @@ jobs:
 
       - name: Build for CodeQL
         # 限定 --package nebulaid，避免扫描 path 依赖
-        run: cargo build --package nebulaid --all-features
+        # 特性集与 ci.yml 一致：dbnexus 禁止 sqlite 与 postgres 混用，
+        # 全特性开关会 compile_error；default 已含 postgresql，etcd 为唯一安全叠加。
+        run: cargo build --package nebulaid --features etcd
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3

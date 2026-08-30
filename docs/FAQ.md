@@ -1385,7 +1385,7 @@ curl http://localhost:8080/metrics
 1. 🍴 Fork the repository
 2. 🌱 Create a branch: `git checkout -b feature/amazing-feature`
 3. ✏️ Make changes
-4. ✅ Add tests: `cargo test --all-features`
+4. ✅ Add tests: `cargo test --package nebulaid --features etcd`
 5. 📤 Submit PR
 
 **Guidelines:** [CONTRIBUTING.md](../CONTRIBUTING.md)

@@ -13,8 +13,8 @@ graph TB
     gRPC --> Router
 
     Router --> Seg[Segment 算法<br/>双 buffer + 动态步长]
-    Router --> Snow[Snowflake 算法<br/>无锁序列号]
-    Router --> UUID[UUID v7/v4]
+    Router --> Snow[Snowflake 算法<br/>串行化时间戳+序列号]
+    Router --> UUID[UUID v8]
 
     Seg --> DB[(PostgreSQL<br/>sea-orm)]
     Seg --> DcDetector[DC 故障检测器]

@@ -266,9 +266,34 @@ impl TlsManager {
 /// 实现 `axum::serve::Listener`（axum 0.8 该 trait 未 sealed，可外部实现），
 /// 使 `axum::serve` 无需 `axum-server` 等额外依赖即可在单一端口上启用 HTTPS。
 /// 未启用 TLS 时行为与裸 `TcpListener` 完全一致（明文回退）。
+///
+/// TLS 模式下握手在 per-connection 任务中并发完成（converge T019）：
+/// 旧实现把 `acceptor.accept(tcp).await` 内联在 accept 循环里，客户端
+/// 只建连不发 ClientHello 即可永久冻结整个 HTTP 端口（未认证 DoS）。
 pub enum DualListener {
     Plain(tokio::net::TcpListener),
-    Tls(tokio::net::TcpListener, TlsAcceptor),
+    Tls(TlsEndpoint),
+}
+
+/// TLS 握手超时：慢发 / 挂起 ClientHello 的连接在此边界被丢弃。
+const TLS_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// accept 错误退避（EMFILE 等持续错误时避免热自旋）。
+const ACCEPT_ERROR_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// 已完成握手连接的汇聚队列深度（对 axum serve 循环形成背压上限）。
+const TLS_HANDSHAKE_QUEUE: usize = 128;
+
+/// TLS 监听端：TCP accept 与 TLS 握手解耦，握手结果经有界 channel 汇聚。
+pub struct TlsEndpoint {
+    listener: tokio::net::TcpListener,
+    acceptor: TlsAcceptor,
+    /// 每个握手任务用的发送端克隆。
+    tx: tokio::sync::mpsc::Sender<(DualStream, std::net::SocketAddr)>,
+    /// 常驻发送端：保证 `rx` 不因"所有 sender 已 drop"而立刻返回 None，
+    /// 使 `select!` 在空闲期正确挂起而非忙轮询。本字段只持有、从不发送。
+    _keepalive: tokio::sync::mpsc::Sender<(DualStream, std::net::SocketAddr)>,
+    rx: tokio::sync::mpsc::Receiver<(DualStream, std::net::SocketAddr)>,
 }
 
 /// DualListener 接受出的流：明文 TCP 或已握手的 TLS 服务端流。
@@ -285,7 +310,16 @@ impl DualListener {
     ) -> std::io::Result<Self> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         Ok(match tls {
-            Some(acceptor) => DualListener::Tls(listener, acceptor),
+            Some(acceptor) => {
+                let (tx, rx) = tokio::sync::mpsc::channel(TLS_HANDSHAKE_QUEUE);
+                DualListener::Tls(TlsEndpoint {
+                    listener,
+                    acceptor,
+                    tx: tx.clone(),
+                    _keepalive: tx,
+                    rx,
+                })
+            }
             None => DualListener::Plain(listener),
         })
     }
@@ -298,37 +332,71 @@ impl axum::serve::Listener for DualListener {
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         match self {
             DualListener::Plain(listener) => {
-                // 与 axum 内置 TcpListener 实现一致：accept 错误记日志后重试。
+                // 与 axum 内置 TcpListener 实现一致：accept 错误记日志后重试
+                // （T019 补充 50ms 退避：EMFILE 等持续性错误不再热自旋）。
                 // 注意用固有方法全限定调用，避免解析到本 trait 的 accept。
                 loop {
                     match tokio::net::TcpListener::accept(listener).await {
                         Ok((stream, addr)) => return (DualStream::Plain(stream), addr),
-                        Err(e) => tracing::warn!(error = %e, "tcp accept failed; retrying"),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "tcp accept failed; retrying");
+                            tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
+                        }
                     }
                 }
             }
-            DualListener::Tls(listener, acceptor) => {
-                loop {
-                    match tokio::net::TcpListener::accept(listener).await {
-                        Ok((tcp, addr)) => match acceptor.accept(tcp).await {
-                            Ok(stream) => return (DualStream::Tls(Box::new(stream)), addr),
-                            // 握手失败（客户端非 TLS/证书拒绝等）：记录并继续，
-                            // 不让单个坏连接拖垮整个 accept 循环
-                            Err(e) => {
-                                tracing::warn!(error = %e, "TLS handshake failed; skipping connection")
+            DualListener::Tls(endpoint) => loop {
+                tokio::select! {
+                    // 已握手中的连接：握手成功即交付 axum
+                    completed = endpoint.rx.recv() => {
+                        if let Some(item) = completed {
+                            return item;
+                        }
+                        // rx 不会返回 None（_keepalive 常驻）；到达此处仅为防御
+                    }
+                    // TCP accept 与握手并发推进：慢握手不阻塞后续连接受理
+                    accepted = endpoint.listener.accept() => {
+                        match accepted {
+                            Ok((tcp, addr)) => {
+                                let tx = endpoint.tx.clone();
+                                let acceptor = endpoint.acceptor.clone();
+                                tokio::spawn(async move {
+                                    let handshake = tokio::time::timeout(
+                                        TLS_HANDSHAKE_TIMEOUT,
+                                        acceptor.accept(tcp),
+                                    )
+                                    .await;
+                                    let stream = match handshake {
+                                        Ok(Ok(stream)) => stream,
+                                        // 握手失败/超时：记录并丢弃该连接
+                                        Ok(Err(e)) => {
+                                            tracing::warn!(error = %e, "TLS handshake failed; dropping connection");
+                                            return;
+                                        }
+                                        Err(_) => {
+                                            tracing::warn!("TLS handshake timed out; dropping connection");
+                                            return;
+                                        }
+                                    };
+                                    let _ =
+                                        tx.send((DualStream::Tls(Box::new(stream)), addr)).await;
+                                });
                             }
-                        },
-                        Err(e) => tracing::warn!(error = %e, "tcp accept failed; retrying"),
+                            Err(e) => {
+                                tracing::warn!(error = %e, "tcp accept failed; retrying");
+                                tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
+                            }
+                        }
                     }
                 }
-            }
+            },
         }
     }
 
     fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
         match self {
             DualListener::Plain(listener) => listener.local_addr(),
-            DualListener::Tls(listener, _) => listener.local_addr(),
+            DualListener::Tls(endpoint) => endpoint.listener.local_addr(),
         }
     }
 }

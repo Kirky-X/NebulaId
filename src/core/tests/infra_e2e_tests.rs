@@ -562,11 +562,29 @@ async fn e2e_tls_initialize_with_valid_cert_succeeds() {
 // DualListener 实现 axum::serve::Listener，使 HTTPS 真实生效。
 // ============================================================================
 
+/// 构造信任 rcgen 自签证书的 tokio-rustls 客户端连接器（TLS e2e 共用）。
+fn build_test_rustls_connector(cert_file: &NamedTempFile) -> tokio_rustls::TlsConnector {
+    use std::sync::Arc;
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let mut roots = rustls::RootCertStore::empty();
+    let cert_pem = std::fs::read(cert_file.path()).expect("read cert pem");
+    let certs: Vec<_> = rustls_pemfile::certs(&mut std::io::BufReader::new(cert_pem.as_slice()))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("parse certs");
+    for cert in certs {
+        roots.add(cert).expect("add root cert");
+    }
+    let client_config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    tokio_rustls::TlsConnector::from(Arc::new(client_config))
+}
+
 #[tokio::test]
 async fn e2e_dual_listener_serves_https_request_end_to_end() {
     use crate::server::config::tls::DualListener;
     use axum::serve::Listener as _;
-    use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let (cert_file, key_file) = generate_test_cert_files();
@@ -595,19 +613,7 @@ async fn e2e_dual_listener_serves_https_request_end_to_end() {
     });
 
     // rustls TLS 客户端：信任自签证书，请求 /ping
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let mut roots = rustls::RootCertStore::empty();
-    let cert_pem = std::fs::read(cert_file.path()).expect("read cert pem");
-    let certs: Vec<_> = rustls_pemfile::certs(&mut std::io::BufReader::new(cert_pem.as_slice()))
-        .collect::<Result<Vec<_>, _>>()
-        .expect("parse certs");
-    for cert in certs {
-        roots.add(cert).expect("add root cert");
-    }
-    let client_config = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+    let connector = build_test_rustls_connector(&cert_file);
 
     let tcp = tokio::net::TcpStream::connect(addr)
         .await
@@ -629,6 +635,80 @@ async fn e2e_dual_listener_serves_https_request_end_to_end() {
     assert!(
         body.starts_with("HTTP/1.1 200"),
         "HTTPS 请求应返回 200，实际响应: {body}"
+    );
+
+    server.abort();
+}
+
+/// E2E-TLS-012（converge T019）: 挂起的 TLS 握手不得冻结监听端口。
+///
+/// 旧实现在 accept 循环内串行 `await` 握手：客户端只要 TCP 建连后不发
+/// ClientHello，后续所有连接（含正常 TLS 客户端）都无法被受理 —— 未认证
+/// 远程 DoS。并发握手 + 超时修复后，正常连接必须立即可用。
+#[tokio::test]
+async fn e2e_dual_listener_slow_handshake_does_not_block_other_connections() {
+    use crate::server::config::tls::DualListener;
+    use axum::serve::Listener as _;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let (cert_file, key_file) = generate_test_cert_files();
+    let config = crate::core::config::TlsConfig {
+        enabled: true,
+        cert_path: cert_file.path().to_str().unwrap().to_string(),
+        key_path: key_file.path().to_str().unwrap().to_string(),
+        http_enabled: true,
+        ..Default::default()
+    };
+    let mut manager = TlsManager::new(config);
+    manager
+        .initialize()
+        .await
+        .expect("tls initialize with rcgen cert");
+    let acceptor = manager.http_acceptor().cloned().expect("http acceptor");
+
+    let listener = DualListener::bind("127.0.0.1:0".parse().unwrap(), Some(acceptor))
+        .await
+        .expect("bind dual listener");
+    let addr = listener.local_addr().expect("dual listener local addr");
+    let app = axum::Router::new().route("/ping", axum::routing::get(|| async { "pong" }));
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    // 1) 挂起连接：仅建立 TCP，不发送任何 TLS 字节（keep-alive 住）
+    let _stalled = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("stall tcp connect");
+
+    // 2) 正常 TLS 客户端必须在远小于握手超时的窗口内完成握手并获得响应。
+    //    串行握手实现下本请求会被 _stalled 阻塞直至超时。
+    let connector = build_test_rustls_connector(&cert_file);
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        let tcp = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("second tcp connect");
+        let mut tls_stream = connector
+            .connect("localhost".try_into().expect("server name"), tcp)
+            .await
+            .expect("TLS handshake");
+        tls_stream
+            .write_all(b"GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("write request");
+        let mut buf = Vec::new();
+        tls_stream
+            .read_to_end(&mut buf)
+            .await
+            .expect("read response");
+        String::from_utf8_lossy(&buf).to_string()
+    })
+    .await
+    .expect("挂起握手不得阻塞正常连接（5s 内必须完成）");
+
+    assert!(
+        result.starts_with("HTTP/1.1 200"),
+        "正常 TLS 请求应返回 200，实际: {result}"
     );
 
     server.abort();

@@ -38,7 +38,7 @@
 
 **Nebula ID** is an enterprise-grade distributed ID generation system for high-performance applications. It provides:
 
-- ✅ **Multiple ID Algorithms** - Segment, Snowflake, UUID v7, UUID v4
+- ✅ **Multiple ID Algorithms** - Segment, Snowflake, UUID v8
 - ✅ **Distributed Coordination** - Etcd-based leader election and coordination
 - ✅ **High Availability** - Datacenter health monitoring and automatic failover
 - ✅ **Type-Safe Design** - Full Rust type safety with async/await patterns
@@ -107,7 +107,7 @@ It's designed for **distributed systems** that require unique, ordered, and high
 <td width="50%">
 
 **What's Ready:**
-- ✅ Core ID generation algorithms (Segment, Snowflake, UUID v7/v4)
+- ✅ Core ID generation algorithms (Segment, Snowflake, UUID v8)
 - ✅ Distributed coordination with Etcd
 - ✅ Datacenter health monitoring and failover
 - ✅ HTTP/HTTPS and gRPC/gRPCS APIs
@@ -219,20 +219,15 @@ It's designed for **distributed systems** that require unique, ordered, and high
 <td>High-performance systems</td>
 </tr>
 <tr>
-<td>UUID v7</td>
+<td>UUID v8</td>
 <td>128-bit</td>
 <td>✅ Yes</td>
 <td>500K+/sec</td>
 <td>Distributed systems</td>
 </tr>
-<tr>
-<td>UUID v4</td>
-<td>128-bit</td>
-<td>❌ No</td>
-<td>1M+/sec</td>
-<td>Unique identifiers</td>
-</tr>
 </table>
+
+> Throughput figures are indicative only — the repository has no `benches/` coverage for the UUID path.
 
 </details>
 
@@ -509,23 +504,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |----------|----------------------|--------|
 | Database primary keys | Segment | Ordered, database-backed, reliable |
 | High-throughput microservices | Snowflake | Fast, no database dependency |
-| Time-ordered distributed IDs | UUID v7 | Standard, time-sortable |
-| General unique identifiers | UUID v4 | Simple, collision-resistant |
+| Time-ordered distributed IDs | UUID v8 | RFC 9562 §5.8 layout, time-sortable, embeds dc/worker/shard |
 | Mixed requirements | Multi-algorithm | Use different algorithms per use case |
 
 **Configuration**Code Example:**
 
 ```rust
-use nebula_core::algorithm::{SegmentAlgorithm, SnowflakeAlgorithm, UuidV7Impl};
+use nebulaid::core::algorithm::AlgorithmBuilder;
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 
-// For database primary keys
-let segment = SegmentAlgorithm::new(1);
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = Config::default();
 
-// For high-performance services
-let snowflake = SnowflakeAlgorithm::new(1, 1);
+    // Algorithm structs (SegmentAlgorithm / SnowflakeAlgorithm / UuidV8Impl) are crate-internal;
+    // build them through the public AlgorithmBuilder.
+    // Snowflake and UuidV8 are pure algorithms and need no database; Segment requires a
+    // repository to be wired up first (see the SDK notes in src/sdk/client.rs).
+    let snowflake = AlgorithmBuilder::new(AlgorithmType::Snowflake)
+        .build(&config)
+        .await?;
+    let uuid_v8 = AlgorithmBuilder::new(AlgorithmType::UuidV8)
+        .build(&config)
+        .await?;
 
-// For time-ordered UUIDs
-let uuid_v7 = UuidV7Impl::new();
+    Ok(())
+}
 ```
 
 </details>
@@ -617,48 +622,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 </details>
 
 <details>
-<summary><b>❓ What is UUID v7 and when should I use it?</b></summary>
+<summary><b>❓ What is UUID v8 and when should I use it?</b></summary>
 
 <br>
 
-UUID v7 is a time-ordered UUID format defined by RFC 9562:
+Nebula ID ships a **time-ordered UUID v8** generator (RFC 9562 §5.8 custom layout). Standard
+UUID v7 also carries a 48-bit millisecond timestamp, but its remaining bits are fixed to
+clock-seq + node; Nebula's v8 composition uses the vendor-defined fields to embed
+tenant/zone context directly into the ID (UUIDP "Cluster" style: random per-instance start plus
+a strictly monotonic counter):
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│                    UUID v7 Structure                            │
+│                    UUID v8 Structure (128 bits)                 │
 ├────────────────────────────────────────────────────────────────┤
-│  48 bits  │  4 bits  │  3 bits  │  13 bits  │  62 bits        │
-│  timestamp│ version  │  variant │  clock-seq│  node ID        │
+│  48 bits   │  16 bits (incl. version=0b1000 + variant=0b10)    │
+│  timestamp │  dc(3) | worker(8) | counter_hi(1) ...            │
+│            │  62 bits: shard(16) | counter_lo(20) | rand(26)   │
 └────────────────────────────────────────────────────────────────┘
 ```
 
 **Benefits:**
 - ✅ **Time-Ordered**: Lexicographically sortable by creation time
-- ✅ **Standard**: RFC 9562 compliant
-- 🔄 **Compatible**: Works with existing UUID infrastructure
+- ✅ **Self-Describing**: `dc` / `worker` / `shard` are readable from the ID itself
+- ✅ **Collision-Resistant**: monotonic counter + per-instance random start
+- ⚠️ **Version nibble is `8`**: strict "version == 7" validators will reject it
 
 **Code Example:**
 
 ```rust
-use nebula_core::algorithm::UuidV7Impl;
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::{AlgorithmType, Id};
+use nebulaid::core::Config;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let v7 = UuidV7Impl::new();
-    
-    let uuid = uuid::Uuid::now_v7();
-    println!("UUID v7: {}", uuid);
-    
-    // Convert to Nebula ID
-    let nebula_id = nebula_core::types::Id::from_uuid_v7(uuid);
-    
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = Config::default();
+    let uuid = AlgorithmBuilder::new(AlgorithmType::UuidV8)
+        .build(&config)
+        .await?;
+
+    let id = uuid.generate(&GenerateContext::default()).await?;
+    println!("UUID v8: {}", id);
+
+    // Round-trip through the uuid crate representation
+    let as_uuid = id.to_uuid_v8();
+    let back = Id::from_uuid_v8(as_uuid);
+    assert_eq!(back, id);
+
     Ok(())
 }
 ```
 
 **Use When:**
-- You need standard-compliant identifiers
+- You need UUID-shaped identifiers that stay index-friendly
 - Time-based sorting is important
-- You want UUID compatibility
+- You want dc / worker / shard observable straight from the ID
+
+> **Legacy naming**: `uuid_v7` and `uuid_v4` are no longer separate algorithms, but
+> `AlgorithmType::from_str` (`src/core/types/id.rs:195-201`) still accepts both spellings as
+> **input aliases** that resolve to `UuidV8`, so old configs and API payloads keep working.
+> Anything Nebula emits is `uuid_v8`.
 
 </details>
 
@@ -833,14 +857,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 <td>~0.1ms</td>
 </tr>
 <tr>
-<td>UUID v7</td>
+<td>UUID v8</td>
 <td>500,000+ IDs/sec</td>
-<td>~0.03ms</td>
-<td>~0.05ms</td>
-</tr>
-<tr>
-<td>UUID v4</td>
-<td>1,000,000+ IDs/sec</td>
 <td>~0.03ms</td>
 <td>~0.05ms</td>
 </tr>
@@ -1249,12 +1267,17 @@ Generated IDs are not monotonically increasing.
 
 2. **For Segment:** Verify segment refresh logic
 
-3. **Use UUID v7 for time-ordering:**
+3. **Use UUID v8 for time-ordering:**
    ```rust
-   use nebula_core::algorithm::UuidV7Impl;
-   use uuid::Uuid;
-   
-   let uuid = Uuid::now_v7();
+   // Inside an `async fn`:
+   use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+   use nebulaid::core::types::AlgorithmType;
+   use nebulaid::core::Config;
+
+   let uuid = AlgorithmBuilder::new(AlgorithmType::UuidV8)
+       .build(&Config::default())
+       .await?;
+   let id = uuid.generate(&GenerateContext::default()).await?;
    ```
 
 **Note:** Snowflake IDs are ordered within the same millisecond per instance.

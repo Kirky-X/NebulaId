@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS biz_tags (
     group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     name VARCHAR(255) NOT NULL,
     description TEXT,
-    algorithm algorithm_type DEFAULT 'segment',
+    algorithm algorithm_type NOT NULL DEFAULT 'segment',
     format id_format DEFAULT 'numeric',
     prefix VARCHAR(50) DEFAULT '',
     base_step INT DEFAULT 1000,

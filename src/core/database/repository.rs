@@ -5416,11 +5416,15 @@ mod tests {
         .await
         .unwrap();
 
-        // Create enums in public schema for SeaORM compatibility
+        // Create enums in the nebula_id schema, matching scripts/init.sql
+        // (init.sql does `SET search_path TO nebula_id, public` before creating
+        // the types, so they live in nebula_id). The tables below reference them
+        // as "nebula_id".<type>, so creating them in public would fail with
+        // `type nebula_id.algorithm_type does not exist`.
         db.execute_raw(Statement::from_string(
             backend,
             r#"DO $$ BEGIN
-                CREATE TYPE public.algorithm_type AS ENUM ('segment', 'snowflake', 'uuid_v8');
+                CREATE TYPE nebula_id.algorithm_type AS ENUM ('segment', 'snowflake', 'uuid_v8');
             EXCEPTION
                 WHEN duplicate_object THEN null;
             END $$"#,
@@ -5431,7 +5435,7 @@ mod tests {
         db.execute_raw(Statement::from_string(
             backend,
             r#"DO $$ BEGIN
-                CREATE TYPE public.id_format AS ENUM ('numeric', 'prefixed', 'uuid');
+                CREATE TYPE nebula_id.id_format AS ENUM ('numeric', 'prefixed', 'uuid');
             EXCEPTION
                 WHEN duplicate_object THEN null;
             END $$"#,
@@ -5442,7 +5446,7 @@ mod tests {
         db.execute_raw(Statement::from_string(
             backend,
             r#"DO $$ BEGIN
-                CREATE TYPE public.workspace_status AS ENUM ('active', 'inactive', 'suspended');
+                CREATE TYPE nebula_id.workspace_status AS ENUM ('active', 'inactive', 'suspended');
             EXCEPTION
                 WHEN duplicate_object THEN null;
             END $$"#,

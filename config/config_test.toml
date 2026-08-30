@@ -46,7 +46,7 @@ worker_id_bits = 8
 sequence_bits = 10
 clock_drift_threshold_ms = 1000
 
-[algorithm.uuid_v7]
+[algorithm.uuid_v8]
 enabled = true
 
 [monitoring]

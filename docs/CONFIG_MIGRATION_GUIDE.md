@@ -183,7 +183,7 @@ enum 变体而直接报错。
 | 类型 | 对象 |
 |------|------|
 | ENUM 类型 | `algorithm_type`（`scripts/init.sql` 在 `SET search_path TO nebula_id, public` 之后不带限定名创建，实际落在 `nebula_id` schema） |
-| 使用该类型的列 | `nebula_id.biz_tags.algorithm`（`algorithm algorithm_type DEFAULT 'segment'`，可空） |
+| 使用该类型的列 | `nebula_id.biz_tags.algorithm`（`scripts/init.sql` 现为 `algorithm algorithm_type NOT NULL DEFAULT 'segment'`；存量库仍是可空列，需按下面「补充步骤」回填后收紧） |
 
 `id_generation_logs.algorithm` 是 `VARCHAR(50)` 纯文本列，与本 ENUM 无关，无需 DDL 变更。
 全库只有这一处引用该类型，下面第 1 步会实测确认。
@@ -367,6 +367,44 @@ ALTER TYPE nebula_id.algorithm_type_new RENAME TO algorithm_type;
 所以必须在应用已停机或已完成升级后执行。执行完 3.5 之前，`nebula_id.algorithm_type` 已不被任何列引用，
 旧 binary 的读路径不受影响（它读的是列，不是类型名）。
 
+### 补充步骤：收紧 `algorithm` 列的 NOT NULL（方案 A / 方案 B 之后都要执行）
+
+SeaORM 实体 `Model.algorithm` 是**非 Option** 的 `AlgorithmTypeDb`
+（`src/core/database/biz_tag_entity.rs:30`），任何 `algorithm IS NULL` 的行在 `find` 时都会
+解码失败并抛错——与残留 `uuid_v7` 行是同一类故障。`scripts/init.sql` 已把该列声明为
+`NOT NULL DEFAULT 'segment'`，但它用的是 `CREATE TABLE IF NOT EXISTS`，**对存量库完全不生效**，
+所以约束必须由本步骤手工收紧。
+
+```sql
+-- S.1 先看有多少 NULL（为 0 则 S.2 可跳过，直接执行 S.3）
+SELECT count(*) AS null_rows FROM nebula_id.biz_tags WHERE algorithm IS NULL;
+
+-- S.2 先回填：NULL -> 'segment'（与列 DEFAULT 一致，不引入新语义）
+--     只锁受影响行，不重写整表；不碰 updated_at，理由同 2.2。
+UPDATE nebula_id.biz_tags
+SET algorithm = 'segment'
+WHERE algorithm IS NULL;
+
+-- S.3 再收紧约束（回填未清完时本语句必定失败，见下方"执行顺序"）
+ALTER TABLE nebula_id.biz_tags ALTER COLUMN algorithm SET NOT NULL;
+
+-- S.4 验证
+SELECT is_nullable, column_default
+FROM information_schema.columns
+WHERE table_schema = 'nebula_id' AND table_name = 'biz_tags' AND column_name = 'algorithm';
+-- 期望：is_nullable = 'NO'；column_default 含 `'segment'`
+--       （渲染形式随 PG 版本 / search_path 变化，可能是 `'segment'::algorithm_type`
+--         或带 schema 限定的 `'segment'::nebula_id.algorithm_type`，两者都正确）
+```
+
+**执行顺序为什么必须是「先回填、后收紧」**：`SET NOT NULL` 在提交前要扫描全表确认现存行没有 NULL，
+只要还有一行 NULL，整条语句就以 `ERROR: column "algorithm" contains null values` 失败并回滚，
+不会留下"半收紧"的状态。反过来先做 DDL 再回填是没有意义的（回填的目标行根本不存在）。
+`UPDATE ... WHERE algorithm IS NULL` 放在前面还能把 S.3 需要校验的数据量降到最低。
+
+回滚：`ALTER TABLE nebula_id.biz_tags ALTER COLUMN algorithm DROP NOT NULL;`（该列允许 NULL 的历史
+状态可随时退回，且不影响数据）。
+
 ### 4. 为什么不是一句 `RENAME VALUE` 就够
 
 ```sql
@@ -527,10 +565,23 @@ WHERE t.algorithm::text <> b.algorithm_label;
 
 ### 7. 已知遗留（不在本 SQL 范围内）
 
-以下位置仍是 `uuid_v7` 命名，属于同一重命名工作线的其他任务，迁移 ENUM 不会修复它们：
+同一重命名工作线的其余残留，**已在本轮 converge 阶段闭环**，记录如下以免按旧描述回改：
 
-- `config/config.toml:49`、`config/config_test.toml:49`：`[algorithm.uuid_v7]` 配置段键名
-- `docs/API_REFERENCE.md`、`docs/USER_GUIDE.md`、`docs/FAQ.md`：`from_uuid_v7` / `UuidV7Impl` 等 API 示例
-- `src/core/database/repository.rs:5419-5429`：集成测试自建 schema 时把 `algorithm_type` 建在 `public`，
-  而建表语句引用 `"nebula_id"."algorithm_type"`，两者不一致（仅 `--features integration-tests -- --ignored`
-  路径下暴露）
+- `config/config.toml:49`、`config/config_test.toml:49`：段键名已改为 `[algorithm.uuid_v8]`。
+  旧写法不只是"该段不生效"——`AlgorithmConfig::uuid_v8`（`src/core/config/algorithm.rs:109`）
+  没有 `#[serde(default)]`，缺字段会让**整个配置文件**反序列化失败，`src/main.rs:532-537` 随后
+  退回 `Config::default()`，等于整份 config.toml 被丢弃。
+- `docs/API_REFERENCE.md`、`docs/USER_GUIDE.md`、`docs/FAQ.md`：示例已改用 `AlgorithmType::UuidV8`
+  / `AlgorithmBuilder` / `Id::from_uuid_v8`；`uuid_v7` / `uuid_v4` 仅作为 `AlgorithmType::from_str`
+  的输入别名保留说明（`src/core/types/id.rs:197-198`）。
+- `src/core/database/repository.rs`（`integration-tests` 模块 `setup_test_db`）：三个枚举
+  （`algorithm_type` / `id_format` / `workspace_status`）已改为在 `nebula_id` schema 创建，
+  与建表语句的 `"nebula_id"."xxx"` 引用及 `scripts/init.sql` 一致。
+- `scripts/init.sql`：`biz_tags.algorithm` 已加 `NOT NULL`，存量库按上面「补充步骤」收紧。
+
+**本工作线尚未处理**（记录供后续任务）：
+
+- `docs/ARCHITECTURE.md:17`：架构图节点仍写 `UUID v7/v4`。
+- `scripts/init.sql` 的 `biz_tags`：`format` / `prefix` / `base_step` / `max_step` / `datacenter_ids`
+  对应的实体字段同样是非 Option（`src/core/database/biz_tag_entity.rs:31-36`），但列仍可空，
+  与 `algorithm` 是同一类不一致；本轮按任务范围只收紧了 `algorithm`。

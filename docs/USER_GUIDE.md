@@ -66,7 +66,7 @@ Segment、Snowflake、UUID
 </tr>
 </table>
 
-**Nebula ID** 是一个功能强大的企业级分布式 ID 生成系统，提供多种高性能、高可用的 ID 生成算法，包括 Segment（号段）、Snowflake（雪花）以及标准 UUID v7/v4 实现。它专为分布式系统设计，支持数据中心健康监控、故障自动转移和毫秒级延迟。
+**Nebula ID** 是一个功能强大的企业级分布式 ID 生成系统，提供多种高性能、高可用的 ID 生成算法，包括 Segment（号段）、Snowflake（雪花）以及时间有序的 UUID v8 实现（RFC 9562 §5.8 自定义布局）。它专为分布式系统设计，支持数据中心健康监控、故障自动转移和毫秒级延迟。
 
 > 💡 **提示**: 本指南假设你具备基本的 Rust 知识。如果你是 Rust 新手，建议先阅读 [Rust 官方教程](https://doc.rust-lang.org/book/)。
 
@@ -173,7 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 `Nebula ID` 提供三种核心算法：
 - **Segment (号段)**: 基于数据库的号段分配，支持高并发批量获取
 - **Snowflake (雪花)**: Twitter 风格的分布式 ID，时间有序、无需协调
-- **UUID (通用唯一标识符)**: 标准 UUID v7/v4 实现，符合 RFC 4122
+- **UUID (通用唯一标识符)**: 时间有序的 UUID v8 实现（RFC 9562 §5.8 自定义布局，内嵌 dc/worker/shard）；`uuid_v7` / `uuid_v4` 仅作为算法名的输入别名保留
 
 ### 2️⃣ 数据中心 (Datacenter)
 
@@ -259,7 +259,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### UUID 生成
 
-支持标准 UUID v7（时间有序）和 v4（完全随机）：
+支持时间有序的 UUID v8（RFC 9562 §5.8 自定义布局，内嵌 dc/worker/shard，严格单调递增）：
 
 ```rust
 use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
@@ -270,22 +270,26 @@ use nebulaid::core::Config;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::default();
 
-    // UUID v7 - 时间有序，适合数据库主键
-    let v7 = AlgorithmBuilder::new(AlgorithmType::UuidV7)
+    // UUID v8 - 时间有序，适合数据库主键
+    let v8 = AlgorithmBuilder::new(AlgorithmType::UuidV8)
         .build(&config)
         .await?;
 
     let ctx = GenerateContext::default();
-    let uuid_v7 = v7.generate(&ctx).await?;
-    println!("UUID v7: {}", uuid_v7);
+    let uuid_v8 = v8.generate(&ctx).await?;
+    println!("UUID v8: {}", uuid_v8);
 
     // 批量生成
-    let batch = v7.batch_generate(&ctx, 100).await?;
+    let batch = v8.batch_generate(&ctx, 100).await?;
     println!("Generated {} UUIDs", batch.ids.len());
 
     Ok(())
 }
 ```
+
+> 💡 **关于旧名称**：`uuid_v7` / `uuid_v4` 不再是独立算法，但 `AlgorithmType::from_str`
+> （`src/core/types/id.rs:195-201`）仍接受它们作为 `uuid_v8` 的**输入别名**，
+> 因此历史配置/API 请求里的 `"uuid_v7"` 依然能解析；输出与存储一律是 `uuid_v8`。
 
 ---
 

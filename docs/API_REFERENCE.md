@@ -386,41 +386,46 @@ pub fn get_sequence(&self) -> u64
 
 ### UUID Generation
 
-#### `UuidV7Impl`
+#### `UuidV8Impl`
 
-UUID v7 generator implementing timestamp-ordered UUIDs.
+Time-ordered RFC 9562 **v8** UUID generator (`src/core/algorithm/uuid_v8.rs`). It is the only
+UUID algorithm in the crate — there is no separate random-UUID (v4) implementation.
 
-**Constructor:**
+Reachability: the `uuid_v8` module is `pub(crate)` (`src/core/algorithm/mod.rs:21`), so
+`UuidV8Impl` is **not** importable from outside the crate. Build it through the public factory
+instead:
 
 ```rust
-pub fn new() -> Self
+// Inside an `async fn` (the builder's `build` is async):
+use nebulaid::core::algorithm::AlgorithmBuilder;
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
+
+let config = Config::default();
+let uuid_alg = AlgorithmBuilder::new(AlgorithmType::UuidV8)
+    .build(&config)
+    .await?;
 ```
 
-**Methods:**
+**Constructor (crate-internal):**
 
 ```rust
-pub fn generate() -> Result<Uuid>
+pub fn new(dc_id: u64, worker_id: u64, clock_drift_threshold_ms: u64) -> Self
+```
+
+`dc_id` / `worker_id` are taken from `Config.app`, `clock_drift_threshold_ms` from
+`Config.algorithm.snowflake` (see `UuidV8Factory::build`). `Default` is `new(0, 0, 1000)`.
+
+**Methods (via the `IdAlgorithm` trait):**
+
+```rust
 pub async fn generate(&self, ctx: &GenerateContext) -> Result<Id>
 pub async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result<IdBatch>
 ```
 
-#### `UuidV4Impl`
-
-UUID v4 generator for random UUIDs.
-
-**Constructor:**
-
-```rust
-pub fn new() -> Self
-```
-
-**Methods:**
-
-```rust
-pub fn generate() -> Result<Uuid>
-pub async fn generate(&self, ctx: &GenerateContext) -> Result<Id>
-pub async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result<IdBatch>
-```
+> **Legacy names:** `uuid_v7` / `uuid_v4` are still accepted **as input** by
+> `AlgorithmType::from_str` (`src/core/types/id.rs:197-198`) and map to `AlgorithmType::UuidV8`.
+> They are not type names, constructors, or storage values — `Display` only ever emits `uuid_v8`.
 
 ---
 
@@ -483,7 +488,7 @@ Get the algorithm type.
 fn algorithm_type(&self) -> AlgorithmType
 ```
 
-**Returns:** `AlgorithmType` - One of `Segment`, `Snowflake`, `UuidV7`, `UuidV4`
+**Returns:** `AlgorithmType` - One of `Segment`, `Snowflake`, `UuidV8`
 
 #### `shutdown()`
 
@@ -715,12 +720,15 @@ pub struct Id {
 
 ```rust
 pub fn from_u128(value: u128) -> Self
-pub fn from_uuid_v7(uuid: Uuid) -> Self
-pub fn from_uuid_v4(uuid: Uuid) -> Self
+pub fn from_uuid_v8(uuid: Uuid) -> Self
+pub fn to_uuid_v8(&self) -> Uuid
 pub fn to_u128(&self) -> u128
 pub fn to_string(&self) -> String
 pub fn to_hex(&self) -> String
 ```
+
+> `Id` has no `from_uuid_v7` / `from_uuid_v4` — `uuid_v7` / `uuid_v4` exist only as input aliases of
+> `AlgorithmType::from_str` (`src/core/types/id.rs:197-198`).
 
 ### `IdBatch`
 
@@ -749,12 +757,16 @@ Enumeration of supported algorithm types.
 
 ```rust
 pub enum AlgorithmType {
+    #[default]
     Segment,
     Snowflake,
-    UuidV7,
-    UuidV4,
+    UuidV8,
 }
 ```
+
+`AlgorithmType::from_str` additionally accepts the legacy spellings `uuid_v7` / `uuid_v4`
+(plus `uuidv7` / `uuid7` / `uuidv4` / `uuid4`) as **input aliases** for `UuidV8`
+(`src/core/types/id.rs:195-201`); `Display` only ever emits `segment` / `snowflake` / `uuid_v8`.
 
 ### `DcStatus`
 
@@ -1143,18 +1155,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### UUID Generation
 
 ```rust
-use nebulaid::core::algorithm::uuid_v7::{UuidV7Impl, UuidV4Impl};
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let v7 = UuidV7Impl::new();
-    let v4 = UuidV4Impl::new();
-    
-    let uuid_v7 = v7.generate()?;
-    let uuid_v4 = v4.generate()?;
-    
-    println!("UUID v7: {}", uuid_v7);
-    println!("UUID v4: {}", uuid_v4);
-    
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = Config::default();
+
+    // The only UUID algorithm is uuid_v8 (time-ordered RFC 9562 v8 layout).
+    let uuid = AlgorithmBuilder::new(AlgorithmType::UuidV8)
+        .build(&config)
+        .await?;
+
+    let ctx = GenerateContext::default();
+    let id = uuid.generate(&ctx).await?;
+    println!("UUID v8: {}", id);
+
+    let batch = uuid.batch_generate(&ctx, 10).await?;
+    println!("Generated {} UUIDs", batch.len());
+
     Ok(())
 }
 ```

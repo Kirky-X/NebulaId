@@ -714,6 +714,53 @@ async fn e2e_dual_listener_slow_handshake_does_not_block_other_connections() {
     server.abort();
 }
 
+/// E2E-TLS-013（converge T018）: DualListener 必须把真实对端地址交给
+/// `get_client_ip`，否则生产 per-IP 限流/认证失败计数/审计退化为共享单桶。
+#[tokio::test]
+async fn e2e_dual_listener_exposes_peer_addr_to_client_ip_extraction() {
+    use crate::server::config::tls::{DualListener, PeerAddr};
+    use crate::server::middleware::utils::get_client_ip;
+    use axum::serve::Listener as _;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = DualListener::bind("127.0.0.1:0".parse().unwrap(), None)
+        .await
+        .expect("bind plain dual listener");
+    let addr = listener.local_addr().expect("local addr");
+
+    let app = axum::Router::new().route(
+        "/whoami",
+        axum::routing::get(|req: axum::extract::Request| async move {
+            // 与生产中间件同一条提取路径（含 ConnectInfo<PeerAddr> 识别）
+            get_client_ip(&req, &[]).unwrap_or_else(|| "none".to_string())
+        }),
+    );
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<PeerAddr>(),
+        )
+        .await;
+    });
+
+    let mut tcp = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("tcp connect");
+    tcp.write_all(b"GET /whoami HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n")
+        .await
+        .expect("write request");
+    let mut buf = Vec::new();
+    tcp.read_to_end(&mut buf).await.expect("read response");
+    let body = String::from_utf8_lossy(&buf).to_string();
+
+    server.abort();
+
+    assert!(
+        body.ends_with("127.0.0.1"),
+        "对端地址必须经 ConnectInfo<PeerAddr> 注入并被 get_client_ip 识别，实际响应体: {body}"
+    );
+}
+
 /// E2E-TLS-011（wiring T005）: 未配置 TLS 时 DualListener 行为与纯
 /// TcpListener 一致（明文 HTTP 回归无差异）。
 #[tokio::test]

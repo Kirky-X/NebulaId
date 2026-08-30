@@ -16,6 +16,8 @@
 //! 提供 HTTPS 和 gRPC TLS 支持
 
 use crate::core::config::TlsConfig;
+use axum::extract::connect_info::Connected;
+use axum::serve::IncomingStream;
 use rustls::pki_types::PrivateKeyDer;
 use sdforge::tonic::transport::{Certificate, Identity, ServerTlsConfig};
 use std::fs::File;
@@ -398,6 +400,22 @@ impl axum::serve::Listener for DualListener {
             DualListener::Plain(listener) => listener.local_addr(),
             DualListener::Tls(endpoint) => endpoint.listener.local_addr(),
         }
+    }
+}
+
+/// 由 axum 注入的连接对端地址（converge T018）。
+///
+/// 孤儿规则禁止为外来的 `SocketAddr` 实现 axum 的 `Connected`，
+/// 故用本 crate 新类型承载；读取端见 `middleware::utils::get_client_ip`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PeerAddr(pub std::net::SocketAddr);
+
+/// 支撑 `into_make_service_with_connect_info::<PeerAddr>()`：axum 经本 trait
+/// 从已接受的流提取对端地址并注入 `ConnectInfo<PeerAddr>`，使限流 / 认证失败
+/// 计数 / 审计拿到真实 per-IP 语义。
+impl Connected<IncomingStream<'_, DualListener>> for PeerAddr {
+    fn connect_info(target: IncomingStream<'_, DualListener>) -> Self {
+        PeerAddr(*target.remote_addr())
     }
 }
 

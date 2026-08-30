@@ -21,7 +21,7 @@ use nebulaid::core::types::Result;
 use nebulaid::server::audit::AuditLogger;
 use nebulaid::server::config::hot_reload::HotReloadConfig;
 use nebulaid::server::config::management::{ConfigManagementService, ConfigManager};
-use nebulaid::server::config::tls::{DualListener, TlsManager};
+use nebulaid::server::config::tls::{DualListener, PeerAddr, TlsManager};
 use nebulaid::server::grpc::GrpcServer;
 use nebulaid::server::handlers::ApiHandlers;
 use nebulaid::server::middleware::size_limit::create_size_limit_middleware;
@@ -374,12 +374,12 @@ async fn start_http_server(
     info!("{}", t!("log.main.starting_http_server", addr = bind_addr));
     let listener = DualListener::bind(bind_addr, tls_acceptor).await?;
 
-    // converge T018：注入 ConnectInfo<SocketAddr>，使限流键、认证失败计数、
+    // converge T018：注入 ConnectInfo<PeerAddr>，使限流键、认证失败计数、
     // 审计 client_ip 恢复 per-IP 语义（缺失时 get_client_ip 恒 None，全站
     // 共享单一 "anonymous" 桶——单攻击者可把 /health、/metrics 一并打成 429）。
     axum::serve(
         listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
+        router.into_make_service_with_connect_info::<PeerAddr>(),
     )
     .with_graceful_shutdown(async {
         tokio::signal::ctrl_c().await.ok();

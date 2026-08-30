@@ -56,6 +56,18 @@ pub enum WorkerAllocatorError {
     NotConfigured,
 }
 
+/// Segment 号段分配分布式锁的 etcd 键前缀。
+///
+/// 单一来源：此前 `main.rs` 与 `sdk/client.rs` 各写一份字面量，任一处改动
+/// 都会让服务端与嵌入方持有不同的锁键，跨进程号段互斥随之失效。
+///
+/// **为何 `pub` 而非 `pub(crate)`**：消费方 `src/main.rs` 属于同包的 bin crate，
+/// 读不到 lib crate 的 `pub(crate)` 项；且 CI 分别以 `--features etcd` 与
+/// `--features sdk` 跑 `clippy -D warnings`，`pub(crate)` 常量在这两种组合下
+/// 都会因 lib 内无使用点触发 `dead_code`。公开后两种配置均干净，嵌入方也能
+/// 用同一常量与 server 端对齐锁键。
+pub const SEGMENT_LOCK_PATH_PREFIX: &str = "nebulaid-segment-lock";
+
 #[async_trait]
 pub trait DistributedLock: Send + Sync {
     async fn acquire(

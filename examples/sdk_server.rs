@@ -19,8 +19,8 @@
 //! `POST /generate/batch`），并由 sdforge 自动产出 OpenAPI 文档
 //! （`GET /api-docs/openapi.json`）。纯算法（snowflake），零 DB 零网络。
 //!
-//! 参考 `src/server/sdforge_adapter.rs` 的 `init_sdforge` /
-//! `merge_sdforge_routes` 装配模式。
+//! 本示例只依赖 `nebulaid::sdk` 公开面（R-sdk-003）：sdforge 插件初始化与
+//! 路由合并直接内联如下，不复用 `server` 模块的内部装配知识。
 //!
 //! 运行：
 //! ```bash
@@ -42,9 +42,33 @@ use axum::routing::get;
 use axum::{Json, Router};
 use nebulaid::core::Config;
 use nebulaid::sdk::{NebulaIdClient, NebulaIdClientBuilder};
-use nebulaid::server::sdforge_adapter::{init_sdforge, merge_sdforge_routes};
+use sdforge::core::Registration;
 use sdforge::prelude::*;
 use sdforge::serde::{Deserialize, Serialize};
+
+/// 初始化 sdforge 插件（HTTP/MCP/WebSocket 等 inventory 提交）。
+///
+/// 必须在构建 axum 路由前调用一次，否则 `#[forge]` 经 inventory 注册的路由
+/// 会被链接器裁剪。
+///
+/// 内联而非复用 `nebulaid::server::sdforge_adapter`：R-sdk-003 要求示例只用
+/// sdk 公开面，嵌入方读这段代码即可照抄，不需要了解服务端模块的内部装配。
+fn init_sdforge() -> sdforge::PluginCounts {
+    sdforge::init_all_plugins()
+}
+
+/// 把 inventory 中注册的 `#[forge]` HTTP 路由合并进基础 Router。
+///
+/// 每个 `RouteRegistration::create()` 产出一个 `HttpRoute`，其 `path()` 与
+/// `handler()`（`MethodRouter`）经 `Router::route` 挂载。
+fn merge_sdforge_routes(router: Router) -> Router {
+    let mut router = router;
+    for reg in sdforge::inventory::iter::<sdforge::http::RouteRegistration> {
+        let route = reg.create();
+        router = router.route(route.path(), route.handler().clone());
+    }
+    router
+}
 
 /// 进程级共享客户端：`#[forge]` 处理器为自由函数，经此静态句柄访问客户端。
 static CLIENT: OnceLock<Arc<NebulaIdClient>> = OnceLock::new();
@@ -153,8 +177,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set(Arc::new(client))
         .map_err(|_| "client already initialized")?;
 
-    // 初始化 sdforge 插件并合并 #[forge] 注册的 HTTP 路由（参考
-    // src/server/sdforge_adapter.rs 的装配模式），再挂载 Swagger/OpenAPI 路由。
+    // 初始化 sdforge 插件并合并 #[forge] 注册的 HTTP 路由（装配函数见文件
+    // 上方），再挂载 Swagger/OpenAPI 路由。
     let counts = init_sdforge();
     println!(
         "sdforge plugins initialized: {} http route(s)",

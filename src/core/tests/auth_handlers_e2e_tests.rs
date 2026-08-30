@@ -758,14 +758,25 @@ mod biz_tag_tenant_isolation {
     }
 
     async fn build_app() -> Router {
+        build_app_with(make_auth(), Arc::new(make_config_service())).await
+    }
+
+    /// 用指定 auth / config service 组装真实 `create_router` 全栈
+    /// （认证中间件 + Anonymous 拦截 + 限流 + 审计）。
+    ///
+    /// `pub(super)`：同文件的 Anonymous 端点组需要以「认证禁用」的 auth 复用
+    /// 同一套全栈装配，避免复制路由代码。
+    pub(super) async fn build_app_with(
+        auth: Arc<ApiKeyAuth>,
+        config_service: Arc<dyn ConfigManagementService>,
+    ) -> Router {
         let config = Config::default();
         let alg_router = Arc::new(AlgorithmRouter::new(config, None));
-        let config_service: Arc<dyn ConfigManagementService> = Arc::new(make_config_service());
         let handlers = Arc::new(ApiHandlers::new(alg_router, config_service));
         // 宽松限流：本组测试只关心认证与租户过滤，不应被 429 干扰
         let rate_limiter = Arc::new(RateLimiter::new(10_000, 10_000));
         let audit_logger = Arc::new(AuditLogger::new(10));
-        create_router(handlers, make_auth(), rate_limiter, audit_logger).await
+        create_router(handlers, auth, rate_limiter, audit_logger).await
     }
 
     async fn list_biz_tags(uri: &str, key_id: &str) -> (StatusCode, Vec<String>) {
@@ -847,6 +858,120 @@ mod biz_tag_tenant_isolation {
             "无 workspace 限定时必须显式报错而非静默查 nil"
         );
         assert!(workspaces.is_empty());
+    }
+}
+
+// ============================================================================
+// wiring T025⑤: biz-tags 端点对 Anonymous 身份一律 401（SEC-CRITICAL-001）
+//
+// 走真实 `create_router` 全栈逐端点断言 401，锁定「Anonymous 无 biz-tags 业务
+// 权限」这一可观测契约。注意：路由层的 `anonymous_block_middleware` 与 handler
+// 内的 `verify_user_role` 是两道防线，本组无法区分二者（响应相同），中间件自身
+// 行为由 `router.rs` 的单元用例覆盖。
+// ============================================================================
+
+mod biz_tag_anonymous_guard {
+    use super::biz_tag_tenant_isolation::build_app_with;
+    use super::*;
+    use crate::server::config::management::ConfigManagementService;
+    use crate::server::handlers::mock_tests::{MockApiKeyRepository, MockConfigManagementService};
+
+    /// 认证禁用 → `auth_middleware_fn` 注入 `ApiKeyRole::Anonymous`（LOW-1 语义）。
+    fn anonymous_auth() -> Arc<ApiKeyAuth> {
+        // ApiKeyRepository mock 无需任何期望：禁用分支在触达仓储前即短路返回。
+        let repo = MockApiKeyRepository::new();
+        Arc::new(ApiKeyAuth::new(Arc::new(repo), false))
+    }
+
+    /// 零期望的 config service：钉住「拒绝发生在服务层之前」。
+    ///
+    /// 五个 biz-tag handler 自身也在调用服务前拒绝 Anonymous（`verify_user_role`
+    /// / list 内的显式分支），与路由层的 `anonymous_block_middleware` 构成两道
+    /// 防线；本组断言的是端点的可观测契约。若未来退化为「先查库再鉴权」，
+    /// mockall 会因未预期的方法调用直接 panic。
+    fn untouched_config_service() -> Arc<dyn ConfigManagementService> {
+        Arc::new(MockConfigManagementService::new())
+    }
+
+    /// 以 Anonymous 身份发起一次真实 HTTP 请求，返回响应状态码。
+    async fn anonymous_request(method: &str, uri: &str, body: Option<&str>) -> StatusCode {
+        let app = build_app_with(anonymous_auth(), untouched_config_service()).await;
+        let mut builder = Request::builder().uri(uri).method(method);
+        if body.is_some() {
+            builder = builder.header("content-type", "application/json");
+        }
+        let resp = app
+            .oneshot(
+                builder
+                    .body(match body {
+                        Some(raw) => Body::from(raw.to_string()),
+                        None => Body::empty(),
+                    })
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        resp.status()
+    }
+
+    /// 任意格式合法的 UUID：本组只关心身份，取值本身不重要。
+    fn sample_uuid() -> Uuid {
+        Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap()
+    }
+
+    /// Anonymous 即使显式带上 ?workspace_id= 也必须被拒（拒绝基于身份，
+    /// 而非参数可解析性）。
+    #[tokio::test]
+    async fn anonymous_list_biz_tags_is_401() {
+        let uri = format!("/api/v1/biz-tags?workspace_id={}", sample_uuid());
+        assert_eq!(
+            anonymous_request("GET", &uri, None).await,
+            StatusCode::UNAUTHORIZED,
+            "Anonymous 不得列出 biz-tags"
+        );
+    }
+
+    #[tokio::test]
+    async fn anonymous_create_biz_tag_is_401() {
+        let body = r#"{"workspace_id":"11111111-1111-1111-1111-111111111111",
+                       "group_id":"22222222-2222-2222-2222-222222222222",
+                       "name":"anon-tag","algorithm":"segment","format":"numeric"}"#;
+        assert_eq!(
+            anonymous_request("POST", "/api/v1/biz-tags", Some(body)).await,
+            StatusCode::UNAUTHORIZED,
+            "Anonymous 不得创建 biz-tag"
+        );
+    }
+
+    #[tokio::test]
+    async fn anonymous_get_biz_tag_is_401() {
+        let uri = format!("/api/v1/biz-tags/{}", sample_uuid());
+        assert_eq!(
+            anonymous_request("GET", &uri, None).await,
+            StatusCode::UNAUTHORIZED,
+            "Anonymous 不得读取 biz-tag"
+        );
+    }
+
+    #[tokio::test]
+    async fn anonymous_update_biz_tag_is_401() {
+        let uri = format!("/api/v1/biz-tags/{}", sample_uuid());
+        assert_eq!(
+            anonymous_request("PUT", &uri, Some(r#"{"name":"renamed"}"#)).await,
+            StatusCode::UNAUTHORIZED,
+            "Anonymous 不得修改 biz-tag"
+        );
+    }
+
+    /// 破坏性端点：Anonymous 越权删除的后果最重，单独钉桩。
+    #[tokio::test]
+    async fn anonymous_delete_biz_tag_is_401() {
+        let uri = format!("/api/v1/biz-tags/{}", sample_uuid());
+        assert_eq!(
+            anonymous_request("DELETE", &uri, None).await,
+            StatusCode::UNAUTHORIZED,
+            "Anonymous 不得删除 biz-tag"
+        );
     }
 }
 

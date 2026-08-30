@@ -138,51 +138,15 @@ impl super::ApiHandlers {
         workspace_id: Option<uuid::Uuid>,
         group_id: Option<uuid::Uuid>,
     ) -> Result<BizTagListResponse> {
-        // L7 修复：缺失 workspace_id 时返回 InvalidInput，避免静默回退到
-        // nil UUID 触发 `WHERE workspace_id = '00000000-...'` 查询，
-        // 该查询在底层 SeaORM 中可能意外匹配到 workspace_id 字段为 nil
-        // 的脏数据记录，导致越权返回其他 workspace 的 BizTag。
-        let workspace_id = workspace_id.ok_or_else(|| {
-            CoreError::InvalidInput(
-                t!("api.error.handlers.biz_tag_handlers.workspace_id_required_list").to_string(),
-            )
-        })?;
+        let workspace_id = Self::require_workspace_id(workspace_id)?;
 
-        let biz_tags: Vec<crate::core::database::BizTag> = self
-            .config_service
-            .list_biz_tags(workspace_id, group_id, None, None)
+        let (biz_tags, total) = self
+            .fetch_biz_tags(workspace_id, group_id, None, None)
             .await?;
-
-        // L8 修复：调用 count_biz_tags 获取真实总数，而非用当前页列表长度
-        // 作为 total。原实现 `total = responses.len() as u64` 在分页场景下
-        // 会让前端分页控件显示错误的总数（仅当前页条数）。
-        let total = self
-            .config_service
-            .count_biz_tags(workspace_id, group_id)
-            .await?;
-
-        let responses: Vec<BizTagResponse> = biz_tags
-            .into_iter()
-            .map(|bt| BizTagResponse {
-                id: bt.id.to_string(),
-                workspace_id: bt.workspace_id.to_string(),
-                group_id: bt.group_id.to_string(),
-                name: bt.name,
-                description: bt.description,
-                algorithm: bt.algorithm.to_string(),
-                format: bt.format.to_string(),
-                prefix: bt.prefix,
-                base_step: bt.base_step,
-                max_step: bt.max_step,
-                datacenter_ids: bt.datacenter_ids,
-                created_at: naive_to_rfc3339(bt.created_at),
-                updated_at: naive_to_rfc3339(bt.updated_at),
-            })
-            .collect();
 
         Ok(BizTagListResponse {
             total,
-            biz_tags: responses,
+            biz_tags,
             page: 1,
             page_size: total,
         })
@@ -201,20 +165,57 @@ impl super::ApiHandlers {
             ));
         }
 
-        let workspace_id = workspace_id.ok_or_else(|| {
-            CoreError::InvalidInput(
-                t!("api.error.handlers.biz_tag_handlers.workspace_id_required_list").to_string(),
-            )
-        })?;
+        let workspace_id = Self::require_workspace_id(workspace_id)?;
 
-        let biz_tags: Vec<crate::core::database::BizTag> = self
-            .config_service
-            .list_biz_tags(
+        let (biz_tags, total) = self
+            .fetch_biz_tags(
                 workspace_id,
                 group_id,
                 Some(limit as u32),
                 Some(offset as u32),
             )
+            .await?;
+
+        Ok(BizTagListResponse {
+            total,
+            biz_tags,
+            page: (offset / limit + 1) as u64,
+            page_size: limit as u64,
+        })
+    }
+
+    pub async fn delete_biz_tag(&self, id: uuid::Uuid) -> Result<()> {
+        self.config_service.delete_biz_tag(id).await
+    }
+
+    /// L7 修复：缺失 workspace_id 时返回 InvalidInput，避免静默回退到
+    /// nil UUID 触发 `WHERE workspace_id = '00000000-...'` 查询，
+    /// 该查询在底层 SeaORM 中可能意外匹配到 workspace_id 字段为 nil
+    /// 的脏数据记录，导致越权返回其他 workspace 的 BizTag。
+    fn require_workspace_id(workspace_id: Option<uuid::Uuid>) -> Result<uuid::Uuid> {
+        workspace_id.ok_or_else(|| {
+            CoreError::InvalidInput(
+                t!("api.error.handlers.biz_tag_handlers.workspace_id_required_list").to_string(),
+            )
+        })
+    }
+
+    /// 两处 list 路径的共享实现：按 workspace（可选 group/分页）查询并映射为
+    /// 响应，同时取真实总数。
+    ///
+    /// L8 修复：`total` 取 `count_biz_tags` 而非当前页列表长度 —— 原实现
+    /// `total = responses.len() as u64` 在分页场景下会让前端分页控件只显示
+    /// 当前页条数。
+    async fn fetch_biz_tags(
+        &self,
+        workspace_id: uuid::Uuid,
+        group_id: Option<uuid::Uuid>,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> Result<(Vec<BizTagResponse>, u64)> {
+        let biz_tags: Vec<crate::core::database::BizTag> = self
+            .config_service
+            .list_biz_tags(workspace_id, group_id, limit, offset)
             .await?;
 
         let total = self
@@ -241,16 +242,7 @@ impl super::ApiHandlers {
             })
             .collect();
 
-        Ok(BizTagListResponse {
-            total,
-            biz_tags: responses,
-            page: (offset / limit + 1) as u64,
-            page_size: limit as u64,
-        })
-    }
-
-    pub async fn delete_biz_tag(&self, id: uuid::Uuid) -> Result<()> {
-        self.config_service.delete_biz_tag(id).await
+        Ok((responses, total))
     }
 }
 

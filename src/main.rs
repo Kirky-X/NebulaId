@@ -612,7 +612,7 @@ async fn main() -> Result<()> {
                         std::sync::Arc::new(client);
                     match nebulaid::core::coordinator::EtcdDistributedLock::new(
                         client,
-                        "nebulaid-segment-lock".to_string(),
+                        nebulaid::core::coordinator::SEGMENT_LOCK_PATH_PREFIX.to_string(),
                     )
                     .await
                     {

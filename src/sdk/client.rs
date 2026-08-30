@@ -45,11 +45,9 @@ use crate::core::types::{AlgorithmType, Id, IdBatch, IdFormat};
 use crate::core::{CoreError, Result};
 
 #[cfg(feature = "etcd")]
-use crate::core::coordinator::{EtcdClientOps, EtcdClientWrapper, EtcdDistributedLock};
-
-/// Segment 号段分布式锁的 etcd 键前缀（与 main.rs 保持一致）。
-#[cfg(feature = "etcd")]
-const SEGMENT_LOCK_PREFIX: &str = "nebulaid-segment-lock";
+use crate::core::coordinator::{
+    EtcdClientOps, EtcdClientWrapper, EtcdDistributedLock, SEGMENT_LOCK_PATH_PREFIX,
+};
 
 /// 嵌入式客户端构建器。
 ///
@@ -127,7 +125,7 @@ async fn create_distributed_lock(config: &Config) -> Arc<dyn DistributedLock + S
         match EtcdClientWrapper::new(config.etcd.endpoints.clone()).await {
             Ok(client) => {
                 let client: Arc<dyn EtcdClientOps> = Arc::new(client);
-                match EtcdDistributedLock::new(client, SEGMENT_LOCK_PREFIX.to_string()).await {
+                match EtcdDistributedLock::new(client, SEGMENT_LOCK_PATH_PREFIX.to_string()).await {
                     Ok(etcd_lock) => return Arc::new(etcd_lock),
                     Err(e) => {
                         tracing::warn!(
@@ -221,6 +219,15 @@ impl NebulaIdClient {
     }
 
     /// 逃生舱：直接访问内部路由（高级用法）。
+    ///
+    /// **注意：绕过前置守卫，自负其责。** [`Self::generate`] / [`Self::batch_generate`]
+    /// / [`Self::generate_with_algorithm`] 在调用路由前会执行
+    /// `require_repository_for_segment` —— 未通过
+    /// [`NebulaIdClientBuilder::with_repository`] 注入仓储时，Segment 请求返回
+    /// 显性 `CoreError::ConfigurationError`。经本方法拿到 [`AlgorithmRouter`]
+    /// 后直接调用其 `generate*` **不经过该守卫**：无 DB 时 Segment 会按路由自身的
+    /// 行为处理（可能内存模式或降级），而非显性报错。仅在明确知晓自身如何补齐
+    /// 该校验（或本就不需要）时使用。
     pub fn router(&self) -> &Arc<AlgorithmRouter> {
         &self.router
     }

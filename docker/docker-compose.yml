@@ -146,11 +146,17 @@ services:
   # Nebula ID Application
   # ============================================
   app:
+    # 依赖 [patch.crates-io] 的本地 RC 依赖（../sdforge、../inklog）。
+    # 先运行 ./docker/vendor-deps.sh 生成 .docker-vendor/，再 `docker compose build`
+    # （或直接使用 ./docker/build.sh）。
     build:
       context: ..
       dockerfile: docker/Dockerfile
       args:
         BUILD_PROFILE: release
+      additional_contexts:
+        sdforge: ../.docker-vendor/sdforge
+        inklog: ../.docker-vendor/inklog
     image: nebula-id:latest
     container_name: nebula-app
     ports:

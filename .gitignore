@@ -234,3 +234,5 @@ grafana/log/
 # -----------------------------------------------------------------------------
 **/protos/*.rs
 !protos/build.rs
+# wiring T011: Docker vendor stage (docker/vendor-deps.sh)
+.docker-vendor/

@@ -19,6 +19,12 @@ WORKDIR /app
 # 复制二进制文件（直接使用本地已编译的）
 COPY target/release/nebula-id /app/nebula-id
 
+# 运行时资源（与主 Dockerfile 对齐）：
+# config/ 为运行时默认配置路径 config/config.toml 所需；
+# locales 已在编译期经 i18n! 宏嵌入，随包拷贝仅作冗余兜底。
+COPY config /app/config
+COPY locales /app/locales
+
 # 设置权限
 RUN chown -R appuser:appgroup /app && \
     chmod +x /app/nebula-id

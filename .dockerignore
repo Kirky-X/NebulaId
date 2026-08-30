@@ -74,3 +74,5 @@ grafana/
 
 # Protobuf (already compiled)
 protos/*.rs
+# wiring T011: Docker vendor stage
+.docker-vendor/

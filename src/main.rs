@@ -374,12 +374,18 @@ async fn start_http_server(
     info!("{}", t!("log.main.starting_http_server", addr = bind_addr));
     let listener = DualListener::bind(bind_addr, tls_acceptor).await?;
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async {
-            tokio::signal::ctrl_c().await.ok();
-            info!("{}", t!("log.main.shutting_down_http_server"));
-        })
-        .await?;
+    // converge T018：注入 ConnectInfo<SocketAddr>，使限流键、认证失败计数、
+    // 审计 client_ip 恢复 per-IP 语义（缺失时 get_client_ip 恒 None，全站
+    // 共享单一 "anonymous" 桶——单攻击者可把 /health、/metrics 一并打成 429）。
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async {
+        tokio::signal::ctrl_c().await.ok();
+        info!("{}", t!("log.main.shutting_down_http_server"));
+    })
+    .await?;
 
     Ok(())
 }

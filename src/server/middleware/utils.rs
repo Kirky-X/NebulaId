@@ -46,7 +46,15 @@ use std::net::{IpAddr, SocketAddr};
 /// limiting or auth-failure tracking. An empty `trusted_proxies` slice
 /// disables header-based IP discovery entirely (default).
 pub fn get_client_ip(req: &Request<Body>, trusted_proxies: &[IpAddr]) -> Option<String> {
-    let connection_ip = req.extensions().get::<SocketAddr>().map(|addr| addr.ip());
+    // axum serve 经 into_make_service_with_connect_info::<SocketAddr>() 注入的是
+    // `ConnectInfo<SocketAddr>` 扩展（converge T018：此前只查裸 SocketAddr，
+    // 生产恒 None → 限流/认证失败计数/审计 client_ip 全部落入共享单桶）。
+    // 裸 SocketAddr 回退保留给手工构造请求的测试。
+    let connection_ip = req
+        .extensions()
+        .get::<axum::extract::connect_info::ConnectInfo<SocketAddr>>()
+        .map(|info| info.0.ip())
+        .or_else(|| req.extensions().get::<SocketAddr>().map(|addr| addr.ip()));
 
     if let Some(conn_ip) = connection_ip {
         if trusted_proxies.contains(&conn_ip) {
@@ -116,6 +124,18 @@ mod tests {
         );
         let ip = get_client_ip(&req, &[]).unwrap();
         assert_eq!(ip, "10.0.0.1");
+    }
+
+    #[test]
+    fn reads_connectinfo_extension_injected_by_axum_serve() {
+        // converge T018：真实 serve 路径注入的是 ConnectInfo<SocketAddr>，
+        // 必须优先于裸 SocketAddr 被识别（否则生产 per-IP 限流失效）。
+        let mut req = Request::builder().uri("/").body(Body::empty()).unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::connect_info::ConnectInfo(SocketAddr::from(
+                (Ipv4Addr::new(203, 0, 113, 7), 9999),
+            )));
+        assert_eq!(get_client_ip(&req, &[]).as_deref(), Some("203.0.113.7"));
     }
 
     #[test]

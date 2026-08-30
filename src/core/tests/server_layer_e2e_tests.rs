@@ -1254,6 +1254,82 @@ async fn e2e_rate_limit_hot_update_takes_effect() {
 }
 
 // ============================================================================
+// E2E-RATE-009（converge T018）: 真实 TCP 请求必须按对端 IP 限流
+//
+// 背景：main.rs 曾未注入 ConnectInfo<SocketAddr>，get_client_ip 恒 None，
+// 全站流量共享 "anonymous" 单桶 —— 单个客户端即可把 /health、/metrics
+// 一并打成 429。本测试复刻 main.rs 的 serve 装配并验证桶键路由。
+// ============================================================================
+
+#[tokio::test]
+async fn e2e_real_tcp_requests_consume_per_ip_rate_limit_bucket() {
+    use crate::core::algorithm::AlgorithmRouter;
+    use crate::core::config::Config;
+    use crate::server::config::hot_reload::HotReloadConfig;
+    use crate::server::config::management::ConfigManager;
+    use crate::server::handlers::ApiHandlers;
+    use crate::server::middleware::api_key_auth::ApiKeyAuth;
+    use crate::server::router::create_router;
+
+    let config = Config::default();
+    let alg_router = Arc::new(AlgorithmRouter::new(config.clone(), None));
+    let hot_config = Arc::new(HotReloadConfig::new(
+        config,
+        "config/config.toml".to_string(),
+    ));
+    let config_service = Arc::new(ConfigManager::new(hot_config, alg_router.clone()));
+    let handlers = Arc::new(ApiHandlers::new(alg_router, config_service));
+    let auth = Arc::new(ApiKeyAuth::new(Arc::new(NoopApiKeyRepo), true));
+    // rps=1 / burst=2：同 IP 前 2 个请求放行，后续拒绝
+    let rate_limiter = Arc::new(RateLimiter::new(1, 2));
+    let audit_logger = Arc::new(AuditLogger::new(100));
+
+    let app = create_router(handlers, auth, rate_limiter.clone(), audit_logger).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.changed().await;
+        })
+        .await;
+    });
+
+    let client = reqwest::Client::new();
+    for i in 0..2 {
+        let resp = client
+            .get(format!("http://{}/health", addr))
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("第 {} 个请求应送达: {}", i + 1, e));
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    }
+
+    // 桶键必须是对端 IP：loopback 桶被消耗尽，"anonymous" 键不受触碰。
+    assert!(
+        !rate_limiter
+            .check_rate_limit("127.0.0.1", None, None)
+            .await
+            .allowed,
+        "ConnectInfo 注入缺失的回归：per-IP 桶应已被 2 次请求耗尽"
+    );
+    assert!(
+        rate_limiter
+            .check_rate_limit("anonymous", None, None)
+            .await
+            .allowed,
+        "真实 TCP 请求不应落入 anonymous 共享桶"
+    );
+
+    shutdown_tx.send(true).ok();
+    server.await.unwrap();
+}
+
+// ============================================================================
 // E2E-RATE-004: token 随时间恢复（rate=1/s，等待 1s 后应允许 1 次）
 // ============================================================================
 

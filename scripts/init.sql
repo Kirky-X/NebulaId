@@ -9,8 +9,14 @@ SET search_path TO nebula_id, public;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp" SCHEMA public;
 
 -- Create enums
+-- Values must match AlgorithmTypeDb (src/core/database/biz_tag_entity.rs):
+-- 'segment' | 'snowflake' | 'uuid_v8'.
+-- NOTE: the DO block below is a no-op when the type already exists, so databases
+-- initialized by an older init.sql still hold the legacy 'uuid_v7' / 'uuid_v4'
+-- values. Migrate them with docs/CONFIG_MIGRATION_GUIDE.md
+-- ("algorithm_type ENUM 迁移（uuid_v7 / uuid_v4 -> uuid_v8）").
 DO $$ BEGIN
-    CREATE TYPE algorithm_type AS ENUM ('segment', 'snowflake', 'uuid_v7', 'uuid_v4');
+    CREATE TYPE algorithm_type AS ENUM ('segment', 'snowflake', 'uuid_v8');
 EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;

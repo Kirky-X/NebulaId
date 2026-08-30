@@ -704,6 +704,17 @@ async fn main() -> Result<()> {
         "config/config.toml".to_string(),
     ));
 
+    // wiring T015：hot_reload 文件监视启动条件与 feature / repo 解耦 ——
+    // 仅取决于 `hot_reload.auto_watch_enabled`，etcd 与非 etcd 分支共用。
+    // （原实现位于 etcd 分支"无 repo"路径，非 etcd 构建从不启动监视。）
+    if config.hot_reload.auto_watch_enabled {
+        let watcher = hot_config.clone();
+        tokio::spawn(async move {
+            watcher.watch(2000).await;
+        });
+        info!("{}", t!("log.main.hot_reload_watcher_started"));
+    }
+
     #[cfg(feature = "etcd")]
     {
         info!("{}", t!("log.main.initializing_etcd_health_monitor"));
@@ -793,14 +804,7 @@ async fn main() -> Result<()> {
                 ConfigManager::new(hot_config.clone(), id_generator.clone())
                     .with_rate_limiter(rate_limiter.clone()),
             );
-            // T011：仅当配置显式开启时启动文件监视；缺省 false 保持历史行为
-            if config.hot_reload.auto_watch_enabled {
-                let watcher = hot_config.clone();
-                tokio::spawn(async move {
-                    watcher.watch(2000).await;
-                });
-                info!("{}", t!("log.main.hot_reload_watcher_started"));
-            }
+            // wiring T015：hot_reload 监视已移至两分支公共位置，此处不再重复启动。
             let h = Arc::new(ApiHandlers::new(id_generator.clone(), cs.clone()));
             (h, cs)
         };
@@ -918,11 +922,8 @@ async fn main() -> Result<()> {
     {
         info!("{}", t!("log.main.etcd_disabled"));
 
-        let audit_logger_for_core: nebulaid::core::algorithm::DynAuditLogger =
-            audit_logger.clone() as Arc<dyn nebulaid::core::algorithm::AuditLogger>;
-        let router = AlgorithmRouter::new(config.clone(), Some(audit_logger_for_core));
-        let _router = Arc::new(router);
-
+        // wiring T015：删除原此处创建后即丢弃的 AlgorithmRouter 死代码；
+        // id_generator 由 create_id_generator 构建并作为实际生成器使用。
         let id_generator = create_id_generator(&config, audit_logger.clone(), None).await?;
 
         // wiring T003：限流器先于 ConfigManager 创建并共享（同 etcd 分支）

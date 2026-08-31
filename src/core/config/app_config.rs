@@ -77,6 +77,49 @@ pub(crate) fn parse_toml_config(content: &str, source_id: &str) -> ConfigResult<
         .map_err(|e| ConfigError::InvalidValue(e.to_string()))
 }
 
+/// 启动期配置的来源判定（T014）。
+///
+/// 调用方据此决定是否需要输出"正在使用内置默认值"的显式告警：`Loaded` 之外只有
+/// `DefaultsBecauseMissing` 一种可能，不存在"静默用默认值"的第三种状态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartupConfig {
+    /// 已按 `path` 成功加载并通过校验
+    Loaded { path: String },
+    /// 未显式指定配置文件且该路径确实不存在 → 使用内置默认值
+    DefaultsBecauseMissing,
+}
+
+/// 按 design 判定矩阵解析启动配置（确定性、无启发式）。
+///
+/// - 文件存在但解析/校验失败 → 原样 `Err`（消息含缺失或未知字段名）→ 启动失败
+/// - 文件不存在且 `explicit_path` → `Err(FileNotFound)` → 运维指定的文件必须存在
+/// - 文件不存在且非 `explicit_path` → `Ok((Config::default(), DefaultsBecauseMissing))`
+/// - 权限/IO 类失败（非 `NotFound`）→ 原样 `Err(FileError)`，不得降级为默认值
+///
+/// 环境变量覆盖由 `Config::load_from_env()?` 单独承担（其消息已含变量名），
+/// 不在本函数职责内。
+///
+/// # Errors
+///
+/// 见上述矩阵：除"默认路径且文件不存在"外，任何失败都原样上抛。
+pub fn resolve_startup_config(
+    path: &str,
+    explicit_path: bool,
+) -> ConfigResult<(Config, StartupConfig)> {
+    match Config::load_from_file(path) {
+        Ok(config) => Ok((
+            config,
+            StartupConfig::Loaded {
+                path: path.to_string(),
+            },
+        )),
+        Err(ConfigError::FileNotFound(_)) if !explicit_path => {
+            Ok((Config::default(), StartupConfig::DefaultsBecauseMissing))
+        }
+        Err(e) => Err(e),
+    }
+}
+
 impl Config {
     /// Load configuration from file with environment variable expansion
     /// Supports ${VAR_NAME} syntax for environment variable substitution
@@ -505,6 +548,97 @@ mod tests {
         assert!(
             matches!(result, Err(ConfigError::FileError(_))),
             "目录路径应返回 FileError 而非 FileNotFound，实际为 {:?}",
+            result
+        );
+    }
+
+    /// T014 判定矩阵前提：文件存在且合法 → `Loaded { path }`，且值来自文件而非默认值。
+    #[test]
+    fn test_resolve_startup_config_returns_loaded_with_path() {
+        let mut original = Config::default();
+        original.app.http_port = 18080;
+        original.auth.key_rotation_grace_period_seconds = 3600;
+        let toml_content = toml::to_string(&original).expect("序列化 Config 应成功");
+
+        let temp = tempfile::NamedTempFile::new().expect("创建临时文件应成功");
+        let path = temp.path().to_str().unwrap().to_string();
+        std::fs::write(&path, &toml_content).expect("写入临时文件应成功");
+
+        let (config, source) =
+            resolve_startup_config(&path, true).expect("合法配置文件应当加载成功（含显式路径）");
+        assert_eq!(source, StartupConfig::Loaded { path: path.clone() });
+        assert_eq!(config.app.http_port, 18080, "值必须来自文件");
+        assert_eq!(config.auth.key_rotation_grace_period_seconds, 3600);
+    }
+
+    /// T014 判定矩阵第 1 行：文件存在但解析失败 —— 错误必须原样上抛，且带上
+    /// 缺失的字段名。形状复现历史事故：配置里把 `[algorithm.uuid_v8]` 误写成
+    /// `[algorithm.uuid_v7]`，此前会被静默降级为默认值并"正常启动"。
+    #[test]
+    fn test_resolve_startup_config_propagates_parse_error_with_field_name() {
+        let original = Config::default();
+        let toml_content = toml::to_string(&original).expect("序列化 Config 应成功");
+        let typo = toml_content.replace("algorithm.uuid_v8", "algorithm.uuid_v7");
+        assert_ne!(typo, toml_content, "测试前提：确实改写了段名");
+
+        let temp = tempfile::NamedTempFile::new().expect("创建临时文件应成功");
+        std::fs::write(temp.path(), &typo).expect("写入临时文件应成功");
+
+        let result = resolve_startup_config(temp.path().to_str().unwrap(), true);
+        match result {
+            Err(ConfigError::InvalidValue(msg)) => {
+                assert!(
+                    msg.contains("missing field") && msg.contains("uuid_v8"),
+                    "解析错误必须点名缺失字段，实际消息：{}",
+                    msg
+                );
+            }
+            other => panic!(
+                "文件存在但解析失败时必须 Err(InvalidValue)，实际为 {:?}",
+                other
+            ),
+        }
+    }
+
+    /// T014 判定矩阵第 2 行：`--config` 显式给出的路径不存在 → 启动失败。
+    #[test]
+    fn test_resolve_startup_config_missing_explicit_path_errors() {
+        let result = resolve_startup_config("/nonexistent/path/explicit.toml", true);
+        match result {
+            Err(ConfigError::FileNotFound(msg)) => {
+                assert!(
+                    msg.contains("/nonexistent/path/explicit.toml"),
+                    "错误消息必须点名运维指定的路径，实际：{}",
+                    msg
+                );
+            }
+            other => panic!("显式路径不存在时必须 Err(FileNotFound)，实际为 {:?}", other),
+        }
+    }
+
+    /// T014 判定矩阵第 3 行：默认路径且文件不存在 → 回落内置默认值（开箱可跑）。
+    #[test]
+    fn test_resolve_startup_config_missing_default_path_falls_back_to_defaults() {
+        let (config, source) = resolve_startup_config("/nonexistent/path/default.toml", false)
+            .expect("未显式指定路径且文件不存在时应回落到内置默认值");
+        assert_eq!(source, StartupConfig::DefaultsBecauseMissing);
+        let default = Config::default();
+        assert_eq!(config.app.http_port, default.app.http_port);
+        assert_eq!(config.auth.enabled, default.auth.enabled);
+        assert_eq!(
+            config.auth.key_rotation_grace_period_seconds,
+            default.auth.key_rotation_grace_period_seconds
+        );
+    }
+
+    /// T014 判定矩阵第 4 行：权限/IO 类失败（非 NotFound）不得被当作"文件缺失"降级。
+    #[test]
+    fn test_resolve_startup_config_io_error_never_falls_back_to_defaults() {
+        let dir = tempfile::tempdir().expect("创建临时目录应成功");
+        let result = resolve_startup_config(dir.path().to_str().unwrap(), false);
+        assert!(
+            matches!(result, Err(ConfigError::FileError(_))),
+            "非 NotFound 的 IO 失败必须原样 Err，实际为 {:?}",
             result
         );
     }

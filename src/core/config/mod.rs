@@ -45,8 +45,10 @@ pub use algorithm::{
     AlgorithmConfig, SegmentAlgorithmConfig, SnowflakeAlgorithmConfig, UuidV8Config,
 };
 pub use app::{AppConfig, DatabaseConfig, DatabaseEngine, EtcdConfig};
+pub use app_config::resolve_startup_config;
 pub use app_config::Config;
 pub use app_config::HotReloadSettings;
+pub use app_config::StartupConfig;
 pub use auth::{ApiKeyEntry, AuthConfig};
 pub use batch::BatchGenerateConfig;
 pub use environment::{is_production, Environment};

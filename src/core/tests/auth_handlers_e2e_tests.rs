@@ -1144,6 +1144,106 @@ mod auth_cache_wiring {
         );
     }
 
+    /// 双代凭证仓储 mock（T010）：`cache-secret` 是当代凭证，`previous-secret`
+    /// 代表轮换后仍在宽限期内的上一代凭证（`used_previous_credential = true`）。
+    ///
+    /// `times` 就是断言本身：它限制"允许回源仓储几次"，缓存若意外命中/未命中都
+    /// 会在 mock 释放时报违反。
+    fn mock_repo_two_generations(
+        workspace_id: Uuid,
+        times: usize,
+    ) -> (MockApiKeyRepository, Arc<AtomicUsize>) {
+        let validate_calls = Arc::new(AtomicUsize::new(0));
+        let mut repo = MockApiKeyRepository::new();
+        let counter = validate_calls.clone();
+        repo.expect_validate_api_key()
+            .times(times)
+            .returning(move |key_id, key_secret| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                if key_id != "cache-key" {
+                    return Ok(None);
+                }
+                let used_previous = key_secret == "previous-secret";
+                if !used_previous && key_secret != "cache-secret" {
+                    return Ok(None);
+                }
+                Ok(Some(AuthenticatedKey {
+                    workspace_id: Some(workspace_id),
+                    role: ApiKeyRole::User,
+                    used_previous_credential: used_previous,
+                }))
+            });
+        (repo, validate_calls)
+    }
+
+    /// T010（D-A）：宽限期命中的决策有时效性（受 `rotate_expires_at` 约束），
+    /// 缓存 TTL 表达不了这个绝对截止时间，因此这类命中不得写入认证决策缓存 ——
+    /// 否则上一代凭证在宽限期结束后仍会被缓存放行到 TTL 到期，等于变相延长窗口。
+    #[tokio::test]
+    async fn test_grace_credential_hit_is_not_cached() {
+        let workspace_id = Uuid::new_v4();
+        let (mut repo, validate_calls) = mock_repo_two_generations(workspace_id, 2);
+        // 跳过写入 ⇒ 连"读 key 行拿绝对过期时间"都不该发生
+        repo.expect_get_api_key_by_id().never();
+        let (auth, cache) = make_cached_auth(Arc::new(repo), 300);
+
+        for _ in 0..2 {
+            let identity = auth
+                .validate_key("cache-key", "previous-secret")
+                .await
+                .expect("宽限期内的上一代凭证必须通过认证");
+            assert!(
+                identity.used_previous_credential,
+                "上一代凭证命中必须置标记，否则缓存侧无法识别并跳过写入"
+            );
+        }
+
+        assert_eq!(
+            validate_calls.load(Ordering::SeqCst),
+            2,
+            "上一代凭证的两次校验都必须回源仓储"
+        );
+        assert!(
+            cache.get("cache-key", "previous-secret").await.is_none(),
+            "缓存中不得出现上一代凭证的认证决策"
+        );
+    }
+
+    /// T010 的另一半：跳过写入只针对宽限期命中，当代凭证的缓存路径不得受影响。
+    #[tokio::test]
+    async fn test_current_credential_hit_is_cached() {
+        let workspace_id = Uuid::new_v4();
+        // 允许回源 2 次 = 上一代 1 次 + 当代首见 1 次；当代第二次必须命中缓存
+        let (mut repo, validate_calls) = mock_repo_two_generations(workspace_id, 2);
+        // 次数 1 = 只有当代凭证那次校验读了 key 行
+        expect_cache_key_row(&mut repo, 1, workspace_id);
+        let (auth, _cache) = make_cached_auth(Arc::new(repo), 300);
+
+        assert!(auth
+            .validate_key("cache-key", "previous-secret")
+            .await
+            .is_some());
+        assert!(auth
+            .validate_key("cache-key", "cache-secret")
+            .await
+            .is_some());
+        assert_eq!(validate_calls.load(Ordering::SeqCst), 2);
+
+        let identity = auth
+            .validate_key("cache-key", "cache-secret")
+            .await
+            .expect("当代凭证第二次校验仍应通过");
+        assert!(
+            !identity.used_previous_credential,
+            "从缓存恢复的决策必须标记为非宽限期"
+        );
+        assert_eq!(
+            validate_calls.load(Ordering::SeqCst),
+            2,
+            "当代凭证第二次校验必须命中缓存，不得回源"
+        );
+    }
+
     /// R-auth-002：吊销后立即再校验返回 401（经真实中间件，不等待 TTL）。
     #[tokio::test]
     async fn revoked_key_is_rejected_immediately_via_middleware() {

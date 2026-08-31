@@ -180,6 +180,20 @@ impl ApiKeyAuth {
             .ok()
             .flatten()?;
 
+        // T010（D-A）：上一代凭证只在宽限期内有效，其有效期由 key 行里的
+        // `rotate_expires_at` 决定，而缓存只能表达相对 TTL —— 一旦写入，旧凭证
+        // 会在宽限期关闭后继续被放行直到 TTL 到期，等于变相延长窗口。因此这类命中
+        // 不进缓存（代价：窗口期内每个请求都回源校验），并记显式告警供运维定位
+        // 尚未完成轮换的调用方。
+        if auth.used_previous_credential {
+            tracing::warn!(
+                event = "auth_grace_credential_used",
+                key_id_prefix = %key_id.chars().take(8).collect::<String>(),
+                "request authenticated with a previous-generation credential inside the rotation grace period"
+            );
+            return Some(auth);
+        }
+
         #[cfg(feature = "garrison-auth")]
         if let Some(cache) = self.cache.as_ref() {
             // 缓存必须携带 key 的绝对过期时间，否则「TTL 未结束但 key 已到期」

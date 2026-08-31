@@ -203,6 +203,35 @@ mod tests {
     }
 
     #[test]
+    fn test_config_defaults_because_missing_message_interpolates_path_en() {
+        let _g = LocaleGuard::new();
+        rust_i18n::set_locale("en");
+        assert_eq!(
+            translate_with_locale_args(
+                "en",
+                "log.main.config_defaults_because_missing",
+                &[("path", "config/config.toml".to_string())]
+            ),
+            "No --config was given and 'config/config.toml' does not exist; \
+             starting with built-in default configuration"
+        );
+    }
+
+    #[test]
+    fn test_config_defaults_because_missing_message_interpolates_path_zh_cn() {
+        let _g = LocaleGuard::new();
+        rust_i18n::set_locale("en");
+        assert_eq!(
+            translate_with_locale_args(
+                "zh-CN",
+                "log.main.config_defaults_because_missing",
+                &[("path", "config/config.toml".to_string())]
+            ),
+            "未指定 --config 且配置文件“config/config.toml”不存在，正在使用内置默认配置启动"
+        );
+    }
+
+    #[test]
     fn test_translate_with_locale_missing_key_returns_key() {
         let _g = LocaleGuard::new();
         rust_i18n::set_locale("en");

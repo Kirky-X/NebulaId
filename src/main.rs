@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use nebulaid::core::algorithm::AlgorithmRouter;
-use nebulaid::core::config::Config;
+use nebulaid::core::config::{resolve_startup_config, Config, StartupConfig};
 #[cfg(feature = "etcd")]
 use nebulaid::core::coordinator::{EtcdClientWrapper, EtcdClusterHealthMonitor};
 use nebulaid::core::database::{self, ApiKeyRepository};
@@ -523,7 +523,8 @@ async fn main() -> Result<()> {
 
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();
-    let config_path = if args.len() > 2 && args[1] == "--config" {
+    let explicit_path = args.len() > 2 && args[1] == "--config";
+    let config_path = if explicit_path {
         args[2].clone()
     } else {
         DEFAULT_CONFIG_PATH.to_string()
@@ -532,16 +533,35 @@ async fn main() -> Result<()> {
     info!("{}", t!("log.main.loading_config", path = config_path));
 
     // Load config from file first, then merge with environment variables
-    let mut config = match Config::load_from_file(&config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("{}", t!("log.main.config_load_failed", error = e));
-            Config::default()
-        }
-    };
+    //
+    // T015（D-D）：加载失败不再降级为 `Config::default()`。原实现把错误 `error!` 一行
+    // 后继续启动，等价于用一套没人审阅过的默认配置对外提供服务；坏配置现在直接让
+    // 进程以非零码退出，消息里带上路径与原因。只有"未显式指定 --config 且该路径确实
+    // 不存在"才允许回落内置默认值，且必须显式 warn。
+    let (mut config, source) =
+        resolve_startup_config(&config_path, explicit_path).map_err(|e| {
+            nebulaid::core::types::CoreError::InternalError(format!(
+                "failed to load configuration from '{}': {}",
+                config_path, e
+            ))
+        })?;
+    if matches!(source, StartupConfig::DefaultsBecauseMissing) {
+        warn!(
+            "{}",
+            t!(
+                "log.main.config_defaults_because_missing",
+                path = config_path
+            )
+        );
+    }
 
     // Apply environment variable overrides
-    config.merge(Config::load_from_env().unwrap_or_default());
+    config.merge(Config::load_from_env().map_err(|e| {
+        nebulaid::core::types::CoreError::InternalError(format!(
+            "failed to load configuration from environment: {}",
+            e
+        ))
+    })?);
     info!("{}", t!("log.main.config_loaded"));
 
     let server_config = ServerConfig {

@@ -600,6 +600,30 @@ mod tests {
         }
     }
 
+    /// T014 判定矩阵第 1 行的另一半：文件能解析但 `validate` 不通过 —— 同样必须原样
+    /// 上抛并点名违规项，而不是降级为默认值（`http_port = 0` 是最常见的手误形状）。
+    #[test]
+    fn test_resolve_startup_config_propagates_validation_error() {
+        let mut original = Config::default();
+        original.app.http_port = 0;
+        let toml_content = toml::to_string(&original).expect("序列化 Config 应成功");
+
+        let temp = tempfile::NamedTempFile::new().expect("创建临时文件应成功");
+        std::fs::write(temp.path(), &toml_content).expect("写入临时文件应成功");
+
+        let result = resolve_startup_config(temp.path().to_str().unwrap(), true);
+        match result {
+            Err(ConfigError::InvalidValue(msg)) => {
+                assert!(
+                    msg.contains("HTTP port"),
+                    "校验错误必须点名违规项，实际消息：{}",
+                    msg
+                );
+            }
+            other => panic!("校验失败时必须 Err(InvalidValue)，实际为 {:?}", other),
+        }
+    }
+
     /// T014 判定矩阵第 2 行：`--config` 显式给出的路径不存在 → 启动失败。
     #[test]
     fn test_resolve_startup_config_missing_explicit_path_errors() {

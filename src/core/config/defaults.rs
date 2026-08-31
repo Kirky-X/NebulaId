@@ -18,9 +18,15 @@
 //! 常量保留在原定义处，不为搬而搬。历史教训见
 //! [`crate::core::config::auth`] 中 grace period 曾三处重复的自述。
 
-/// API key 轮换宽限期默认值：7 天（秒）。
+/// API key 轮换宽限期默认值：`0` = 关闭（T011）。
 ///
-/// 原定义于 `core/config/auth.rs`，因被 infrastructure/config_adapter 与
-/// server/handlers 两域共同消费而迁入本注册表；原位置经 `pub use` 保持
-/// 导入路径兼容。
-pub const DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60;
+/// `0` 表示轮换后上一代凭证立即失效：`rotate_api_key` 不写 `prev_secret_hash`
+/// / `rotate_expires_at`，`validate_api_key` 只校验当代凭证。需要"轮换不掉请求"
+/// 时由运维显式配置 `auth.key_rotation_grace_period_seconds`（上限 30 天）。
+/// 默认值取关闭而非 7 天：宽限期在语义上是"让一个已知/可能泄露的旧凭证继续有效"，
+/// 该取舍必须由显式配置承担，不能作为出厂默认。
+///
+/// 原定义于 `core/config/auth.rs`，因被 `core/config/auth.rs`（serde 默认值）与
+/// `server/handlers/mod.rs`（未注入配置时的兜底）两域共同消费而迁入本注册表；
+/// 全仓仅此一处定义。
+pub const DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS: u64 = 0;

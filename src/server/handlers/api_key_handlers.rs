@@ -287,9 +287,10 @@ impl super::ApiHandlers {
 
         // L16 修复：从 `ApiHandlers::key_rotation_grace_period_seconds`
         // 读取，原为硬编码 `const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60`。
-        // 默认值仍为 7 天（见 `mod.rs::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`），
-        // 可通过 `AuthConfig::key_rotation_grace_period_seconds` +
-        // `ApiHandlers::with_key_rotation_grace_period` 覆盖。
+        // 默认 0 = 关闭宽限期（T011，见
+        // `core::config::defaults::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`），
+        // 需要"轮换不掉请求"时用 `AuthConfig::key_rotation_grace_period_seconds`
+        // + `ApiHandlers::with_key_rotation_grace_period` 显式开启。
         let grace_period_seconds = self.key_rotation_grace_period_seconds;
 
         let key_with_secret = repo

@@ -69,7 +69,7 @@ pub struct ApiMetrics {
     pub total_latency_ms: std::sync::atomic::AtomicU64,
 }
 
-/// L16 修复：默认密钥轮换宽限期 = 7 天。
+/// L16 修复：默认密钥轮换宽限期取自配置默认值注册表（T011 起为 `0` = 关闭）。
 ///
 /// ARCH-MED-002 修复：删除重复 `const`，统一引用
 /// `crate::core::config::defaults::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`。
@@ -117,26 +117,19 @@ impl ApiHandlers {
     }
 
     /// L16 修复：注入 `AuthConfig::key_rotation_grace_period_seconds`。
-    /// 未调用时使用默认值 7 天，保持向后兼容。
+    /// 未调用时使用注册表默认值（T011 起为 `0` = 关闭宽限期）。
     ///
-    /// SEC-LOW-003 修复（CWE-358 信任边界）：对配置值做范围校验。
-    /// - 0：轮换瞬间失败，进行中的请求被拒（业务破坏）
-    /// - 过大（> 30 天）：旧密钥几乎永久有效，密钥泄露窗口无限大
+    /// SEC-LOW-003 修复（CWE-358 信任边界）：过大（> 30 天）时旧密钥几乎永久
+    /// 有效，密钥泄露窗口无限大；超上限记录警告并 clamp 到 30 天，既不破坏启动
+    /// 流程（fail-open），也让运维在日志中看到问题（规则 12）。
     ///
-    /// 超出 `[1, 30 * 24 * 60 * 60]` 范围时记录警告并 clamp 到边界值，
-    /// 既不破坏启动流程（fail-open），也让运维在日志中看到问题（规则 12）。
+    /// T011：原下限 `MIN = 1`（把 0 抬成 1 秒，理由是"轮换瞬间会拒掉进行中的请求"）
+    /// 已删除。自 T007 宽限期真正生效后，1 秒窗口同样会写入 `prev_secret_hash`
+    /// 并放行上一代凭证，与"默认关闭"的决策直接冲突；`0` 是合法值而非待纠正的输入。
     pub fn with_key_rotation_grace_period(mut self, seconds: u64) -> Self {
-        const MIN_GRACE_PERIOD_SECONDS: u64 = 1;
         const MAX_GRACE_PERIOD_SECONDS: u64 = 30 * 24 * 60 * 60; // 30 天
 
-        if seconds < MIN_GRACE_PERIOD_SECONDS {
-            tracing::warn!(
-                requested = seconds,
-                min = MIN_GRACE_PERIOD_SECONDS,
-                "key_rotation_grace_period_seconds below minimum, clamped to 1 second"
-            );
-            self.key_rotation_grace_period_seconds = MIN_GRACE_PERIOD_SECONDS;
-        } else if seconds > MAX_GRACE_PERIOD_SECONDS {
+        if seconds > MAX_GRACE_PERIOD_SECONDS {
             tracing::warn!(
                 requested = seconds,
                 max = MAX_GRACE_PERIOD_SECONDS,

@@ -208,10 +208,10 @@ fn make_parse_request_with_id(id: &str) -> ParseRequest {
 // 触发 `repo.rotate_api_key(key_id, grace_period_seconds)` 调用，用 mock repo
 // 捕获传入的 `grace_period_seconds` 参数，间接验证 clamp 行为。
 //
-// MIN_GRACE_PERIOD_SECONDS = 1
+// MIN：0 = 宽限期关闭（T011 起为默认值，合法配置，不再 clamp 到 1 秒）
 // MAX_GRACE_PERIOD_SECONDS = 30 * 24 * 60 * 60 = 2_592_000
 
-/// E2E-KEYROT-001: grace_period 在 [1, 30天] 范围内时，原值传入 repo。
+/// E2E-KEYROT-001: grace_period 在 [0, 30天] 范围内时，原值传入 repo。
 ///
 /// 验证 builder 不修改合法范围内的值。
 #[tokio::test]
@@ -232,10 +232,13 @@ async fn e2e_key_rotation_grace_period_valid_range() {
     );
 }
 
-/// E2E-KEYROT-002: grace_period < 1 时 clamp 到 1。
+/// E2E-KEYROT-002: grace_period = 0 表示"关闭宽限期"，必须原值透传。
+///
+/// 曾经的实现把 0 clamp 到 1 秒（SEC-LOW-003），理由是"轮换瞬间拒掉进行中的
+/// 请求"；但 T007 之后宽限期才真正生效，1 秒窗口意味着轮换后仍写入
+/// `prev_secret_hash` 并放行旧凭证 —— 与"默认关闭"的决策相矛盾，故下限取消。
 #[tokio::test]
-async fn e2e_key_rotation_grace_period_below_minimum_clamped() {
-    // 0 低于 min=1，应 clamp 到 1
+async fn e2e_key_rotation_grace_period_zero_disables_grace() {
     let mock_repo = Arc::new(RecordingApiKeyRepo::new());
     let handlers = build_handlers_with_repo_and_grace(mock_repo.clone(), 0);
 
@@ -244,8 +247,8 @@ async fn e2e_key_rotation_grace_period_below_minimum_clamped() {
     let captured = mock_repo.captured_grace_seconds();
     assert_eq!(
         captured,
-        Some(1),
-        "grace_period=0 必须 clamp 到 1（MIN_GRACE_PERIOD_SECONDS）"
+        Some(0),
+        "grace_period=0 必须原值传给仓储（关闭宽限期），不得被抬高成非零窗口"
     );
 }
 

@@ -7,8 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-接线修复与 SDK 强化（specmark change `wiring-and-sdk-hardening`）。**含多项
-行为变更，部署方需注意。**
+接线修复与 SDK 强化（specmark change `wiring-and-sdk-hardening`）＋ 密钥轮换宽限期与配置
+fail-fast（change `key-rotation-and-config-failfast`）。**含多项行为变更，部署方需注意。**
 
 ### Changed（行为变更）
 
@@ -74,6 +74,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `('segment','snowflake','uuid_v7','uuid_v4')`，而代码侧只有
   `segment/snowflake/uuid_v8`，新库写入 `uuid_v8` 会被拒绝。存量库按
   `docs/CONFIG_MIGRATION_GUIDE.md` 的 ENUM 迁移章节执行（含 NULL 回填与回滚）。
+- **坏配置不再静默降级为默认值**：此前 `main.rs` 对 `Config::load_from_file` 的
+  `Err` 分支只打一条 `error!` 日志，然后用 `Config::default()` 继续启动，进程带着
+  一份"想象中的配置"跑起来（例如 `[algorithm.uuid_v8]` 写错段名时实际跑的是默认
+  算法）。现在文件存在但读失败或解析失败一律致命退出（exit 1），错误经
+  `Termination` 打到 stderr 并点名失败字段。仅"未显式给 `--config` 且默认路径文件
+  不存在"这一种情况仍回落内置默认值并 warn。
+- **配置未知键一律拒绝**：新增 17 处 `#[serde(deny_unknown_fields)]`（分布在
+  `src/core/config/` 的 10 个文件）。此前全仓**一处都没有**——顶层 `Config`
+  也不例外，因此任何段名/键名拼错都会被 serde 静默丢弃，整段设置无声失效。
+  **破坏性变更**：存量配置里任何误写的键现在都会阻止启动，
+  升级前先用 `docs/CONFIG_MIGRATION_GUIDE.md` 的预检命令跑一遍。
+- **密钥轮换宽限期真正生效且默认关闭**：此前配置值确实被读到并传进仓储，但
+  `rotate_api_key` 的形参写作 `_grace_period_seconds`（下划线前缀、完全不读），
+  轮换直接覆盖 `key_secret_hash` → 旧密钥当场失效，宽限期形同虚设。现在
+  `>0` 时轮换会把上一代哈希和窗口截止时刻落库，旧密钥在宽限窗口内仍可验证、
+  到期自动失效（惰性按 `rotate_expires_at` 判定），超过 30 天会被钳制；
+  `key_rotation_grace_period_seconds` 的默认值由 7 天改为 `0`（宽限期关闭），
+  因为旧行为等价于"没有宽限期"，默认开启会改变既有部署的安全窗口语义。
+  **需要 DB 迁移**：`api_keys` 表新增 `prev_secret_hash` / `rotate_expires_at`
+  两列，见 `docs/CONFIG_MIGRATION_GUIDE.md` 的"密钥轮换宽限期"章节。
+- **第二个 admin key 首次真正被拒**：创建 API key 与吊销 API key 的 admin 守卫
+  此前用 `list_api_keys(workspace_id = NULL)` 分页查询 + 内存扫描，而全局 admin
+  key 的 `workspace_id` 是 NULL，`NULL = nil_uuid` 在 SQL 中不成立 → 查询恒空 →
+  守卫从未生效，持 admin 凭证者可以再开一个 admin key 作为持久化后门。改用
+  行 id 精确查询与 SQL 侧 `role='admin' AND enabled=true` 计数（无 workspace
+  过滤、无 1000 行分页上界）。**注意作用范围**：守卫只在 HTTP `POST /api-keys`
+  上生效，启动期环境/配置引导的 admin key 走仓储层直插，不经过守卫。
 
 ### Added
 
@@ -84,6 +111,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CI/构建**：`ci.yml` clippy 与 test matrix 改单特性（`--features etcd`，
   因 dbnexus 禁止 sqlite+postgres 混用）；`docker/Dockerfile` 适配单包
   `nebulaid` 构建；新增 `openapi` 镜像特性。
+- **配置错误分类**：`ConfigError::FileNotFound`（区分"文件不存在"与"文件存在但
+  读/解析失败"），使启动期判定矩阵可以只在前者回落默认值。
+- **启动期配置判定策略函数** `resolve_startup_config(path, explicit_path)` 与
+  `StartupConfig`：把"显式给路径 / 默认路径 / 文件是否存在 / 是否解析成功"
+  四种组合的取舍收敛成一处可单测的纯函数（`src/core/config/app_config.rs`），
+  `main.rs` 只消费其返回值。
+- **轮换宽限期可观测**：`ApiKeyWithSecret` 新增 `grace_expires_at` 字段（宽限期
+  未启用或未处于宽限窗口时为 `None`）；新增宽限期与 admin 守卫相关 i18n 文案键。
+  该结构体字段全 `pub` 且无 `#[non_exhaustive]`，因此对**外部构造方是源码级
+  破坏性变更**（必须补上新字段），crate 内构造点已同步。
 
 ### Fixed
 
@@ -109,6 +146,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **降级链去重**：fallback 链 `[Snowflake, UuidV8]`（去除重复占位）。
 - **main.rs 卫生**：删除非 etcd 分支重复 router 构造；hot_reload watcher 启动
   条件与 feature 解耦。
+- **含非 ASCII 的配置文件不再 panic**：`Config::load_from_file` 在打 debug 日志前
+  对 `[auth]` 段做 `&expanded[start..start+100]` 字节切片，配置文件含中文注释或
+  中文值时该下标不落在字符边界上 → 进程在 TOML 解析之前 panic（与日志级别无关，
+  实测 exit 101）。改为按字符截断。回归用例见 `app_config.rs` 的
+  `load_from_file_with_non_ascii_comments_does_not_panic`。
+- **删除无消费点的配置死键**：`config/config.toml` 与 `config/config_test.toml`
+  中的 `[logging] backtrace = false` —— `LoggingConfig` 无该字段且全仓零引用，
+  此前一直被静默忽略；未知键一律拒绝后它会让这两个配置无法启动，故先清掉。
+- **`test_uuid_v8_counter_resets_on_millisecond_rollover` 不再 flaky**：该用例
+  原先假设"连续两次生成必定跨毫秒"，在快速机器上隔离运行 8 次失败 2 次。改为
+  从生成值内嵌的时间戳判断样本是否同毫秒，同毫秒才断言计数器 +1，并显式断言
+  "4 次采样中至少有一对同毫秒"作为测试前提。
 
 ## [0.2.0] - 2026-07-23
 

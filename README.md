@@ -583,9 +583,12 @@ graph TB
 
 `Config` declares `app`, `database`, `etcd`, `auth`, `algorithm`, `monitoring`,
 `logging`, `rate_limit`, `tls` and `batch_generate` **without** `#[serde(default)]`
-(`src/core/config/app_config.rs:35-62`). A missing required field fails the whole file, and a
-failed parse degrades silently to `Config::default()` (`src/main.rs:535-541`) — copy this
-shape, do not trim it. Only `[redis]` and `[hot_reload]` may be omitted.
+(`src/core/config/app_config.rs:37-64`). A missing required field fails the whole file, and so
+does any **unknown** key — every config struct carries `deny_unknown_fields`. A failed parse
+aborts startup with exit code 1 (`resolve_startup_config`, `src/main.rs:542`); it no longer
+degrades to `Config::default()`. Built-in defaults apply only when no `--config` was given
+*and* `config/config.toml` does not exist, and that fallback emits a `warn`. Copy this shape,
+do not trim it. Only `[redis]` and `[hot_reload]` may be omitted.
 
 ```toml
 [app]
@@ -620,7 +623,7 @@ enabled = true
 cache_ttl_seconds = 300
 # api_keys = []                  # optional; entries need key_id/key_secret/workspace/role/rate_limit/name
 # api_key_salt = "..."           # optional (falls back to $NEBULA_API_KEY_SALT)
-# key_rotation_grace_period_seconds = 604800   # optional
+# key_rotation_grace_period_seconds = 0      # optional; 0 (default) = grace disabled
 
 [algorithm]
 default = "segment"              # segment | snowflake | uuid_v8 (no `type` key)
@@ -682,7 +685,7 @@ max_batch_size = 100             # validate(): 1..=10000
 > ⚠️ **Code reality check**: at server startup `Config::merge()` overwrites
 > `algorithm.segment` / `algorithm.snowflake` / `algorithm.uuid_v8` with the values of the
 > environment-derived config, which are always the defaults
-> (`src/core/config/app_config.rs:331-333`, called from `src/main.rs:544`). Only
+> (`src/core/config/app_config.rs:393-395`, called from `src/main.rs:559`). Only
 > `algorithm.default` survives; tune the three sub-tables in code until that merge is fixed.
 
 **Environment Variables**
@@ -737,7 +740,7 @@ export NEBULA_API_KEY_SALT="..."        # [auth].api_key_salt fallback
 | `auth.cache_ttl_seconds` | u64 | `300` | ✅ | Auth cache TTL |
 | `auth.api_keys` | array | `[]` | ➖ | Entry = `key_id`, `key_secret`, `workspace`, `role`, `rate_limit`, `name` (all required) |
 | `auth.api_key_salt` | String | `$NEBULA_API_KEY_SALT` or `""` | ➖ | Salt for key hashing |
-| `auth.key_rotation_grace_period_seconds` | u64 | `604800` (7 days) | ➖ | Old key stays valid during rotation |
+| `auth.key_rotation_grace_period_seconds` | u64 | `0` (grace disabled) | ➖ | Set `> 0` to keep the previous credential valid that long after a rotation; `> 30 days` is clamped to 30 days with a warning; requires the two grace columns (see `docs/CONFIG_MIGRATION_GUIDE.md`) |
 | `algorithm.default` | String | `"segment"` | ✅ | `segment` / `snowflake` / `uuid_v8` |
 | `algorithm.segment.base_step` / `min_step` / `max_step` / `switch_threshold` | u64 / u64 / u64 / f64 | `1000` / `500` / `100000` / `0.1` | ✅ | Dynamic step sizing (see note above about `merge`) |
 | `algorithm.snowflake.datacenter_id_bits` / `worker_id_bits` / `sequence_bits` / `clock_drift_threshold_ms` | u8 / u8 / u8 / u64 | `3` / `8` / `10` / `1000` | ✅ | Bit layout; remainder = timestamp bits |
@@ -755,14 +758,17 @@ export NEBULA_API_KEY_SALT="..."        # [auth].api_key_salt fallback
 | `batch_generate.max_batch_size` | u32 | `100` | ✅ | Must be in 1..=10000 |
 
 Defaults are the values of `Config::default()`; **required** columns show whether the key
-carries a serde default. Unknown keys are silently ignored (no `deny_unknown_fields`),
-but a missing required key fails parsing of the **entire** file.
+carries a serde default. All 17 config structs carry `#[serde(deny_unknown_fields)]`, so an
+unknown key is rejected exactly like a missing required key: both fail parsing of the **entire**
+file and abort startup. A mistyped section name can no longer be silently dropped.
 
 ### Validation Rules
 
-`Config::validate()` (`src/core/config/app_config.rs:111-231`) runs right after parsing; a
+`Config::validate()` (`src/core/config/app_config.rs:173-293`) runs right after parsing; a
 violation makes `Config::load_from_file` return `ConfigError::InvalidValue`, which at server
-startup means "log an error and fall back to `Config::default()`":
+startup aborts the process with exit code 1, naming both the file path and the violated rule
+(e.g. `failed to load configuration from 'config/config.toml': Invalid configuration value:
+HTTP port must be between 1 and 65535`):
 
 | Rule | Source |
 |------|--------|

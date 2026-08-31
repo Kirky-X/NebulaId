@@ -569,8 +569,9 @@ WHERE t.algorithm::text <> b.algorithm_label;
 
 - `config/config.toml:49`、`config/config_test.toml:49`：段键名已改为 `[algorithm.uuid_v8]`。
   旧写法不只是"该段不生效"——`AlgorithmConfig::uuid_v8`（`src/core/config/algorithm.rs:109`）
-  没有 `#[serde(default)]`，缺字段会让**整个配置文件**反序列化失败，`src/main.rs:532-537` 随后
-  退回 `Config::default()`，等于整份 config.toml 被丢弃。
+  没有 `#[serde(default)]`，缺字段会让**整个配置文件**反序列化失败。自未发布版本起该失败不再
+  退回 `Config::default()`：`resolve_startup_config`（`src/main.rs:542`）会让进程以退出码 1 终止
+  （见下一节「配置新增限制」）。
 - `docs/API_REFERENCE.md`、`docs/USER_GUIDE.md`、`docs/FAQ.md`：示例已改用 `AlgorithmType::UuidV8`
   / `AlgorithmBuilder` / `Id::from_uuid_v8`；`uuid_v7` / `uuid_v4` 仅作为 `AlgorithmType::from_str`
   的输入别名保留说明（`src/core/types/id.rs:197-198`）。
@@ -585,3 +586,157 @@ WHERE t.algorithm::text <> b.algorithm_label;
 - `scripts/init.sql` 的 `biz_tags`：`format` / `prefix` / `base_step` / `max_step` / `datacenter_ids`
   对应的实体字段同样是非 Option（`src/core/database/biz_tag_entity.rs:31-36`），但列仍可空，
   与 `algorithm` 是同一类不一致；本轮按任务范围只收紧了 `algorithm`。
+
+---
+
+## 密钥轮换宽限期与配置 fail-fast（未发布版本）
+
+对应 specmark change `key-rotation-and-config-failfast`。三节相互独立：第 1、2 节是开启宽限期
+前要做的 DDL 与只读核对，第 3 节是纯行为变更（没有 SQL，但直接决定升级后能否启动）。
+
+本节 SQL 全部在 `postgres:16-alpine`（与 `docker/docker-compose.yml:8` 同镜像）容器里实际执行
+过，"实测输出"即真实结果；配置侧的三条消息取自真实二进制
+`target/debug/nebula-id.exe --config <file>` 的 stderr。
+
+### 1. 宽限期两列迁移（存量库 `ADD COLUMN` 幂等）
+
+`auth.key_rotation_grace_period_seconds`（默认 `0` = 关闭）设为 `> 0` 时，轮换会把上一代凭证在
+库中继续采信一段时间，这依赖 `nebula_id.api_keys` 的两列（实体定义
+`src/core/database/api_key_entity.rs:31-34`）：
+
+| 列 | 类型 | 语义 |
+|----|------|------|
+| `prev_secret_hash` | `VARCHAR(128)` | 上一代凭证哈希；仅在"宽限期开启状态下完成轮换"后非 NULL |
+| `rotate_expires_at` | `TIMESTAMP WITHOUT TIME ZONE` | 宽限期绝对截止时刻（UTC 无时区）；NULL = 无在效窗口 |
+
+- 新建库：`scripts/init.sql:88-94` 已直接建出两列，跳过本节。
+- 存量库：**先执行本节 DDL，再把宽限期调到 `> 0`**。两列缺失时轮换写入会失败。
+- 到期判定是惰性的 —— `validate_api_key` 在每次校验时比较 `rotate_expires_at` 与当前时间，
+  因此不需要后台清理任务，也不需要为它建索引。
+
+#### 1.1 执行前检查（只读，先跑这段）
+
+```sql
+-- 返回 2 行 = 已是新结构，跳过本节；返回 0 行 = 需要迁移
+SELECT column_name, data_type, is_nullable
+FROM information_schema.columns
+WHERE table_schema = 'nebula_id'
+  AND table_name = 'api_keys'
+  AND column_name IN ('prev_secret_hash', 'rotate_expires_at')
+ORDER BY column_name;
+```
+
+#### 1.2 备份
+
+```bash
+pg_dump -U idgen -d idgen -n nebula_id -Fc \
+  -f "nebula_id_pre_grace_columns_$(date +%Y%m%d_%H%M%S).dump"
+```
+
+#### 1.3 迁移（可重复执行）
+
+```sql
+ALTER TABLE nebula_id.api_keys ADD COLUMN IF NOT EXISTS prev_secret_hash VARCHAR(128);
+ALTER TABLE nebula_id.api_keys ADD COLUMN IF NOT EXISTS rotate_expires_at TIMESTAMP WITHOUT TIME ZONE;
+```
+
+实测行为：
+
+- 首次执行：输出两条 `ALTER TABLE`。
+- 重复执行：每条先输出 `NOTICE:  column "prev_secret_hash" of relation "api_keys" already exists, skipping`
+  （第二列同理）再输出 `ALTER TABLE`，退出码仍为 0 —— 幂等成立，可安全地与 `scripts/init.sql`
+  一起重复执行。
+- `ADD COLUMN IF NOT EXISTS` 需要 PG 9.6+（本仓 compose 固定 16）。
+- 两列都可空且无默认值，PG 11+ 不重写表数据；但语句仍需短暂持有 `ACCESS EXCLUSIVE` 锁，
+  大表请在低峰期执行，并先确认前面没有长事务/长查询。
+
+#### 1.4 迁移后验证
+
+重复 1.1 的查询，期望恰好 2 行（实测输出）：
+
+| column_name | data_type | is_nullable |
+|-------------|-----------|-------------|
+| `prev_secret_hash` | `character varying` | `YES` |
+| `rotate_expires_at` | `timestamp without time zone` | `YES` |
+
+#### 1.5 回滚
+
+```sql
+ALTER TABLE nebula_id.api_keys DROP COLUMN IF EXISTS rotate_expires_at;
+ALTER TABLE nebula_id.api_keys DROP COLUMN IF EXISTS prev_secret_hash;
+```
+
+**破坏性**：`DROP COLUMN` 会连带丢弃仍在生效的宽限期窗口，窗口内的上一代凭证立即失效。只在
+已把 `key_rotation_grace_period_seconds` 改回 `0`、且确认没有在效窗口之后再执行。
+
+### 2. 开启前核对：现存 admin key 数
+
+未发布版本修正了 admin key 守卫的根因。旧实现用 `list_api_keys(Uuid::nil(), Some(1000), Some(0))`
+加内存扫描来判断"是否已存在 admin key"，而全局 admin key 的 `workspace_id` 是 `NULL`，
+`NULL = nil_uuid` 在 SQL 里不成立 → 该查询恒空 → **守卫从未真正生效过**。现在改用
+`count_admin_keys()`（`src/core/database/repository.rs:264-268`：谓词只有
+`role = 'admin' AND enabled = true`，不带 workspace 过滤、也没有 1000 行分页上界）。
+
+后果：升级后通过 `POST /api-keys` 再创建 admin key 会**第一次真正被拒绝**。建议执行前先核对：
+
+```sql
+-- 与守卫完全同谓词。实测：库中放 1 个启用 admin + 1 个禁用 admin + 1 个启用 user 时返回 1
+SELECT count(*) AS enabled_admins
+FROM nebula_id.api_keys
+WHERE role = 'admin' AND enabled;
+```
+
+- 返回 `0`：仍可用 `POST /api-keys` 创建首个 admin key。
+- 返回 `≥ 1`：再创建被拒，`CoreError::AuthenticationError`，文案
+  `An admin API key already exists; creating additional admin keys is forbidden`
+  （`locales/en.yml:53`；中文 `locales/zh-CN.yml:50`）。**这是修复后的预期行为，不是回归。**
+- `role` 是 `VARCHAR(20)` 文本列（历史 ENUM 已按 `scripts/init.sql:85` 的注释移除），
+  直接用字符串 `'admin'` 比较即可。
+- 把某条 admin key 置 `enabled = false` 会让它不再计入该计数，但同时也就剥夺了它的认证资格。
+
+**守卫的作用范围**：启动期引导 key 走的是仓储层 `repo.create_api_key()`
+（`src/main.rs:122`、`:159`、`:203`、`:264`），**不经过**这条守卫；只有 HTTP
+`POST /api-keys`（`src/server/handlers/api_key_handlers.rs:61-88`）会被拦。
+
+### 3. 配置新增限制：坏配置与未知键一律启动失败
+
+无 SQL，但属于**破坏性变更**：此前坏配置会被记一条日志后丢弃、进程用内置默认配置正常启动。
+
+| 场景 | 旧行为 | 新行为 | 实测 stderr 片段 |
+|------|--------|--------|------------------|
+| 段名拼错（如 `[algorithm.uuid_v7]`） | 整段被静默忽略，用默认值启动 | 解析失败，退出码 1 | ``unknown field `uuid_v7`, expected one of `default`, `segment`, `snowflake`, `uuid_v8` `` |
+| 段内未知键（如 `[logging] backtrace`） | 静默忽略 | 解析失败，退出码 1 | ``unknown field `backtrace`, expected one of `level`, `format`, `include_location` `` |
+| 缺必填键 | 解析失败但**仍降级**为默认配置 | 解析失败，退出码 1 | ``missing field `host` `` |
+| 违反 `Config::validate()` | 记 error 后降级 | 退出码 1 | `HTTP port must be between 1 and 65535` |
+| 未给 `--config` 且 `config/config.toml` 不存在 | 静默用默认值 | 仍用默认值，但输出一条 `warn` | — |
+| `--config` 指向不存在的路径 | — | 退出码 1 | `Configuration file not found: <path>` |
+
+完整消息形状为
+`failed to load configuration from '<path>': Invalid configuration value: <原因>`，
+由 `resolve_startup_config`（`src/main.rs:542`）抛出。
+
+升级前预检（不需要数据库 —— 配置加载在建连之前完成）：
+
+```bash
+# 给出你的配置文件；能进入正常启动流程即说明配置面干净，Ctrl-C 停掉即可
+./nebula-id --config /path/to/your/config.toml
+```
+
+判据是**进程是否立即退出**：`--config` 指向不存在的文件或配置面有任一错误时
+秒级退出码 1（实测 `--config <不存在的路径>` → `exit=1`），而配置干净时会越过
+这一阶段持续运行（实测出厂 `config/config.toml` 存活至被超时杀掉）。
+
+本次收紧顺带清掉的配置面失真（同一个死键出现在两个出厂文件）：
+
+- `config/config.toml` 与 `config/config_test.toml` 的 `[logging] backtrace = false` 已删除 ——
+  `LoggingConfig` 里没有该字段，全仓 `src/` 与 `docs/` 零引用，此前一直被静默忽略。
+
+已知遗留（本次未处理，记录以免被当成新缺陷）：
+
+- `config/test_config.toml` **不是**服务端配置文件，而是 `tests/lib.sh` 那套 bash 测试脚本的入参
+  （`[api]` / `[auth]` / `[workspace]` / `[test]` / `[concurrency]` / `[performance]`，没有
+  `[app]`、`[database]`）。用服务端加载器读它会报 `unknown field \`api\``；这在收紧之前同样
+  会失败（其 `[auth]` 缺必填的 `enabled`），不属于新行为。
+- `config/config_test.toml` 写的是 `engine = "sqlite"`，而 `src/core/database/connection.rs:384`
+  的 sqlite 分支锁在 `#[cfg(feature = "sqlite")]` 内，该 feature 目前不可构建（见 `AGENTS.md`
+  的构建说明）。该文件能通过解析与 `validate`，却不可能被真实二进制跑起来。

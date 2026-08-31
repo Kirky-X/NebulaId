@@ -872,6 +872,34 @@ pub struct SegmentInfo {
 }
 ```
 
+### `ApiKeyWithSecret`
+
+Result of creating or rotating an API key — the plaintext credential is returned exactly once.
+
+```rust
+pub struct ApiKeyWithSecret {
+    pub key: ApiKeyResponse,
+    pub key_secret: String,
+    pub grace_expires_at: Option<DateTime>,
+}
+```
+
+> `grace_expires_at` (`src/core/database/api_key_entity.rs:189`) is non-`None` only when
+> `auth.key_rotation_grace_period_seconds > 0` at the moment of a rotation: it is the absolute
+> UTC deadline until which the **previous** generation's secret still authenticates
+> (`prev_secret_hash` + `rotate_expires_at`, compared lazily inside `validate_api_key`).
+> `None` means "no grace window in effect" — the default (`0`) and every freshly created key.
+> Adding this field to a `pub` struct is a **breaking change** for external code that builds
+> `ApiKeyWithSecret` with a struct literal.
+>
+> The wire model is `ApiKeyWithSecretResponse` (`src/server/models.rs:749`), where the same
+> field is an RFC 3339 string or `null`. Note the boundary honestly: `ApiHandlers::rotate_api_key`
+> (`src/server/handlers/api_key_handlers.rs:274`) has **no HTTP route** — the key-related admin
+> routes are `POST /api-keys`, `GET /api-keys`, `DELETE /api-keys/{id}` and
+> `POST /workspaces/{name}/regenerate-user-key`, and the latter two go through the *create* /
+> *delete-and-recreate* paths, so `grace_expires_at` is always `null` there. There is no
+> `POST /api-keys/{id}/rotate` to call.
+
 ---
 
 ## Error Handling

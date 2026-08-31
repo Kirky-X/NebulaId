@@ -424,9 +424,11 @@ services:
 **Configuration File (`config.toml`):**
 
 All ten sections below are **required** — `Config` gives them no
-`#[serde(default)]` (`src/core/config/app_config.rs:35-62`), and a parse failure
-makes `src/main.rs` fall back to `Config::default()`, i.e. the whole file is
-discarded. Only `[redis]` and `[hot_reload]` may be omitted.
+`#[serde(default)]` (`src/core/config/app_config.rs:37-64`). A parse failure now aborts
+startup with exit code 1 instead of falling back to `Config::default()`; unknown keys are
+rejected the same way, because every config struct carries `deny_unknown_fields`. Built-in
+defaults are used only when no `--config` was given *and* `config/config.toml` does not
+exist, which emits a `warn`. Only `[redis]` and `[hot_reload]` may be omitted.
 
 ```toml
 [app]
@@ -509,8 +511,8 @@ max_batch_size = 100
 
 > ⚠️ `Config::merge()` runs the environment config on top of the file at startup
 > and unconditionally replaces `algorithm.segment` / `algorithm.snowflake` /
-> `algorithm.uuid_v8` with it (`src/core/config/app_config.rs:331-333`,
-> `src/main.rs:544`) — in practice those three sub-tables always end up as
+> `algorithm.uuid_v8` with it (`src/core/config/app_config.rs:393-395`,
+> `src/main.rs:559`) — in practice those three sub-tables always end up as
 > defaults. Only `algorithm.default` survives. Tune them in code for now.
 
 **Environment Variables:**
@@ -1055,7 +1057,7 @@ cargo bench
    switch_threshold = 0.1
    ```
    > ⚠️ At server startup `Config::merge()` resets this sub-table to the defaults
-   > (`src/core/config/app_config.rs:331-333`); until that is fixed, tune it in code
+   > (`src/core/config/app_config.rs:393-395`); until that is fixed, tune it in code
    > (`Config { algorithm: AlgorithmConfig { segment: .. } }` before `AlgorithmBuilder::build`).
 
 4. **Use Snowflake for Speed:**
@@ -1241,7 +1243,7 @@ api_keys = [
     role = "user", rate_limit = 1000, name = "Billing service" },
 ]
 api_key_salt = "${NEBULA_API_KEY_SALT}"   # optional; production rejects an empty salt
-key_rotation_grace_period_seconds = 604800 # optional, default 7 days
+key_rotation_grace_period_seconds = 0 # optional; 0 (default) = grace off, >0 needs the two grace columns
 
 [rate_limit]
 enabled = true

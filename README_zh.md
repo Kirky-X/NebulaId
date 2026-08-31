@@ -583,8 +583,11 @@ graph TB
 
 `Config` 对 `app`、`database`、`etcd`、`auth`、`algorithm`、`monitoring`、`logging`、
 `rate_limit`、`tls`、`batch_generate` 都**没有**标注 `#[serde(default)]`
-（`src/core/config/app_config.rs:35-62`）。缺任一必填字段会让**整份**文件解析失败，
-而解析失败会静默退回 `Config::default()`（`src/main.rs:535-541`）—— 所以请照抄，不要裁剪。
+（`src/core/config/app_config.rs:37-64`）。缺任一必填字段会让**整份**文件解析失败，
+**未知键**同样会被拒绝 —— 17 个配置结构体全部带 `deny_unknown_fields`。解析失败会让进程
+以退出码 1 终止（`resolve_startup_config`，`src/main.rs:542`），不再退回
+`Config::default()`；只有在既没给 `--config`、`config/config.toml` 也确实不存在时，才使用
+内置默认配置，并额外输出一条 `warn`。所以请照抄，不要裁剪。
 只有 `[redis]` 与 `[hot_reload]` 可以整体省略。
 
 ```toml
@@ -620,7 +623,7 @@ enabled = true
 cache_ttl_seconds = 300
 # api_keys = []                  # 可选；条目需 key_id/key_secret/workspace/role/rate_limit/name
 # api_key_salt = "..."           # 可选（回退到 $NEBULA_API_KEY_SALT）
-# key_rotation_grace_period_seconds = 604800   # 可选
+# key_rotation_grace_period_seconds = 0      # 可选；0（默认）= 不启用宽限期
 
 [algorithm]
 default = "segment"              # segment | snowflake | uuid_v8（没有 `type` 键）
@@ -682,7 +685,7 @@ max_batch_size = 100             # validate()：1..=10000
 > ⚠️ **代码事实核对**：服务端启动时 `Config::merge()` 会用
 > 「环境变量配置」的 `algorithm.segment` / `algorithm.snowflake` /
 > `algorithm.uuid_v8` 覆盖文件值，而它们恒为默认值
-> （`src/core/config/app_config.rs:331-333`，由 `src/main.rs:544` 调用）。
+> （`src/core/config/app_config.rs:393-395`，由 `src/main.rs:559` 调用）。
 > 合并后只有 `algorithm.default` 保留；在该合并逻辑修正前，三个子表请在代码里调。
 
 **环境变量**
@@ -737,7 +740,7 @@ export NEBULA_API_KEY_SALT="..."        # [auth].api_key_salt 回退值
 | `auth.cache_ttl_seconds` | u64 | `300` | ✅ | 认证缓存 TTL |
 | `auth.api_keys` | 数组 | `[]` | ➖ | 条目字段：`key_id`、`key_secret`、`workspace`、`role`、`rate_limit`、`name`（全部必填） |
 | `auth.api_key_salt` | String | `$NEBULA_API_KEY_SALT` 或 `""` | ➖ | 密钥哈希盐值 |
-| `auth.key_rotation_grace_period_seconds` | u64 | `604800`（7 天） | ➖ | 轮换期内旧密钥仍有效 |
+| `auth.key_rotation_grace_period_seconds` | u64 | `0`（关闭宽限期） | ➖ | 设为 `> 0` 才在轮换后保留上一代凭证该秒数；超过 30 天会被钳制到 30 天并告警；需库中存在宽限期两列（见 `docs/CONFIG_MIGRATION_GUIDE.md`） |
 | `algorithm.default` | String | `"segment"` | ✅ | `segment` / `snowflake` / `uuid_v8` |
 | `algorithm.segment.base_step` / `min_step` / `max_step` / `switch_threshold` | u64 / u64 / u64 / f64 | `1000` / `500` / `100000` / `0.1` | ✅ | 动态步长（注意上文的 `merge` 说明） |
 | `algorithm.snowflake.datacenter_id_bits` / `worker_id_bits` / `sequence_bits` / `clock_drift_threshold_ms` | u8 / u8 / u8 / u64 | `3` / `8` / `10` / `1000` | ✅ | 位布局；余量为时间戳位 |
@@ -755,14 +758,16 @@ export NEBULA_API_KEY_SALT="..."        # [auth].api_key_salt 回退值
 | `batch_generate.max_batch_size` | u32 | `100` | ✅ | 必须在 1..=10000 |
 
 默认值即 `Config::default()` 的取值；「文件内必填」表示该字段
-是否带 serde 默认值。未知键会被静默忽略（没有 `deny_unknown_fields`），
-但缺必填键会让**整份**文件解析失败。
+是否带 serde 默认值。17 个配置结构体全部带 `#[serde(deny_unknown_fields)]`，未知键的严重后果
+与缺必填键完全一样：两者都让**整份**文件解析失败并终止启动，段名拼错不再可能被静默丢弃。
 
 ### 校验规则
 
-解析成功后立刻执行 `Config::validate()`（`src/core/config/app_config.rs:111-231`）；违反
-即 `Config::load_from_file` 返回 `ConfigError::InvalidValue`，服务端启动表现为
-「记一条 error 后退回 `Config::default()`」：
+解析成功后立刻执行 `Config::validate()`（`src/core/config/app_config.rs:173-293`）；违反
+即 `Config::load_from_file` 返回 `ConfigError::InvalidValue`，服务端启动会以退出码 1 终止，
+并在消息里同时给出文件路径与违规项（例如
+`failed to load configuration from 'config/config.toml': Invalid configuration value:
+HTTP port must be between 1 and 65535`）：
 
 | 约束 | 来源 |
 |------|------|

@@ -368,17 +368,32 @@ mod tests {
 
     #[test]
     fn test_uuid_v8_counter_resets_on_millisecond_rollover() {
-        // 同毫秒内：counter 连续递增（Cluster 单调语义）
+        // 同毫秒内：counter 连续递增（Cluster 单调语义）。
+        // custom_a(bits 80..128) 就是本次生成使用的 effective_ts，只有相邻两侧 ts 相同的
+        // 样本对才能断言 +1 —— 跨毫秒的那一对 counter 按设计重置为新的随机起点（见下方
+        // assert_ne 与 CAS 分支），对它断言 +1 会让结果取决于时钟是否恰好跳毫秒。
         let algo = UuidV8Impl::new(1, 1, 1000);
-        let _a = algo.generate_inner(&ctx()).unwrap();
-        let c1 = algo.counter.load(Ordering::Relaxed);
-        let _b = algo.generate_inner(&ctx()).unwrap();
-        let c2 = algo.counter.load(Ordering::Relaxed);
-        assert_eq!(
-            c2,
-            (c1 + 1) & COUNTER_TOTAL_MASK,
-            "same-ms counter must increment by 1"
+        let mut samples: Vec<(u128, u64)> = Vec::new();
+        for _ in 0..4 {
+            let id = algo.generate_inner(&ctx()).unwrap();
+            samples.push((
+                id.to_uuid_v8().as_u128() >> 80,
+                algo.counter.load(Ordering::Relaxed),
+            ));
+        }
+        assert!(
+            samples.windows(2).any(|w| w[0].0 == w[1].0),
+            "测试前提：连续 4 次生成中必须至少有一对落在同一毫秒内"
         );
+        for w in samples.windows(2) {
+            if w[0].0 == w[1].0 {
+                assert_eq!(
+                    w[1].1,
+                    (w[0].1 + 1) & COUNTER_TOTAL_MASK,
+                    "same-ms counter must increment by 1"
+                );
+            }
+        }
 
         // 跨毫秒：注入 last_timestamp 回退 10ms，下次生成 effective_ts > last
         // → counter 必须重置为新的随机起点（UUIDP Cluster），而非旧值连续递增

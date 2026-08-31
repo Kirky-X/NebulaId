@@ -266,6 +266,61 @@ impl SeaOrmRepository {
             .filter(ApiKeyColumn::Enabled.eq(true))
     }
 
+    /// 推导轮换后要写入的宽限期两列值：`(prev_secret_hash, rotate_expires_at)`。
+    ///
+    /// - `grace == 0`（默认）返回 `(None, None)`：新凭证立即生效，旧凭证不再被采信。
+    /// - `grace > 0` 把**轮换前的当前哈希**降级为宽限期凭证，到期时刻为 `now + grace`
+    ///   （绝对时刻，后续判定不再依赖配置，避免热更新宽限期反而延长旧凭证寿命）。
+    ///
+    /// 超出可表示范围时返回 `InvalidInput`，不走 `Duration::seconds` / `+` 的 panic 路径。
+    fn grace_columns_for_rotation(
+        grace_period_seconds: u64,
+        current_hash: String,
+        now: NaiveDateTime,
+    ) -> Result<(Option<String>, Option<NaiveDateTime>)> {
+        if grace_period_seconds == 0 {
+            return Ok((None, None));
+        }
+
+        let out_of_range = || {
+            format!(
+                "key rotation grace period {}s is out of representable range",
+                grace_period_seconds
+            )
+        };
+        let grace_seconds = i64::try_from(grace_period_seconds)
+            .map_err(|_| crate::core::CoreError::InvalidInput(out_of_range()))?;
+        let delta = chrono::Duration::try_seconds(grace_seconds)
+            .ok_or_else(|| crate::core::CoreError::InvalidInput(out_of_range()))?;
+        let expires_at = now
+            .checked_add_signed(delta)
+            .ok_or_else(|| crate::core::CoreError::InvalidInput(out_of_range()))?;
+
+        Ok((Some(current_hash), Some(expires_at)))
+    }
+
+    /// 构造轮换写库的 changeset。
+    ///
+    /// 宽限期两列**总是** `Set(..)` 而非 `NotSet`：关闭宽限期时也必须把该行遗留的
+    /// 上一代凭证与到期时刻清成 NULL，否则旧窗口会一直有效。抽成独立函数同样是
+    /// 测试接缝 —— sea-orm 2.0 的 `MockDatabase` 不捕获 UPDATE 语句。
+    fn rotate_changeset(
+        id: Uuid,
+        new_secret_hash: String,
+        prev_secret_hash: Option<String>,
+        rotate_expires_at: Option<NaiveDateTime>,
+        now: NaiveDateTime,
+    ) -> ApiKeyActiveModel {
+        ApiKeyActiveModel {
+            id: Set(id),
+            key_secret_hash: Set(new_secret_hash),
+            prev_secret_hash: Set(prev_secret_hash),
+            rotate_expires_at: Set(rotate_expires_at),
+            updated_at: Set(now),
+            ..Default::default()
+        }
+    }
+
     /// Hash API key using Argon2id (replaces SHA256, CWE-916 fix).
     ///
     /// 使用 Argon2id（memory-hard, OWASP 2023 推荐）替代 SHA256。
@@ -1217,30 +1272,40 @@ impl ApiKeyRepository for SeaOrmRepository {
     async fn rotate_api_key(
         &self,
         key_id: &str,
-        _grace_period_seconds: u64,
+        grace_period_seconds: u64,
     ) -> Result<ApiKeyWithSecret> {
-        // 获取现有密钥
-        let key_data = self.get_api_key_by_id(key_id).await?.ok_or_else(|| {
-            crate::core::CoreError::NotFound(format!("API key not found: {}", key_id))
-        })?;
+        // 直接取 `Model` 而非 `ApiKeyInfo`：宽限期需要"轮换前的当前哈希"，
+        // 而 `ApiKeyInfo`/`ApiKeyResponse` 都不携带哈希（原实现因此只能丢掉宽限期）。
+        let model = ApiKeyEntity::find()
+            .filter(ApiKeyColumn::KeyId.eq(key_id))
+            .one(&self.db)
+            .await
+            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?
+            .ok_or_else(|| {
+                crate::core::CoreError::NotFound(format!("API key not found: {}", key_id))
+            })?;
+
+        let now = chrono::Utc::now().naive_utc();
+        let (prev_secret_hash, rotate_expires_at) = Self::grace_columns_for_rotation(
+            grace_period_seconds,
+            model.key_secret_hash.clone(),
+            now,
+        )?;
 
         // 生成新密钥
         let new_secret = generate_secret();
-        let new_secret_hash = self.hash_key(&key_data.key_id, &new_secret)?;
-        let now = chrono::Utc::now().naive_utc();
+        let new_secret_hash = self.hash_key(&model.key_id, &new_secret)?;
 
-        // 更新数据库
-        let updated_key = ApiKeyActiveModel {
-            id: Set(key_data.id),
-            key_secret_hash: Set(new_secret_hash),
-            updated_at: Set(now),
-            ..Default::default()
-        };
-
-        let updated = updated_key
-            .update(&self.db)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        let updated = Self::rotate_changeset(
+            model.id,
+            new_secret_hash,
+            prev_secret_hash,
+            rotate_expires_at,
+            now,
+        )
+        .update(&self.db)
+        .await
+        .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
 
         // 返回新密钥
         Ok(ApiKeyWithSecret {
@@ -1253,7 +1318,7 @@ impl ApiKeyRepository for SeaOrmRepository {
                 role: updated.role.into(),
                 rate_limit: updated.rate_limit,
                 enabled: updated.enabled,
-                expires_at: key_data.expires_at,
+                expires_at: model.expires_at,
                 created_at: updated.created_at,
             },
             key_secret: new_secret,
@@ -3641,6 +3706,116 @@ mod mock_tests {
             "rotated secret must be 32 chars"
         );
         assert_ne!(rotated.key_secret, "", "rotated secret must not be empty");
+    }
+
+    /// T007：`grace == 0`（新默认值）时轮换必须把两列**显式写 NULL**。
+    ///
+    /// 关键是 `Set(None)` 而不是 `NotSet` —— `NotSet` 不会出现在 UPDATE 语句里，
+    /// 该行历史遗留的宽限期就会被无限延续，等于关不掉宽限期。
+    #[test]
+    fn test_rotate_with_zero_grace_clears_previous_credential() {
+        let now = fixed_datetime(1_700_000_000);
+        let (prev, expires) =
+            SeaOrmRepository::grace_columns_for_rotation(0, "current-hash".to_string(), now)
+                .expect("grace=0 is always in range");
+
+        assert_eq!(
+            prev, None,
+            "zero grace must not carry a previous credential"
+        );
+        assert_eq!(expires, None, "zero grace must not open a grace window");
+
+        let changeset = SeaOrmRepository::rotate_changeset(
+            fixed_uuid(96),
+            "new-hash".to_string(),
+            prev,
+            expires,
+            now,
+        );
+        assert!(
+            matches!(
+                changeset.prev_secret_hash,
+                dbnexus::sea_orm::ActiveValue::Set(None)
+            ),
+            "prev_secret_hash must be explicitly SET to NULL, got {:?}",
+            changeset.prev_secret_hash
+        );
+        assert!(
+            matches!(
+                changeset.rotate_expires_at,
+                dbnexus::sea_orm::ActiveValue::Set(None)
+            ),
+            "rotate_expires_at must be explicitly SET to NULL, got {:?}",
+            changeset.rotate_expires_at
+        );
+    }
+
+    /// T007：`grace > 0` 时轮换必须把**轮换前的当前哈希**移入 `prev_secret_hash`，
+    /// 并把 `rotate_expires_at` 设为 `now + grace`（旧凭证只在窗口内可被采信）。
+    #[test]
+    fn test_rotate_with_grace_keeps_previous_hash_and_expiry() {
+        let now = fixed_datetime(1_700_000_000);
+        let (prev, expires) = SeaOrmRepository::grace_columns_for_rotation(
+            3600,
+            "old-generation-hash".to_string(),
+            now,
+        )
+        .expect("3600s is in range");
+
+        assert_eq!(
+            prev.as_deref(),
+            Some("old-generation-hash"),
+            "the credential being replaced must become the grace-period credential"
+        );
+        let expires = expires.expect("grace > 0 must open a grace window");
+        let window = (expires - now).num_seconds();
+        assert!(
+            (3595..=3605).contains(&window),
+            "rotate_expires_at must be now + 3600s, got offset {window}s"
+        );
+
+        let changeset = SeaOrmRepository::rotate_changeset(
+            fixed_uuid(97),
+            "new-hash".to_string(),
+            prev,
+            Some(expires),
+            now,
+        );
+        assert!(
+            matches!(
+                changeset.prev_secret_hash,
+                dbnexus::sea_orm::ActiveValue::Set(Some(_))
+            ),
+            "prev_secret_hash must be SET to the old hash, got {:?}",
+            changeset.prev_secret_hash
+        );
+        assert!(
+            matches!(
+                changeset.key_secret_hash,
+                dbnexus::sea_orm::ActiveValue::Set(_)
+            ),
+            "key_secret_hash must be SET to the new hash, got {:?}",
+            changeset.key_secret_hash
+        );
+    }
+
+    /// T007：宽限期秒数超出 `i64` 范围必须返回 `InvalidInput`，而不是 panic 或溢出回绕。
+    ///
+    /// 走完整的 `rotate_api_key` 才有意义 —— 桩只提供 1 个 SELECT 结果，
+    /// 若实现忽略该参数继续写库，`MockDatabase` 会因缺少第二个桩直接 panic。
+    #[tokio::test]
+    async fn test_rotate_with_out_of_range_grace_returns_invalid_input() {
+        let id = fixed_uuid(98);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![sample_api_key_model(id, "niad_x", "admin")]])
+            .into_connection();
+        let repo = make_repo(db);
+
+        let err = repo.rotate_api_key("niad_x", u64::MAX).await.unwrap_err();
+        assert!(
+            matches!(err, crate::core::CoreError::InvalidInput(ref m) if !m.is_empty()),
+            "out-of-range grace must be rejected as InvalidInput, got {err:?}"
+        );
     }
 
     #[tokio::test]

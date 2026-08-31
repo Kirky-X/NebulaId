@@ -167,6 +167,16 @@ impl ApiKeyRepository for MockApiKeyRepo {
         Ok(0)
     }
 
+    /// admin 守卫用：本 mock 只存 key_id→(hash, role)，无行主键也无 enabled，恒查不到行。
+    async fn find_api_key_by_row_id(&self, _id: Uuid) -> Result<Option<ApiKeyInfo>> {
+        Ok(None)
+    }
+
+    /// admin 守卫用：本 mock 不建模 key 行，与 count_api_keys 一致返回 0。
+    async fn count_admin_keys(&self) -> Result<u64> {
+        Ok(0)
+    }
+
     async fn rotate_api_key(
         &self,
         _key_id: &str,
@@ -1126,8 +1136,11 @@ mod auth_cache_wiring {
         let (mut repo, validate_calls, revoked) = mock_repo(workspace_id, 2);
         // 真实吊销路径按行 id 查询（查不到）；缓存写入路径按 key_id 查询
         expect_cache_key_row(&mut repo, 1, workspace_id);
-        repo.expect_get_api_key_by_id()
-            .withf(|key_id: &str| key_id != "cache-key")
+        // T003：吊销守卫改用 `find_api_key_by_row_id`（按行主键），不再用
+        // `get_api_key_by_id`（按 key_id 字符串）。本用例吊销的是与本组缓存键
+        // 无关的随机行 id → 查不到 → 守卫跳过 → 删除照常执行。
+        // 刻意不登记 `count_admin_keys`：行不存在时守卫不得进入计数分支。
+        repo.expect_find_api_key_by_row_id()
             .times(1)
             .returning(|_| Ok(None));
         let repo = Arc::new(repo);
@@ -1237,5 +1250,248 @@ mod auth_cache_wiring {
             .await
             .is_some());
         assert_eq!(validate_calls.load(Ordering::SeqCst), 2);
+    }
+}
+
+// ============================================================================
+// key-rotation-and-config-failfast T005：admin key 吊销守卫 e2e
+// ============================================================================
+
+/// 有状态内存仓储：把「key 行」完整建模（行 UUID + key_id + role + enabled +
+/// secret 哈希），使 `find_api_key_by_row_id` / `count_admin_keys` 能像真实 SQL
+/// 那样回答（含 `role='admin' AND enabled=true` 的双重过滤）。
+///
+/// 目的：把守卫缺陷钉在 **handler 集成层**。repository 单测只能证明新增的两个
+/// 查询方法本身正确，证明不了 handler 真的用对了它们 —— 旧实现正是"方法没问题、
+/// 调用点查错列"才让守卫整块跳过的。
+mod admin_key_guard_e2e {
+    use super::*;
+    use crate::core::types::error::CoreError;
+    use crate::server::handlers::mock_generator::MockIdGenerator;
+    use crate::server::handlers::mock_tests::MockConfigManagementService;
+    use crate::server::handlers::ApiHandlers;
+    use std::sync::Mutex;
+
+    const ADMIN_KEY_ID: &str = "guard-admin-key";
+    const ADMIN_SECRET: &str = "guard-admin-secret";
+
+    #[derive(Clone)]
+    struct KeyRow {
+        id: Uuid,
+        key_id: String,
+        secret_hash: String,
+        role: ApiKeyRole,
+        enabled: bool,
+    }
+
+    #[derive(Clone, Default)]
+    struct StatefulKeyRepo {
+        rows: Arc<Mutex<Vec<KeyRow>>>,
+    }
+
+    impl StatefulKeyRepo {
+        fn hash_secret(secret: &str) -> String {
+            let mut hasher = sha2::Sha256::default();
+            hasher.update(secret);
+            hex::encode(hasher.finalize())
+        }
+
+        /// 预置唯一一行启用中的全局 admin key（workspace_id 为 NULL 的场景）。
+        fn with_single_enabled_admin() -> (Self, Uuid) {
+            let row = KeyRow {
+                id: Uuid::new_v4(),
+                key_id: ADMIN_KEY_ID.to_string(),
+                secret_hash: Self::hash_secret(ADMIN_SECRET),
+                role: ApiKeyRole::Admin,
+                enabled: true,
+            };
+            let row_id = row.id;
+            (
+                Self {
+                    rows: Arc::new(Mutex::new(vec![row])),
+                },
+                row_id,
+            )
+        }
+
+        /// 行 → 对外 `ApiKeyInfo`（`get_api_key_by_id` 与
+        /// `find_api_key_by_row_id` 共用，避免重复整段 struct 字面量）。
+        fn to_info(row: &KeyRow) -> ApiKeyInfo {
+            ApiKeyInfo {
+                id: row.id,
+                key_id: row.key_id.clone(),
+                key_prefix: "nino_".to_string(),
+                role: row.role.clone(),
+                workspace_id: None,
+                name: "stateful row".to_string(),
+                description: None,
+                rate_limit: 10000,
+                enabled: row.enabled,
+                expires_at: None,
+                last_used_at: None,
+                created_at: chrono::Utc::now().naive_utc(),
+            }
+        }
+
+        /// 观察某行的 `enabled`，用于断言"守卫生效时删除根本没执行"。
+        fn enabled_of(&self, id: Uuid) -> Option<bool> {
+            self.rows
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| r.enabled)
+        }
+    }
+
+    #[async_trait]
+    impl ApiKeyRepository for StatefulKeyRepo {
+        async fn create_api_key(&self, _request: &CreateApiKeyRequest) -> Result<ApiKeyWithSecret> {
+            Err(CoreError::InternalError(
+                "create_api_key not needed by admin guard e2e".to_string(),
+            ))
+        }
+
+        async fn get_api_key_by_id(&self, key_id: &str) -> Result<Option<ApiKeyInfo>> {
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.key_id == key_id)
+                .map(Self::to_info))
+        }
+
+        async fn validate_api_key(
+            &self,
+            key_id: &str,
+            key_secret: &str,
+        ) -> Result<Option<(Option<Uuid>, ApiKeyRole)>> {
+            use subtle::ConstantTimeEq;
+            let incoming = Self::hash_secret(key_secret);
+            let hit = self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.key_id == key_id)
+                .filter(|r| r.enabled)
+                .filter(|r| r.secret_hash.as_bytes().ct_eq(incoming.as_bytes()).into())
+                .map(|r| (None, r.role.clone()));
+            Ok(hit)
+        }
+
+        async fn list_api_keys(
+            &self,
+            _workspace_id: Uuid,
+            _limit: Option<u32>,
+            _offset: Option<u32>,
+        ) -> Result<Vec<ApiKeyInfo>> {
+            // 刻意恒空：真实库里全局 admin 行的 `workspace_id` 是 NULL，
+            // `NULL = nil_uuid` 在 SQL 中不成立 —— 这正是旧守卫失效的根因。
+            // 若实现退回 `list_api_keys` 扫描，这里会让它再次看不见 admin 行。
+            Ok(vec![])
+        }
+
+        /// `ApiHandlers::revoke_api_key` 的落库副作用：置 `enabled = false`。
+        async fn delete_api_key(&self, id: Uuid) -> Result<()> {
+            if let Some(row) = self.rows.lock().unwrap().iter_mut().find(|r| r.id == id) {
+                row.enabled = false;
+            }
+            Ok(())
+        }
+
+        async fn revoke_api_key(&self, id: Uuid) -> Result<()> {
+            self.delete_api_key(id).await
+        }
+
+        async fn update_last_used(&self, _id: Uuid) -> Result<()> {
+            Ok(())
+        }
+
+        async fn get_admin_api_key(&self, _workspace_id: Uuid) -> Result<Option<ApiKeyInfo>> {
+            Ok(None)
+        }
+
+        async fn count_api_keys(&self, _workspace_id: Uuid) -> Result<u64> {
+            Ok(0)
+        }
+
+        /// 按行主键取行 —— 守卫的新查询路径（旧实现错用 `get_api_key_by_id`）。
+        async fn find_api_key_by_row_id(&self, id: Uuid) -> Result<Option<ApiKeyInfo>> {
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.id == id)
+                .map(Self::to_info))
+        }
+
+        /// SQL 侧计数：`role = 'admin' AND enabled = true`，不带 workspace 过滤。
+        async fn count_admin_keys(&self) -> Result<u64> {
+            let count = self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.role == ApiKeyRole::Admin && r.enabled)
+                .count();
+            Ok(count as u64)
+        }
+
+        async fn rotate_api_key(
+            &self,
+            _key_id: &str,
+            _grace_period_seconds: u64,
+        ) -> Result<ApiKeyWithSecret> {
+            Err(CoreError::InternalError(
+                "rotate_api_key not needed by admin guard e2e".to_string(),
+            ))
+        }
+
+        async fn get_keys_older_than(&self, _age_threshold_days: i64) -> Result<Vec<ApiKeyInfo>> {
+            Ok(vec![])
+        }
+    }
+
+    fn build_handlers(repo: Arc<StatefulKeyRepo>) -> ApiHandlers {
+        let config_service: Arc<dyn crate::server::config::management::ConfigManagementService> =
+            Arc::new(MockConfigManagementService::new());
+        ApiHandlers::with_api_key_repository(Arc::new(MockIdGenerator::new()), config_service, repo)
+    }
+
+    /// T005：唯一启用中的 admin key 不得被吊销，且吊销被拒后该凭证仍可用。
+    ///
+    /// 缺陷形态：旧守卫用 `get_api_key_by_id(&id.to_string())` 查行 UUID
+    /// （该方法按 `key_id` 过滤）→ 恒 `None` → 整块守卫跳过 → 管理员把自己
+    /// 锁在系统外。本用例在 handler 集成层覆盖，不断言 HTTP 状态码。
+    #[tokio::test]
+    async fn e2e_revoke_only_admin_key_is_rejected_and_key_still_usable() {
+        let (repo, admin_row_id) = StatefulKeyRepo::with_single_enabled_admin();
+        let repo = Arc::new(repo);
+        let handlers = build_handlers(repo.clone());
+
+        let err = handlers.revoke_api_key(admin_row_id).await.unwrap_err();
+        assert!(
+            matches!(err, CoreError::AuthenticationError(_)),
+            "唯一启用中的 admin key 必须被拒绝吊销，实际返回：{err:?}"
+        );
+
+        // 守卫拦截 → 删除路径未执行 → 行仍启用（旧实现会把它置为 disabled）
+        assert_eq!(
+            repo.enabled_of(admin_row_id),
+            Some(true),
+            "守卫拦截后 key 行的 enabled 必须仍为 true"
+        );
+
+        // 该 admin secret 仍可正常认证：把"守卫误放行"这条回归也钉住
+        let auth = ApiKeyAuth::new(repo.clone(), true);
+        assert!(
+            auth.validate_key(ADMIN_KEY_ID, ADMIN_SECRET)
+                .await
+                .is_some(),
+            "守卫拦截后 admin 凭证必须仍可通过校验"
+        );
     }
 }

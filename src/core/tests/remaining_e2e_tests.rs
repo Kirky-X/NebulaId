@@ -678,6 +678,20 @@ impl ApiKeyRepository for CrudApiKeyRepo {
             .count() as u64)
     }
 
+    /// admin 守卫用：按行主键 `id` 回查 key 行（本 mock 的 `keys` 就以 `id` 为键）。
+    async fn find_api_key_by_row_id(&self, id: Uuid) -> Result<Option<ApiKeyInfo>> {
+        Ok(self.keys.lock().unwrap().get(&id).cloned())
+    }
+
+    /// admin 守卫用：统计启用中的全局 admin key（`role == Admin && enabled`）。
+    async fn count_admin_keys(&self) -> Result<u64> {
+        let keys = self.keys.lock().unwrap();
+        Ok(keys
+            .values()
+            .filter(|k| k.role == ApiKeyRole::Admin && k.enabled)
+            .count() as u64)
+    }
+
     async fn rotate_api_key(
         &self,
         _key_id: &str,
@@ -775,6 +789,16 @@ impl ApiKeyRepository for RecordingApiKeyRepo {
     }
 
     async fn count_api_keys(&self, _workspace_id: Uuid) -> Result<u64> {
+        Ok(0)
+    }
+
+    /// admin 守卫用：本 mock 不保存 key 行，与 get_api_key_by_id 一致的空调用桩。
+    async fn find_api_key_by_row_id(&self, _id: Uuid) -> Result<Option<ApiKeyInfo>> {
+        Ok(None)
+    }
+
+    /// admin 守卫用：本 mock 不保存 key 行，与 count_api_keys 一致的空调用桩。
+    async fn count_admin_keys(&self) -> Result<u64> {
         Ok(0)
     }
 

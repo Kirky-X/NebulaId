@@ -1164,6 +1164,19 @@ mod tests {
                 Ok(0)
             }
 
+            /// admin 守卫用：本 mock 只做 bin 装配，与 get_api_key_by_id 一样返回 None。
+            async fn find_api_key_by_row_id(
+                &self,
+                _id: uuid::Uuid,
+            ) -> nebulaid::core::types::Result<Option<database::ApiKeyInfo>> {
+                Ok(None)
+            }
+
+            /// admin 守卫用：本 mock 只做 bin 装配，与 count_api_keys 一样返回 0。
+            async fn count_admin_keys(&self) -> nebulaid::core::types::Result<u64> {
+                Ok(0)
+            }
+
             async fn rotate_api_key(
                 &self,
                 _key_id: &str,
@@ -1300,6 +1313,19 @@ mod tests {
                 &self,
                 _workspace_id: uuid::Uuid,
             ) -> nebulaid::core::types::Result<u64> {
+                Ok(0)
+            }
+
+            /// admin 守卫用：本 mock 只做 bin 装配，与 get_api_key_by_id 一样返回 None。
+            async fn find_api_key_by_row_id(
+                &self,
+                _id: uuid::Uuid,
+            ) -> nebulaid::core::types::Result<Option<database::ApiKeyInfo>> {
+                Ok(None)
+            }
+
+            /// admin 守卫用：本 mock 只做 bin 装配，与 count_api_keys 一样返回 0。
+            async fn count_admin_keys(&self) -> nebulaid::core::types::Result<u64> {
                 Ok(0)
             }
 

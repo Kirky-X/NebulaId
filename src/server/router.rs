@@ -1085,6 +1085,16 @@ mod tests {
                 Ok(0)
             }
 
+            /// admin 守卫用：本 mock 是无状态装配桩，与 get_api_key_by_id 一致返回 None。
+            async fn find_api_key_by_row_id(&self, _id: Uuid) -> Result<Option<ApiKeyInfo>> {
+                Ok(None)
+            }
+
+            /// admin 守卫用：本 mock 是无状态装配桩，与 count_api_keys 一致返回 0。
+            async fn count_admin_keys(&self) -> Result<u64> {
+                Ok(0)
+            }
+
             async fn rotate_api_key(
                 &self,
                 _key_id: &str,

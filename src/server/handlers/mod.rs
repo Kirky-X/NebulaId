@@ -224,6 +224,8 @@ pub(crate) mod mock_tests {
             async fn update_last_used(&self, id: Uuid) -> Result<()>;
             async fn get_admin_api_key(&self, workspace_id: Uuid) -> Result<Option<ApiKeyInfo>>;
             async fn count_api_keys(&self, workspace_id: Uuid) -> Result<u64>;
+            async fn find_api_key_by_row_id(&self, id: Uuid) -> Result<Option<ApiKeyInfo>>;
+            async fn count_admin_keys(&self) -> Result<u64>;
             async fn rotate_api_key(&self, key_id: &str, grace_period_seconds: u64) -> Result<ApiKeyWithSecret>;
             async fn get_keys_older_than(&self, age_threshold_days: i64) -> Result<Vec<ApiKeyInfo>>;
         }
@@ -1385,8 +1387,10 @@ pub(crate) mod mock_tests {
         let target_id = Uuid::new_v4();
         let mut mock_repo = MockApiKeyRepository::new();
         mock_repo
-            .expect_get_api_key_by_id()
+            .expect_find_api_key_by_row_id()
             .return_once(|_| Ok(Some(test_api_key(ApiKeyRole::User))));
+        // User 角色不触发 admin 计数守卫。
+        mock_repo.expect_count_admin_keys().never();
         mock_repo.expect_delete_api_key().return_once(|_| Ok(()));
         let handlers =
             create_mock_handlers_with_repo(MockConfigManagementService::new(), mock_repo);
@@ -1402,11 +1406,11 @@ pub(crate) mod mock_tests {
         let admin_key = test_api_key(ApiKeyRole::Admin);
         let mut mock_repo = MockApiKeyRepository::new();
         mock_repo
-            .expect_get_api_key_by_id()
+            .expect_find_api_key_by_row_id()
             .return_once(|_| Ok(Some(admin_key)));
-        mock_repo
-            .expect_list_api_keys()
-            .return_once(|_, _, _| Ok(vec![test_api_key(ApiKeyRole::Admin)]));
+        mock_repo.expect_count_admin_keys().return_once(|| Ok(1));
+        // 守卫生效时不得触及删除路径。
+        mock_repo.expect_delete_api_key().never();
         let handlers =
             create_mock_handlers_with_repo(MockConfigManagementService::new(), mock_repo);
         let result = handlers.revoke_api_key(Uuid::new_v4()).await;

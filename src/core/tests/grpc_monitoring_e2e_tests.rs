@@ -605,6 +605,17 @@ mod grpc_auth {
         async fn count_api_keys(&self, _workspace_id: Uuid) -> crate::core::types::Result<u64> {
             Ok(0)
         }
+        /// admin 守卫用：本桩只做 gRPC 凭证校验，与 get_api_key_by_id 一样返回 None。
+        async fn find_api_key_by_row_id(
+            &self,
+            _id: Uuid,
+        ) -> crate::core::types::Result<Option<ApiKeyInfo>> {
+            Ok(None)
+        }
+        /// admin 守卫用：本桩只做 gRPC 凭证校验，与 count_api_keys 一样返回 0。
+        async fn count_admin_keys(&self) -> crate::core::types::Result<u64> {
+            Ok(0)
+        }
         async fn rotate_api_key(
             &self,
             _key_id: &str,
@@ -828,6 +839,17 @@ mod grpc_auth {
             Ok(None)
         }
         async fn count_api_keys(&self, _workspace_id: Uuid) -> crate::core::types::Result<u64> {
+            Ok(0)
+        }
+        /// admin 守卫用：本桩的 `key_row` 行 id 每次调用随机生成，无稳定主键可回查。
+        async fn find_api_key_by_row_id(
+            &self,
+            _id: Uuid,
+        ) -> crate::core::types::Result<Option<ApiKeyInfo>> {
+            Ok(None)
+        }
+        /// admin 守卫用：本桩的 `key_row` 角色恒为 User，启用中的 admin key 真实计数为 0。
+        async fn count_admin_keys(&self) -> crate::core::types::Result<u64> {
             Ok(0)
         }
         async fn rotate_api_key(

@@ -1110,6 +1110,17 @@ impl crate::core::database::ApiKeyRepository for NoopApiKeyRepo {
     async fn count_api_keys(&self, _workspace_id: uuid::Uuid) -> crate::core::types::Result<u64> {
         Ok(0)
     }
+    /// admin 守卫用：本仓储只做路由装配，与其余方法一样返回空值。
+    async fn find_api_key_by_row_id(
+        &self,
+        _id: uuid::Uuid,
+    ) -> crate::core::types::Result<Option<crate::core::database::ApiKeyInfo>> {
+        Ok(None)
+    }
+    /// admin 守卫用：本仓储只做路由装配，与 count_api_keys 一样返回空值。
+    async fn count_admin_keys(&self) -> crate::core::types::Result<u64> {
+        Ok(0)
+    }
     async fn rotate_api_key(
         &self,
         _key_id: &str,

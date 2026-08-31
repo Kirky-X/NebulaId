@@ -176,6 +176,20 @@ pub trait ApiKeyRepository: Send + Sync {
     async fn get_admin_api_key(&self, workspace_id: Uuid) -> Result<Option<ApiKeyInfo>>;
     async fn count_api_keys(&self, workspace_id: Uuid) -> Result<u64>;
 
+    /// 按**行主键 `id`**（UUID）查找 API Key。
+    ///
+    /// 与 [`Self::get_api_key_by_id`] 的区别是入参语义：后者的 `key_id` 是对外凭证标识
+    /// （`niad_…` 字符串，按 `ApiKeyColumn::KeyId` 过滤），本方法按主键 `id` 过滤。
+    /// handler 层拿到的是行 UUID，必须用本方法——用 `get_api_key_by_id` 会永远查不到。
+    async fn find_api_key_by_row_id(&self, id: Uuid) -> Result<Option<ApiKeyInfo>>;
+
+    /// 统计**启用中的全局 admin key** 数量（`role = 'admin' AND enabled = true`）。
+    ///
+    /// 不带 workspace 过滤是有意为之：全局 admin key 的 `workspace_id` 为 NULL，
+    /// `list_api_keys` 的 `WorkspaceId.eq(...)` 谓词匹配不到 NULL 行，因此不能复用
+    /// 它来做 admin 计数（那是"最后一个 admin key"守卫恒不生效的根因）。
+    async fn count_admin_keys(&self) -> Result<u64>;
+
     /// 轮换 API Key（生成新密钥，保持旧密钥在宽限期内有效）
     async fn rotate_api_key(
         &self,
@@ -231,6 +245,25 @@ impl SeaOrmRepository {
     /// Get the underlying database connection for advanced operations
     pub fn get_db_connection(&self) -> &dbnexus::sea_orm::DatabaseConnection {
         &self.db
+    }
+
+    /// 构造"按行主键取 api_keys 行"的查询。
+    ///
+    /// 抽成函数是为了可测试性：`MockDatabase` 不执行 SQL，桩数据无法区分
+    /// `find_by_id` 与 `filter(KeyId.eq(..))`，只有把查询构造暴露出来，测试才能
+    /// 用 `build(DatabaseBackend::Postgres)` 钉住谓词。
+    fn select_api_key_by_row_id(id: Uuid) -> dbnexus::sea_orm::Select<ApiKeyEntity> {
+        ApiKeyEntity::find().filter(ApiKeyColumn::Id.eq(id))
+    }
+
+    /// 构造"启用中的全局 admin key"查询（admin 守卫的计数来源）。
+    ///
+    /// 谓词只有 `role` 与 `enabled` 两项 —— 不能加 `workspace_id` 过滤，全局 admin key
+    /// 的该列是 NULL。
+    fn select_enabled_admin_keys() -> dbnexus::sea_orm::Select<ApiKeyEntity> {
+        ApiKeyEntity::find()
+            .filter(ApiKeyColumn::Role.eq(ApiKeyRole::Admin.to_string()))
+            .filter(ApiKeyColumn::Enabled.eq(true))
     }
 
     /// Hash API key using Argon2id (replaces SHA256, CWE-916 fix).
@@ -1160,6 +1193,24 @@ impl ApiKeyRepository for SeaOrmRepository {
         Ok(count)
     }
 
+    async fn find_api_key_by_row_id(&self, id: Uuid) -> Result<Option<ApiKeyInfo>> {
+        let result = Self::select_api_key_by_row_id(id)
+            .one(&self.db)
+            .await
+            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+
+        Ok(result.map(|m| m.into()))
+    }
+
+    async fn count_admin_keys(&self) -> Result<u64> {
+        let count = Self::select_enabled_admin_keys()
+            .count(&self.db)
+            .await
+            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+
+        Ok(count)
+    }
+
     async fn rotate_api_key(
         &self,
         key_id: &str,
@@ -1767,7 +1818,7 @@ mod mock_tests {
     use crate::core::types::id::{AlgorithmType, IdFormat};
     use chrono::NaiveDateTime;
     use dbnexus::sea_orm::{
-        DatabaseBackend, DbErr, MockDatabase, MockExecResult, MockRow, RuntimeErr,
+        DatabaseBackend, DbErr, MockDatabase, MockExecResult, MockRow, QueryTrait, RuntimeErr,
     };
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -3410,6 +3461,143 @@ mod mock_tests {
 
         let count = repo.count_api_keys(ws_id).await.unwrap();
         assert_eq!(count, 5);
+    }
+
+    /// 取 SQL 的 WHERE 子句部分。
+    ///
+    /// 谓词断言必须只看 WHERE：`SELECT` 的投影列里必然出现 `"api_keys"."key_id"` 与
+    /// `"api_keys"."workspace_id"`，拿整条 SQL 做"不含某列"的负向断言会误报。
+    fn where_clause(sql: &str) -> &str {
+        sql.split_once("WHERE")
+            .map(|(_, tail)| tail)
+            .unwrap_or_else(|| panic!("statement has no WHERE clause: {sql}"))
+    }
+
+    /// T001：`find_api_key_by_row_id` 必须按主键 `id` 过滤，而不是按 `key_id` 字符串
+    /// （后者是 `get_api_key_by_id` 的语义，也是原 admin 守卫恒不生效的根因）。
+    ///
+    /// `MockDatabase` 不执行 SQL —— 桩数据无法区分两种过滤方式，所以谓词正确性只能
+    /// 从构造出的语句上断言。绑定值用整条语句的 `Debug` 渲染做包含检查，兼容
+    /// 内联字面量与 `$n` 占位两种渲染形式。
+    #[test]
+    fn test_select_api_key_by_row_id_filters_primary_key_not_key_id() {
+        let id = fixed_uuid(11);
+        let stmt = SeaOrmRepository::select_api_key_by_row_id(id).build(DatabaseBackend::Postgres);
+        let sql = stmt.to_string();
+        let predicate = where_clause(&sql);
+
+        assert!(
+            predicate.contains(r#""api_keys"."id" = "#),
+            "row-id lookup must filter on the primary key, got: {predicate}"
+        );
+        assert!(
+            !predicate.contains("key_id"),
+            "row-id lookup must not filter on key_id, got: {predicate}"
+        );
+        assert!(
+            format!("{stmt:?}").contains(&id.to_string()),
+            "bound value must be exactly the requested row id, got: {stmt:?}"
+        );
+    }
+
+    /// T001：admin 计数谓词只允许 `role` + `enabled` 两项，且值正确。
+    ///
+    /// `workspace_id` 一旦出现在谓词里就会重蹈根因：全局 admin key 的该列是 NULL，
+    /// `WorkspaceId.eq(..)` 永远匹配不到它。
+    #[test]
+    fn test_select_enabled_admin_keys_filters_role_and_enabled_without_workspace() {
+        let stmt = SeaOrmRepository::select_enabled_admin_keys().build(DatabaseBackend::Postgres);
+        let sql = stmt.to_string();
+        let predicate = where_clause(&sql);
+
+        assert!(
+            predicate.contains(r#""api_keys"."role" = "#),
+            "admin count must filter on role, got: {predicate}"
+        );
+        assert!(
+            predicate.contains(r#""api_keys"."enabled" = "#),
+            "admin count must filter on enabled, got: {predicate}"
+        );
+        assert!(
+            !predicate.contains("workspace_id"),
+            "admin count must not filter by workspace_id (admin keys have NULL workspace), got: {predicate}"
+        );
+        let rendered = format!("{stmt:?}");
+        assert!(
+            rendered.contains(r#"String(Some("admin"))"#) && rendered.contains("Bool(Some(true))"),
+            "bound values must be role='admin' AND enabled=true, got {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_find_api_key_by_row_id_returns_mapped_row() {
+        let id = fixed_uuid(12);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![sample_api_key_model(id, "niad_row", "admin")]])
+            .into_connection();
+        let repo = make_repo(db);
+
+        let key = repo
+            .find_api_key_by_row_id(id)
+            .await
+            .unwrap()
+            .expect("row must be returned");
+        assert_eq!(
+            key.id, id,
+            "returned row must carry the requested primary key"
+        );
+        assert_eq!(key.key_id, "niad_row");
+    }
+
+    #[tokio::test]
+    async fn test_find_api_key_by_row_id_returns_none_when_row_missing() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<ApiKeyModel>::new()])
+            .into_connection();
+        let repo = make_repo(db);
+
+        assert!(
+            repo.find_api_key_by_row_id(fixed_uuid(13))
+                .await
+                .unwrap()
+                .is_none(),
+            "missing row must map to None, not an error"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_count_admin_keys_returns_stacked_count() {
+        let mut count_row: BTreeMap<String, dbnexus::sea_orm::Value> = BTreeMap::new();
+        count_row.insert(
+            "num_items".to_string(),
+            dbnexus::sea_orm::Value::BigInt(Some(2)),
+        );
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![count_row]])
+            .into_connection();
+        let repo = make_repo(db);
+
+        assert_eq!(
+            repo.count_admin_keys().await.unwrap(),
+            2,
+            "SQL COUNT result must be propagated as-is"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_count_admin_keys_propagates_db_error() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_errors(vec![DbErr::Query(RuntimeErr::Internal(
+                "connection reset".to_string(),
+            ))])
+            .into_connection();
+        let repo = make_repo(db);
+
+        let err = repo.count_admin_keys().await.unwrap_err();
+        assert!(
+            matches!(err, crate::core::CoreError::DatabaseError(ref m) if m.contains("connection reset")),
+            "count error must surface as DatabaseError, got {err:?}"
+        );
     }
 
     #[tokio::test]

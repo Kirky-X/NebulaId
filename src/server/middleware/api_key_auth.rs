@@ -594,6 +594,16 @@ mod tests {
             Ok(0)
         }
 
+        /// admin 守卫用：本 mock 只存 key_id→(hash, role)，无行主键也无 enabled，恒查不到行。
+        async fn find_api_key_by_row_id(&self, _id: Uuid) -> Result<Option<ApiKeyInfo>> {
+            Ok(None)
+        }
+
+        /// admin 守卫用：本 mock 不建模 key 行，与 count_api_keys 一致返回 0。
+        async fn count_admin_keys(&self) -> Result<u64> {
+            Ok(0)
+        }
+
         async fn rotate_api_key(
             &self,
             _key_id: &str,

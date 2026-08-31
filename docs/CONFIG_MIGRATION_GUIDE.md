@@ -737,6 +737,11 @@ WHERE role = 'admin' AND enabled;
   （`[api]` / `[auth]` / `[workspace]` / `[test]` / `[concurrency]` / `[performance]`，没有
   `[app]`、`[database]`）。用服务端加载器读它会报 `unknown field \`api\``；这在收紧之前同样
   会失败（其 `[auth]` 缺必填的 `enabled`），不属于新行为。
-- `config/config_test.toml` 写的是 `engine = "sqlite"`，而 `src/core/database/connection.rs:384`
-  的 sqlite 分支锁在 `#[cfg(feature = "sqlite")]` 内，该 feature 目前不可构建（见 `AGENTS.md`
-  的构建说明）。该文件能通过解析与 `validate`，却不可能被真实二进制跑起来。
+- `config/config_test.toml` 写的是 `engine = "sqlite"`，而 `sqlite` feature 目前根本
+  不可构建：`Cargo.toml:32` 定义 `sqlite = ["dbnexus/sqlite"]`，默认已开启
+  `dbnexus/postgres`，两者同时开启会命中 dbnexus 的 `compile_error!`（"cannot enable both
+  client-side (sqlite/duckdb) and server-side (postgres/mysql) database features"），且
+  limiteron 硬依赖 `dbnexus/postgres`。运行时侧 `create_connection` 的 Sqlite 分支
+  （`src/core/database/connection.rs:90`）没有 feature 门控，只是把 `database` 当作 URL
+  传给 `Database::connect` —— 在没有 sqlite 驱动的构建里这一步必然失败。
+  该文件能通过解析与 `validate`，却不可能被真实二进制跑起来。

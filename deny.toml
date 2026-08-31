@@ -41,57 +41,32 @@ allow = []
 deny = []
 skip = [
     # Web framework crates with multiple versions due to feature combinations
-    { crate = "axum", version = "*", reason = "Multiple feature combinations require different versions" },
-    { crate = "axum-core", version = "*", reason = "axum dependency requires specific version" },
-    { crate = "tower", version = "*", reason = "HTTP middleware library with different feature requirements" },
     { crate = "tower-http", version = "*", reason = "HTTP middleware extension" },
-    { crate = "tokio-rustls", version = "*", reason = "TLS integration for tokio" },
     { crate = "winnow", version = "*", reason = "Parser combinator library" },
     
     # Common dependencies with different feature requirements
     { crate = "base64", version = "*", reason = "Common dependency with different feature requirements" },
     { crate = "bitflags", version = "*", reason = "Common dependency with different feature requirements" },
     { crate = "hashbrown", version = "*", reason = "Common dependency with different feature requirements" },
-    { crate = "indexmap", version = "*", reason = "Common dependency with different feature requirements" },
-    { crate = "webpki-roots", version = "*", reason = "WebPKI root certificates" },
     
     # Macro crates often have multiple versions
     { crate = "darling", version = "*", reason = "Macro dependency with different feature requirements" },
     { crate = "darling_core", version = "*", reason = "Macro dependency with different feature requirements" },
     { crate = "darling_macro", version = "*", reason = "Macro dependency with different feature requirements" },
-    { crate = "derive_more", version = "*", reason = "Macro dependency with different feature requirements" },
-    { crate = "derive_more-impl", version = "*", reason = "Macro dependency with different feature requirements" },
-    { crate = "thiserror", version = "*", reason = "Macro dependency with different feature requirements" },
-    { crate = "thiserror-impl", version = "*", reason = "Macro dependency with different feature requirements" },
     
     # Cryptography and networking crates
     { crate = "getrandom", version = "*", reason = "Cryptography dependency with different feature requirements" },
     { crate = "rand", version = "*", reason = "Random number generation with different feature requirements" },
-    { crate = "rand_chacha", version = "*", reason = "Random number generation dependency" },
     { crate = "rand_core", version = "*", reason = "Random number generation dependency" },
-    { crate = "rustls", version = "*", reason = "TLS library with different feature combinations" },
-    { crate = "rustls-webpki", version = "*", reason = "TLS library dependency" },
-    { crate = "socket2", version = "*", reason = "Networking dependency with different feature requirements" },
     
     # Apple platform crates
     { crate = "core-foundation", version = "*", reason = "Apple platform dependency" },
     
-    # Windows platform crates (all variants)
+    # Windows platform crates
     { crate = "windows-sys", version = "*", reason = "Windows platform dependency" },
-    { crate = "windows-targets", version = "*", reason = "Windows platform dependency" },
-    { crate = "windows_aarch64_gnullvm", version = "*", reason = "Windows platform dependency" },
-    { crate = "windows_aarch64_msvc", version = "*", reason = "Windows platform dependency" },
-    { crate = "windows_i686_gnu", version = "*", reason = "Windows platform dependency" },
-    { crate = "windows_i686_msvc", version = "*", reason = "Windows platform dependency" },
-    { crate = "windows_i686_gnullvm", version = "*", reason = "Windows platform dependency" },
-    { crate = "windows_x86_64_gnu", version = "*", reason = "Windows platform dependency" },
-    { crate = "windows_x86_64_gnullvm", version = "*", reason = "Windows platform dependency" },
-    { crate = "windows_x86_64_msvc", version = "*", reason = "Windows platform dependency" },
     
     # Other common dependencies
-    { crate = "hashlink", version = "*", reason = "Common dependency with different feature requirements" },
     { crate = "heck", version = "*", reason = "Common dependency with different feature requirements" },
-    { crate = "matchit", version = "*", reason = "Common dependency with different feature requirements" },
 ]
 
 [advisories]

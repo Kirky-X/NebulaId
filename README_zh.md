@@ -758,8 +758,9 @@ export NEBULA_API_KEY_SALT="..."        # [auth].api_key_salt 回退值
 | `batch_generate.max_batch_size` | u32 | `100` | ✅ | 必须在 1..=10000 |
 
 默认值即 `Config::default()` 的取值；「文件内必填」表示该字段
-是否带 serde 默认值。17 个配置结构体全部带 `#[serde(deny_unknown_fields)]`，未知键的严重后果
-与缺必填键完全一样：两者都让**整份**文件解析失败并终止启动，段名拼错不再可能被静默丢弃。
+是否带 serde 默认值。17 个配置结构体全部带 `#[serde(deny_unknown_fields)]`，
+未知键的严重后果与缺必填键完全一样：两者都让**整份**文件解析失败并终止启动，
+段名拼错不再可能被静默丢弃。
 
 ### 校验规则
 

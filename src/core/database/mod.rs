@@ -24,7 +24,8 @@ mod workspace_entity;
 
 pub use crate::core::types::id::{AlgorithmType, IdFormat};
 pub use api_key_entity::{
-    ApiKey, ApiKeyInfo, ApiKeyResponse, ApiKeyRole, ApiKeyWithSecret, CreateApiKeyRequest,
+    ApiKey, ApiKeyInfo, ApiKeyResponse, ApiKeyRole, ApiKeyWithSecret, AuthenticatedKey,
+    CreateApiKeyRequest,
 };
 pub use biz_tag_entity::{BizTag, CreateBizTagRequest, UpdateBizTagRequest};
 pub use connection::create_connection;

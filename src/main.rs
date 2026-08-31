@@ -1121,8 +1121,7 @@ mod tests {
                 &self,
                 _key_id: &str,
                 _key_secret: &str,
-            ) -> nebulaid::core::types::Result<Option<(Option<uuid::Uuid>, database::ApiKeyRole)>>
-            {
+            ) -> nebulaid::core::types::Result<Option<database::AuthenticatedKey>> {
                 Ok(None)
             }
 
@@ -1273,8 +1272,7 @@ mod tests {
                 &self,
                 _key_id: &str,
                 _key_secret: &str,
-            ) -> nebulaid::core::types::Result<Option<(Option<uuid::Uuid>, database::ApiKeyRole)>>
-            {
+            ) -> nebulaid::core::types::Result<Option<database::AuthenticatedKey>> {
                 Ok(None)
             }
 

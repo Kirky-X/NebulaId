@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::core::database::ApiKeyRepository;
+use crate::core::database::{ApiKeyRepository, AuthenticatedKey};
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{Request, StatusCode};
@@ -154,11 +154,7 @@ impl ApiKeyAuth {
         crate::server::middleware::utils::get_client_ip(req, &self.trusted_proxies)
     }
 
-    pub async fn validate_key(
-        &self,
-        key_id: &str,
-        key_secret: &str,
-    ) -> Option<(Option<uuid::Uuid>, ApiKeyRole)> {
+    pub async fn validate_key(&self, key_id: &str, key_secret: &str) -> Option<AuthenticatedKey> {
         #[cfg(feature = "garrison-auth")]
         if let Some(cache) = self.cache.as_ref() {
             if let Some(identity) = cache.get(key_id, key_secret).await {
@@ -167,11 +163,17 @@ impl ApiKeyAuth {
                     key_id_prefix = %key_id.chars().take(8).collect::<String>(),
                     "authentication served from cache"
                 );
-                return Some((identity.workspace_id, identity.role));
+                // 缓存里只可能存在"当代凭证命中"的决策（宽限期命中不写缓存，
+                // 见下方写入侧保护），所以从缓存恢复一律标记为非宽限期。
+                return Some(AuthenticatedKey {
+                    workspace_id: identity.workspace_id,
+                    role: identity.role,
+                    used_previous_credential: false,
+                });
             }
         }
 
-        let (workspace_id, role) = self
+        let auth = self
             .repo
             .validate_api_key(key_id, key_secret)
             .await
@@ -199,8 +201,8 @@ impl ApiKeyAuth {
                         key_id,
                         key_secret,
                         &crate::server::auth::CachedIdentity {
-                            workspace_id,
-                            role: role.clone(),
+                            workspace_id: auth.workspace_id,
+                            role: auth.role.clone(),
                             key_expires_at: info
                                 .expires_at
                                 .map(|expires_at| expires_at.and_utc().timestamp()),
@@ -210,7 +212,7 @@ impl ApiKeyAuth {
             }
         }
 
-        Some((workspace_id, role))
+        Some(auth)
     }
 
     pub async fn auth_middleware(&self, mut req: Request<Body>, next: Next) -> Response {
@@ -337,9 +339,9 @@ impl ApiKeyAuth {
         };
 
         match self.validate_key(&key_id, &key_secret).await {
-            Some((workspace_id, role)) => {
-                req.extensions_mut().insert(workspace_id);
-                req.extensions_mut().insert(role.clone());
+            Some(auth) => {
+                req.extensions_mut().insert(auth.workspace_id);
+                req.extensions_mut().insert(auth.role.clone());
 
                 // Log successful authentication
                 let duration = start_time.elapsed().as_millis() as u64;
@@ -347,7 +349,7 @@ impl ApiKeyAuth {
                 tracing::info!(
                     event = "auth_success",
                     key_id_prefix = %key_id_prefix,
-                    role = ?role,
+                    role = ?auth.role,
                     client_ip = %client_ip,
                     duration_ms = duration,
                     "{}",
@@ -544,7 +546,7 @@ mod tests {
             &self,
             key_id: &str,
             key_secret: &str,
-        ) -> Result<Option<(Option<uuid::Uuid>, ApiKeyRole)>> {
+        ) -> Result<Option<AuthenticatedKey>> {
             use subtle::ConstantTimeEq;
             if let Some((expected_secret, role)) = self.keys.get(key_id) {
                 let incoming_hash = MockApiKeyRepo::hash_secret(key_secret);
@@ -559,7 +561,11 @@ mod tests {
                     } else {
                         Some(uuid::Uuid::nil())
                     };
-                    return Ok(Some((workspace_id, role.clone())));
+                    return Ok(Some(AuthenticatedKey {
+                        workspace_id,
+                        role: role.clone(),
+                        used_previous_credential: false,
+                    }));
                 }
             }
             Ok(None)
@@ -641,12 +647,12 @@ mod tests {
         // Test valid user key
         let result = auth.validate_key("test-key-id", "test-secret").await;
         assert!(result.is_some());
-        assert_eq!(result.unwrap().1, ApiKeyRole::User);
+        assert_eq!(result.unwrap().role, ApiKeyRole::User);
 
         // Test valid admin key
         let result = auth.validate_key("admin-key", "admin-secret").await;
         assert!(result.is_some());
-        assert_eq!(result.unwrap().1, ApiKeyRole::Admin);
+        assert_eq!(result.unwrap().role, ApiKeyRole::Admin);
 
         // Test invalid secret
         let result = auth.validate_key("test-key-id", "wrong-secret").await;
@@ -1037,10 +1043,10 @@ mod tests {
         let auth = ApiKeyAuth::new(repo, true);
         let result = auth.validate_key("admin-key", "admin-secret").await;
         assert!(result.is_some());
-        let (workspace_id, role) = result.unwrap();
-        assert_eq!(role, ApiKeyRole::Admin);
+        let auth = result.unwrap();
+        assert_eq!(auth.role, ApiKeyRole::Admin);
         // Admin keys are global (workspace_id = None).
-        assert!(workspace_id.is_none());
+        assert!(auth.workspace_id.is_none());
     }
 
     #[tokio::test]
@@ -1049,11 +1055,11 @@ mod tests {
         let auth = ApiKeyAuth::new(repo, true);
         let result = auth.validate_key("user-key", "user-secret").await;
         assert!(result.is_some());
-        let (workspace_id, role) = result.unwrap();
-        assert_eq!(role, ApiKeyRole::User);
+        let auth = result.unwrap();
+        assert_eq!(auth.role, ApiKeyRole::User);
         // User keys are bound to a workspace (Some(Uuid::nil()) per mock).
-        assert!(workspace_id.is_some());
-        assert_eq!(workspace_id.unwrap(), Uuid::nil());
+        assert!(auth.workspace_id.is_some());
+        assert_eq!(auth.workspace_id.unwrap(), Uuid::nil());
     }
 
     // ===== 解析唯一实现（converge T026①）=====

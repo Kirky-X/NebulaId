@@ -1052,7 +1052,7 @@ mod tests {
                 &self,
                 _key_id: &str,
                 _key_secret: &str,
-            ) -> Result<Option<(Option<Uuid>, crate::core::database::ApiKeyRole)>> {
+            ) -> Result<Option<crate::core::database::AuthenticatedKey>> {
                 Ok(None)
             }
 

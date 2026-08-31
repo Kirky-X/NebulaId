@@ -82,6 +82,19 @@ pub struct ApiKey {
 
 pub type ApiKeyInfo = ApiKey;
 
+/// `validate_api_key` 的判定结果。
+///
+/// 取代原来的 `(workspace_id, role)` 元组：宽限期生效后，"认证通过"不再是一个
+/// 二元结论 —— 命中的是当代凭证还是上一代凭证，决定调用方能否缓存该决策。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AuthenticatedKey {
+    pub workspace_id: Option<Uuid>,
+    pub role: ApiKeyRole,
+    /// `true` 表示只有 `prev_secret_hash`（宽限期内的旧凭证）校验通过。
+    /// 该结果有时效性（受 `rotate_expires_at` 约束），不得进入认证决策缓存。
+    pub used_previous_credential: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ApiKeyRole {
     Admin,

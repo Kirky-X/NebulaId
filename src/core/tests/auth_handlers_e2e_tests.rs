@@ -60,7 +60,8 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::core::database::{
-    ApiKeyInfo, ApiKeyRepository, ApiKeyResponse, ApiKeyRole, ApiKeyWithSecret, CreateApiKeyRequest,
+    ApiKeyInfo, ApiKeyRepository, ApiKeyResponse, ApiKeyRole, ApiKeyWithSecret, AuthenticatedKey,
+    CreateApiKeyRequest,
 };
 use crate::core::types::Result;
 use crate::server::middleware::api_key_auth::{
@@ -116,7 +117,7 @@ impl ApiKeyRepository for MockApiKeyRepo {
         &self,
         key_id: &str,
         key_secret: &str,
-    ) -> Result<Option<(Option<Uuid>, ApiKeyRole)>> {
+    ) -> Result<Option<AuthenticatedKey>> {
         use subtle::ConstantTimeEq;
         if let Some((expected_secret, role)) = self.keys.get(key_id) {
             let incoming_hash = MockApiKeyRepo::hash_secret(key_secret);
@@ -132,7 +133,11 @@ impl ApiKeyRepository for MockApiKeyRepo {
                 } else {
                     Some(Uuid::nil())
                 };
-                return Ok(Some((workspace_id, role.clone())));
+                return Ok(Some(AuthenticatedKey {
+                    workspace_id,
+                    role: role.clone(),
+                    used_previous_credential: false,
+                }));
             }
         }
         Ok(None)
@@ -759,8 +764,16 @@ mod biz_tag_tenant_isolation {
         let mut repo = MockApiKeyRepository::new();
         repo.expect_validate_api_key().returning(move |key_id, _| {
             Ok(match key_id {
-                "user-a" => Some((Some(workspace_a()), ApiKeyRole::User)),
-                "admin-k" => Some((None, ApiKeyRole::Admin)),
+                "user-a" => Some(AuthenticatedKey {
+                    workspace_id: Some(workspace_a()),
+                    role: ApiKeyRole::User,
+                    used_previous_credential: false,
+                }),
+                "admin-k" => Some(AuthenticatedKey {
+                    workspace_id: None,
+                    role: ApiKeyRole::Admin,
+                    used_previous_credential: false,
+                }),
                 _ => None,
             })
         });
@@ -1030,7 +1043,11 @@ mod auth_cache_wiring {
                     return Ok(None);
                 }
                 if key_id == "cache-key" && key_secret == "cache-secret" {
-                    Ok(Some((Some(workspace_id), ApiKeyRole::User)))
+                    Ok(Some(AuthenticatedKey {
+                        workspace_id: Some(workspace_id),
+                        role: ApiKeyRole::User,
+                        used_previous_credential: false,
+                    }))
                 } else {
                     Ok(None)
                 }
@@ -1366,7 +1383,7 @@ mod admin_key_guard_e2e {
             &self,
             key_id: &str,
             key_secret: &str,
-        ) -> Result<Option<(Option<Uuid>, ApiKeyRole)>> {
+        ) -> Result<Option<AuthenticatedKey>> {
             use subtle::ConstantTimeEq;
             let incoming = Self::hash_secret(key_secret);
             let hit = self
@@ -1377,7 +1394,11 @@ mod admin_key_guard_e2e {
                 .find(|r| r.key_id == key_id)
                 .filter(|r| r.enabled)
                 .filter(|r| r.secret_hash.as_bytes().ct_eq(incoming.as_bytes()).into())
-                .map(|r| (None, r.role.clone()));
+                .map(|r| AuthenticatedKey {
+                    workspace_id: None,
+                    role: r.role.clone(),
+                    used_previous_credential: false,
+                });
             Ok(hit)
         }
 

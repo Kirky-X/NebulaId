@@ -55,7 +55,7 @@ use validator::Validate;
 
 use crate::core::database::{
     ApiKey, ApiKeyInfo, ApiKeyRepository, ApiKeyResponse, ApiKeyRole, ApiKeyWithSecret,
-    CreateApiKeyRequest,
+    AuthenticatedKey, CreateApiKeyRequest,
 };
 use crate::core::monitoring::core::{
     AlertManager, AlertNotificationSender, AlertRule, AlertSeverity, AlertingConfig,
@@ -611,7 +611,7 @@ impl ApiKeyRepository for CrudApiKeyRepo {
         &self,
         _key_id: &str,
         _key_secret: &str,
-    ) -> Result<Option<(Option<Uuid>, ApiKeyRole)>> {
+    ) -> Result<Option<AuthenticatedKey>> {
         // CRUD 测试不关注 validate
         Ok(None)
     }
@@ -759,7 +759,7 @@ impl ApiKeyRepository for RecordingApiKeyRepo {
         &self,
         _key_id: &str,
         _key_secret: &str,
-    ) -> Result<Option<(Option<Uuid>, ApiKeyRole)>> {
+    ) -> Result<Option<AuthenticatedKey>> {
         Ok(None)
     }
 

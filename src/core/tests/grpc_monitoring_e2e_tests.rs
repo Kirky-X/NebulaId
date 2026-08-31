@@ -543,7 +543,8 @@ async fn e2e_hot_reload_config_reload_failure_handled() {
 mod grpc_auth {
     use super::*;
     use crate::core::database::{
-        ApiKeyInfo, ApiKeyRepository, ApiKeyRole, ApiKeyWithSecret, CreateApiKeyRequest,
+        ApiKeyInfo, ApiKeyRepository, ApiKeyRole, ApiKeyWithSecret, AuthenticatedKey,
+        CreateApiKeyRequest,
     };
     use crate::core::types::CoreError;
     use crate::server::middleware::api_key_auth::ApiKeyAuth;
@@ -572,9 +573,13 @@ mod grpc_auth {
             &self,
             key_id: &str,
             _key_secret: &str,
-        ) -> crate::core::types::Result<Option<(Option<Uuid>, ApiKeyRole)>> {
+        ) -> crate::core::types::Result<Option<AuthenticatedKey>> {
             if key_id == "grpc-key" {
-                Ok(Some((Some(Uuid::new_v4()), ApiKeyRole::User)))
+                Ok(Some(AuthenticatedKey {
+                    workspace_id: Some(Uuid::new_v4()),
+                    role: ApiKeyRole::User,
+                    used_previous_credential: false,
+                }))
             } else {
                 Ok(None)
             }
@@ -796,7 +801,7 @@ mod grpc_auth {
             &self,
             key_id: &str,
             key_secret: &str,
-        ) -> crate::core::types::Result<Option<(Option<Uuid>, ApiKeyRole)>> {
+        ) -> crate::core::types::Result<Option<AuthenticatedKey>> {
             let row = self.get_api_key_by_id(key_id).await?;
             let Some(row) = row else {
                 return Ok(None);
@@ -813,7 +818,11 @@ mod grpc_auth {
             if key_secret != "grpc-secret" {
                 return Ok(None);
             }
-            Ok(Some((row.workspace_id, row.role)))
+            Ok(Some(AuthenticatedKey {
+                workspace_id: row.workspace_id,
+                role: row.role,
+                used_previous_credential: false,
+            }))
         }
         async fn list_api_keys(
             &self,

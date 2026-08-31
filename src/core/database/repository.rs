@@ -28,8 +28,8 @@ use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use crate::core::coordinator::{LockError, LockGuard};
 use crate::core::database::api_key_entity::{
     ActiveModel as ApiKeyActiveModel, ApiKey as ApiKeyInfo, ApiKeyResponse, ApiKeyRole,
-    ApiKeyWithSecret, Column as ApiKeyColumn, CreateApiKeyRequest, Entity as ApiKeyEntity,
-    Model as ApiKeyModel,
+    ApiKeyWithSecret, AuthenticatedKey, Column as ApiKeyColumn, CreateApiKeyRequest,
+    Entity as ApiKeyEntity, Model as ApiKeyModel,
 };
 use crate::core::database::biz_tag_entity::{
     ActiveModel as BizTagActiveModel, Column as BizTagColumn, Entity as BizTagEntity,
@@ -159,11 +159,16 @@ pub trait BizTagRepository: Send + Sync {
 pub trait ApiKeyRepository: Send + Sync {
     async fn create_api_key(&self, request: &CreateApiKeyRequest) -> Result<ApiKeyWithSecret>;
     async fn get_api_key_by_id(&self, key_id: &str) -> Result<Option<ApiKeyInfo>>;
+    /// 校验凭证并返回认证结果。
+    ///
+    /// 返回 `None` 表示不予采信（key 不存在、被禁用、已过期或两代凭证都不匹配）；
+    /// 返回 `Some` 时结果里的 `used_previous_credential` 说明命中的是当代凭证还是
+    /// 宽限期内的上一代凭证 —— 调用方必须据此决定是否可缓存该决策。
     async fn validate_api_key(
         &self,
         key_id: &str,
         key_secret: &str,
-    ) -> Result<Option<(Option<Uuid>, ApiKeyRole)>>; // workspace_id is Uuid
+    ) -> Result<Option<AuthenticatedKey>>;
     async fn list_api_keys(
         &self,
         workspace_id: Uuid,
@@ -319,6 +324,28 @@ impl SeaOrmRepository {
             updated_at: Set(now),
             ..Default::default()
         }
+    }
+
+    /// 列出一次请求允许尝试校验的凭证哈希：`(哈希, 是否为上一代)`，按顺序短路。
+    ///
+    /// 当代凭证永远排第一（常见路径只验一次）；上一代只有在**同时满足**
+    /// "`prev_secret_hash` 非 NULL" 与 "`rotate_expires_at > now`" 时才进入候选，
+    /// 因此到期时刻之后旧凭证立即不再被采信（惰性时间判定，无需清理任务）。
+    /// 抽成纯函数是为了把"候选只有几项"这一性质变成可断言的测试目标 ——
+    /// Argon2 校验次数无法从 `MockDatabase` 观测。
+    fn credential_candidates(model: &ApiKeyModel, now: NaiveDateTime) -> Vec<(String, bool)> {
+        let mut candidates = vec![(model.key_secret_hash.clone(), false)];
+
+        if let Some(prev_hash) = model.prev_secret_hash.as_ref() {
+            let window_open = model
+                .rotate_expires_at
+                .is_some_and(|expires_at| expires_at > now);
+            if window_open {
+                candidates.push((prev_hash.clone(), true));
+            }
+        }
+
+        candidates
     }
 
     /// Hash API key using Argon2id (replaces SHA256, CWE-916 fix).
@@ -1098,7 +1125,7 @@ impl ApiKeyRepository for SeaOrmRepository {
         &self,
         key_id: &str,
         key_secret: &str,
-    ) -> Result<Option<(Option<Uuid>, ApiKeyRole)>> {
+    ) -> Result<Option<AuthenticatedKey>> {
         let key_model = ApiKeyEntity::find()
             .filter(ApiKeyColumn::KeyId.eq(key_id))
             .one(&self.db)
@@ -1106,18 +1133,27 @@ impl ApiKeyRepository for SeaOrmRepository {
             .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
 
         if let Some(model) = key_model {
+            // 同一次请求只用一个 `now`：key 有效期判定与宽限期窗口判定共享同一时刻，
+            // 否则可能出现"按两个时钟一个通过一个拒绝"的自相矛盾结论。
+            let now = chrono::Utc::now().naive_utc();
+
             if !model.enabled {
                 return Ok(None);
             }
 
             if let Some(expires_at) = model.expires_at {
-                if expires_at < chrono::Utc::now().naive_utc() {
+                if expires_at < now {
                     return Ok(None);
                 }
             }
 
             // Argon2 verify_key 内部使用 constant-time 比较，等价于 subtle::ConstantTimeEq
-            if self.verify_key(key_id, key_secret, &model.key_secret_hash) {
+            for (stored_hash, used_previous_credential) in Self::credential_candidates(&model, now)
+            {
+                if !self.verify_key(key_id, key_secret, &stored_hash) {
+                    continue;
+                }
+
                 let _ = self.update_last_used(model.id).await;
                 let role: ApiKeyRole = model.role.clone().into();
                 tracing::debug!(
@@ -1125,10 +1161,15 @@ impl ApiKeyRepository for SeaOrmRepository {
                     key_id = %key_id,
                     db_role = %model.role,
                     converted_role = ?role,
+                    used_previous_credential,
                     "{}",
                     t!("log.core.database.repository.api_key_role_conversion")
                 );
-                return Ok(Some((model.workspace_id, role)));
+                return Ok(Some(AuthenticatedKey {
+                    workspace_id: model.workspace_id,
+                    role,
+                    used_previous_credential,
+                }));
             }
         }
 
@@ -3372,6 +3413,156 @@ mod mock_tests {
         assert!(result.is_none(), "wrong secret must not validate");
     }
 
+    /// 造一行"轮换后带宽限期"的 key：两代凭证都是真实 Argon2 哈希，
+    /// 因为 `validate_api_key` 走的是密码学校验，桩里放占位串永远验不过。
+    fn grace_rotated_model(
+        repo: &SeaOrmRepository,
+        id: Uuid,
+        key_id: &str,
+        new_secret: &str,
+        old_secret: Option<&str>,
+        rotate_expires_at: Option<NaiveDateTime>,
+    ) -> ApiKeyModel {
+        api_key_entity::Model {
+            key_secret_hash: repo.hash_key(key_id, new_secret).unwrap(),
+            prev_secret_hash: old_secret.map(|s| repo.hash_key(key_id, s).unwrap()),
+            rotate_expires_at,
+            ..sample_api_key_model(id, key_id, "admin")
+        }
+    }
+
+    fn grace_window_from_now(seconds: i64) -> NaiveDateTime {
+        chrono::Utc::now().naive_utc() + chrono::Duration::seconds(seconds)
+    }
+
+    /// T008：宽限期内旧凭证必须仍然可用，并且要标记为"命中的是上一代凭证"
+    /// （T010 据此跳过认证决策缓存，否则窗口关闭后缓存还会放行旧凭证）。
+    #[tokio::test]
+    async fn test_validate_within_grace_window_accepts_previous_credential() {
+        let id = fixed_uuid(140);
+        let db_repo = make_repo(empty_pg_connection());
+        let model = grace_rotated_model(
+            &db_repo,
+            id,
+            "niad_grace",
+            "new-secret-value-aaa",
+            Some("old-secret-value-bbb"),
+            Some(grace_window_from_now(3600)),
+        );
+        let repo = make_repo(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results(vec![vec![model]])
+                .into_connection(),
+        );
+
+        let auth = repo
+            .validate_api_key("niad_grace", "old-secret-value-bbb")
+            .await
+            .unwrap()
+            .expect("previous credential must authenticate inside the grace window");
+
+        assert!(
+            auth.used_previous_credential,
+            "hit on the grace-period credential must be flagged"
+        );
+        assert_eq!(auth.role, ApiKeyRole::Admin);
+        assert_eq!(auth.workspace_id, None);
+    }
+
+    /// T008：当前凭证命中时不得被标记为宽限期命中。
+    #[tokio::test]
+    async fn test_validate_current_credential_is_not_marked_as_grace() {
+        let id = fixed_uuid(141);
+        let db_repo = make_repo(empty_pg_connection());
+        let model = grace_rotated_model(
+            &db_repo,
+            id,
+            "niad_grace",
+            "new-secret-value-aaa",
+            Some("old-secret-value-bbb"),
+            Some(grace_window_from_now(3600)),
+        );
+        let repo = make_repo(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results(vec![vec![model]])
+                .into_connection(),
+        );
+
+        let auth = repo
+            .validate_api_key("niad_grace", "new-secret-value-aaa")
+            .await
+            .unwrap()
+            .expect("current credential must authenticate");
+
+        assert!(
+            !auth.used_previous_credential,
+            "current credential must not be flagged as grace-period hit"
+        );
+    }
+
+    /// T008：`rotate_expires_at` 到期后旧凭证立即失效，但新凭证不受影响。
+    ///
+    /// "到期即断"是本变更的核心承诺 —— 只断旧凭证，不能把整把 key 一起判死。
+    #[tokio::test]
+    async fn test_validate_after_grace_expiry_rejects_previous_credential() {
+        let id = fixed_uuid(142);
+        let db_repo = make_repo(empty_pg_connection());
+        let model = grace_rotated_model(
+            &db_repo,
+            id,
+            "niad_grace",
+            "new-secret-value-aaa",
+            Some("old-secret-value-bbb"),
+            Some(grace_window_from_now(-1)),
+        );
+        let repo = make_repo(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results(vec![vec![model.clone()], vec![model]])
+                .into_connection(),
+        );
+
+        assert!(
+            repo.validate_api_key("niad_grace", "old-secret-value-bbb")
+                .await
+                .unwrap()
+                .is_none(),
+            "expired grace credential must be rejected"
+        );
+        let auth = repo
+            .validate_api_key("niad_grace", "new-secret-value-aaa")
+            .await
+            .unwrap()
+            .expect("key itself must stay usable after the window closes");
+        assert!(!auth.used_previous_credential);
+    }
+
+    /// T008：没有上一代凭证时只允许一次哈希校验（不得凭空开窗口）。
+    ///
+    /// 校验次数无法从 `MockDatabase` 观测，所以钉住候选列表本身：
+    /// 窗口时刻有效但 `prev_secret_hash` 为 NULL 时，候选必须只有当前哈希一项。
+    #[test]
+    fn test_validate_without_grace_window_only_checks_current_credential() {
+        let now = fixed_datetime(1_700_000_000);
+        let db_repo = make_repo(empty_pg_connection());
+        let model = grace_rotated_model(
+            &db_repo,
+            fixed_uuid(143),
+            "niad_never_rotated",
+            "new-secret-value-aaa",
+            None,
+            Some(now + chrono::Duration::seconds(3600)),
+        );
+
+        let candidates = SeaOrmRepository::credential_candidates(&model, now);
+
+        assert_eq!(
+            candidates.len(),
+            1,
+            "a NULL previous credential must not open a second verification window"
+        );
+        assert_eq!(candidates[0], (model.key_secret_hash.clone(), false));
+    }
+
     #[tokio::test]
     async fn test_api_key_list_returns_keys_for_workspace() {
         let ws_id = fixed_uuid(80);
@@ -3799,10 +3990,10 @@ mod mock_tests {
         );
     }
 
-    /// T007：宽限期秒数超出 `i64` 范围必须返回 `InvalidInput`，而不是 panic 或溢出回绕。
+    /// T007：宽限期秒数超出可表示范围必须返回 `InvalidInput`，而不是 panic 或溢出回绕。
     ///
-    /// 走完整的 `rotate_api_key` 才有意义 —— 桩只提供 1 个 SELECT 结果，
-    /// 若实现忽略该参数继续写库，`MockDatabase` 会因缺少第二个桩直接 panic。
+    /// 走完整的 `rotate_api_key` 才有意义 —— 桩只给 1 个 SELECT 结果，实现若忽略该
+    /// 参数继续写库，就会消费到空桩并返回 `DatabaseError` 而非 `InvalidInput`，本用例即失败。
     #[tokio::test]
     async fn test_rotate_with_out_of_range_grace_returns_invalid_input() {
         let id = fixed_uuid(98);

@@ -170,7 +170,7 @@ pub(crate) mod mock_tests {
     use crate::core::algorithm::AlgorithmMetricsSnapshot;
     use crate::core::database::{
         ApiKey, ApiKeyInfo, ApiKeyRepository, ApiKeyResponse as CoreApiKeyResponse, ApiKeyRole,
-        ApiKeyWithSecret, BizTag, CreateApiKeyRequest as CoreCreateApiKeyRequest,
+        ApiKeyWithSecret, AuthenticatedKey, BizTag, CreateApiKeyRequest as CoreCreateApiKeyRequest,
     };
     use crate::core::types::AlgorithmType;
     use crate::core::{CoreError, Result};
@@ -217,7 +217,7 @@ pub(crate) mod mock_tests {
         impl ApiKeyRepository for ApiKeyRepository {
             async fn create_api_key(&self, request: &CoreCreateApiKeyRequest) -> Result<ApiKeyWithSecret>;
             async fn get_api_key_by_id(&self, key_id: &str) -> Result<Option<ApiKeyInfo>>;
-            async fn validate_api_key(&self, key_id: &str, key_secret: &str) -> Result<Option<(Option<Uuid>, ApiKeyRole)>>;
+            async fn validate_api_key(&self, key_id: &str, key_secret: &str) -> Result<Option<AuthenticatedKey>>;
             async fn list_api_keys(&self, workspace_id: Uuid, limit: Option<u32>, offset: Option<u32>) -> Result<Vec<ApiKeyInfo>>;
             async fn delete_api_key(&self, id: Uuid) -> Result<()>;
             async fn revoke_api_key(&self, id: Uuid) -> Result<()>;

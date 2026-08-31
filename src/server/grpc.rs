@@ -128,10 +128,10 @@ impl GrpcServer {
         };
 
         match auth.validate_key(&key_id, &key_secret).await {
-            Some((workspace_id, role)) => {
+            Some(auth) => {
                 let mut request = request;
-                request.extensions_mut().insert(workspace_id);
-                request.extensions_mut().insert(role);
+                request.extensions_mut().insert(auth.workspace_id);
+                request.extensions_mut().insert(auth.role);
                 Ok(request)
             }
             // 校验 miss：回查 key 行区分「凭证无效」与「key 被禁用/已过期」

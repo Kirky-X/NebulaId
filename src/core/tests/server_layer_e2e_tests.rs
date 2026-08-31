@@ -1080,8 +1080,7 @@ impl crate::core::database::ApiKeyRepository for NoopApiKeyRepo {
         &self,
         _key_id: &str,
         _key_secret: &str,
-    ) -> crate::core::types::Result<Option<(Option<uuid::Uuid>, crate::core::database::ApiKeyRole)>>
-    {
+    ) -> crate::core::types::Result<Option<crate::core::database::AuthenticatedKey>> {
         Ok(None)
     }
     async fn list_api_keys(

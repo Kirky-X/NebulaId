@@ -549,6 +549,7 @@ mod tests {
                     created_at: chrono::Utc::now().naive_utc(),
                 },
                 key_secret: "mock_secret".to_string(),
+                grace_expires_at: None,
             })
         }
 

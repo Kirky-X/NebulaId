@@ -749,6 +749,8 @@ pub struct ApiKeyResponse {
 pub struct ApiKeyWithSecretResponse {
     pub key: ApiKeyResponse,
     pub key_secret: String, // Only returned on creation
+    /// 轮换后的宽限期截止时刻（RFC3339）；`null` = 未开启宽限期，上一代凭证即刻失效。
+    pub grace_expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

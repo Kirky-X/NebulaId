@@ -151,6 +151,7 @@ impl super::ApiHandlers {
                 created_at: naive_to_rfc3339(key_with_secret.key.created_at),
             },
             key_secret: key_with_secret.key_secret,
+            grace_expires_at: key_with_secret.grace_expires_at.map(naive_to_rfc3339),
         })
     }
 
@@ -316,6 +317,7 @@ impl super::ApiHandlers {
                 created_at: naive_to_rfc3339(key_with_secret.key.created_at),
             },
             key_secret: key_with_secret.key_secret,
+            grace_expires_at: key_with_secret.grace_expires_at.map(naive_to_rfc3339),
         })
     }
 }

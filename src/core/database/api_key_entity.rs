@@ -183,6 +183,10 @@ pub struct ApiKeyResponse {
 pub struct ApiKeyWithSecret {
     pub key: ApiKeyResponse,
     pub key_secret: String,
+    /// 本次轮换后的宽限期截止时刻（UTC）；`None` = 未开启宽限期（默认）或新建 key。
+    ///
+    /// 调用方据此知道上一代凭证何时彻底失效（T012）。
+    pub grace_expires_at: Option<DateTime>,
 }
 
 impl From<Model> for ApiKey {

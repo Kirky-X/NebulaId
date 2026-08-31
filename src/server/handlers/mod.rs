@@ -306,6 +306,7 @@ pub(crate) mod mock_tests {
                 created_at: chrono::Utc::now().naive_utc(),
             },
             key_secret: "test-secret-value-12345".to_string(),
+            grace_expires_at: None,
         }
     }
 
@@ -1452,6 +1453,44 @@ pub(crate) mod mock_tests {
         assert!(result.is_ok());
         let response = result.unwrap();
         assert!(!response.key_secret.is_empty());
+        assert_eq!(
+            response.grace_expires_at, None,
+            "未开启宽限期（默认）时不得回显截止时间"
+        );
+    }
+
+    /// T012：调用方需要知道上一代凭证何时彻底失效，否则只能靠猜 TTL。
+    #[tokio::test]
+    async fn test_rotate_response_exposes_grace_expiry() {
+        let mut with_grace = test_api_key_with_secret();
+        with_grace.grace_expires_at =
+            Some(chrono::Utc::now().naive_utc() + chrono::Duration::hours(1));
+        let mut mock_repo = MockApiKeyRepository::new();
+        mock_repo
+            .expect_rotate_api_key()
+            .return_once(|_, _| Ok(with_grace));
+        let handlers =
+            create_mock_handlers_with_repo(MockConfigManagementService::new(), mock_repo);
+
+        let response = handlers
+            .rotate_api_key("nino_test-key-id")
+            .await
+            .expect("轮换应成功");
+        let echoed = response
+            .grace_expires_at
+            .expect("开启宽限期时必须回显截止时间");
+        let parsed = chrono::DateTime::parse_from_rfc3339(&echoed)
+            .unwrap_or_else(|e| panic!("{echoed} 不是 RFC3339: {e}"));
+        assert!(
+            parsed > chrono::Utc::now(),
+            "截止时间必须晚于当前时间，实际 {echoed}"
+        );
+        // naive UTC → RFC3339 不得按本地时区偏移，否则跨时区部署时回显值失真
+        assert_eq!(
+            parsed.offset(),
+            &chrono::FixedOffset::east_opt(0).expect("UTC"),
+            "截止时间必须以 UTC 表示，实际 {echoed}"
+        );
     }
 
     // ========== Key Rotation + Shutdown Tests (2) ==========

@@ -153,6 +153,7 @@ impl super::ApiHandlers {
                 created_at: naive_to_rfc3339(user_key.key.created_at),
             },
             key_secret: user_key.key_secret,
+            grace_expires_at: user_key.grace_expires_at.map(naive_to_rfc3339),
         })
     }
 
@@ -248,6 +249,7 @@ mod tests {
                 created_at: chrono::Utc::now().naive_utc(),
             },
             key_secret: "test-secret-value-12345".to_string(),
+            grace_expires_at: None,
         }
     }
 

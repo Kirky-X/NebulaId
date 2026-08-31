@@ -1106,6 +1106,8 @@ impl ApiKeyRepository for SeaOrmRepository {
                 created_at: inserted.created_at,
             },
             key_secret,
+            // 新建 key 没有上一代凭证，宽限期概念不适用
+            grace_expires_at: None,
         };
 
         Ok(response)
@@ -1363,6 +1365,9 @@ impl ApiKeyRepository for SeaOrmRepository {
                 created_at: updated.created_at,
             },
             key_secret: new_secret,
+            // 与写入 `rotate_expires_at` 列的值同源：调用方看到的截止时间
+            // 必须等于落库的截止时间，而不是重新推导一次。
+            grace_expires_at: rotate_expires_at,
         })
     }
 
@@ -4006,6 +4011,48 @@ mod mock_tests {
         assert!(
             matches!(err, crate::core::CoreError::InvalidInput(ref m) if !m.is_empty()),
             "out-of-range grace must be rejected as InvalidInput, got {err:?}"
+        );
+    }
+
+    /// T012：`grace > 0` 时轮换必须把**实际写入的**窗口截止时刻回传给调用方，
+    /// 响应体据此回显，调用方才知道上一代凭证何时彻底失效。
+    #[tokio::test]
+    async fn test_rotate_returns_grace_expiry_to_caller() {
+        let id = fixed_uuid(144);
+        let model = sample_api_key_model(id, "niad_echo", "admin");
+        let repo = make_repo(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                // 1st = 轮换前 SELECT，2nd = UPDATE ... RETURNING
+                .append_query_results(vec![vec![model.clone()], vec![model]])
+                .into_connection(),
+        );
+
+        let rotated = repo.rotate_api_key("niad_echo", 3600).await.unwrap();
+        let expires_at = rotated
+            .grace_expires_at
+            .expect("grace > 0 必须回传宽限期截止时刻");
+        let offset = (expires_at - chrono::Utc::now().naive_utc()).num_seconds();
+        assert!(
+            (3595..=3605).contains(&offset),
+            "回传时刻应为 now + 3600s，实际偏移 {offset}s"
+        );
+    }
+
+    /// T012：关闭宽限期（默认）时不得回传一个并不存在的窗口。
+    #[tokio::test]
+    async fn test_rotate_without_grace_returns_no_expiry() {
+        let id = fixed_uuid(145);
+        let model = sample_api_key_model(id, "niad_nograce", "admin");
+        let repo = make_repo(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results(vec![vec![model.clone()], vec![model]])
+                .into_connection(),
+        );
+
+        let rotated = repo.rotate_api_key("niad_nograce", 0).await.unwrap();
+        assert_eq!(
+            rotated.grace_expires_at, None,
+            "grace = 0 时不得回传宽限期截止时刻"
         );
     }
 

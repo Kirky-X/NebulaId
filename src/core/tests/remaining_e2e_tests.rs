@@ -597,6 +597,7 @@ impl ApiKeyRepository for CrudApiKeyRepo {
                 created_at: info.created_at,
             },
             key_secret,
+            grace_expires_at: None,
         })
     }
 
@@ -751,6 +752,7 @@ impl ApiKeyRepository for RecordingApiKeyRepo {
                 created_at: chrono::Utc::now().naive_utc(),
             },
             key_secret: "mock-secret".to_string(),
+            grace_expires_at: None,
         })
     }
 
@@ -827,6 +829,7 @@ impl ApiKeyRepository for RecordingApiKeyRepo {
                 created_at: chrono::Utc::now().naive_utc(),
             },
             key_secret: "rotated-secret".to_string(),
+            grace_expires_at: None,
         })
     }
 

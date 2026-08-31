@@ -124,6 +124,20 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
     Ok(db)
 }
 
+/// 幂等地给 `nebula_id.api_keys` 补齐宽限期两列（存量库升级路径）。
+///
+/// 新库由 `run_migrations` 里的 `CREATE TABLE` 直接带列，本语句对它们是 no-op
+/// （`ADD COLUMN IF NOT EXISTS`）。两列都可空，因此不需要回填存量行。
+///
+/// 抽成独立函数是测试接缝：sea-orm 2.0 的 `MockDatabase` 不记录
+/// `execute_unprepared` 的 SQL，只有把语句构造分离出来，才能对列名与幂等子句断言。
+pub(crate) fn api_keys_grace_period_alter_sql() -> String {
+    format!(
+        r#"ALTER TABLE {}.api_keys ADD COLUMN IF NOT EXISTS prev_secret_hash VARCHAR(128), ADD COLUMN IF NOT EXISTS rotate_expires_at TIMESTAMP"#,
+        NEBULA_SCHEMA
+    )
+}
+
 /// Auto-create schema and tables for Nebula ID
 pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
     info!("{}", t!("log.core.database.connection.running_migrations"));
@@ -160,6 +174,8 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             key_id VARCHAR(64) NOT NULL UNIQUE,
             key_secret_hash VARCHAR(128) NOT NULL,
+            prev_secret_hash VARCHAR(128),
+            rotate_expires_at TIMESTAMP,
             key_prefix VARCHAR(16) NOT NULL,
             role VARCHAR(20) NOT NULL DEFAULT 'user',
             workspace_id UUID,  -- 允许 NULL，用于全局 admin key
@@ -287,6 +303,37 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
                         "Failed to create table (see server logs for details)".to_string(),
                     ));
                 }
+            }
+        }
+    }
+
+    // 宽限期两列的存量库迁移：新库的 CREATE TABLE 已带这两列，本语句对它们是 no-op。
+    // 失败必须终止启动 —— 缺列会让 validate_api_key 读不到宽限期而静默放行旧凭证。
+    match db
+        .execute_unprepared(&api_keys_grace_period_alter_sql())
+        .await
+    {
+        Ok(_) => tracing::info!(
+            event = "api_keys_grace_columns_ensured",
+            table = "api_keys",
+            "rotated-credential grace period columns ensured"
+        ),
+        Err(e) => {
+            let error_msg = e.to_string();
+            if error_msg.contains("already exists") || error_msg.contains("duplicate") {
+                info!(
+                    "{}",
+                    t!("log.core.database.connection.table_already_exists")
+                );
+            } else {
+                tracing::error!(
+                    event = "db_alter_table_failed",
+                    error = %error_msg,
+                    "database table alteration failed"
+                );
+                return Err(CoreError::DatabaseError(
+                    "Failed to alter table (see server logs for details)".to_string(),
+                ));
             }
         }
     }
@@ -556,22 +603,26 @@ mod tests {
 
     // ===== run_migrations with MockDatabase =====
 
-    fn mock_db_with_n_ok(n: usize) -> dbnexus::sea_orm::DatabaseConnection {
-        let results: Vec<MockExecResult> = (0..n)
+    /// n 个"执行成功"桩结果（每个 execute 消费一个）。
+    fn ok_exec_results(n: usize) -> Vec<MockExecResult> {
+        (0..n)
             .map(|_| MockExecResult {
                 last_insert_id: 0,
                 rows_affected: 0,
             })
-            .collect();
+            .collect()
+    }
+
+    fn mock_db_with_n_ok(n: usize) -> dbnexus::sea_orm::DatabaseConnection {
         MockDatabase::new(DatabaseBackend::Postgres)
-            .append_exec_results(results)
+            .append_exec_results(ok_exec_results(n))
             .into_connection()
     }
 
     #[tokio::test]
     async fn test_run_migrations_succeeds_when_all_executes_succeed() {
-        // 1 schema + 5 tables = 6 successful executes.
-        let db = mock_db_with_n_ok(6);
+        // 1 schema + 5 tables + 1 grace-column ALTER = 7 successful executes.
+        let db = mock_db_with_n_ok(7);
         let result = run_migrations(&db).await;
         assert!(
             result.is_ok(),
@@ -581,33 +632,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_logs_warn_but_continues_when_schema_create_fails() {
-        // Schema create fails (logged as warn), tables still succeed.
+        // Schema create fails (logged as warn), tables + grace-column ALTER still succeed.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "schema creation permission denied".to_string(),
             ))])
-            .append_exec_results(vec![
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-            ])
+            .append_exec_results(ok_exec_results(6))
             .into_connection();
         let result = run_migrations(&db).await;
         assert!(
@@ -652,35 +682,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_treats_already_exists_as_info_not_error() {
-        // Schema + first table succeed, second table fails with "already exists".
+        // Schema + first table succeed, second table fails with "already exists",
+        // remaining tables + the grace-column ALTER succeed.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_exec_results(vec![
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-            ])
+            .append_exec_results(ok_exec_results(2))
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "relation already exists".to_string(),
             ))])
-            .append_exec_results(vec![
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-            ])
+            .append_exec_results(ok_exec_results(4))
             .into_connection();
         let result = run_migrations(&db).await;
         assert!(
@@ -691,40 +700,70 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_treats_duplicate_as_info_not_error() {
-        // Schema + 2 tables succeed, third table fails with "duplicate".
+        // Schema + 2 tables succeed, third table fails with "duplicate",
+        // remaining table + the grace-column ALTER succeed.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_exec_results(vec![
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-            ])
+            .append_exec_results(ok_exec_results(3))
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "duplicate table name".to_string(),
             ))])
-            .append_exec_results(vec![
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-            ])
+            .append_exec_results(ok_exec_results(3))
             .into_connection();
         let result = run_migrations(&db).await;
         assert!(
             result.is_ok(),
             "'duplicate' should be logged as info, not propagate Err: {result:?}"
         );
+    }
+
+    /// T006：宽限期两列的存量库迁移必须是幂等的 `ADD COLUMN IF NOT EXISTS`，
+    /// 且两列可空（存量行无需回填）。
+    #[test]
+    fn test_run_migrations_emits_alter_table_for_grace_columns() {
+        let sql = api_keys_grace_period_alter_sql();
+
+        assert!(
+            sql.contains(&format!("ALTER TABLE {}.api_keys", NEBULA_SCHEMA)),
+            "ALTER must target the nebula_id api_keys table, got: {sql}"
+        );
+        assert!(
+            sql.contains("ADD COLUMN IF NOT EXISTS prev_secret_hash VARCHAR(128)"),
+            "prev_secret_hash must be added idempotently, got: {sql}"
+        );
+        assert!(
+            sql.contains("ADD COLUMN IF NOT EXISTS rotate_expires_at TIMESTAMP"),
+            "rotate_expires_at must be added idempotently, got: {sql}"
+        );
+        assert!(
+            !sql.contains("NOT NULL"),
+            "grace columns must stay nullable so existing rows need no backfill, got: {sql}"
+        );
+    }
+
+    /// T006：ALTER 硬失败必须终止迁移 —— 缺列会让 `validate_api_key` 读不到宽限期，
+    /// 从而静默按"无旧凭证"处理，属于必须响而不能兜底的故障。
+    #[tokio::test]
+    async fn test_run_migrations_returns_error_when_grace_column_alter_fails() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(ok_exec_results(6))
+            .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
+                "permission denied for table api_keys".to_string(),
+            ))])
+            .into_connection();
+
+        let err = run_migrations(&db).await.unwrap_err();
+        match err {
+            CoreError::DatabaseError(msg) => {
+                assert!(
+                    msg.contains("Failed to alter table"),
+                    "should report the alteration step, got: {msg}"
+                );
+                assert!(
+                    !msg.contains("permission denied"),
+                    "should NOT leak raw DB error details (CWE-209), got: {msg}"
+                );
+            }
+            other => panic!("expected DatabaseError for ALTER failure, got {other:?}"),
+        }
     }
 }

@@ -400,13 +400,13 @@ async fn e2e_database_sqlite_memory_connection_succeeds() {
 
 /// E2E-DB-002: run_migrations 在所有 execute 成功时返回 Ok（迁移创建表）。
 ///
-/// run_migrations 发出 1 个 CREATE SCHEMA + 5 个 CREATE TABLE = 6 个
-/// execute 语句。用 MockDatabase 模拟真实数据库全部成功执行，验证
-/// 迁移逻辑的完整性（所有表创建语句都被发出且无错误）。
+/// run_migrations 发出 1 个 CREATE SCHEMA + 5 个 CREATE TABLE + 1 个宽限期列的
+/// 幂等 ALTER = 7 个 execute 语句。用 MockDatabase 模拟真实数据库全部成功执行，
+/// 验证迁移逻辑的完整性（所有语句都被发出且无错误）。
 #[tokio::test]
 async fn e2e_database_run_migrations_creates_tables() {
-    // 1 schema + 5 tables = 6 个成功的 execute
-    let results: Vec<MockExecResult> = (0..6)
+    // 1 schema + 5 tables + 1 grace-column ALTER = 7 个成功的 execute
+    let results: Vec<MockExecResult> = (0..7)
         .map(|_| MockExecResult {
             last_insert_id: 0,
             rows_affected: 0,
@@ -419,7 +419,7 @@ async fn e2e_database_run_migrations_creates_tables() {
     let result = run_migrations(&db).await;
     assert!(
         result.is_ok(),
-        "迁移应成功创建 schema + 5 张表: {:?}",
+        "迁移应成功创建 schema + 5 张表并补齐宽限期列: {:?}",
         result.err()
     );
 }

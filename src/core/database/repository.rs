@@ -989,6 +989,9 @@ impl ApiKeyRepository for SeaOrmRepository {
             id: Set(Uuid::new_v4()),
             key_id: Set(full_key_id.clone()),
             key_secret_hash: Set(key_secret_hash),
+            // 新建的 key 没有上一代凭证，也不处于宽限期内。
+            prev_secret_hash: Set(None),
+            rotate_expires_at: Set(None),
             key_prefix: Set(prefix.to_string()),
             role: Set(request.role.clone().into()),
             workspace_id: Set(request.workspace_id),
@@ -1920,6 +1923,8 @@ mod mock_tests {
             key_secret_hash:
                 "$argon2id$v=19$m=19456,t=2,p=1$YWNldG9uAAAAAAAAAAAAAAAAAAA$N+1jKtFi1q5p9tLi0dK0pQ"
                     .to_string(),
+            prev_secret_hash: None,
+            rotate_expires_at: None,
             key_prefix: "niad_".to_string(),
             role: role.to_string(),
             workspace_id: None,

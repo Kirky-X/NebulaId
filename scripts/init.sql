@@ -90,6 +90,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
     workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,  -- Optional: NULL for global admin keys
     key_id VARCHAR(36) NOT NULL UNIQUE,  -- Public key identifier (UUID format)
     key_secret_hash VARCHAR(255) NOT NULL,  -- Argon2id PHC-format hash of key_secret (CWE-916 fix)
+    prev_secret_hash VARCHAR(128),  -- Previous-generation credential hash; non-NULL only after a rotation while auth.key_rotation_grace_period_seconds > 0
+    rotate_expires_at TIMESTAMP WITHOUT TIME ZONE,  -- Absolute end of the grace window; NULL means no grace period in effect
     key_prefix VARCHAR(8) NOT NULL,  -- niad_ for admin, nino_ for user
     role VARCHAR(20) NOT NULL DEFAULT 'user',
     name VARCHAR(255) NOT NULL,

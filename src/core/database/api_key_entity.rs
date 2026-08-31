@@ -26,6 +26,12 @@ pub struct Model {
     #[sea_orm(unique)]
     pub key_id: String,
     pub key_secret_hash: String,
+    /// 上一代凭证的哈希（与 `key_secret_hash` 同 Argon2 PHC 格式、同 salt）。
+    /// 仅在"开启宽限期的轮换"后写入；`grace = 0`（默认）或从未轮换时为 `None`。
+    pub prev_secret_hash: Option<String>,
+    /// 宽限期的绝对到期时刻（UTC）。`None` 表示当前没有生效中的宽限期；
+    /// 到期后 `prev_secret_hash` 不再被采信（惰性时间判定，见 `validate_api_key`）。
+    pub rotate_expires_at: Option<DateTime>,
     pub key_prefix: String,
     #[sea_orm(column_name = "role")]
     pub role: String,

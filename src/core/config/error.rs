@@ -24,6 +24,15 @@ pub enum ConfigError {
     #[error("Invalid configuration value: {}", _0)]
     InvalidValue(String),
 
+    /// 配置文件不存在（`io::ErrorKind::NotFound`）。
+    ///
+    /// 必须与 [`ConfigError::FileError`] 区分：启动期配置解析只允许在"文件确实不存
+    /// 在"时回落到内置默认值，而权限、磁盘、路径类型等 IO 失败不得被误判为缺失，
+    /// 否则坏配置会静默降级成默认配置。
+    #[error("Configuration file not found: {}", _0)]
+    FileNotFound(String),
+
+    /// 读取配置文件失败，但失败原因不是"文件不存在"（权限、IO 错误、路径不是文件等）。
     #[error("Configuration file error: {}", _0)]
     FileError(String),
 }

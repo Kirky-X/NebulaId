@@ -80,9 +80,23 @@ pub(crate) fn parse_toml_config(content: &str, source_id: &str) -> ConfigResult<
 impl Config {
     /// Load configuration from file with environment variable expansion
     /// Supports ${VAR_NAME} syntax for environment variable substitution
+    ///
+    /// # Errors
+    ///
+    /// * [`ConfigError::FileNotFound`] - 文件确实不存在，payload 为传入路径。
+    ///   这是唯一允许回落到内置默认值的情形（见 `resolve_startup_config`，T014）。
+    /// * [`ConfigError::FileError`] - 读取失败但原因不是缺失（权限、路径是目录、磁盘错误）。
+    /// * [`ConfigError::InvalidValue`] - TOML 解析、字段缺失/未知、或 `validate` 不通过。
     pub fn load_from_file(path: &str) -> ConfigResult<Self> {
-        let content =
-            std::fs::read_to_string(path).map_err(|e| ConfigError::FileError(e.to_string()))?;
+        // T013：只有 `NotFound` 才代表"文件不存在"，其余 IO 失败（权限、路径是目录、
+        // 磁盘错误）必须保持 FileError，避免被启动期判定误当作可降级为默认值的缺失。
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                ConfigError::FileNotFound(path.to_string())
+            } else {
+                ConfigError::FileError(format!("{}: {}", path, e))
+            }
+        })?;
 
         let expanded = Self::expand_env_vars(&content);
 
@@ -468,11 +482,31 @@ mod tests {
         );
     }
 
-    /// 文件不存在时应返回 FileError
+    /// 路径不存在时应返回 `FileNotFound`（T013：与 IO 类失败区分开）
     #[test]
-    fn load_from_file_missing_path_returns_file_error() {
+    fn test_load_from_file_missing_path_returns_file_not_found() {
         let result = Config::load_from_file("/nonexistent/path/no/such/file.toml");
-        assert!(matches!(result, Err(ConfigError::FileError(_))));
+        assert!(
+            matches!(result, Err(ConfigError::FileNotFound(_))),
+            "不存在的路径必须映射为 FileNotFound，实际为 {:?}",
+            result
+        );
+    }
+
+    /// 传入目录时读文件失败属于 IO 错误而非"文件不存在"，必须保持 `FileError`，
+    /// 否则权限/IO 类失败会被误判为文件缺失而在 `DefaultsBecauseMissing` 分支被静默降级。
+    ///
+    /// 跨平台实测：Windows 读取目录返回 `PermissionDenied`（os error 5），
+    /// Linux 返回 `IsADirectory` —— 两者都不是 `NotFound`，因此两条路径都落到 FileError。
+    #[test]
+    fn test_load_from_file_directory_path_still_returns_file_error() {
+        let dir = tempfile::tempdir().expect("创建临时目录应成功");
+        let result = Config::load_from_file(dir.path().to_str().unwrap());
+        assert!(
+            matches!(result, Err(ConfigError::FileError(_))),
+            "目录路径应返回 FileError 而非 FileNotFound，实际为 {:?}",
+            result
+        );
     }
 
     /// confers 替换 toml 后语义等价性：unknown fields 应被静默忽略（与 toml crate 默认行为一致）

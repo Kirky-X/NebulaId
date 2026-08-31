@@ -108,21 +108,23 @@ async fn e2e_config_load_from_file_with_env_expansion_and_validation() {
     std::env::remove_var("E2E_TEST_DB_PASSWORD");
 }
 
-/// E2E-CFG-002: Config::load_from_file 在文件不存在时返回 FileError。
+/// E2E-CFG-002: Config::load_from_file 在文件不存在时返回 FileNotFound（T013）。
 ///
-/// 覆盖功能场景穷举分析第 2.2 节"文件不存在 → FileError"。
+/// 覆盖功能场景穷举分析第 2.2 节"文件不存在 → FileNotFound"。
+/// T013 之前该场景与权限/IO 失败共用 FileError，启动期无法安全区分"可降级为默认
+/// 值的缺失"与"必须显性失败的读取错误"。
 #[tokio::test]
-async fn e2e_config_load_from_file_missing_returns_file_error() {
+async fn e2e_config_load_from_file_missing_returns_file_not_found() {
     let result = Config::load_from_file("/nonexistent/path/to/config.toml");
     match result {
-        Err(ConfigError::FileError(msg)) => {
+        Err(ConfigError::FileNotFound(msg)) => {
             assert!(
-                msg.contains("No such file") || msg.contains("Not found") || !msg.is_empty(),
-                "E2E: FileError should describe IO failure, got: {}",
+                msg.contains("/nonexistent/path/to/config.toml"),
+                "E2E: FileNotFound should name the missing path, got: {}",
                 msg
             );
         }
-        other => panic!("E2E: expected FileError, got {:?}", other),
+        other => panic!("E2E: expected FileNotFound, got {:?}", other),
     }
 }
 

@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 /// Redis configuration for caching
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RedisConfig {
     /// Redis connection URL
     pub url: String,

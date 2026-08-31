@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 /// Batch generation configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BatchGenerateConfig {
     /// Maximum batch size for bulk ID generation
     pub max_batch_size: u32,

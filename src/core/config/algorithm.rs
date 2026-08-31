@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 /// Segment algorithm configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SegmentAlgorithmConfig {
     /// Base step size for ID allocation
     pub base_step: u64,
@@ -43,6 +44,7 @@ impl Default for SegmentAlgorithmConfig {
 
 /// Snowflake algorithm configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SnowflakeAlgorithmConfig {
     /// Number of bits for datacenter ID
     pub datacenter_id_bits: u8,
@@ -85,6 +87,7 @@ impl Default for SnowflakeAlgorithmConfig {
 
 /// UUID v7 configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct UuidV8Config {
     /// Enable/disable UUID v7 generation
     pub enabled: bool,
@@ -98,6 +101,7 @@ impl Default for UuidV8Config {
 
 /// Algorithm configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AlgorithmConfig {
     /// Default algorithm type
     pub default: String,

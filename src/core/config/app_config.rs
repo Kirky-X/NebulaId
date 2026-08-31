@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 /// 热更新相关配置（T011）。
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct HotReloadSettings {
     /// 是否在启动时自动监视配置文件 mtime 并热加载。缺省 false：
     /// 行为与历史版本完全一致，仅能通过 POST /config/reload 手动触发。
@@ -32,6 +33,7 @@ pub struct HotReloadSettings {
 
 /// Complete application configuration
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// Application settings
     pub app: AppConfig,
@@ -150,7 +152,10 @@ impl Config {
             t!("log.core.config.app_config.config_expanded")
         );
         if let Some(auth_start) = expanded.find("[auth]") {
-            let auth_section = &expanded[auth_start..(auth_start + 100).min(expanded.len())];
+            // 按字符而非字节截断：`find` 返回的下标必定落在字符边界上，但
+            // `auth_start + 100` 不一定 —— 配置文件含中文注释或值时，字节切片会
+            // 在解析之前 panic（与日志级别无关）。
+            let auth_section: String = expanded[auth_start..].chars().take(100).collect();
             tracing::debug!(event = "auth_section", auth_section = %auth_section);
         }
 
@@ -479,10 +484,11 @@ mod tests {
         assert!(loaded.validate().is_ok());
 
         // 2) 字段从 TOML 缺省 → serde default 兜底 30
-        //    （完整 Config 的 TOML 中移除该键后反序列化，其余必填字段保持齐全）
-        let without_field = toml_content.replace(
-            "shutdown_timeout_seconds = 45",
-            "shutdown_timeout_removed = 45",
+        //    （必须整行删除而不是改名：T016 之后未知键会直接报错，改名不再等价于"字段缺省"）
+        let without_field = toml_content.replace("shutdown_timeout_seconds = 45\n", "");
+        assert!(
+            !without_field.contains("shutdown_timeout"),
+            "测试前提：该键必须整行消失"
         );
         let reloaded: Config = toml::from_str(&without_field).expect("缺省字段应走 serde default");
         assert_eq!(reloaded.app.shutdown_timeout_seconds, 30);
@@ -571,9 +577,12 @@ mod tests {
         assert_eq!(config.auth.key_rotation_grace_period_seconds, 3600);
     }
 
-    /// T014 判定矩阵第 1 行：文件存在但解析失败 —— 错误必须原样上抛，且带上
-    /// 缺失的字段名。形状复现历史事故：配置里把 `[algorithm.uuid_v8]` 误写成
-    /// `[algorithm.uuid_v7]`，此前会被静默降级为默认值并"正常启动"。
+    /// T014 判定矩阵第 1 行：文件存在但解析失败 —— 错误必须原样上抛，且点名出错的键。
+    /// 形状复现历史事故：配置里把 `[algorithm.uuid_v8]` 误写成 `[algorithm.uuid_v7]`，
+    /// 此前会被静默降级为默认值并"正常启动"。
+    ///
+    /// T016 加上 `deny_unknown_fields` 后，误写的段名在反序列化阶段就以 `unknown field`
+    /// 暴露 —— 比原先的 `missing field uuid_v8` 更早，且直接点名误写的键。
     #[test]
     fn test_resolve_startup_config_propagates_parse_error_with_field_name() {
         let original = Config::default();
@@ -588,8 +597,10 @@ mod tests {
         match result {
             Err(ConfigError::InvalidValue(msg)) => {
                 assert!(
-                    msg.contains("missing field") && msg.contains("uuid_v8"),
-                    "解析错误必须点名缺失字段，实际消息：{}",
+                    msg.contains("unknown field")
+                        && msg.contains("uuid_v7")
+                        && msg.contains("uuid_v8"),
+                    "解析错误必须点名误写字段和期望字段，实际消息：{}",
                     msg
                 );
             }
@@ -597,6 +608,31 @@ mod tests {
                 "文件存在但解析失败时必须 Err(InvalidValue)，实际为 {:?}",
                 other
             ),
+        }
+    }
+
+    /// 与上一个测试互补：`deny_unknown_fields` 不得吞掉"必填字段整段缺失"这一类诊断。
+    /// 删掉必填的 `[algorithm.uuid_v8]` 段后，错误消息必须点名缺失字段。
+    #[test]
+    fn test_resolve_startup_config_propagates_missing_field_error() {
+        let original = Config::default();
+        let toml_content = toml::to_string(&original).expect("序列化 Config 应成功");
+        let missing = toml_content.replace("[algorithm.uuid_v8]\nenabled = true\n", "");
+        assert_ne!(missing, toml_content, "测试前提：确实删除了整个段");
+
+        let temp = tempfile::NamedTempFile::new().expect("创建临时文件应成功");
+        std::fs::write(temp.path(), &missing).expect("写入临时文件应成功");
+
+        let result = resolve_startup_config(temp.path().to_str().unwrap(), true);
+        match result {
+            Err(ConfigError::InvalidValue(msg)) => {
+                assert!(
+                    msg.contains("missing field") && msg.contains("uuid_v8"),
+                    "解析错误必须点名缺失字段，实际消息：{}",
+                    msg
+                );
+            }
+            other => panic!("必填字段缺失时必须 Err(InvalidValue)，实际为 {:?}", other),
         }
     }
 
@@ -667,24 +703,146 @@ mod tests {
         );
     }
 
-    /// confers 替换 toml 后语义等价性：unknown fields 应被静默忽略（与 toml crate 默认行为一致）
+    /// T016 各用例统一注入的未知键名（取值本身无语义，只用于在错误消息里定位）。
+    const UNKNOWN_KEY: &str = "__bogus_key_for_test";
+
+    /// T016 测试夹具：在序列化后的默认配置里，向指定表头注入一个未知键。
     ///
-    /// 验证 confers 的 TOML→JSON 转换不会因 unknown fields 报错，
-    /// 且已知字段值正确解析。这是 M-3 审查项的边界覆盖。
+    /// `header` 形如 `[app]` 或 `[algorithm.segment]`；返回的文本除这一个键外与
+    /// 默认配置完全等价，因此断言失败时唯一的可能就是该未知键没被拒绝。
+    fn toml_with_unknown_key(header: &str) -> String {
+        let base = toml::to_string(&Config::default()).expect("序列化 Config 应成功");
+        // 首部补换行，使第一个表头（无前导 \n）也能被同一个 needle 命中
+        let padded = format!("\n{}", base);
+        let needle = format!("\n{}\n", header);
+        let injected = padded.replace(&needle, &format!("{}{} = true\n", needle, UNKNOWN_KEY));
+        assert_ne!(
+            injected, padded,
+            "测试前提：默认序列化文本中应存在表头 {}",
+            header
+        );
+        injected.replacen("\n", "", 1)
+    }
+
+    /// 断言指定 TOML 文本因未知键而加载失败，且消息点名该键。
+    fn assert_rejected_unknown_key(toml_content: &str, case: &str) {
+        let temp = tempfile::NamedTempFile::new().expect("创建临时文件应成功");
+        std::fs::write(temp.path(), toml_content).expect("写入临时文件应成功");
+
+        match Config::load_from_file(temp.path().to_str().unwrap()) {
+            Err(ConfigError::InvalidValue(msg)) => assert!(
+                msg.contains("unknown field") && msg.contains(UNKNOWN_KEY),
+                "{}：必须因未知键返回 unknown field，实际消息：{}",
+                case,
+                msg
+            ),
+            Ok(_) => panic!("{}：未知键必须导致加载失败，实际返回 Ok", case),
+            Err(other) => panic!("{}：应返回 InvalidValue，实际为 {:?}", case, other),
+        }
+    }
+
+    /// T016 新契约：顶层未知表必须被拒绝（覆盖 `Config` 自身的 deny_unknown_fields）。
+    ///
+    /// 本例替换旧测试 `load_from_file_ignores_unknown_fields_like_toml_crate` ——
+    /// 旧断言固化的正是被废弃的"静默忽略未知键"契约：段名拼错的整段配置会被无声丢弃。
     #[test]
-    fn load_from_file_ignores_unknown_fields_like_toml_crate() {
-        let original = Config::default();
-        let mut toml_content = toml::to_string(&original).expect("序列化 Config 应成功");
-        // 追加 unknown 顶层表和字段
-        toml_content.push_str("\n[unknown_section]\nunknown_key = \"ignored\"\nunknown_int = 42\n");
+    fn load_from_file_rejects_unknown_fields() {
+        let base = toml::to_string(&Config::default()).expect("序列化 Config 应成功");
+        // 未知键必须写在第一个表头之前，否则它会归属到上一个表而不是文档根
+        assert_rejected_unknown_key(&format!("{} = true\n\n{}", UNKNOWN_KEY, base), "顶层未知键");
+    }
+
+    /// T016 新契约：每一个配置段内的未知键都必须被拒绝。
+    ///
+    /// 逐段构造而非只测一段，是因为 `deny_unknown_fields` 必须落在全部 17 个结构体上
+    /// —— 只在 `Config` 加属性时，`[app]` 里的拼错叶键仍会被静默忽略。
+    #[test]
+    fn load_from_file_rejects_unknown_key_in_every_section() {
+        let sections = [
+            "[app]",
+            "[database]",
+            "[redis]",
+            "[etcd]",
+            "[auth]",
+            "[algorithm]",
+            "[algorithm.segment]",
+            "[algorithm.snowflake]",
+            "[algorithm.uuid_v8]",
+            "[monitoring]",
+            "[logging]",
+            "[rate_limit]",
+            "[tls]",
+            "[batch_generate]",
+            "[hot_reload]",
+        ];
+        for header in sections {
+            assert_rejected_unknown_key(&toml_with_unknown_key(header), header);
+        }
+
+        // `[[auth.api_keys]]` 的每一条是独立结构体，默认序列化里是空数组，
+        // 因此单独构造一条带未知键的完整条目。
+        let entry = format!(
+            "{{ key_id = \"k\", key_secret = \"s\", workspace = \"global\", \
+             role = \"user\", rate_limit = 1, name = \"n\", {} = true }}",
+            UNKNOWN_KEY
+        );
+        let base = toml::to_string(&Config::default()).expect("序列化 Config 应成功");
+        let injected = base.replacen("api_keys = []", &format!("api_keys = [{}]", entry), 1);
+        assert_ne!(
+            injected, base,
+            "测试前提：默认序列化文本中应存在 api_keys = []"
+        );
+        assert_rejected_unknown_key(&injected, "[[auth.api_keys]] 条目");
+    }
+
+    /// 回归：`[auth]` 段之后出现多字节字符时，加载不得 panic。
+    ///
+    /// 原实现在 `tracing::debug!` 之前就对 `[auth_start..auth_start+100]` 做字节切片，
+    /// 边界落在字符中间会 panic（`is not a char boundary`），且与日志级别无关。
+    /// 本用例把中文注释长度算准，使第 100 字节必定落在某个汉字的中间：
+    /// `[auth]\n` 占 7 字节，注释行 `# ` 占 2 字节，其后每字 3 字节 →
+    /// 偏移 100 即注释内第 93 字节 = 2 + 30×3 + 1，落在第 31 个汉字内部。
+    #[test]
+    fn load_from_file_with_non_ascii_comments_does_not_panic() {
+        let base = toml::to_string(&Config::default()).expect("序列化 Config 应成功");
+        let comment = format!("# {}\n", "密".repeat(80));
+        let injected = base.replacen("\n[auth]\n", &format!("\n[auth]\n{}", comment), 1);
+        assert_ne!(injected, base, "测试前提：默认序列化文本中应存在 [auth] 段");
 
         let temp = tempfile::NamedTempFile::new().expect("创建临时文件应成功");
-        std::fs::write(temp.path(), &toml_content).expect("写入临时文件应成功");
+        std::fs::write(temp.path(), &injected).expect("写入临时文件应成功");
 
-        let loaded = Config::load_from_file(temp.path().to_str().unwrap())
-            .expect("confers 应静默忽略 unknown fields，与 toml crate 默认行为一致");
-        assert_eq!(loaded.app.host, original.app.host);
-        assert_eq!(loaded.app.http_port, original.app.http_port);
+        let config = Config::load_from_file(temp.path().to_str().unwrap())
+            .expect("非 ASCII 注释不得影响配置加载");
+        assert_eq!(config.auth.enabled, Config::default().auth.enabled);
+    }
+
+    /// T016 回归：仓库随附的**服务端**配置必须在严格模式下干净加载。
+    ///
+    /// 失败时修配置文件，不得放宽 `deny_unknown_fields`。
+    ///
+    /// 范围说明：任务原文点名的第三份 `config/test_config.toml` **不在清单内** —— 它的
+    /// 唯一消费方是 `tests/lib.sh`（bash 测试夹具），段形状是 `[api]`/`[workspace]`/
+    /// `[test]`/`[concurrency]`/`[performance]`，既没有 `[app]` 也没有 `[database]`，
+    /// 因此服务端加载器从来读不了它（在加严格模式之前就会因 `[auth]` 缺 `enabled` 而
+    /// 失败）。把它纳入"必须干净加载"要么需要为 shell 夹具发明服务端配置面，要么需要
+    /// 放宽严格模式 —— 两者都不是正确方向，故按真相排除并留档。
+    #[test]
+    fn test_shipped_config_files_load_cleanly() {
+        for path in ["config/config.toml", "config/config_test.toml"] {
+            assert!(
+                std::path::Path::new(path).exists(),
+                "测试前提：仓库内应存在随附配置 {}",
+                path
+            );
+            match Config::load_from_file(path) {
+                Ok(_) => {}
+                Err(e) => panic!(
+                    "随附配置 {} 必须能干净加载（若为未知键，修配置文件而非放宽属性）：{}",
+                    path, e
+                ),
+            }
+        }
     }
 
     /// TOML 解析错误应返回 InvalidValue

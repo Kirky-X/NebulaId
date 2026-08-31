@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 /// Monitoring configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MonitoringConfig {
     /// Enable Prometheus metrics
     pub metrics_enabled: bool,

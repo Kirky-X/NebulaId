@@ -100,6 +100,7 @@ impl From<String> for LogFormat {
 
 /// Logging configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingConfig {
     /// Log level
     pub level: LogLevel,

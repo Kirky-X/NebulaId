@@ -39,6 +39,7 @@ impl std::fmt::Display for TlsVersion {
 
 /// TLS configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TlsConfig {
     /// Enable/disable TLS
     pub enabled: bool,

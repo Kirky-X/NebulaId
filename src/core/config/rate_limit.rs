@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 /// Rate limiting configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RateLimitConfig {
     /// Enable/disable rate limiting
     pub enabled: bool,

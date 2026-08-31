@@ -10,7 +10,6 @@ worker_id = 0
 level = "info"
 format = "json"
 include_location = false
-backtrace = false
 
 [database]
 engine = "sqlite"

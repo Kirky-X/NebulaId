@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 /// API key entry for configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApiKeyEntry {
     /// Unique key identifier
     pub key_id: String,
@@ -35,6 +36,7 @@ pub struct ApiKeyEntry {
 
 /// Authentication configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuthConfig {
     /// Enable/disable authentication
     pub enabled: bool,

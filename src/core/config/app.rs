@@ -60,6 +60,7 @@ impl From<String> for DatabaseEngine {
 
 /// Application configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppConfig {
     /// Application name
     pub name: String,
@@ -124,6 +125,7 @@ impl AppConfig {
 
 /// Database configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DatabaseConfig {
     /// Database engine type
     pub engine: DatabaseEngine,
@@ -222,6 +224,7 @@ impl Default for DatabaseConfig {
 
 /// etcd configuration for distributed coordination
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct EtcdConfig {
     /// List of etcd endpoints
     pub endpoints: Vec<String>,

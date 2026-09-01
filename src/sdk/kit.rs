@@ -51,6 +51,37 @@ impl_async_auto_builder!(
     })
 );
 
+/// 仓储的 TypeMap 注入包装（`pub(crate)`，不 re-export，不扩大 SDK 公共面）。
+///
+/// RepositoryModule 经 `kit.config::<RepositoryInput>()` 取用户注入的
+/// `SeaOrmRepository`，经 `require::<DistributedLockModule>()` 取锁并注入。
+#[derive(Clone)]
+pub(crate) struct RepositoryInput(pub SeaOrmRepository);
+
+/// 仓储模块（能力：`Arc<SeaOrmRepository>`，锁已注入）。
+///
+/// 依赖 `DistributedLockModule`（硬链 Lock→Repo）；本模块由 `register_if`
+/// 条件注册——仅 builder 注入仓储时入图，纯算法零 DB 场景整个模块缺席。
+pub struct RepositoryModule;
+
+impl_module_meta!(
+    RepositoryModule,
+    "repository",
+    deps = [DistributedLockModule]
+);
+
+impl_async_auto_builder!(RepositoryModule, Arc<SeaOrmRepository>, CoreError, |kit| {
+    Box::pin(async move {
+        let RepositoryInput(repository) = kit
+            .config::<RepositoryInput>()
+            .map_err(|e| CoreError::InternalError(format!("repository 模块配置缺失: {e}")))?;
+        let lock = kit.require::<DistributedLockModule>().map_err(|e| {
+            CoreError::InternalError(format!("repository 模块依赖分布式锁缺失: {e}"))
+        })?;
+        Ok(Arc::new(repository.with_distributed_lock(lock)))
+    })
+});
+
 /// 分布式锁创建：`etcd` feature 且 endpoints 已配置 → `EtcdDistributedLock`；
 /// 任何失败回退 `LocalDistributedLock` 并显性 warn（与 main.rs 行为一致）。
 #[cfg(feature = "etcd")]
@@ -164,6 +195,15 @@ impl NebulaIdKitBuilder {
         kit.register::<DistributedLockModule>()
             .map_err(|e| CoreError::InternalError(format!("trait-kit 模块注册失败: {e}")))?;
 
+        // 仓储条件注册：仅注入时入图（register_if）——未注入时模块缺席、
+        // build 不失败，"纯算法零 DB"这一核心卖点成立。
+        kit.register_if::<RepositoryModule>(|_| self.repository.is_some())
+            .map_err(|e| CoreError::InternalError(format!("trait-kit 模块注册失败: {e}")))?;
+        if let Some(repository) = self.repository {
+            // 用户注入的仓储也要作为配置入 TypeMap（RepositoryModule build 回调读取）
+            kit.set_config(RepositoryInput(repository));
+        }
+
         // 注入完整性显性校验（装配错误提前暴露，不落入模块回调的隐式
         // MissingConfig）；同时确认 audit_logger 注入形态，供启动观测。
         let AuditLoggerInput(audit_logger) = kit
@@ -237,5 +277,55 @@ mod tests {
             .await
             .expect("acquire 必须成功");
         guard.release().await.expect("release 必须成功");
+    }
+
+    /// R-sdk-emb-001：注入仓储时 `RepositoryModule` 注册且 `require` 返回的仓储
+    /// 能力可用。
+    ///
+    /// 锁注入本身无 pub 观测接缝（repository.rs 注释自认 "No public getter for
+    /// distributed_lock"，且测试构建下无锁路径静默走 `NoopLockGuard`），故断言
+    /// 能力落位（contains/require）+ 仓储可用性冒烟（`get_db_connection`）；
+    /// 锁注入的忠实性由实现直接调用 `with_distributed_lock(require 的锁)` 保证。
+    #[tokio::test]
+    async fn test_repository_module_registered_when_injected() {
+        use dbnexus::sea_orm::{DatabaseBackend, MockDatabase};
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let kit = NebulaIdKitBuilder::new(Config::default())
+            .with_repository(crate::core::database::SeaOrmRepository::new(
+                db,
+                "test_salt".to_string(),
+            ))
+            .build()
+            .await
+            .expect("注入仓储后 build 必须成功");
+        assert!(
+            kit.inner().contains::<RepositoryModule>(),
+            "注入仓储后 RepositoryModule 必须注册"
+        );
+
+        let repository = kit
+            .inner()
+            .require::<RepositoryModule>()
+            .expect("require 仓储必须成功");
+        let _ = repository.get_db_connection();
+    }
+
+    /// R-sdk-emb-001：未注入仓储时 `RepositoryModule` 缺席且 `build()` 不失败
+    ///（`register_if` 语义——纯算法零 DB 场景成立）。
+    #[tokio::test]
+    async fn test_repository_module_absent_without_injection() {
+        let kit = NebulaIdKitBuilder::new(Config::default())
+            .build()
+            .await
+            .expect("无仓储注入时 build 必须成功（纯算法零 DB 场景）");
+        assert!(
+            !kit.inner().contains::<RepositoryModule>(),
+            "未注入仓储时 RepositoryModule 必须缺席"
+        );
+        assert!(
+            kit.inner().optional::<RepositoryModule>().is_none(),
+            "optional 拉取也必须为 None"
+        );
     }
 }

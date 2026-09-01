@@ -210,6 +210,10 @@ use crate::core::database::biz_tag_entity::{BizTag, CreateBizTagRequest, UpdateB
 use crate::core::database::group_entity::{CreateGroupRequest, Group, UpdateGroupRequest};
 use crate::core::database::workspace_entity::{CreateWorkspaceRequest, UpdateWorkspaceRequest};
 
+/// 分割（`db` 为连接池廉价克隆、`salt` 为 String、`distributed_lock` 为
+/// `Option<Arc<..>>`）；SDK Kit 化（trait-kit TypeMap 注入，`RepositoryInput`
+/// 需 `Clone`）依赖此 trait。
+#[derive(Clone)]
 pub struct SeaOrmRepository {
     db: dbnexus::sea_orm::DatabaseConnection,
     /// Salt for API key hashing

@@ -338,6 +338,57 @@ impl NebulaIdKit {
     pub(crate) fn inner(&self) -> &AsyncKit<AsyncReady> {
         &self.kit
     }
+
+    /// 取用 ID 生成能力（`require::<IdGenModule>()` 的薄封装）。
+    ///
+    /// `require` 的读锁成本只发生在本次分发的瞬间（O(1) map 查找）；此后
+    /// `IdGenerator::generate*` 直调内部 `Arc<AlgorithmRouter>`，热路径零锁。
+    pub fn id_generator(&self) -> Result<IdGenerator> {
+        self.kit
+            .require::<IdGenModule>()
+            .map_err(|e| CoreError::InternalError(format!("id-generation 能力缺失: {e}")))
+    }
+
+    /// 各算法健康状态快照（直调 router，语义与旧 API 一致）。
+    ///
+    /// RouterModule 能力在构建成功的 Ready Kit 上必然存在（`build()` 依赖图
+    /// 校验已保证依赖链完整）——此处 `expect` 是内部不变量断言，显性失败，
+    /// 不吞错。
+    pub async fn health_check(&self) -> Vec<(AlgorithmType, crate::core::types::HealthStatus)> {
+        let router = self
+            .kit
+            .require::<RouterModule>()
+            .expect("RouterModule 能力在 Ready Kit 上必然存在（build 图校验已保证）");
+        router.health_check().await
+    }
+
+    /// 模块级健康报告（trait-kit `health` feature，同步方法）。
+    ///
+    /// 返回 trait-kit 的 `HealthStatus`（与 nebulaid 核心类型同名不同源）。
+    pub fn health_report(&self) -> Vec<(&'static str, trait_kit::HealthStatus)> {
+        self.kit.health_report()
+    }
+
+    /// 停机：手动按逆拓扑调用 `RouterModule::on_shutdown`（执行
+    /// `stop_background_check().await`，语义等价旧 `NebulaIdClient::shutdown`）
+    /// 后再调 `kit.shutdown()` 完成其余同步清理。
+    ///
+    /// **为何手动**：trait-kit 0.5.0-rc.1 的 `AsyncKit::shutdown()` 是同步方法，
+    /// 不执行 async `on_shutdown` 回调（库源码 async_kit.rs 明示 "intentionally
+    /// skipped... users must invoke it manually"）。trait-kit 正式版提供 async
+    /// shutdown 后可迁移回纯钩子。
+    pub async fn shutdown(self) {
+        if let Ok(router) = self.kit.require::<RouterModule>() {
+            RouterModule::on_shutdown(&router).await;
+        }
+        self.kit.shutdown();
+    }
+
+    /// 是否注入了数据库仓储（决定 Segment 可用性；语义 = 旧
+    /// `NebulaIdClient::has_repository`，经 TypeMap optional 拉取判定）。
+    pub fn has_repository(&self) -> bool {
+        self.kit.optional::<RepositoryModule>().is_some()
+    }
 }
 
 /// 嵌入式 SDK Kit 构建器。
@@ -436,14 +487,16 @@ mod tests {
     use crate::core::algorithm::GenerateContext;
     use crate::core::config::Config;
 
-    /// R-sdk-emb-001：仅 config、无任何模块注册时 `build()` 成功返回 Ready Kit
-    ///（空依赖图通过 trait-kit 校验），且 TypeMap 中已注入 Config 与 audit_logger。
+    /// R-sdk-emb-001：默认 Config 下 `build()` 成功返回 Ready Kit，TypeMap 中
+    /// 已注入 Config 与 audit_logger（空图断言随模块演进由
+    /// `test_health_report_contains_router_module` / `test_kit_full_build_*`
+    /// 取代）。
     #[tokio::test]
     async fn test_kit_builder_builds_empty_ready_kit() {
         let kit = NebulaIdKitBuilder::new(Config::default())
             .build()
             .await
-            .expect("空图 build 必须成功");
+            .expect("build 必须成功");
 
         // config 与 audit_logger 已注入 TypeMap（未注入审计日志器时值为 None）
         assert!(kit.inner().contains_config::<Config>());
@@ -452,8 +505,6 @@ mod tests {
             .config::<AuditLoggerInput>()
             .expect("audit_logger 必须已注入 TypeMap");
         assert!(audit.0.is_none(), "未注入审计日志器时应为 None");
-        // 无任何模块注册：健康检查报告为空
-        assert!(kit.inner().health_report().is_empty());
     }
 
     /// R-sdk-emb-001：`DistributedLockModule` 注册后 `build()` 成功；`require`
@@ -716,5 +767,121 @@ mod tests {
         });
         let id = handle.await.expect("worker task panicked");
         assert!(id.as_u128() > 0);
+    }
+
+    /// R-sdk-emb-001：完整 build 后四模块（除未注入的仓储）全部在场。
+    #[tokio::test]
+    async fn test_kit_full_build_all_modules_present() {
+        let kit = NebulaIdKitBuilder::new(snowflake_config())
+            .build()
+            .await
+            .expect("纯算法配置 build 必须成功");
+        assert!(kit.inner().contains::<DistributedLockModule>());
+        assert!(kit.inner().contains::<RouterModule>());
+        assert!(kit.inner().contains::<IdGenModule>());
+        assert!(!kit.inner().contains::<RepositoryModule>());
+    }
+
+    /// R-sdk-emb-002：门面 `id_generator()` 取用的 handle 可 generate 与
+    /// batch_generate。
+    #[tokio::test]
+    async fn test_kit_id_generator_generates_and_batches() {
+        let kit = NebulaIdKitBuilder::new(snowflake_config())
+            .build()
+            .await
+            .expect("build 必须成功");
+        let generator = kit.id_generator().expect("id_generator() 必须成功");
+
+        let id = generator
+            .generate("ws", "group", "biz")
+            .await
+            .expect("snowflake 生成必须成功");
+        assert!(id.as_u128() > 0);
+
+        let batch = generator
+            .batch_generate("ws", "group", "biz", 10)
+            .await
+            .expect("snowflake 批量生成必须成功");
+        assert_eq!(batch.ids.len(), 10);
+    }
+
+    /// R-sdk-emb-002：指定算法（uuid_v8）生成走通。
+    #[tokio::test]
+    async fn test_kit_generate_with_algorithm_uuid_v8() {
+        let kit = NebulaIdKitBuilder::new(snowflake_config())
+            .build()
+            .await
+            .expect("build 必须成功");
+        let generator = kit.id_generator().expect("id_generator() 必须成功");
+
+        let id = generator
+            .generate_with_algorithm(AlgorithmType::UuidV8, "ws", "group", "biz")
+            .await
+            .expect("uuid_v8 生成必须成功");
+        assert!(id.as_u128() > 0);
+    }
+
+    /// R-sdk-emb-003：`health_check()` 保留算法级快照语义（返回
+    /// `Vec<(AlgorithmType, HealthStatus)>`，与旧 API 一致）。
+    #[tokio::test]
+    async fn test_kit_health_check_returns_algorithm_snapshot() {
+        let kit = NebulaIdKitBuilder::new(snowflake_config())
+            .build()
+            .await
+            .expect("build 必须成功");
+
+        let snapshot = kit.health_check().await;
+        assert!(!snapshot.is_empty(), "算法级快照不可为空");
+        assert!(
+            snapshot.iter().any(|(t, _)| *t == AlgorithmType::Snowflake),
+            "快照必须含 snowflake"
+        );
+    }
+
+    /// R-sdk-emb-003：门面 `shutdown()` 后降级后台任务停止——先证明任务在运行
+    ///（≥1 tick 后计数刷新），再 shutdown，等待一个完整 interval 断言计数不再
+    /// 增长（pub 接缝 `get_algorithm_metrics()`，禁止依赖私有字段）。
+    #[tokio::test]
+    async fn test_kit_shutdown_stops_background_check() {
+        let kit = NebulaIdKitBuilder::new(snowflake_config())
+            .build()
+            .await
+            .expect("build 必须成功");
+        let router = kit
+            .inner()
+            .require::<RouterModule>()
+            .expect("require router 必须成功");
+        let dm = router.get_degradation_manager();
+
+        // 首个 tick 立即触发；给足调度时间后确认后台任务确在运行
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let before = dm.get_algorithm_metrics()["snowflake"].consecutive_successes;
+        assert!(before > 0, "shutdown 前后台任务应处于运行状态");
+
+        kit.shutdown().await;
+
+        // 等待超过一个完整 interval（默认 5000ms），若任务未停止计数会增长
+        tokio::time::sleep(std::time::Duration::from_millis(5_500)).await;
+        let after = dm.get_algorithm_metrics()["snowflake"].consecutive_successes;
+        assert_eq!(
+            before, after,
+            "shutdown 后降级后台任务必须停止（指标不得再刷新）"
+        );
+    }
+
+    /// R-sdk-emb-001：依赖图校验核心价值——裸 `AsyncKit` 只注册 `IdGenModule`
+    /// 而不注册其依赖链（RouterModule→DistributedLockModule），`build()` 必须
+    /// 返回 `Err`（缺依赖检测，不允许绕过）。
+    #[tokio::test]
+    async fn test_kit_build_fails_on_missing_dependency() {
+        let mut kit = trait_kit::AsyncKit::new();
+        kit.register::<IdGenModule>()
+            .expect("单模块注册本身应成功（图校验发生在 build()）");
+
+        let result = kit.build().await;
+        assert!(
+            result.is_err(),
+            "缺失依赖链（RouterModule/DistributedLockModule 未注册）时 build() 必须 Err"
+        );
     }
 }

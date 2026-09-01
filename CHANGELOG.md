@@ -10,6 +10,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 接线修复与 SDK 强化（specmark change `wiring-and-sdk-hardening`）＋ 密钥轮换宽限期与配置
 fail-fast（change `key-rotation-and-config-failfast`）。**含多项行为变更，部署方需注意。**
 
+### Breaking（破坏性 API 变更）
+
+- **嵌入式 SDK 全面迁移到 trait-kit 装配（change `sdk-trait-kit-migration`）**：
+  `NebulaIdClient` / `NebulaIdClientBuilder` 移除，新门面为 `NebulaIdKit` /
+  `NebulaIdKitBuilder`（装配经 trait-kit AsyncKit 依赖图校验，缺失依赖/环在
+  `build()` 期报错）。迁移对照：
+
+  | 旧 API（已移除） | 新 API |
+  |---|---|
+  | `NebulaIdClientBuilder::new(config)` | `NebulaIdKitBuilder::new(config)` |
+  | `.with_audit_logger(logger)` | `.with_audit_logger(logger)`（同名） |
+  | `.with_repository(repo)` | `.with_repository(repo)`（同名） |
+  | `.build().await?` → `NebulaIdClient` | `.build().await?` → `NebulaIdKit` |
+  | `client.generate(ws, group, tag).await?` | `kit.id_generator()?.generate(ws, group, tag).await?` |
+  | `client.batch_generate(ws, group, tag, n).await?` | `kit.id_generator()?.batch_generate(ws, group, tag, n).await?` |
+  | `client.generate_with_algorithm(alg, ..).await?` | `kit.id_generator()?.generate_with_algorithm(alg, ..).await?` |
+  | `client.health_check().await` | `kit.health_check().await`（算法级快照，语义不变；模块级报告用 `kit.health_report()`） |
+  | `client.shutdown().await` | `kit.shutdown().await` |
+  | `client.has_repository()` | `kit.has_repository()` |
+  | `client.router()`（逃生舱） | **已移除**：`AlgorithmRouter` 不再出现在 SDK 公共面，Segment 无仓储的守卫不再可绕过 |
+
+  生成语义不变：纯算法（snowflake/uuid_v8）零 DB 可用；Segment 需
+  `.with_repository(..)`，未注入时返回 `CoreError::ConfigurationError`。
+  `IdGenerator` handle 为 `Clone + Send + Sync`，可跨任务共享（比缓存整个 Kit 更轻）。
+
 ### Changed（行为变更）
 
 - **HTTP TLS fail-fast**：`tls.enabled=true` 且证书缺失/解析失败时拒绝启动

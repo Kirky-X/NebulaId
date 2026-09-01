@@ -417,8 +417,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### SDK 嵌入
 
 Nebula ID 提供一等公民的嵌入式 SDK（feature `sdk`），无需自行拼装
-分布式锁 / 路由 / 降级后台任务等装配细节，`NebulaIdClientBuilder::build()`
-内部统一收拢。
+分布式锁 / 路由 / 降级后台任务等装配细节，`NebulaIdKitBuilder::build()`
+内部经 trait-kit 依赖图校验统一收拢。
 
 启用特性：
 
@@ -431,7 +431,7 @@ nebulaid = { version = "0.2", features = ["sdk"] }
 
 ```rust
 use nebulaid::core::Config;
-use nebulaid::sdk::NebulaIdClientBuilder;
+use nebulaid::sdk::NebulaIdKitBuilder;
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
@@ -439,11 +439,12 @@ async fn main() -> nebulaid::core::Result<()> {
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
 
-    let client = NebulaIdClientBuilder::new(config).build().await?;
-    let id = client.generate("workspace", "group", "biz_tag").await?;
+    let kit = NebulaIdKitBuilder::new(config).build().await?;
+    let generator = kit.id_generator()?;
+    let id = generator.generate("workspace", "group", "biz_tag").await?;
     println!("{id}");
 
-    client.shutdown().await;
+    kit.shutdown().await;
     Ok(())
 }
 ```

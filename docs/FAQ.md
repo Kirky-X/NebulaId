@@ -267,7 +267,7 @@ cargo add nebulaid tokio
 ```toml
 # default = ["postgresql", "http", "grpc", "garrison-auth"]
 nebulaid = { version = "0.2", features = ["etcd"] }  # distributed coordination
-# nebulaid = { version = "0.2", features = ["sdk"] } # NebulaIdClient facade
+# nebulaid = { version = "0.2", features = ["sdk"] } # NebulaIdKit facade
 # There is no `monitoring` / `audit` / `tls` feature: metrics, audit logging and
 # TLS are runtime configuration ([monitoring] / [auth] / [tls]).
 ```
@@ -276,18 +276,19 @@ nebulaid = { version = "0.2", features = ["etcd"] }  # distributed coordination
 
 ```rust
 use nebulaid::core::Config;
-use nebulaid::sdk::NebulaIdClientBuilder; // requires feature `sdk`
+use nebulaid::sdk::NebulaIdKitBuilder; // requires feature `sdk`
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
 
-    let client = NebulaIdClientBuilder::new(config).build().await?;
-    let id = client.generate("verify", "install", "order").await?;
+    let kit = NebulaIdKitBuilder::new(config).build().await?;
+    let generator = kit.id_generator()?;
+    let id = generator.generate("verify", "install", "order").await?;
     println!("✅ Generated ID: {id}");
 
-    client.shutdown().await;
+    kit.shutdown().await;
     Ok(())
 }
 ```
@@ -558,26 +559,27 @@ export NEBULA_API_KEY_SALT="..."        # [auth].api_key_salt fallback
 
 ```rust
 use nebulaid::core::Config;
-use nebulaid::sdk::NebulaIdClientBuilder; // feature `sdk`
+use nebulaid::sdk::NebulaIdKitBuilder; // feature `sdk`
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
-    // Segment needs `NebulaIdClientBuilder::with_repository(..)` because it
+    // Segment needs `NebulaIdKitBuilder::with_repository(..)` because it
     // allocates ranges from the database; pure algorithms need nothing.
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
 
-    let client = NebulaIdClientBuilder::new(config).build().await?;
+    let kit = NebulaIdKitBuilder::new(config).build().await?;
+    let generator = kit.id_generator()?;
 
     // Generate a single ID
-    let id = client.generate("prod", "core", "order").await?;
+    let id = generator.generate("prod", "core", "order").await?;
     println!("Generated ID: {} (u128: {})", id, id.as_u128());
 
     // Generate a batch of IDs
-    let batch = client.batch_generate("prod", "core", "order", 100).await?;
+    let batch = generator.batch_generate("prod", "core", "order", 100).await?;
     println!("Generated {} IDs", batch.len());
 
-    client.shutdown().await;
+    kit.shutdown().await;
     Ok(())
 }
 ```

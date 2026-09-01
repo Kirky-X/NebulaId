@@ -131,27 +131,28 @@ graph LR
 ```rust
 use nebulaid::core::types::AlgorithmType;
 use nebulaid::core::Config;
-use nebulaid::sdk::NebulaIdClientBuilder; // feature `sdk`
+use nebulaid::sdk::NebulaIdKitBuilder; // feature `sdk`
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
     // Segment 需要从数据库领取号段，必须先用
-    // `NebulaIdClientBuilder::with_repository(..)` 注入仓储；纯算法不需要。
+    // `NebulaIdKitBuilder::with_repository(..)` 注入仓储；纯算法不需要。
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
 
-    let client = NebulaIdClientBuilder::new(config).build().await?;
+    let kit = NebulaIdKitBuilder::new(config).build().await?;
+    let generator = kit.id_generator()?;
 
     // 使用默认算法（`config.algorithm.default`）
-    let id = client.generate("prod", "core", "order").await?;
+    let id = generator.generate("prod", "core", "order").await?;
 
     // 或按次指定算法
-    let uuid = client
+    let uuid = generator
         .generate_with_algorithm(AlgorithmType::UuidV8, "prod", "core", "trace")
         .await?;
 
     println!("snowflake={id} uuid_v8={uuid}");
-    client.shutdown().await;
+    kit.shutdown().await;
     Ok(())
 }
 ```
@@ -191,20 +192,21 @@ let uuid = id_v4.to_uuid_v8();
 
 ```rust
 use nebulaid::core::Config;
-use nebulaid::sdk::NebulaIdClientBuilder;
+use nebulaid::sdk::NebulaIdKitBuilder;
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
-    let client = NebulaIdClientBuilder::new(config).build().await?;
+    let kit = NebulaIdKitBuilder::new(config).build().await?;
+    let generator = kit.id_generator()?;
 
     // 一次调用拿一批。双缓冲是 Segment 的内部机制 —— 对外只需
     // 一次申请 N 个 ID（`IdAlgorithm::batch_generate`）。
-    let batch = client.batch_generate("prod", "core", "order", 1000).await?;
+    let batch = generator.batch_generate("prod", "core", "order", 1000).await?;
     println!("{} ids via {:?}", batch.len(), batch.algorithm);
 
-    client.shutdown().await;
+    kit.shutdown().await;
     Ok(())
 }
 ```
@@ -330,24 +332,25 @@ curl -s http://localhost:8080/metrics
 // 与 examples/embedded.rs 一致 —— 运行方式：
 //   cargo run --package nebulaid --example embedded --features sdk
 use nebulaid::core::Config;
-use nebulaid::sdk::NebulaIdClientBuilder;
+use nebulaid::sdk::NebulaIdKitBuilder;
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
     // 仅纯算法：`segment` 还需
-    // NebulaIdClientBuilder::with_repository(..)，
+    // NebulaIdKitBuilder::with_repository(..)，
     // 因为它要从数据库领取号段。
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
 
-    let client = NebulaIdClientBuilder::new(config).build().await?;
+    let kit = NebulaIdKitBuilder::new(config).build().await?;
+    let generator = kit.id_generator()?;
 
     for _ in 0..5 {
-        let id = client.generate("embedded", "demo", "order").await?;
+        let id = generator.generate("embedded", "demo", "order").await?;
         println!("生成的ID: {id}");
     }
 
-    client.shutdown().await;
+    kit.shutdown().await;
     Ok(())
 }
 ```

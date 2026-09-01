@@ -131,27 +131,28 @@ graph LR
 ```rust
 use nebulaid::core::types::AlgorithmType;
 use nebulaid::core::Config;
-use nebulaid::sdk::NebulaIdClientBuilder; // feature `sdk`
+use nebulaid::sdk::NebulaIdKitBuilder; // feature `sdk`
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
     // Segment allocates number ranges from the database and needs
-    // `NebulaIdClientBuilder::with_repository(..)`; pure algorithms do not.
+    // `NebulaIdKitBuilder::with_repository(..)`; pure algorithms do not.
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
 
-    let client = NebulaIdClientBuilder::new(config).build().await?;
+    let kit = NebulaIdKitBuilder::new(config).build().await?;
+    let generator = kit.id_generator()?;
 
     // Default algorithm (`config.algorithm.default`)
-    let id = client.generate("prod", "core", "order").await?;
+    let id = generator.generate("prod", "core", "order").await?;
 
     // Or pin one algorithm per call
-    let uuid = client
+    let uuid = generator
         .generate_with_algorithm(AlgorithmType::UuidV8, "prod", "core", "trace")
         .await?;
 
     println!("snowflake={id} uuid_v8={uuid}");
-    client.shutdown().await;
+    kit.shutdown().await;
     Ok(())
 }
 ```
@@ -191,20 +192,21 @@ Ideal for microservices requiring unique identifiers with different ordering gua
 
 ```rust
 use nebulaid::core::Config;
-use nebulaid::sdk::NebulaIdClientBuilder;
+use nebulaid::sdk::NebulaIdKitBuilder;
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
-    let client = NebulaIdClientBuilder::new(config).build().await?;
+    let kit = NebulaIdKitBuilder::new(config).build().await?;
+    let generator = kit.id_generator()?;
 
     // One call, one batch. Segment's double buffering is internal — from the
     // outside you just ask for N ids at a time (`IdAlgorithm::batch_generate`).
-    let batch = client.batch_generate("prod", "core", "order", 1000).await?;
+    let batch = generator.batch_generate("prod", "core", "order", 1000).await?;
     println!("{} ids via {:?}", batch.len(), batch.algorithm);
 
-    client.shutdown().await;
+    kit.shutdown().await;
     Ok(())
 }
 ```
@@ -330,24 +332,25 @@ Embedding the crate as a library instead of running the server is covered by the
 // Mirrors examples/embedded.rs — run it with:
 //   cargo run --package nebulaid --example embedded --features sdk
 use nebulaid::core::Config;
-use nebulaid::sdk::NebulaIdClientBuilder;
+use nebulaid::sdk::NebulaIdKitBuilder;
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
     // Pure algorithms only: `segment` would additionally require
-    // NebulaIdClientBuilder::with_repository(..) because it allocates
+    // NebulaIdKitBuilder::with_repository(..) because it allocates
     // number ranges from the database.
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
 
-    let client = NebulaIdClientBuilder::new(config).build().await?;
+    let kit = NebulaIdKitBuilder::new(config).build().await?;
+    let generator = kit.id_generator()?;
 
     for _ in 0..5 {
-        let id = client.generate("embedded", "demo", "order").await?;
+        let id = generator.generate("embedded", "demo", "order").await?;
         println!("Generated ID: {id}");
     }
 
-    client.shutdown().await;
+    kit.shutdown().await;
     Ok(())
 }
 ```

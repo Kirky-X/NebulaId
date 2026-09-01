@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! 嵌入式 SDK（wiring T012，feature `sdk` 门控）。
+//! 嵌入式 SDK（trait-kit Kit 范式装配，feature `sdk` 门控）。
 //!
-//! 规则 25：本 `mod.rs` 只做模块声明与 re-export，实现位于 [`client`]。
+//! 规则 25：本 `mod.rs` 只做模块声明与 re-export，实现位于 [`kit`]（`client` 为
+//! 旧 API，T008 移除）。
 
 pub mod client;
+pub mod kit;
 
 pub use client::{NebulaIdClient, NebulaIdClientBuilder};
+pub use kit::{NebulaIdKit, NebulaIdKitBuilder};

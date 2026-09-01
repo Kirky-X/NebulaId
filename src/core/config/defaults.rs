@@ -30,3 +30,10 @@
 /// `server/handlers/mod.rs`（未注入配置时的兜底）两域共同消费而迁入本注册表；
 /// 全仓仅此一处定义。
 pub const DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS: u64 = 0;
+
+/// 宽限期上限：30 天（秒）。超限值在配置校验阶段即被拒绝（fail-fast），
+/// 避免静默传递到 handler 层才被 clamp。
+///
+/// ARCH-MED-002 修复：提取为 `pub const`，与 `DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`
+/// 同属注册表，`Config::validate()` 直接引用。
+pub const MAX_KEY_ROTATION_GRACE_PERIOD_SECONDS: u64 = 30 * 24 * 60 * 60;

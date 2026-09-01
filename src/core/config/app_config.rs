@@ -311,6 +311,20 @@ impl Config {
             ));
         }
 
+        // SAST-MED-005 / ARCH-MED-002 修复：宽限期上限校验。
+        // `api_key_salt` 为空是 dev/test 的安全默认值（garrison 生产路径已 panic），
+        // 不在 config validate 层拒绝，避免破坏测试。宽限期 > 30 天在 handler 层被
+        // clamp 但配置文件中的值是静默的，运维无法从文件判断生效值，fail-fast 比
+        // silent clamp 更安全。
+        if self.auth.key_rotation_grace_period_seconds
+            > crate::core::config::defaults::MAX_KEY_ROTATION_GRACE_PERIOD_SECONDS
+        {
+            return Err(ConfigError::InvalidValue(format!(
+                "auth.key_rotation_grace_period_seconds must not exceed {} seconds (30 days)",
+                crate::core::config::defaults::MAX_KEY_ROTATION_GRACE_PERIOD_SECONDS
+            )));
+        }
+
         // 未定义的环境变量在 `expand_env_vars` 中按设计保留字面量 `${VAR}`（见
         // `expand_env_vars_preserves_missing_var`）。对字符串型字段，字面量是"看起来
         // 合法的值"：`database.password` 会在建连时被
@@ -433,6 +447,11 @@ impl Config {
         if !other.auth.api_keys.is_empty() {
             self.auth.api_keys = other.auth.api_keys;
         }
+
+        // ARCH-HIGH-012：`key_rotation_grace_period_seconds` 不参与 merge。
+        // 该值是部署期决策（运维显式配置一次即可），热重载变更它没有意义：
+        // 进行中的轮换窗口会因阈值突变而产生不一致的凭证判定。
+        // 如需调整，必须重启进程，由 `resolve_startup_config` 重新读取。
 
         if other.algorithm.default != "segment" {
             self.algorithm.default = other.algorithm.default;
@@ -835,7 +854,9 @@ mod tests {
             rate_limit: 100,
             name: "k".to_string(),
         }];
-        let err = config.validate().expect_err("未展开的 key_secret 同样必须被拒");
+        let err = config
+            .validate()
+            .expect_err("未展开的 key_secret 同样必须被拒");
         assert!(
             matches!(&err, ConfigError::InvalidValue(msg) if msg.contains("auth.api_keys")),
             "实际为 {:?}",
@@ -854,13 +875,12 @@ mod tests {
         config.algorithm.snowflake.sequence_bits = 60;
         match config.validate() {
             Err(ConfigError::InvalidValue(msg)) => {
-                assert!(
-                    msg.contains("bits"),
-                    "错误必须点名位数规则，实际：{}",
-                    msg
-                );
+                assert!(msg.contains("bits"), "错误必须点名位数规则，实际：{}", msg);
             }
-            other => panic!("u8 溢出的位数组合必须 Err(InvalidValue)，实际为 {:?}", other),
+            other => panic!(
+                "u8 溢出的位数组合必须 Err(InvalidValue)，实际为 {:?}",
+                other
+            ),
         }
     }
 

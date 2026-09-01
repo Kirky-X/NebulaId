@@ -17,9 +17,8 @@
 use super::helpers::{map_db_error, map_uuid_error};
 use crate::core::{CoreError, Result};
 use crate::server::models::{
-    naive_to_rfc3339, ApiKeyResponse, ApiKeyWithSecretResponse, CreateGroupRequest,
-    CreateWorkspaceRequest, GroupListResponse, GroupResponse, UserApiKeyInfo,
-    WorkspaceListResponse, WorkspaceResponse,
+    ApiKeyWithSecretResponse, CreateGroupRequest, CreateWorkspaceRequest, GroupListResponse,
+    GroupResponse, UserApiKeyInfo, WorkspaceListResponse, WorkspaceResponse,
 };
 
 impl super::ApiHandlers {
@@ -129,32 +128,9 @@ impl super::ApiHandlers {
             .await
             .map_err(map_db_error)?;
 
-        Ok(ApiKeyWithSecretResponse {
-            key: ApiKeyResponse {
-                id: user_key.key.id.to_string(),
-                key_id: user_key.key.key_id,
-                key_prefix: user_key.key.key_prefix,
-                name: user_key.key.name,
-                description: user_key.key.description,
-                role: match user_key.key.role {
-                    crate::core::database::ApiKeyRole::Admin => "admin".to_string(),
-                    crate::core::database::ApiKeyRole::User => "user".to_string(),
-                    // LOW-1 修复：Anonymous 不会被持久化到数据库，这里只是穷尽匹配。
-                    // 如果运行到这里说明数据库被外部直接写入了 Anonymous，返回错误标记。
-                    crate::core::database::ApiKeyRole::Anonymous => {
-                        return Err(crate::core::CoreError::InternalError(
-                            "Anonymous role should not be persisted in database".to_string(),
-                        ))
-                    }
-                },
-                rate_limit: user_key.key.rate_limit,
-                enabled: user_key.key.enabled,
-                expires_at: user_key.key.expires_at.map(naive_to_rfc3339),
-                created_at: naive_to_rfc3339(user_key.key.created_at),
-            },
-            key_secret: user_key.key_secret,
-            grace_expires_at: user_key.grace_expires_at.map(naive_to_rfc3339),
-        })
+        // LOW-1 的 Anonymous 防御已内移到 `impl TryFrom<...> for ApiKeyWithSecretResponse`
+        // （`src/server/models.rs`），错误文案不变。
+        user_key.try_into()
     }
 
     /// List all Workspaces.

@@ -29,6 +29,7 @@ pub use api_key_entity::{
 };
 pub use biz_tag_entity::{BizTag, CreateBizTagRequest, UpdateBizTagRequest};
 pub use connection::create_connection;
+pub(crate) use connection::redact_db_url;
 pub use connection::run_migrations;
 pub use group_entity::{CreateGroupRequest, Group, UpdateGroupRequest};
 pub use repository::{

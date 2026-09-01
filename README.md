@@ -621,7 +621,7 @@ watch_timeout_ms = 5000
 [auth]
 enabled = true
 cache_ttl_seconds = 300
-# api_keys = []                  # optional; entries need key_id/key_secret/workspace/role/rate_limit/name
+# api_keys = []                  # optional; only the FIRST entry is provisioned at startup; needs key_id/key_secret/workspace (UUID or "global")/role/rate_limit/name
 # api_key_salt = "..."           # optional (falls back to $NEBULA_API_KEY_SALT)
 # key_rotation_grace_period_seconds = 0      # optional; 0 (default) = grace disabled
 
@@ -738,9 +738,9 @@ export NEBULA_API_KEY_SALT="..."        # [auth].api_key_salt fallback
 | `etcd.connect_timeout_ms` / `watch_timeout_ms` | u64 | `5000` / `5000` | ✅ | etcd timeouts |
 | `auth.enabled` | bool | `true` | ✅ | Gates the API-key middleware |
 | `auth.cache_ttl_seconds` | u64 | `300` | ✅ | Auth cache TTL |
-| `auth.api_keys` | array | `[]` | ➖ | Entry = `key_id`, `key_secret`, `workspace`, `role`, `rate_limit`, `name` (all required) |
+| `auth.api_keys` | array | `[]` | ➖ | Entry = `key_id`, `key_secret`, `workspace`, `role`, `rate_limit`, `name` (all required). Startup provisions **only the first** entry; `workspace` must be a UUID string or `global`; `role` is admin only for the exact value `admin` |
 | `auth.api_key_salt` | String | `$NEBULA_API_KEY_SALT` or `""` | ➖ | Salt for key hashing |
-| `auth.key_rotation_grace_period_seconds` | u64 | `0` (grace disabled) | ➖ | Set `> 0` to keep the previous credential valid that long after a rotation; `> 30 days` is clamped to 30 days with a warning; requires the two grace columns (see `docs/CONFIG_MIGRATION_GUIDE.md`) |
+| `auth.key_rotation_grace_period_seconds` | u64 | `0` (grace disabled) | ➖ | Set `> 0` to keep the previous credential valid that long after a rotation; `> 30 days` is clamped to 30 days with a warning; requires the two grace columns, which startup migrations add automatically (manual DDL only if the DB role lacks DDL grants; see `docs/CONFIG_MIGRATION_GUIDE.md`) |
 | `algorithm.default` | String | `"segment"` | ✅ | `segment` / `snowflake` / `uuid_v8` |
 | `algorithm.segment.base_step` / `min_step` / `max_step` / `switch_threshold` | u64 / u64 / u64 / f64 | `1000` / `500` / `100000` / `0.1` | ✅ | Dynamic step sizing (see note above about `merge`) |
 | `algorithm.snowflake.datacenter_id_bits` / `worker_id_bits` / `sequence_bits` / `clock_drift_threshold_ms` | u8 / u8 / u8 / u64 | `3` / `8` / `10` / `1000` | ✅ | Bit layout; remainder = timestamp bits |

@@ -32,7 +32,7 @@ pub const NEBULA_SCHEMA: &str = "nebula_id";
 /// is emitted; the password is replaced by `***`. If the URL cannot be
 /// parsed by `url::Url`, the entire string is replaced by `<redacted>`
 /// to guarantee no password can leak.
-fn redact_db_url(url: &str) -> String {
+pub(crate) fn redact_db_url(url: &str) -> String {
     match url::Url::parse(url) {
         Ok(mut parsed) => {
             let _ = parsed.set_password(Some("***"));

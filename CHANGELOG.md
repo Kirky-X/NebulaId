@@ -92,8 +92,11 @@ fail-fast（change `key-rotation-and-config-failfast`）。**含多项行为变�
   到期自动失效（惰性按 `rotate_expires_at` 判定），超过 30 天会被钳制；
   `key_rotation_grace_period_seconds` 的默认值由 7 天改为 `0`（宽限期关闭），
   因为旧行为等价于"没有宽限期"，默认开启会改变既有部署的安全窗口语义。
-  **需要 DB 迁移**：`api_keys` 表新增 `prev_secret_hash` / `rotate_expires_at`
-  两列，见 `docs/CONFIG_MIGRATION_GUIDE.md` 的"密钥轮换宽限期"章节。
+  `api_keys` 表新增 `prev_secret_hash` / `rotate_expires_at` 两列；两列由启动期
+  `run_migrations` 自动幂等补齐（`ADD COLUMN IF NOT EXISTS`，失败即终止启动，
+  `src/core/database/connection.rs:310-339`），**常规部署无需手工 DDL**。仅当数据库账号
+  无 DDL 权限、或 schema 由外部工具管控时需手工执行，见
+  `docs/CONFIG_MIGRATION_GUIDE.md` 的"密钥轮换宽限期"章节。
 - **第二个 admin key 首次真正被拒**：创建 API key 与吊销 API key 的 admin 守卫
   此前用 `list_api_keys(workspace_id = NULL)` 分页查询 + 内存扫描，而全局 admin
   key 的 `workspace_id` 是 NULL，`NULL = nil_uuid` 在 SQL 中不成立 → 查询恒空 →

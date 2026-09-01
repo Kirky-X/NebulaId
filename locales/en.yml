@@ -280,7 +280,7 @@ log.server.config.cors.allowed_origins_dev_default: "ALLOWED_ORIGINS not configu
 # src/server/config/hot_reload.rs
 log.server.config.hot_reload.write_lock_failed_callbacks: "Failed to acquire write lock for reload callbacks: %{error}"
 log.server.config.hot_reload.read_config_failed: "Failed to read config file: %{error}"
-log.server.config.hot_reload.parse_config_failed: "Failed to parse config file: %{error}"
+log.server.config.hot_reload.parse_config_failed: "Failed to parse or validate config file: %{error}"
 log.server.config.hot_reload.read_lock_failed_callbacks: "Failed to acquire read lock for reload callbacks: %{error}"
 log.server.config.hot_reload.config_hot_reloaded: "Configuration hot-reloaded from %{config_path}"
 log.server.config.hot_reload.reload_error: "Error during config reload: %{error}"

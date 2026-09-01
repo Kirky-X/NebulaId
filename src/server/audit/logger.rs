@@ -176,10 +176,25 @@ pub struct AuditLogger {
     _writer_task: Option<Arc<JoinHandle<()>>>,
 }
 
+/// `VecDeque` 预分配条数上限。
+///
+/// `max_events` 由调用方传入，其中一个来源是配置值
+/// （`src/main.rs:746` 传的是 `rate_limit.default_rps`，而该字段只在限流开启时才有上界
+/// 校验）—— 直接按它预分配等于让一个配置数字决定进程启动时的内存申请量。`with_capacity`
+/// 只是容量提示，钳制它不改变"最多保留 `max_events` 条"的淘汰语义。
+const MAX_AUDIT_PREALLOC: usize = 1024;
+
+fn prealloc_capacity(max_events: usize) -> usize {
+    // `saturating_add`：32 位目标上 `usize::MAX + 1` 会溢出。
+    max_events.saturating_add(1).min(MAX_AUDIT_PREALLOC)
+}
+
 impl AuditLogger {
     pub fn new(max_events: usize) -> Self {
         Self {
-            events: Arc::new(Mutex::new(VecDeque::with_capacity(max_events + 1))),
+            events: Arc::new(Mutex::new(VecDeque::with_capacity(prealloc_capacity(
+                max_events,
+            )))),
             max_events,
             total_logged: Arc::new(AtomicU64::new(0)),
             total_errors: Arc::new(AtomicU64::new(0)),
@@ -246,7 +261,9 @@ impl AuditLogger {
         });
 
         Self {
-            events: Arc::new(Mutex::new(VecDeque::with_capacity(max_events + 1))),
+            events: Arc::new(Mutex::new(VecDeque::with_capacity(prealloc_capacity(
+                max_events,
+            )))),
             max_events,
             total_logged: Arc::new(AtomicU64::new(0)),
             total_errors,

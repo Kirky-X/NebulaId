@@ -621,7 +621,7 @@ watch_timeout_ms = 5000
 [auth]
 enabled = true
 cache_ttl_seconds = 300
-# api_keys = []                  # 可选；条目需 key_id/key_secret/workspace/role/rate_limit/name
+# api_keys = []                  # 可选；启动时只创建第一条；需 key_id/key_secret/workspace（UUID 或 "global"）/role/rate_limit/name
 # api_key_salt = "..."           # 可选（回退到 $NEBULA_API_KEY_SALT）
 # key_rotation_grace_period_seconds = 0      # 可选；0（默认）= 不启用宽限期
 
@@ -738,9 +738,9 @@ export NEBULA_API_KEY_SALT="..."        # [auth].api_key_salt 回退值
 | `etcd.connect_timeout_ms` / `watch_timeout_ms` | u64 | `5000` / `5000` | ✅ | etcd 超时 |
 | `auth.enabled` | bool | `true` | ✅ | API Key 中间件总开关 |
 | `auth.cache_ttl_seconds` | u64 | `300` | ✅ | 认证缓存 TTL |
-| `auth.api_keys` | 数组 | `[]` | ➖ | 条目字段：`key_id`、`key_secret`、`workspace`、`role`、`rate_limit`、`name`（全部必填） |
+| `auth.api_keys` | 数组 | `[]` | ➖ | 条目字段：`key_id`、`key_secret`、`workspace`、`role`、`rate_limit`、`name`（全部必填）。启动时**只创建第一条**；`workspace` 必须是 UUID 字符串或 `global`；`role` 仅精确取 `admin` 时才建管理员 |
 | `auth.api_key_salt` | String | `$NEBULA_API_KEY_SALT` 或 `""` | ➖ | 密钥哈希盐值 |
-| `auth.key_rotation_grace_period_seconds` | u64 | `0`（关闭宽限期） | ➖ | 设为 `> 0` 才在轮换后保留上一代凭证该秒数；超过 30 天会被钳制到 30 天并告警；需库中存在宽限期两列（见 `docs/CONFIG_MIGRATION_GUIDE.md`） |
+| `auth.key_rotation_grace_period_seconds` | u64 | `0`（关闭宽限期） | ➖ | 设为 `> 0` 才在轮换后保留上一代凭证该秒数；超过 30 天会被钳制到 30 天并告警；需库中存在宽限期两列，启动期迁移会自动补齐（仅数据库账号无 DDL 权限时需手工执行，见 `docs/CONFIG_MIGRATION_GUIDE.md`） |
 | `algorithm.default` | String | `"segment"` | ✅ | `segment` / `snowflake` / `uuid_v8` |
 | `algorithm.segment.base_step` / `min_step` / `max_step` / `switch_threshold` | u64 / u64 / u64 / f64 | `1000` / `500` / `100000` / `0.1` | ✅ | 动态步长（注意上文的 `merge` 说明） |
 | `algorithm.snowflake.datacenter_id_bits` / `worker_id_bits` / `sequence_bits` / `clock_drift_threshold_ms` | u8 / u8 / u8 / u64 | `3` / `8` / `10` / `1000` | ✅ | 位布局；余量为时间戳位 |

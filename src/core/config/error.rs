@@ -18,9 +18,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ConfigError {
-    #[error("Missing required configuration: {}", _0)]
-    MissingRequired(String),
-
+    /// TOML 语法错误、字段缺失或未知、以及 `Config::validate` 不通过都落在本变体：
+    /// 前三者由 serde/confers 在解析阶段抛出，最后一项由 `validate` 主动返回。
     #[error("Invalid configuration value: {}", _0)]
     InvalidValue(String),
 

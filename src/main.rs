@@ -540,7 +540,7 @@ async fn main() -> Result<()> {
     // 不存在"才允许回落内置默认值，且必须显式 warn。
     let (mut config, source) =
         resolve_startup_config(&config_path, explicit_path).map_err(|e| {
-            nebulaid::core::types::CoreError::InternalError(format!(
+            nebulaid::core::types::CoreError::ConfigurationError(format!(
                 "failed to load configuration from '{}': {}",
                 config_path, e
             ))
@@ -557,7 +557,7 @@ async fn main() -> Result<()> {
 
     // Apply environment variable overrides
     config.merge(Config::load_from_env().map_err(|e| {
-        nebulaid::core::types::CoreError::InternalError(format!(
+        nebulaid::core::types::CoreError::ConfigurationError(format!(
             "failed to load configuration from environment: {}",
             e
         ))

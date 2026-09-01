@@ -276,7 +276,7 @@ log.server.config.cors.allowed_origins_dev_default: "开发环境未配置 ALLOW
 # src/server/config/hot_reload.rs
 log.server.config.hot_reload.write_lock_failed_callbacks: "获取 reload callbacks 的写锁失败：%{error}"
 log.server.config.hot_reload.read_config_failed: "读取配置文件失败：%{error}"
-log.server.config.hot_reload.parse_config_failed: "解析配置文件失败：%{error}"
+log.server.config.hot_reload.parse_config_failed: "解析或校验配置文件失败：%{error}"
 log.server.config.hot_reload.read_lock_failed_callbacks: "获取 reload callbacks 的读锁失败：%{error}"
 log.server.config.hot_reload.config_hot_reloaded: "配置已从 %{config_path} 热加载"
 log.server.config.hot_reload.reload_error: "配置热加载出错：%{error}"

@@ -79,6 +79,29 @@ pub(crate) fn parse_toml_config(content: &str, source_id: &str) -> ConfigResult<
         .map_err(|e| ConfigError::InvalidValue(e.to_string()))
 }
 
+/// 配置文件原文 → 可用配置的公共管线：环境变量展开 → 解析 → 校验。
+///
+/// 启动期（[`Config::load_from_file`]）与运行期热重载必须共用本函数。此前热重载只调
+/// [`parse_toml_config`]，跳过了 `validate` 和 `${VAR}` 展开 —— 一份启动期必定拒绝
+/// 的配置（未知键、端口为 0、密码仍是未展开的字面量 `${...}`）能在进程运行中被换进
+/// 来。收敛为单一管线后，两类入口对配置严格性的口径不可能再分叉。
+///
+/// # Errors
+///
+/// 解析或校验失败时返回 [`ConfigError::InvalidValue`]。
+pub(crate) fn config_from_file_content(content: &str, source_id: &str) -> ConfigResult<Config> {
+    let expanded = Config::expand_env_vars(content);
+    tracing::debug!(
+        event = "config_expanded",
+        content_len = content.len(),
+        "{}",
+        t!("log.core.config.app_config.config_expanded")
+    );
+    let config: Config = parse_toml_config(&expanded, source_id)?;
+    config.validate()?;
+    Ok(config)
+}
+
 /// 启动期配置的来源判定（T014）。
 ///
 /// 调用方据此决定是否需要输出"正在使用内置默认值"的显式告警：`Loaded` 之外只有
@@ -143,28 +166,10 @@ impl Config {
             }
         })?;
 
-        let expanded = Self::expand_env_vars(&content);
-
-        tracing::debug!(
-            event = "config_expanded",
-            content_len = content.len(),
-            "{}",
-            t!("log.core.config.app_config.config_expanded")
-        );
-        if let Some(auth_start) = expanded.find("[auth]") {
-            // 按字符而非字节截断：`find` 返回的下标必定落在字符边界上，但
-            // `auth_start + 100` 不一定 —— 配置文件含中文注释或值时，字节切片会
-            // 在解析之前 panic（与日志级别无关）。
-            let auth_section: String = expanded[auth_start..].chars().take(100).collect();
-            tracing::debug!(event = "auth_section", auth_section = %auth_section);
-        }
-
-        let config: Config = parse_toml_config(&expanded, "config")?;
+        let config = config_from_file_content(&content, "config")?;
 
         tracing::debug!(event = "toml_parsed", raw_auth_enabled = %format!("{:?}", config.auth.enabled), "{}", t!("log.core.config.app_config.toml_parsed"));
         tracing::debug!(event = "config_loaded", auth_enabled = %config.auth.enabled, "{}", t!("log.core.config.app_config.config_loaded"));
-
-        config.validate()?;
 
         Ok(config)
     }
@@ -213,6 +218,15 @@ impl Config {
             ));
         }
 
+        // 0 会经 `Duration::from_secs(0)` 直接传给连接池
+        // （`src/core/database/connection.rs:103`），连接一建立就被判定空闲并回收，
+        // 等价于"永不复用连接"。与 `acquire_timeout_seconds` 同口径拒绝。
+        if self.database.idle_timeout_seconds == 0 {
+            return Err(ConfigError::InvalidValue(
+                "Database idle_timeout_seconds must be greater than 0".to_string(),
+            ));
+        }
+
         if self.rate_limit.enabled {
             if self.rate_limit.default_rps == 0 {
                 return Err(ConfigError::InvalidValue(
@@ -226,7 +240,10 @@ impl Config {
                 ));
             }
 
-            if self.rate_limit.burst_size > self.rate_limit.default_rps * 10 {
+            // `saturating_mul`：`default_rps` 接近 `u32::MAX` 时普通乘法会在 debug 构建
+            // 直接 panic（attempt to multiply with overflow），在 release 构建回绕成一个
+            // 更小的数、把本该拒绝的配置放行。
+            if self.rate_limit.burst_size > self.rate_limit.default_rps.saturating_mul(10) {
                 return Err(ConfigError::InvalidValue(
                     "Rate limit burst_size should not exceed 10x default_rps".to_string(),
                 ));
@@ -261,9 +278,14 @@ impl Config {
             ));
         }
 
-        let total_bits = self.algorithm.snowflake.datacenter_id_bits
-            + self.algorithm.snowflake.worker_id_bits
-            + self.algorithm.snowflake.sequence_bits;
+        // u32 求和，而非 u8 相加：`datacenter_id_bits=100, worker_id_bits=100,
+        // sequence_bits=60` 的 u8 和是 260 —— debug 构建直接 panic，release 构建回绕成
+        // 4 并通过 `< 64` 校验，随后 `SnowflakeAlgorithmConfig::timestamp_bits()` 与
+        // `1 << bits`（`src/core/config/algorithm.rs:61-75`）才在算法侧炸出来。
+        // 和 < 64 同时也保证了每个分量 < 64，移位量合法。
+        let total_bits = u32::from(self.algorithm.snowflake.datacenter_id_bits)
+            + u32::from(self.algorithm.snowflake.worker_id_bits)
+            + u32::from(self.algorithm.snowflake.sequence_bits);
 
         if total_bits >= 64 {
             return Err(ConfigError::InvalidValue(
@@ -287,6 +309,31 @@ impl Config {
             return Err(ConfigError::InvalidValue(
                 "Batch generate max_batch_size should not exceed 10000".to_string(),
             ));
+        }
+
+        // 未定义的环境变量在 `expand_env_vars` 中按设计保留字面量 `${VAR}`（见
+        // `expand_env_vars_preserves_missing_var`）。对字符串型字段，字面量是"看起来
+        // 合法的值"：`database.password` 会在建连时被
+        // `src/core/database/connection.rs:58-68` 显性拒绝，而 auth 侧的凭证材料没有任
+        // 何等价防线 —— `api_key_salt = "${NEBULA_API_KEY_SALT}"` 变量缺失时，盐值就是
+        // 那段字面量，全部密钥哈希从此共享一个可预测的 pepper，且静默无告警。
+        let mut unexpanded = Vec::new();
+        if self.auth.api_key_salt.contains("${") {
+            unexpanded.push("auth.api_key_salt");
+        }
+        if self
+            .auth
+            .api_keys
+            .iter()
+            .any(|entry| entry.key_secret.contains("${"))
+        {
+            unexpanded.push("auth.api_keys[].key_secret");
+        }
+        if !unexpanded.is_empty() {
+            return Err(ConfigError::InvalidValue(format!(
+                "Configuration values contain unexpanded environment variable references: {}",
+                unexpanded.join(", ")
+            )));
         }
 
         Ok(())
@@ -701,6 +748,241 @@ mod tests {
             "非 NotFound 的 IO 失败必须原样 Err，实际为 {:?}",
             result
         );
+    }
+
+    /// 判定矩阵第 4 行的另一半（T019 补空）：同一类 IO 失败在**显式**路径下同样必须
+    /// `Err(FileError)`。此前只测了 `explicit_path=false`，而显式路径那一格没测过。
+    #[test]
+    fn test_resolve_startup_config_io_error_with_explicit_path_errors() {
+        let dir = tempfile::tempdir().expect("创建临时目录应成功");
+        let path = dir.path().to_str().unwrap().to_string();
+        let result = resolve_startup_config(&path, true);
+        match result {
+            Err(ConfigError::FileError(msg)) => {
+                assert!(
+                    msg.contains(&path),
+                    "FileError 消息必须点名出问题的路径，实际：{}",
+                    msg
+                );
+            }
+            other => panic!("显式路径读取失败时必须 Err(FileError)，实际为 {:?}", other),
+        }
+    }
+
+    /// 判定矩阵第 1 行 × 非显式路径（T019 补空）：没写 `--config` 但默认路径下的文件
+    /// 坏了，同样不得回落内置默认值。这是最贴近生产开箱形状的一格 —— 发行包自带
+    /// `config/config.toml`，运维改坏它就落在这一格。
+    #[test]
+    fn test_resolve_startup_config_broken_file_without_explicit_path_errors() {
+        let original = Config::default();
+        let toml_content = toml::to_string(&original).expect("序列化 Config 应成功");
+        let typo = toml_content.replace("algorithm.uuid_v8", "algorithm.uuid_v7");
+        assert_ne!(typo, toml_content, "测试前提：确实改写了段名");
+
+        let temp = tempfile::NamedTempFile::new().expect("创建临时文件应成功");
+        let path = temp.path().to_str().unwrap().to_string();
+        std::fs::write(&path, &typo).expect("写入临时文件应成功");
+
+        let result = resolve_startup_config(&path, false);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidValue(_))),
+            "文件坏了但路径非显式指定时仍必须 Err(InvalidValue)，不得回落默认值，实际为 {:?}",
+            result
+        );
+    }
+
+    /// 判定矩阵第 2 行的对照组（T019 补空）：非显式路径 + 文件合法 → 必须 `Loaded` 且
+    /// 取值来自文件。缺了这一格就无法区分"回落默认值"和"读到了恰好等于默认值的文件"。
+    #[test]
+    fn test_resolve_startup_config_valid_file_without_explicit_path_loads() {
+        let mut original = Config::default();
+        original.app.http_port = 18081;
+        let toml_content = toml::to_string(&original).expect("序列化 Config 应成功");
+
+        let temp = tempfile::NamedTempFile::new().expect("创建临时文件应成功");
+        let path = temp.path().to_str().unwrap().to_string();
+        std::fs::write(&path, &toml_content).expect("写入临时文件应成功");
+
+        let (config, source) = resolve_startup_config(&path, false)
+            .expect("文件合法且存在时必须 Loaded，即使路径不是显式指定");
+        assert_eq!(source, StartupConfig::Loaded { path: path.clone() });
+        assert_eq!(config.app.http_port, 18081, "值必须来自文件而非内置默认值");
+    }
+
+    /// T019 安全审查 Q3：未定义变量在 `expand_env_vars` 后保留字面量 `${VAR}`，auth 侧
+    /// 凭证字段必须在 `validate` 被拒 —— 否则那段字面量会当作 pepper/密钥静默使用。
+    #[test]
+    fn validate_rejects_unexpanded_env_var_in_credential_fields() {
+        let mut config = Config::default();
+        config.auth.api_key_salt = "${NEBULA_SALT_MISSING}".to_string();
+        match config.validate() {
+            Err(ConfigError::InvalidValue(msg)) => {
+                assert!(
+                    msg.contains("auth.api_key_salt") && msg.contains("unexpanded"),
+                    "错误必须点名未展开的字段，实际：{}",
+                    msg
+                );
+            }
+            other => panic!("未展开的盐值必须 Err(InvalidValue)，实际为 {:?}", other),
+        }
+
+        config.auth.api_key_salt = String::new();
+        config.auth.api_keys = vec![ApiKeyEntry {
+            key_id: "niad_1".to_string(),
+            key_secret: "${NEBULA_KEY_SECRET}".to_string(),
+            workspace: "global".to_string(),
+            role: "user".to_string(),
+            rate_limit: 100,
+            name: "k".to_string(),
+        }];
+        let err = config.validate().expect_err("未展开的 key_secret 同样必须被拒");
+        assert!(
+            matches!(&err, ConfigError::InvalidValue(msg) if msg.contains("auth.api_keys")),
+            "实际为 {:?}",
+            err
+        );
+    }
+
+    /// T019 安全审查 Q5：snowflake 三个位数分量用 u8 相加会溢出（debug panic / release
+    /// 回绕后通过校验、在算法侧移位 panic）。必须在校验阶段以 u32 求和并拒绝。
+    #[test]
+    fn validate_rejects_snowflake_bits_that_overflow_u8_sum() {
+        let mut config = Config::default();
+        // 100 + 100 + 60 = 260：u8 相加在 debug 构建直接 panic，在 release 回绕成 4。
+        config.algorithm.snowflake.datacenter_id_bits = 100;
+        config.algorithm.snowflake.worker_id_bits = 100;
+        config.algorithm.snowflake.sequence_bits = 60;
+        match config.validate() {
+            Err(ConfigError::InvalidValue(msg)) => {
+                assert!(
+                    msg.contains("bits"),
+                    "错误必须点名位数规则，实际：{}",
+                    msg
+                );
+            }
+            other => panic!("u8 溢出的位数组合必须 Err(InvalidValue)，实际为 {:?}", other),
+        }
+    }
+
+    /// T019 安全审查 Q5：`burst_size > default_rps * 10` 的乘法在 `default_rps` 接近
+    /// `u32::MAX` 时溢出。改为 saturating_mul 后：按真实数学关系判定，且不再 panic。
+    #[test]
+    fn validate_rate_limit_burst_check_does_not_overflow() {
+        let mut config = Config::default();
+        config.rate_limit.enabled = true;
+        // 真实关系：burst_size(u32::MAX) ≤ 10 × 1_000_000_000，因此必须放行。
+        // 回绕后的乘积是 1_410_065_408，旧实现会在这里错误拒绝。
+        config.rate_limit.default_rps = 1_000_000_000;
+        config.rate_limit.burst_size = u32::MAX;
+        config
+            .validate()
+            .expect("10×rps 超过 u32 上限时不得因乘法回绕而错误拒绝");
+
+        // 反向：真实超限仍必须拒绝，saturating 不能把校验变成空转。
+        let mut violating = Config::default();
+        violating.rate_limit.enabled = true;
+        violating.rate_limit.default_rps = 100;
+        violating.rate_limit.burst_size = 10_001;
+        let err = violating
+            .validate()
+            .expect_err("burst 超过 10×rps 时必须拒绝");
+        assert!(
+            matches!(&err, ConfigError::InvalidValue(msg) if msg.contains("burst_size")),
+            "实际为 {:?}",
+            err
+        );
+    }
+
+    /// T019 安全审查 Q1：凭证字段的 `Debug` 必须脱敏。此前 `derive(Debug)` 让任何一次
+    /// `{:?}`（日志、panic 消息、断言失败输出）都把明文密钥落盘，且编译期零告警。
+    #[test]
+    fn config_debug_output_never_renders_credential_material() {
+        const SECRET: &str = "super-secret-material";
+        const PEPPER: &str = "pepper-material";
+        const DB_PASS: &str = "db-password-material";
+        const REDIS_PASS: &str = "redis-password-material";
+
+        let mut config = Config::default();
+        config.auth.api_key_salt = PEPPER.to_string();
+        config.auth.api_keys = vec![ApiKeyEntry {
+            key_id: "niad_debug".to_string(),
+            key_secret: SECRET.to_string(),
+            workspace: "global".to_string(),
+            role: "user".to_string(),
+            rate_limit: 100,
+            name: "debug-key".to_string(),
+        }];
+        config.database.password = DB_PASS.to_string();
+        config.database.url = format!("postgresql://idgen:{}@db:5432/idgen", DB_PASS);
+        config.redis.url = format!("redis://:{}@cache:6379", REDIS_PASS);
+
+        let rendered = format!("{:#?}", config);
+        for material in [SECRET, PEPPER, DB_PASS, REDIS_PASS] {
+            assert!(
+                !rendered.contains(material),
+                "`Debug` 输出泄漏了凭证材料 {}：{}",
+                material,
+                rendered
+            );
+        }
+        // 反向：脱敏必须是"替换"而不是"整段消失"，否则调试时看不出字段是否存在。
+        assert!(rendered.contains("ApiKeyEntry"));
+        assert!(rendered.contains("niad_debug"));
+        assert!(rendered.contains("[REDACTED]"));
+        assert!(
+            rendered.contains("postgresql://idgen:***@db:5432/idgen"),
+            "URL 应只替换口令，实际：{}",
+            rendered
+        );
+    }
+
+    /// T019 安全审查 Q4：重复段不得被"后写覆盖前写"静默接受 —— 那会让运维以为生效的
+    /// 那一段其实被整段丢弃。
+    #[test]
+    fn duplicate_toml_section_is_not_silently_accepted() {
+        let mut base = toml::to_string(&Config::default()).expect("序列化 Config 应成功");
+        base.push_str("\n[app]\nhttp_port = 19999\n");
+
+        let temp = tempfile::NamedTempFile::new().expect("创建临时文件应成功");
+        std::fs::write(temp.path(), &base).expect("写入临时文件应成功");
+
+        match Config::load_from_file(temp.path().to_str().unwrap()) {
+            Err(e) => {
+                // 预期形状：解析阶段就失败。
+                assert!(
+                    matches!(e, ConfigError::InvalidValue(_)),
+                    "重复段应在解析阶段失败，实际为 {:?}",
+                    e
+                );
+            }
+            Ok(loaded) => panic!(
+                "重复 `[app]` 段被静默接受（http_port={}），后写覆盖了前写",
+                loaded.app.http_port
+            ),
+        }
+    }
+
+    /// T019 安全审查 Q4：段名大小写变体（`[App]`）在 TOML 里是另一个键，必须由顶层
+    /// `deny_unknown_fields` 拒绝，而不是当成"该段没写"回落默认值。
+    #[test]
+    fn section_name_case_variant_is_rejected_as_unknown_field() {
+        let base = toml::to_string(&Config::default()).expect("序列化 Config 应成功");
+        let mutated = base.replacen("[app]\n", "[App]\n", 1);
+        assert_ne!(mutated, base, "测试前提：确实存在 `[app]` 段头");
+
+        let temp = tempfile::NamedTempFile::new().expect("创建临时文件应成功");
+        std::fs::write(temp.path(), &mutated).expect("写入临时文件应成功");
+
+        match Config::load_from_file(temp.path().to_str().unwrap()) {
+            Err(ConfigError::InvalidValue(msg)) => {
+                assert!(
+                    msg.contains("unknown field") && msg.contains("App"),
+                    "必须点名误写的段名，实际消息：{}",
+                    msg
+                );
+            }
+            other => panic!("大小写变体段名必须 Err(InvalidValue)，实际为 {:?}", other),
+        }
     }
 
     /// T016 各用例统一注入的未知键名（取值本身无语义，只用于在错误消息里定位）。

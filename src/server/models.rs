@@ -753,6 +753,69 @@ pub struct ApiKeyWithSecretResponse {
     pub grace_expires_at: Option<String>,
 }
 
+/// 内部模型 → HTTP wire 的单一映射。
+///
+/// T019 架构审查 MEDIUM：此前同一份 9 字段映射在 4 个 handler 里各写一遍，`ApiKeyWithSecret`
+/// 新增 `grace_expires_at` 时必须同步改多处，漏改就是静默丢字段。
+///
+/// `Anonymous` 角色不落库（与 `workspace_handlers.rs::regenerate_user_key` 的同名防御一致）：
+/// 数据库里出现该行说明被外部直接写入，这里显性报错，而不是渲染成 `"anonymous"` 蒙混下发。
+impl TryFrom<crate::core::database::ApiKeyResponse> for ApiKeyResponse {
+    type Error = crate::core::types::CoreError;
+
+    fn try_from(
+        key: crate::core::database::ApiKeyResponse,
+    ) -> std::result::Result<Self, Self::Error> {
+        Ok(ApiKeyResponse {
+            id: key.id.to_string(),
+            key_id: key.key_id,
+            key_prefix: key.key_prefix,
+            name: key.name,
+            description: key.description,
+            role: match key.role {
+                crate::core::database::ApiKeyRole::Admin => "admin".to_string(),
+                crate::core::database::ApiKeyRole::User => "user".to_string(),
+                crate::core::database::ApiKeyRole::Anonymous => {
+                    return Err(crate::core::types::CoreError::InternalError(
+                        "Anonymous role should not be persisted in database".to_string(),
+                    ))
+                }
+            },
+            rate_limit: key.rate_limit,
+            enabled: key.enabled,
+            expires_at: key.expires_at.map(naive_to_rfc3339),
+            created_at: naive_to_rfc3339(key.created_at),
+        })
+    }
+}
+
+/// 列表接口的元素是 `ApiKey`（= `ApiKeyInfo`）。先由核心层收敛成 `ApiKeyResponse`
+/// 形状，再复用上面那一份唯一的 wire 字段表，避免列表路径再抄一遍。
+impl TryFrom<crate::core::database::ApiKey> for ApiKeyResponse {
+    type Error = crate::core::types::CoreError;
+
+    fn try_from(
+        key: crate::core::database::ApiKey,
+    ) -> std::result::Result<Self, Self::Error> {
+        Self::try_from(crate::core::database::ApiKeyResponse::from(key))
+    }
+}
+
+/// 同 [`ApiKeyResponse`]：创建/轮换响应只有一个映射来源。
+impl TryFrom<crate::core::database::ApiKeyWithSecret> for ApiKeyWithSecretResponse {
+    type Error = crate::core::types::CoreError;
+
+    fn try_from(
+        value: crate::core::database::ApiKeyWithSecret,
+    ) -> std::result::Result<Self, Self::Error> {
+        Ok(ApiKeyWithSecretResponse {
+            key: ApiKeyResponse::try_from(value.key)?,
+            key_secret: value.key_secret,
+            grace_expires_at: value.grace_expires_at.map(naive_to_rfc3339),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiKeyListResponse {
     pub api_keys: Vec<ApiKeyResponse>,

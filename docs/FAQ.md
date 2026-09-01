@@ -1238,12 +1238,20 @@ enabled = true                     # required
 cache_ttl_seconds = 300            # required
 # Static bootstrap keys; runtime keys live in the database / garrison.
 # Every ApiKeyEntry field is required.
+# Startup provisions ONLY the first entry (`src/main.rs:136` takes `keys.first()`);
+# entries 2..N are parsed and validated but never created, with no warning.
+# `workspace` must be a UUID string or the literal "global" (any other value fails
+# `Uuid::parse_str` and is silently replaced with the nil UUID).
+# `role` yields admin only for the exact value "admin" (case-insensitive); anything
+# else becomes user. This block is ignored entirely when
+# NEBULA_ADMIN_API_KEY_SECRET is set.
 api_keys = [
-  { key_id = "svc-billing", key_secret = "replace-me", workspace = "billing",
+  { key_id = "svc-billing", key_secret = "replace-me", workspace = "0f5f6c8e-1f2e-4a7b-9c3d-2b1a4e5f6071",
     role = "user", rate_limit = 1000, name = "Billing service" },
 ]
 api_key_salt = "${NEBULA_API_KEY_SALT}"   # optional; production rejects an empty salt
-key_rotation_grace_period_seconds = 0 # optional; 0 (default) = grace off, >0 needs the two grace columns
+key_rotation_grace_period_seconds = 0 # optional; 0 (default) = grace off; >0 needs the two
+                                      # grace columns, which startup migrations add itself
 
 [rate_limit]
 enabled = true

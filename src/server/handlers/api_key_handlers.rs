@@ -18,8 +18,8 @@ use super::helpers::map_db_error;
 use crate::core::database::{ApiKeyRole, CreateApiKeyRequest as CoreCreateApiKeyRequest};
 use crate::core::{CoreError, Result};
 use crate::server::models::{
-    naive_to_rfc3339, ApiKeyListResponse, ApiKeyResponse, ApiKeyWithSecretResponse,
-    CreateApiKeyRequest, RevokeApiKeyResponse,
+    ApiKeyListResponse, ApiKeyResponse, ApiKeyWithSecretResponse, CreateApiKeyRequest,
+    RevokeApiKeyResponse,
 };
 
 /// Handle for managing the key rotation background task.
@@ -137,22 +137,7 @@ impl super::ApiHandlers {
 
         let key_with_secret = repo.create_api_key(&core_req).await.map_err(map_db_error)?;
 
-        Ok(ApiKeyWithSecretResponse {
-            key: ApiKeyResponse {
-                id: key_with_secret.key.id.to_string(),
-                key_id: key_with_secret.key.key_id,
-                key_prefix: key_with_secret.key.key_prefix,
-                name: key_with_secret.key.name,
-                description: key_with_secret.key.description,
-                role: key_with_secret.key.role.to_string(),
-                rate_limit: key_with_secret.key.rate_limit,
-                enabled: key_with_secret.key.enabled,
-                expires_at: key_with_secret.key.expires_at.map(naive_to_rfc3339),
-                created_at: naive_to_rfc3339(key_with_secret.key.created_at),
-            },
-            key_secret: key_with_secret.key_secret,
-            grace_expires_at: key_with_secret.grace_expires_at.map(naive_to_rfc3339),
-        })
+        key_with_secret.try_into()
     }
 
     /// List API Keys for a workspace (admin only).
@@ -175,19 +160,8 @@ impl super::ApiHandlers {
 
         let responses: Vec<ApiKeyResponse> = keys
             .into_iter()
-            .map(|k| ApiKeyResponse {
-                id: k.id.to_string(),
-                key_id: k.key_id,
-                key_prefix: k.key_prefix,
-                name: k.name,
-                description: k.description,
-                role: k.role.to_string(),
-                rate_limit: k.rate_limit,
-                enabled: k.enabled,
-                expires_at: k.expires_at.map(naive_to_rfc3339),
-                created_at: naive_to_rfc3339(k.created_at),
-            })
-            .collect();
+            .map(ApiKeyResponse::try_from)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
         let total = repo
             .count_api_keys(workspace_id)
@@ -251,6 +225,14 @@ impl super::ApiHandlers {
                 let admin_count = repo.count_admin_keys().await.map_err(map_db_error)?;
 
                 if admin_count <= 1 {
+                    // 与 create 守卫（`admin_key_creation_blocked`）同口径留痕：此前这条
+                    // 分支只有返回给客户端的 i18n 文案，服务端零日志，运维无法定位是谁在
+                    // 尝试吊销最后一个管理凭证。
+                    tracing::warn!(
+                        event = "admin_key_revoke_blocked",
+                        key_id = %id,
+                        "refused to revoke the last enabled admin API key"
+                    );
                     return Err(CoreError::AuthenticationError(
                         t!("api.error.handlers.api_key_handlers.cannot_revoke_last_admin")
                             .to_string(),
@@ -272,8 +254,6 @@ impl super::ApiHandlers {
 
     /// Rotate an API Key (generate new secret, keep old key active during grace period).
     pub async fn rotate_api_key(&self, key_id: &str) -> Result<ApiKeyWithSecretResponse> {
-        use crate::server::models::ApiKeyResponse;
-
         if key_id.is_empty() {
             return Err(CoreError::InvalidInput(
                 t!("api.error.handlers.api_key_handlers.key_id_empty").to_string(),
@@ -303,22 +283,7 @@ impl super::ApiHandlers {
         // wiring T008：清掉该 key_id 名下全部条目（含宽限期内的旧 secret 变体）。
         self.invalidate_auth_cache(key_id).await;
 
-        Ok(ApiKeyWithSecretResponse {
-            key: ApiKeyResponse {
-                id: key_with_secret.key.id.to_string(),
-                key_id: key_with_secret.key.key_id,
-                key_prefix: key_with_secret.key.key_prefix,
-                name: key_with_secret.key.name,
-                description: key_with_secret.key.description,
-                role: key_with_secret.key.role.to_string(),
-                rate_limit: key_with_secret.key.rate_limit,
-                enabled: key_with_secret.key.enabled,
-                expires_at: key_with_secret.key.expires_at.map(naive_to_rfc3339),
-                created_at: naive_to_rfc3339(key_with_secret.key.created_at),
-            },
-            key_secret: key_with_secret.key_secret,
-            grace_expires_at: key_with_secret.grace_expires_at.map(naive_to_rfc3339),
-        })
+        key_with_secret.try_into()
     }
 }
 

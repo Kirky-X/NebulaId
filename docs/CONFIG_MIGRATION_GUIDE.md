@@ -591,14 +591,15 @@ WHERE t.algorithm::text <> b.algorithm_label;
 
 ## 密钥轮换宽限期与配置 fail-fast（未发布版本）
 
-对应 specmark change `key-rotation-and-config-failfast`。三节相互独立：第 1、2 节是开启宽限期
-前要做的 DDL 与只读核对，第 3 节是纯行为变更（没有 SQL，但直接决定升级后能否启动）。
+对应 specmark change `key-rotation-and-config-failfast`。三节相互独立：第 1 节是**可选** DDL
+（启动期迁移已自动补列，仅无 DDL 权限或 schema 外部管控时需要手工执行），第 2 节是开启宽限期前的
+只读核对，第 3 节是纯行为变更（没有 SQL，但直接决定升级后能否启动）。
 
 本节 SQL 全部在 `postgres:16-alpine`（与 `docker/docker-compose.yml:8` 同镜像）容器里实际执行
 过，"实测输出"即真实结果；配置侧的三条消息取自真实二进制
 `target/debug/nebula-id.exe --config <file>` 的 stderr。
 
-### 1. 宽限期两列迁移（存量库 `ADD COLUMN` 幂等）
+### 1. 宽限期两列（启动期自动补齐，手工 DDL 可选）
 
 `auth.key_rotation_grace_period_seconds`（默认 `0` = 关闭）设为 `> 0` 时，轮换会把上一代凭证在
 库中继续采信一段时间，这依赖 `nebula_id.api_keys` 的两列（实体定义
@@ -610,7 +611,13 @@ WHERE t.algorithm::text <> b.algorithm_label;
 | `rotate_expires_at` | `TIMESTAMP WITHOUT TIME ZONE` | 宽限期绝对截止时刻（UTC 无时区）；NULL = 无在效窗口 |
 
 - 新建库：`scripts/init.sql:88-94` 已直接建出两列，跳过本节。
-- 存量库：**先执行本节 DDL，再把宽限期调到 `> 0`**。两列缺失时轮换写入会失败。
+- 存量库：**通常也无需手工 DDL** —— 服务端启动时 `run_migrations`（`src/main.rs:601` 无条件
+  调用）会执行幂等的 `ALTER TABLE nebula_id.api_keys ADD COLUMN IF NOT EXISTS
+  prev_secret_hash ..., ADD COLUMN IF NOT EXISTS rotate_expires_at ...`
+  （`src/core/database/connection.rs:310-339`），该语句失败即终止启动（exit 1），所以运行中的
+  进程一定已经有这两列。
+- 仍需要手工执行本节的三种情况：应用数据库账号**没有 DDL 权限**（此时启动就会失败，必须由 DBA
+  预先加列）、schema 由 Flyway/Liquibase 等外部工具管控、或希望**零停机**提前加列再切换版本。
 - 到期判定是惰性的 —— `validate_api_key` 在每次校验时比较 `rotate_expires_at` 与当前时间，
   因此不需要后台清理任务，也不需要为它建索引。
 

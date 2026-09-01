@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 
 /// API key entry for configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiKeyEntry {
     /// Unique key identifier
@@ -34,8 +34,24 @@ pub struct ApiKeyEntry {
     pub name: String,
 }
 
+/// 手写 `Debug`：`key_secret` 是明文凭证，绝不能出现在 `{:?}` 输出里（CWE-532）——
+/// `derive(Debug)` 下任何日志、panic 消息或断言失败输出都会把它原样落盘，且编译期
+/// 没有任何告警。替代 `#[derive(Debug)]`，其余字段按声明顺序照常输出。
+impl std::fmt::Debug for ApiKeyEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiKeyEntry")
+            .field("key_id", &self.key_id)
+            .field("key_secret", &"[REDACTED]")
+            .field("workspace", &self.workspace)
+            .field("role", &self.role)
+            .field("rate_limit", &self.rate_limit)
+            .field("name", &self.name)
+            .finish()
+    }
+}
+
 /// Authentication configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthConfig {
     /// Enable/disable authentication
@@ -54,6 +70,24 @@ pub struct AuthConfig {
     /// clamp。
     #[serde(default = "default_key_rotation_grace_period_seconds")]
     pub key_rotation_grace_period_seconds: u64,
+}
+
+/// 手写 `Debug`：`api_key_salt` 是密钥哈希的 pepper，与 `ApiKeyEntry::key_secret`
+/// 同属不得进日志/panic 输出的凭证材料（CWE-532）。`api_keys` 由 [`ApiKeyEntry`] 自己的
+/// `Debug` 完成脱敏。
+impl std::fmt::Debug for AuthConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthConfig")
+            .field("enabled", &self.enabled)
+            .field("cache_ttl_seconds", &self.cache_ttl_seconds)
+            .field("api_keys", &self.api_keys)
+            .field("api_key_salt", &"[REDACTED]")
+            .field(
+                "key_rotation_grace_period_seconds",
+                &self.key_rotation_grace_period_seconds,
+            )
+            .finish()
+    }
 }
 
 fn default_api_key_salt() -> String {

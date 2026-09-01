@@ -348,6 +348,14 @@ impl SeaOrmRepository {
         candidates
     }
 
+    /// Argon2 校验的 password 材料：`<pepper>|<key_id>:<key_secret>`。
+    ///
+    /// 编码规则必须有单一来源：`hash_key` 与 `verify_key` 各写一遍时，改分隔符或字段
+    /// 顺序只中一处就会让全量已存哈希静默验不过（且编译期无告警）。
+    fn password_material(&self, key_id: &str, key_secret: &str) -> String {
+        format!("{}|{}:{}", self.salt, key_id, key_secret)
+    }
+
     /// Hash API key using Argon2id (replaces SHA256, CWE-916 fix).
     ///
     /// 使用 Argon2id（memory-hard, OWASP 2023 推荐）替代 SHA256。
@@ -355,7 +363,7 @@ impl SeaOrmRepository {
     /// - 每次调用生成独立的 SaltString（PHC 格式内嵌）
     /// - 返回 PHC 格式字符串（约 96 字符），需 VARCHAR(255) 存储
     fn hash_key(&self, key_id: &str, key_secret: &str) -> Result<String> {
-        let password = format!("{}|{}:{}", self.salt, key_id, key_secret);
+        let password = self.password_material(key_id, key_secret);
         let salt = SaltString::generate(&mut OsRng);
         let argon2 = Argon2::default();
         let hash = argon2
@@ -374,7 +382,7 @@ impl SeaOrmRepository {
             Ok(h) => h,
             Err(_) => return false,
         };
-        let password = format!("{}|{}:{}", self.salt, key_id, key_secret);
+        let password = self.password_material(key_id, key_secret);
         Argon2::default()
             .verify_password(password.as_bytes(), &parsed)
             .is_ok()
@@ -1093,18 +1101,8 @@ impl ApiKeyRepository for SeaOrmRepository {
             .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
 
         let response = ApiKeyWithSecret {
-            key: ApiKeyResponse {
-                id: inserted.id,
-                key_id: inserted.key_id,
-                key_prefix: inserted.key_prefix,
-                name: inserted.name,
-                description: inserted.description,
-                role: inserted.role.into(),
-                rate_limit: inserted.rate_limit,
-                enabled: inserted.enabled,
-                expires_at: inserted.expires_at,
-                created_at: inserted.created_at,
-            },
+            // 复用 `impl From<Model> for ApiKeyResponse`（api_key_entity.rs），不手抄字段表
+            key: inserted.into(),
             key_secret,
             // 新建 key 没有上一代凭证，宽限期概念不适用
             grace_expires_at: None,
@@ -1352,18 +1350,9 @@ impl ApiKeyRepository for SeaOrmRepository {
 
         // 返回新密钥
         Ok(ApiKeyWithSecret {
-            key: ApiKeyResponse {
-                id: updated.id,
-                key_id: updated.key_id,
-                key_prefix: updated.key_prefix,
-                name: updated.name,
-                description: updated.description,
-                role: updated.role.into(),
-                rate_limit: updated.rate_limit,
-                enabled: updated.enabled,
-                expires_at: model.expires_at,
-                created_at: updated.created_at,
-            },
+            // 全部字段单一来源 = `UPDATE ... RETURNING` 的实际行
+            // （复用 `impl From<Model> for ApiKeyResponse`），杜绝逐字段混用轮换前后的行。
+            key: updated.into(),
             key_secret: new_secret,
             // 与写入 `rotate_expires_at` 列的值同源：调用方看到的截止时间
             // 必须等于落库的截止时间，而不是重新推导一次。
@@ -4020,14 +4009,23 @@ mod mock_tests {
     async fn test_rotate_returns_grace_expiry_to_caller() {
         let id = fixed_uuid(144);
         let model = sample_api_key_model(id, "niad_echo", "admin");
+        // 1st = 轮换前 SELECT，2nd = UPDATE ... RETURNING。两行的 `expires_at` 故意
+        // 不同：若响应错误地取自轮换前的旧行，这条断言就会失败 —— 否则桩里两个来源
+        // 永远相等，该缺陷不可能被测出。
+        let mut returning = model.clone();
+        returning.expires_at = Some(fixed_datetime(1_900_000_000));
         let repo = make_repo(
             MockDatabase::new(DatabaseBackend::Postgres)
-                // 1st = 轮换前 SELECT，2nd = UPDATE ... RETURNING
-                .append_query_results(vec![vec![model.clone()], vec![model]])
+                .append_query_results(vec![vec![model], vec![returning]])
                 .into_connection(),
         );
 
         let rotated = repo.rotate_api_key("niad_echo", 3600).await.unwrap();
+        assert_eq!(
+            rotated.key.expires_at,
+            Some(fixed_datetime(1_900_000_000)),
+            "轮换响应必须回显 UPDATE ... RETURNING 的实际行，而非轮换前读到的旧行"
+        );
         let expires_at = rotated
             .grace_expires_at
             .expect("grace > 0 必须回传宽限期截止时刻");

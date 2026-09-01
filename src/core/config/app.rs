@@ -124,7 +124,7 @@ impl AppConfig {
 }
 
 /// Database configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DatabaseConfig {
     /// Database engine type
@@ -150,6 +150,37 @@ pub struct DatabaseConfig {
     pub acquire_timeout_seconds: u64,
     /// Idle connection timeout (seconds)
     pub idle_timeout_seconds: u64,
+}
+
+/// 手写 `Debug`：`password` 是明文口令，`url` 可能以
+/// `postgresql://user:pass@host/db` 的形式内嵌口令，两者都不得进 `{:?}` 输出
+/// （CWE-532）。`url` 复用连接层已有的 [`redact_db_url`]，不另写第二份脱敏逻辑；
+/// 空串保持原样输出，避免丢掉"没有配置整串 URL"这一可读状态。
+impl std::fmt::Debug for DatabaseConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DatabaseConfig")
+            .field("engine", &self.engine)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .field("database", &self.database)
+            .field("url", &redact_optional_url(&self.url))
+            .field("max_connections", &self.max_connections)
+            .field("min_connections", &self.min_connections)
+            .field("acquire_timeout_seconds", &self.acquire_timeout_seconds)
+            .field("idle_timeout_seconds", &self.idle_timeout_seconds)
+            .finish()
+    }
+}
+
+/// 空串不参与脱敏（表示"未使用整串 URL"），其余交给连接层的 `redact_db_url`。
+pub(crate) fn redact_optional_url(url: &str) -> String {
+    if url.is_empty() {
+        String::new()
+    } else {
+        crate::core::database::redact_db_url(url)
+    }
 }
 
 impl Default for DatabaseConfig {

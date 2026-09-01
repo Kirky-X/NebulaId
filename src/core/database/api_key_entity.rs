@@ -208,6 +208,25 @@ impl From<Model> for ApiKey {
     }
 }
 
+/// `ApiKey`（= `ApiKeyInfo`）比 `ApiKeyResponse` 多 `workspace_id` 与 `last_used_at`
+/// 两列，列表接口下发的是后者形状；有了这条转换，wire 层就不必为列表另写一份字段表。
+impl From<ApiKey> for ApiKeyResponse {
+    fn from(key: ApiKey) -> Self {
+        ApiKeyResponse {
+            id: key.id,
+            key_id: key.key_id,
+            key_prefix: key.key_prefix,
+            name: key.name,
+            description: key.description,
+            role: key.role,
+            rate_limit: key.rate_limit,
+            enabled: key.enabled,
+            expires_at: key.expires_at,
+            created_at: key.created_at,
+        }
+    }
+}
+
 impl From<Model> for ApiKeyResponse {
     fn from(model: Model) -> Self {
         ApiKeyResponse {

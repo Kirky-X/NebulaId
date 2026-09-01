@@ -18,7 +18,7 @@ use std::fmt;
 
 use super::connection::NEBULA_SCHEMA;
 
-#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize)]
 #[sea_orm(table_name = "api_keys", schema_name = "nebula_id")]
 pub struct Model {
     #[sea_orm(primary_key)]
@@ -57,6 +57,32 @@ pub enum Relation {
 }
 
 impl ActiveModelBehavior for ActiveModel {}
+
+/// 手写 `Debug`：`key_secret_hash` 与 `prev_secret_hash` 是凭证哈希材料，
+/// 不得出现在 `{:?}` 输出里（CWE-532）。`derive(Debug)` 下任何日志、panic
+/// 消息或断言失败输出都会把它原样落盘，且编译期没有任何告警。
+impl std::fmt::Debug for Model {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Model")
+            .field("id", &self.id)
+            .field("key_id", &self.key_id)
+            .field("key_secret_hash", &"[REDACTED]")
+            .field("prev_secret_hash", &"[REDACTED]")
+            .field("rotate_expires_at", &self.rotate_expires_at)
+            .field("key_prefix", &self.key_prefix)
+            .field("role", &self.role)
+            .field("workspace_id", &self.workspace_id)
+            .field("name", &self.name)
+            .field("description", &self.description)
+            .field("rate_limit", &self.rate_limit)
+            .field("enabled", &self.enabled)
+            .field("expires_at", &self.expires_at)
+            .field("last_used_at", &self.last_used_at)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
 
 impl Related<super::workspace_entity::Entity> for Entity {
     fn to() -> RelationDef {

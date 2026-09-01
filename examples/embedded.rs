@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! SDK 纯算法嵌入示例（wiring T013）。
+//! SDK 纯算法嵌入示例（Kit 范式，wiring T013）。
 //!
 //! 零数据库、零网络：仅使用 Snowflake / UuidV8 纯算法。默认算法改为
 //! `snowflake`（`Config::default()` 的 `segment` 需要数据库，未注入仓储时
@@ -25,7 +25,7 @@
 
 use nebulaid::core::types::AlgorithmType;
 use nebulaid::core::Config;
-use nebulaid::sdk::NebulaIdClientBuilder;
+use nebulaid::sdk::NebulaIdKitBuilder;
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
@@ -33,23 +33,24 @@ async fn main() -> nebulaid::core::Result<()> {
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
 
-    let client = NebulaIdClientBuilder::new(config).build().await?;
+    let kit = NebulaIdKitBuilder::new(config).build().await?;
+    let generator = kit.id_generator()?;
 
     println!("Nebula ID embedded SDK example (zero DB / zero network)");
     println!("-- snowflake --");
     for _ in 0..5 {
-        let id = client.generate("embedded", "demo", "order").await?;
+        let id = generator.generate("embedded", "demo", "order").await?;
         println!("{id}");
     }
 
     println!("-- uuid_v8 --");
     for _ in 0..5 {
-        let id = client
+        let id = generator
             .generate_with_algorithm(AlgorithmType::UuidV8, "embedded", "demo", "trace")
             .await?;
         println!("{id}");
     }
 
-    client.shutdown().await;
+    kit.shutdown().await;
     Ok(())
 }

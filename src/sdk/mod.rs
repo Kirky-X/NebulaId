@@ -18,4 +18,4 @@
 
 pub mod kit;
 
-pub use kit::{NebulaIdKit, NebulaIdKitBuilder};
+pub use kit::{IdGenerator, NebulaIdKit, NebulaIdKitBuilder};

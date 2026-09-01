@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! sdforge `#[forge]` 多协议封装示例（wiring T014）。
+//! sdforge `#[forge]` 多协议封装示例（Kit 范式，wiring T014）。
 //!
-//! 用 sdforge 的 `#[forge]` 属性宏把嵌入式 [`NebulaIdClient`] 的
+//! 用 sdforge 的 `#[forge]` 属性宏把嵌入式 SDK 的 `IdGenerator` handle 的
 //! `generate` / `batch_generate` 声明为 HTTP 端点（`POST /generate`、
 //! `POST /generate/batch`），并由 sdforge 自动产出 OpenAPI 文档
 //! （`GET /api-docs/openapi.json`）。纯算法（snowflake），零 DB 零网络。
@@ -41,7 +41,7 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use nebulaid::core::Config;
-use nebulaid::sdk::{NebulaIdClient, NebulaIdClientBuilder};
+use nebulaid::sdk::{IdGenerator, NebulaIdKitBuilder};
 use sdforge::core::Registration;
 use sdforge::prelude::*;
 use sdforge::serde::{Deserialize, Serialize};
@@ -71,13 +71,15 @@ fn merge_sdforge_routes(router: Router) -> Router {
     router
 }
 
-/// 进程级共享客户端：`#[forge]` 处理器为自由函数，经此静态句柄访问客户端。
-static CLIENT: OnceLock<Arc<NebulaIdClient>> = OnceLock::new();
+/// 进程级共享 `IdGenerator` handle：`#[forge]` 处理器为自由函数，经此静态
+/// 句柄访问生成能力（缓存 handle 而非整个 Kit —— 更小，且生成热路径不经
+/// AsyncKit 读锁）。
+static GENERATOR: OnceLock<Arc<IdGenerator>> = OnceLock::new();
 
-fn client() -> &'static Arc<NebulaIdClient> {
-    CLIENT
+fn generator() -> &'static Arc<IdGenerator> {
+    GENERATOR
         .get()
-        .expect("NebulaIdClient 未初始化（main 应先调用 build 并 set）")
+        .expect("IdGenerator 未初始化（main 应先调用 build 并 set）")
 }
 
 /// 把 `CoreError` 映射为 sdforge `ApiError`（500 内部错误）。
@@ -135,7 +137,7 @@ pub struct SdkBatchGenerateResponse {
     description = "通过嵌入式 SDK 生成单个 ID（snowflake，零 DB）"
 )]
 async fn sdk_generate(req: SdkGenerateRequest) -> Result<SdkGenerateResponse, ApiError> {
-    let id = client()
+    let id = generator()
         .generate(&req.workspace, &req.group, &req.biz_tag)
         .await
         .map_err(to_api_error)?;
@@ -155,7 +157,7 @@ async fn sdk_generate(req: SdkGenerateRequest) -> Result<SdkGenerateResponse, Ap
 async fn sdk_batch_generate(
     req: SdkBatchGenerateRequest,
 ) -> Result<SdkBatchGenerateResponse, ApiError> {
-    let batch = client()
+    let batch = generator()
         .batch_generate(&req.workspace, &req.group, &req.biz_tag, req.size)
         .await
         .map_err(to_api_error)?;
@@ -179,13 +181,15 @@ async fn serve_openapi_json() -> impl IntoResponse {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 构建嵌入式客户端：默认算法 snowflake（纯算法，零 DB 零网络）。
+    // 构建嵌入式 Kit：默认算法 snowflake（纯算法，零 DB 零网络），取 ID 生成
+    // handle 入全局缓存。
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
-    let client = NebulaIdClientBuilder::new(config).build().await?;
-    CLIENT
-        .set(Arc::new(client))
-        .map_err(|_| "client already initialized")?;
+    let kit = NebulaIdKitBuilder::new(config).build().await?;
+    let generator = Arc::new(kit.id_generator()?);
+    GENERATOR
+        .set(generator)
+        .map_err(|_| "generator already initialized")?;
 
     // 初始化 sdforge 插件并合并 #[forge] 注册的 HTTP 路由（装配函数见文件
     // 上方），再挂载 Swagger/OpenAPI 路由。

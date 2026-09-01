@@ -2,7 +2,7 @@
 # 安装: npm install -g @evilmartians/lefthook && lefthook install
 # 文档: https://github.com/evilmartians/lefthook
 #
-# 所有 Rust 命令限定 --package nebulaid，避免扫描 path 依赖（confers/oxcache/dbnexus/limiteron）
+# 所有 Rust 命令限定 --package nebulaid（单包仓库，避免全树扫描）
 
 pre-commit:
   parallel: false

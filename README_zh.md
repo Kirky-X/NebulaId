@@ -269,7 +269,7 @@ cargo build --release --features etcd
 # 嵌入式 SDK（src/sdk + examples/{embedded,sdk_server}）
 cargo build --release --features sdk
 
-# 说明：sqlite 当前不可构建 —— limiteron 硬依赖 dbnexus/postgres，
+# 说明：sqlite 当前不可构建 —— default 特性集恒含 dbnexus/postgres，
 # 而 dbnexus 禁止 sqlite 与 postgres 混用（compile_error）；
 # 同一约束也使「全特性」构建无效。
 ```

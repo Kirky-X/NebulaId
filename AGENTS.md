@@ -17,8 +17,8 @@ cargo build --package nebulaid --release
 
 # Build with default + etcd (maximal buildable feature set)
 # NOTE: --all-features is INVALID here — dbnexus forbids mixing the sqlite
-# and postgres features (compile_error), and limiteron hard-depends on
-# dbnexus/postgres, so the `sqlite` feature is currently unbuildable.
+# and postgres features (compile_error), so the `sqlite` feature is currently
+# unbuildable (the default set always enables postgresql).
 # default already enables postgresql; etcd is the only safe add-on.
 cargo build --package nebulaid --features etcd
 
@@ -112,9 +112,9 @@ pip install --user --upgrade pre-commit
 ## Test Commands
 
 > **Feature exclusivity**: dbnexus forbids mixing `sqlite` with `postgresql`
-> (`compile_error!`), and `limiteron` hard-depends on `dbnexus/postgres`, so
-> `--all-features` and the standalone `sqlite` feature are currently
-> unbuildable. Use `--features etcd` (default includes postgresql) for the
+> (`compile_error!`), so `--all-features` and the standalone `sqlite` feature
+> are currently unbuildable (the default set always enables postgresql).
+> Use `--features etcd` (default includes postgresql) for the
 > full buildable feature set.
 
 ```bash
@@ -176,7 +176,7 @@ GitHub Actions workflows are located in `.github/workflows/`:
   `cargo build --package nebulaid --features <feature>`
 - Coverage gate: `cargo llvm-cov --package nebulaid [--features <feature>]
   --fail-under-lines 95 --lcov --output-path lcov.info`, uploaded to codecov
-- The matrix excludes `sqlite` — limiteron hard-depends on `dbnexus/postgres`, so that
+- The matrix excludes `sqlite` — the default set always enables `dbnexus/postgres`, so that
   feature is unbuildable; `--all-features` is likewise never used
 
 **Security Jobs:**
@@ -405,15 +405,15 @@ All dependencies are defined in the single-package `Cargo.toml` (no workspace). 
 
 | Library | Version | Purpose |
 |---------|---------|---------|
-| `confers` | 0.4 | Configuration management |
-| `oxcache` | 0.3 | Multi-level cache abstraction |
-| `dbnexus` | 0.4 | Database abstraction (postgres) |
-| `limiteron` | 0.2 | Rate limiting (quota-control, ban-manager) |
-| `sdforge` | 0.4 | Service discovery (http, grpc) |
-| `sea-orm` | 1.1 | Database ORM |
+| `confers` | 0.5 | Configuration management |
+| `oxcache` | 0.4 | Multi-level cache abstraction |
+| `dbnexus` | 0.5 | Database abstraction (postgres) |
+| `limiteron` | 0.2 | Rate limiting (core primitives only) |
+| `sdforge` | 0.5 | Service discovery (http, grpc) |
+| `sea-orm` | 2.0 | Database ORM |
 | `axum` | 0.8 | HTTP framework |
 | `tonic` | 0.14 | gRPC framework |
-| `etcd-client` | 0.17 | Etcd client (optional, `etcd` feature) |
+| `etcd-client` | 0.20 | Etcd client (optional, `etcd` feature) |
 
 When adding new dependencies, edit `Cargo.toml` `[dependencies]` directly. Prefer `default-features = false` and explicit feature lists (rule 28).
 

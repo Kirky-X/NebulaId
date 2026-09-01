@@ -269,8 +269,8 @@ cargo build --release --features etcd
 # Embedded SDK facade (src/sdk + examples/{embedded,sdk_server})
 cargo build --release --features sdk
 
-# NOTE: sqlite is currently NOT buildable — limiteron hard-depends on
-# dbnexus/postgres while dbnexus forbids mixing sqlite and postgres
+# NOTE: sqlite is currently NOT buildable — the default feature set always
+# enables dbnexus/postgres while dbnexus forbids mixing sqlite and postgres
 # (compile_error). The same constraint makes the all-features build invalid.
 ```
 

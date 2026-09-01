@@ -19,7 +19,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_LOG: info
-  # 限定 --package nebulaid，避免扫描 path 依赖（confers/oxcache/dbnexus/limiteron）
+  # 单包仓库：显式限定 nebulaid 目标包，避免全树扫描
   PKG: nebulaid
 
 concurrency:
@@ -151,7 +151,7 @@ jobs:
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
 
-      # 注：矩阵不含 sqlite —— limiteron 硬依赖 dbnexus/postgres，与 sqlite
+      # 注：矩阵不含 sqlite —— default 恒含 dbnexus/postgres，与 sqlite
       # 的 embedded 引擎互斥（compile_error），该特性当前不可构建。
       - name: Build (feature=${{ matrix.feature }})
         run: |

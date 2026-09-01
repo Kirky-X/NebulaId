@@ -9,7 +9,7 @@
 
 repos:
   # Rust Code Formatting (cargo fmt)
-  # 限定 --package nebulaid，避免扫描 path 依赖（confers/oxcache/dbnexus/limiteron）
+  # 单包仓库：显式限定 nebulaid 目标包，避免全树扫描
   - repo: local
     hooks:
       - id: cargo-fmt

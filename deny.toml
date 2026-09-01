@@ -55,7 +55,9 @@ skip = [
     { crate = "darling_macro", version = "*", reason = "Macro dependency with different feature requirements" },
     
     # Cryptography and networking crates
-    { crate = "getrandom", version = "*", reason = "Cryptography dependency with different feature requirements" },
+    { crate = "getrandom", version = "0.2", reason = "Legacy transitive copies (rand/rand_core/uuid ecosystem)" },
+    { crate = "getrandom", version = "0.3", reason = "Transitive copy via tempfile/ahash ecosystem" },
+    { crate = "getrandom", version = "0.4", reason = "Current generation (Argon2 salt via password-hash/phc)" },
     { crate = "rand", version = "*", reason = "Random number generation with different feature requirements" },
     { crate = "rand_core", version = "*", reason = "Random number generation dependency" },
     

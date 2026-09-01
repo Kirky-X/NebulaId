@@ -22,13 +22,13 @@ path = "src/main.rs"
 default = ["postgresql", "http", "grpc", "garrison-auth"]
 postgresql = ["dbnexus/postgres"]
 # sqlite: 当前不可构建（保留定义但不受支持，勿在 CI/文档中启用）。
-# 原因是必然的后端混用：limiteron 是非可选依赖且固定 features = ["postgres"]
-# → dbnexus/postgres 恒被启用，此时无论是否显式开 postgresql，
+# 原因是必然的后端混用：default 恒含 postgresql → dbnexus/postgres 恒被启用，
 # 只要再开 sqlite 就同时命中 dbnexus/sqlite + dbnexus/postgres，
 # 触发 dbnexus/src/lib.rs 的 compile_error!("Cannot mix embedded
 # (sqlite/duckdb) and server-side (postgres/mysql) database features")。
 # 同理 --all-features 不可用：本项目可构建的最大集合是 default + etcd。
-# 恢复路径：limiteron 放开后端约束，或把限流与数据库后端解耦（改为可选依赖）。
+# （limiteron 已不再传递启用 dbnexus/postgres —— 其 postgres feature 全仓
+# 零使用，依赖面已解耦；sqlite 不可构建纯因上述 default 后端混用。）
 sqlite = ["dbnexus/sqlite"]
 etcd = ["dep:etcd-client"]
 # integration-tests: 门控需要真实数据库的 #[ignore] 集成测试
@@ -55,14 +55,17 @@ unexpected_cfgs = { level = "allow", check-cfg = [
 
 [dependencies]
 # 外部组件（基础设施层）
-confers = "0.4"
-oxcache = "0.3"
-dbnexus = { version = "0.4", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
+confers = "0.5"
+oxcache = "0.4"
+dbnexus = { version = "0.5", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
 sdforge = { version = "0.5.0-rc.1", default-features = false, features = ["http", "grpc", "openapi"] }
 inklog = { version = "0.3.0-rc.1", default-features = false }
 # garrison: 一站式身份认证框架（同作者 Kirky-X），通过 garrison-auth feature 启用，
 # 接管 API key 验证。仅启用 web-axum（中间件）+ protocol-apikey（ApiKeyHandler）+ cache-memory（KV 后端）
-garrison = { version = "0.7", optional = true, default-features = false, features = ["web-axum", "protocol-apikey", "cache-memory"] }
+# 技术债：garrison 0.8.x 内部固定旧版 confers 0.4 / oxcache 0.3 / sdforge 0.4 /
+# inklog 0.1（与本 crate 的 0.5/0.4/0.5-rc/0.3-rc 并存，类型不跨边界）——
+# 这些传递版本只能随 garrison 自身升级收敛，勿在本仓尝试对齐。
+garrison = { version = "0.8", optional = true, default-features = false, features = ["web-axum", "protocol-apikey", "cache-memory"] }
 
 # 工具
 async-trait = "0.1"
@@ -95,7 +98,7 @@ tonic-prost = { version = "0.14", default-features = false }
 tonic = { version = "0.14", default-features = false, features = ["transport", "tls-ring"] }
 
 # 分布式协调
-etcd-client = { version = "0.17", optional = true }
+etcd-client = { version = "0.20", optional = true }
 
 # 缓存与存储
 parking_lot = "0.12"
@@ -107,16 +110,16 @@ tracing = "0.1"
 uuid = { version = "1.22", features = ["v4", "v7", "v8", "serde"] }
 chrono = { version = "0.4", features = ["std"] }
 hex = "0.4"
-base64 = "0.21"
+base64 = "0.23"
 sha2 = "0.11"
-getrandom = "0.2"
 rand = "0.10"
 subtle = "2.5"
-# Argon2id 用于 API key 密钥哈希（CWE-916 修复），std 启用 OsRng
-argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash", "std"] }
+# Argon2id 用于 API key 密钥哈希（CWE-916 修复）；0.6 起 std 废弃，salt 的
+# OsRng 由 getrandom feature 提供
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "password-hash", "getrandom"] }
 regex = "1.0"
 reqwest = { version = "0.13", features = ["json"] }
-validator = { version = "0.20", features = ["derive"] }
+validator = { version = "0.21", features = ["derive"] }
 serde_with = "3.0"
 
 # 错误处理
@@ -133,18 +136,22 @@ smallvec = "1.0"
 url = "2.0"
 
 # 速率限制和流量控制
-limiteron = { version = "0.2", default-features = false, features = ["postgres", "quota-control", "ban-manager"] }
+# 注：postgres / quota-control / ban-manager features 全仓零使用（只消费
+# core 的 TokenBucketLimiter / ConcurrencyLimiter / Limiter 原语），不启用——
+# 这同时解除了 limiteron → dbnexus ^0.4 的传递约束（postgres feature 是
+# optional dbnexus 的开关）。
+limiteron = { version = "0.2", default-features = false }
 
 # 国际化（default-features = false 禁用 accept-language，项目自带更严格的 RFC 7231 解析）
-rust-i18n = { version = "3.1", default-features = false }
+rust-i18n = { version = "4.2", default-features = false }
 
 [dev-dependencies]
-mockall = "0.13"
+mockall = "0.15"
 sea-orm = { version = "2.0", default-features = false, features = ["mock"] }
 tempfile = "3.0"
 reqwest = { version = "0.13", features = ["json"] }
-criterion = { version = "0.5", default-features = false }
-rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+criterion = { version = "0.8", default-features = false }
+rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
 # toml 仅用于测试中序列化 Config 为 TOML 字符串（confers 不提供序列化功能）
 toml = { version = "1.1", default-features = false, features = ["std", "serde"] }
 
@@ -180,9 +187,6 @@ opt-level = 0
 opt-level = 3
 lto = true
 
-[patch.crates-io]
-# RC 期依赖固定：sdforge/inklog 尚未发布 0.5.0-rc.1 / 0.3.0-rc.1 到 crates.io，
-# 此 patch 使上述精确版本要求解析到本地工作副本（../sdforge、../inklog）。
-# 两仓库为只读引用；正式版发布后可移除对应条目或改回 crates.io 版本。
-sdforge = { path = "../sdforge" }
-inklog = { path = "../inklog" }
+# sdforge 0.5.0-rc.1 / inklog 0.3.0-rc.1 已发布到 crates.io，直接引用 registry
+# 版本（曾以 [patch.crates-io] 指向 ../sdforge、../inklog 工作副本，会破坏无
+# 兄弟目录环境的构建；正式版发布后按 semver 上浮）。

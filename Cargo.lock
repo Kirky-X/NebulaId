@@ -1888,7 +1888,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
- "trait-kit",
+ "trait-kit 0.3.1",
  "unic-langid",
  "unicode-normalization",
  "uuid",
@@ -3438,6 +3438,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tracing",
+ "trait-kit 0.5.0-rc.1",
  "url",
  "utoipa",
  "uuid",
@@ -6134,6 +6135,12 @@ checksum = "948a3283524cc6eb4cbb043bed24e16c54737e726b827671716da1998dbe246e"
 dependencies = [
  "thiserror",
 ]
+
+[[package]]
+name = "trait-kit"
+version = "0.5.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d96cd88d570b452befb747951cb6a15abd88fe9b9348af1ab47d8975b91fea49"
 
 [[package]]
 name = "triomphe"

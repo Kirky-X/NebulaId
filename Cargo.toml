@@ -42,10 +42,12 @@ grpc = []
 openapi = []
 # garrison-auth: 启用 garrison 接管 API key 验证（替代手写 Argon2id + key_id:key_secret 方案）
 garrison-auth = ["dep:garrison"]
-# sdk: 门控嵌入式 SDK facade（src/sdk/，NebulaIdClient/Builder）。
-# 纯标记特性，不引入额外依赖（复用 core 算法/路由/降级能力）。
+# sdk: 门控嵌入式 SDK facade（src/sdk/，Kit 范式装配）。
+# 引入 trait-kit（async/lifecycle/health）：SDK 以 AsyncKit 模块化装配
+# （分布式锁/仓储/路由/ID 生成四模块），依赖图由 kit.build() 校验，
+# 取代手写顺序装配。不开 sdk 的构建不含 trait-kit（依赖树零影响）。
 # 蕴含 openapi：SDK 示例（sdk_server）需产出含路径的 OpenAPI 文档。
-sdk = ["openapi"]
+sdk = ["openapi", "dep:trait-kit"]
 
 # sdforge 宏还 emit 其他内部 feature 的 cfg gate，声明为已知 cfg 值以消除 check-cfg 警告
 [lints.rust]
@@ -66,6 +68,12 @@ inklog = { version = "0.3.0-rc.1", default-features = false }
 # inklog 0.1（与本 crate 的 0.5/0.4/0.5-rc/0.3-rc 并存，类型不跨边界）——
 # 这些传递版本只能随 garrison 自身升级收敛，勿在本仓尝试对齐。
 garrison = { version = "0.8", optional = true, default-features = false, features = ["web-axum", "protocol-apikey", "cache-memory"] }
+# trait-kit: 模块定义标准接口与 Kit 能力管理中心（同作者自研生态，
+# garrison/limiteron/dbnexus/sdforge 均提供 trait-kit 集成面）。
+# RC 期精确 minor 锁定 0.5.0-rc.1（与 sdforge 0.5.0-rc.1 同一 RC 生态）；
+# 正式版发布后按 semver 上浮（Cargo.toml 注释注明，勿提前放宽）。
+# 仅 sdk feature 拉入（dep:trait-kit）：不开 sdk 的构建依赖树零影响。
+trait-kit = { version = "0.5.0-rc.1", optional = true, default-features = false, features = ["async", "lifecycle", "health"] }
 
 # 工具
 async-trait = "0.1"

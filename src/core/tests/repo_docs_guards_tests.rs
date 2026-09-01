@@ -17,7 +17,7 @@
 //! # 仓库文本守卫（converge T020）
 //!
 //! 本 crate 不存在可用的「全特性」构建：dbnexus 禁止 `sqlite` 与 `postgres`
-//! 同时启用（`compile_error!`），而 limiteron 硬依赖 `dbnexus/postgres`。
+//! 同时启用（`compile_error!`），而 default 特性集恒含 `dbnexus/postgres`。
 //! CI 与文档若继续推荐该开关，等于宣称一个必然失败的门禁，故用测试钉住。
 //!
 //! 判定口径（显式规则，不做语义猜测）：被扫描文件**同一行**同时出现 `cargo`

@@ -14,13 +14,80 @@
 
 //! trait-kit Kit 范式装配的嵌入式 SDK 门面（wiring T012，feature `sdk` 门控）。
 
-use trait_kit::{AsyncKit, AsyncReady};
+use std::sync::Arc;
+
+use trait_kit::{impl_async_auto_builder, impl_module_meta, AsyncKit, AsyncReady};
 
 use crate::core::algorithm::DynAuditLogger;
 use crate::core::config::Config;
+use crate::core::coordinator::{DistributedLock, LocalDistributedLock};
 use crate::core::database::SeaOrmRepository;
 use crate::core::types::Result;
 use crate::core::CoreError;
+
+#[cfg(feature = "etcd")]
+use crate::core::coordinator::{
+    EtcdClientOps, EtcdClientWrapper, EtcdDistributedLock, SEGMENT_LOCK_PATH_PREFIX,
+};
+
+/// 分布式锁模块（能力：`Arc<dyn DistributedLock + Send + Sync>`）。
+///
+/// 无依赖；从 TypeMap 拉 `Config` 经 `create_distributed_lock` 构造锁
+///（etcd 优先、任何失败回退 Local 并显性 warn —— 与 `main.rs` 行为一致）。
+pub struct DistributedLockModule;
+
+impl_module_meta!(DistributedLockModule, "distributed-lock");
+
+impl_async_auto_builder!(
+    DistributedLockModule,
+    Arc<dyn DistributedLock + Send + Sync>,
+    CoreError,
+    |kit| Box::pin(async move {
+        let config = kit
+            .config::<Config>()
+            .map_err(|e| CoreError::InternalError(format!("distributed-lock 模块配置缺失: {e}")))?;
+        let lock = create_distributed_lock(&config).await;
+        Ok(lock)
+    })
+);
+
+/// 分布式锁创建：`etcd` feature 且 endpoints 已配置 → `EtcdDistributedLock`；
+/// 任何失败回退 `LocalDistributedLock` 并显性 warn（与 main.rs 行为一致）。
+#[cfg(feature = "etcd")]
+async fn create_distributed_lock(config: &Config) -> Arc<dyn DistributedLock + Send + Sync> {
+    if !config.etcd.endpoints.is_empty() {
+        match EtcdClientWrapper::new(config.etcd.endpoints.clone()).await {
+            Ok(client) => {
+                let client: Arc<dyn EtcdClientOps> = Arc::new(client);
+                match EtcdDistributedLock::new(client, SEGMENT_LOCK_PATH_PREFIX.to_string()).await {
+                    Ok(etcd_lock) => return Arc::new(etcd_lock),
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "sdk: failed to create EtcdDistributedLock, falling back to LocalDistributedLock"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "sdk: failed to connect etcd, falling back to LocalDistributedLock"
+                );
+            }
+        }
+    } else {
+        tracing::warn!(
+            "sdk: etcd endpoints not configured, using LocalDistributedLock (single-process only)"
+        );
+    }
+    Arc::new(LocalDistributedLock::new())
+}
+
+#[cfg(not(feature = "etcd"))]
+async fn create_distributed_lock(_config: &Config) -> Arc<dyn DistributedLock + Send + Sync> {
+    Arc::new(LocalDistributedLock::new())
+}
 
 /// audit_logger 的 TypeMap 注入包装（`pub(crate)`，不 re-export，不扩大 SDK 公共面）。
 ///
@@ -87,11 +154,15 @@ impl NebulaIdKitBuilder {
     /// 组装 Kit：TypeMap 注入 → 模块注册 → `AsyncKit::build()` 依赖图校验
     ///（缺失依赖/环检测 + 拓扑序构造）。
     pub async fn build(self) -> Result<NebulaIdKit> {
-        let kit = AsyncKit::new();
+        let mut kit = AsyncKit::new();
 
         // TypeMap 常驻配置：Config 与 audit_logger（后续模块从 TypeMap 拉取）
         kit.set_config(self.config.clone());
         kit.set_config(AuditLoggerInput(self.audit_logger));
+
+        // 模块注册（依赖图由 trait-kit 在 build() 校验）
+        kit.register::<DistributedLockModule>()
+            .map_err(|e| CoreError::InternalError(format!("trait-kit 模块注册失败: {e}")))?;
 
         // 注入完整性显性校验（装配错误提前暴露，不落入模块回调的隐式
         // MissingConfig）；同时确认 audit_logger 注入形态，供启动观测。
@@ -138,6 +209,33 @@ mod tests {
             .expect("audit_logger 必须已注入 TypeMap");
         assert!(audit.0.is_none(), "未注入审计日志器时应为 None");
         // 无任何模块注册：健康检查报告为空
-        assert!(kit.kit.health_report().is_empty());
+        assert!(kit.inner().health_report().is_empty());
+    }
+
+    /// R-sdk-emb-001：`DistributedLockModule` 注册后 `build()` 成功；`require`
+    /// 返回的锁可 `acquire`/`release` 且 `is_healthy()` 为 true
+    ///（`DistributedLock` trait 无 `lock()/unlock()` 方法，断言只走既有面）。
+    #[tokio::test]
+    async fn test_kit_builds_distributed_lock_module() {
+        let kit = NebulaIdKitBuilder::new(Config::default())
+            .build()
+            .await
+            .expect("build 必须成功");
+        assert!(
+            kit.inner().contains::<DistributedLockModule>(),
+            "DistributedLockModule 必须已注册并构建"
+        );
+
+        let lock = kit
+            .inner()
+            .require::<DistributedLockModule>()
+            .expect("require 分布式锁必须成功");
+        assert!(lock.is_healthy(), "LocalDistributedLock 应恒健康");
+
+        let guard = lock
+            .acquire("test-key", 30)
+            .await
+            .expect("acquire 必须成功");
+        guard.release().await.expect("release 必须成功");
     }
 }

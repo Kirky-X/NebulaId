@@ -832,16 +832,18 @@ async fn main() -> Result<()> {
                 )
                 .with_rate_limiter(rate_limiter.clone()),
             );
-            let mut h = build_api_handlers(
+            let h = build_api_handlers(
                 id_generator.clone(),
                 cs.clone(),
                 repo.clone(),
                 config.auth.key_rotation_grace_period_seconds,
             );
             #[cfg(feature = "garrison-auth")]
-            if let Some(cache) = auth_cache.clone() {
-                h = h.with_auth_cache(cache);
-            }
+            let h = if let Some(cache) = auth_cache.clone() {
+                h.with_auth_cache(cache)
+            } else {
+                h
+            };
             let h = Arc::new(h);
             (h, cs)
         } else {
@@ -969,16 +971,18 @@ async fn main() -> Result<()> {
                 )
                 .with_rate_limiter(rate_limiter.clone()),
             );
-            let mut h = build_api_handlers(
+            let h = build_api_handlers(
                 id_generator.clone(),
                 cs.clone(),
                 repo.clone(),
                 config.auth.key_rotation_grace_period_seconds,
             );
             #[cfg(feature = "garrison-auth")]
-            if let Some(cache) = auth_cache.clone() {
-                h = h.with_auth_cache(cache);
-            }
+            let h = if let Some(cache) = auth_cache.clone() {
+                h.with_auth_cache(cache)
+            } else {
+                h
+            };
             let h = Arc::new(h);
             (h, cs)
         } else {

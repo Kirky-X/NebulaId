@@ -525,13 +525,13 @@ mod tests {
         // `install_default()` is idempotent; safe to call multiple times.
         let _ = rustls::crypto::ring::default_provider().install_default();
 
-        // rcgen 0.13 API: `generate_simple_self_signed` returns a
-        // `CertifiedKey { cert, key_pair }`. `cert.pem()` and
-        // `key_pair.serialize_pem()` both return `String`.
+        // rcgen 0.14 API: `generate_simple_self_signed` returns a
+        // `CertifiedKey { cert, signing_key }`. `cert.pem()` and
+        // `signing_key.serialize_pem()` both return `String`.
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
             .expect("generate self-signed cert");
         let cert_pem = certified.cert.pem();
-        let key_pem = certified.key_pair.serialize_pem();
+        let key_pem = certified.signing_key.serialize_pem();
 
         let mut cert_file = NamedTempFile::new().expect("cert tmp file");
         cert_file

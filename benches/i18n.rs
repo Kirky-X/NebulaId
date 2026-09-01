@@ -28,9 +28,11 @@
 //! `set_locale` (global state) and exercises only the per-call
 //! `translate_with_locale*` APIs which are concurrency-safe.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
+// criterion 0.8 弃用了自身的 `black_box`，直接用标准库的稳定实现
 use nebulaid::core::i18n::{translate_with_locale, translate_with_locale_args};
 use nebulaid::core::types::CoreError;
+use std::hint::black_box;
 
 fn bench_translate_with_locale(c: &mut Criterion) {
     c.bench_function("translate_with_locale/en/no_args", |b| {

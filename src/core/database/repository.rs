@@ -22,8 +22,8 @@ use rand::{Rng, RngExt};
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use argon2::password_hash::{rand_core::OsRng, SaltString};
-use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use argon2::password_hash::phc::PasswordHash;
+use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 
 use crate::core::coordinator::{LockError, LockGuard};
 use crate::core::database::api_key_entity::{
@@ -364,14 +364,13 @@ impl SeaOrmRepository {
     ///
     /// 使用 Argon2id（memory-hard, OWASP 2023 推荐）替代 SHA256。
     /// - `self.salt` 作为 pepper（额外加在 password 前），增加深度防御
-    /// - 每次调用生成独立的 SaltString（PHC 格式内嵌）
+    /// - password-hash 0.6 的 `hash_password` 自动生成 16 字节随机 salt
+    ///   （内嵌 PHC，与旧 SaltString 路径语义等价）
     /// - 返回 PHC 格式字符串（约 96 字符），需 VARCHAR(255) 存储
     fn hash_key(&self, key_id: &str, key_secret: &str) -> Result<String> {
         let password = self.password_material(key_id, key_secret);
-        let salt = SaltString::generate(&mut OsRng);
-        let argon2 = Argon2::default();
-        let hash = argon2
-            .hash_password(password.as_bytes(), &salt)
+        let hash = Argon2::default()
+            .hash_password(password.as_bytes())
             .map_err(|e| {
                 crate::core::CoreError::InternalError(format!("argon2 hash failed: {}", e))
             })?;
@@ -2161,6 +2160,45 @@ mod mock_tests {
         let h1 = repo.hash_key("kid1", "secret1").unwrap();
         let h2 = repo.hash_key("kid1", "secret1").unwrap();
         assert_ne!(h1, h2, "salt must be regenerated per call");
+    }
+
+    #[test]
+    fn test_hash_key_phc_params_stable_across_argon2_0_6_upgrade() {
+        // argon2 0.5 → 0.6 升级的存量数据兼容回归：算法（argon2id）、版本
+        // （v=19）、默认参数（m=19456,t=2,p=1）与 PHC 序列化格式必须保持
+        // 不变 —— DB 中已有的 key_secret_hash 全部是 0.5 时代生成的，任何
+        // 一项漂移都会让全量存量凭证静默验不过。
+        let repo = make_repo(empty_pg_connection());
+        let h = repo.hash_key("kid1", "secret1").unwrap();
+        assert!(
+            h.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"),
+            "算法/版本/默认参数漂移会让存量哈希全部验不过, got: {}",
+            h
+        );
+        assert!(
+            repo.verify_key("kid1", "secret1", &h),
+            "生成-验证闭环必须成立"
+        );
+    }
+
+    #[test]
+    fn test_verify_key_accepts_legacy_pinned_hash_vector() {
+        // 升级前钉死的固定向量：固定 salt（[0x5A; 16]）+ `password_material`
+        // 确定性输入。Argon2（RFC 9106）对相同 salt+输入+参数产出字节级一致
+        // 的 PHC，因此该字面量等价于 argon2 0.5 时代写入 DB 的真实存量哈希
+        // （sample_api_key_model 里的串是占位假数据，钉不住该不变量）。
+        // 任何让存量凭证验不过的实现变更都会被本用例拦截。
+        const LEGACY_PINNED_HASH: &str =
+            "$argon2id$v=19$m=19456,t=2,p=1$WlpaWlpaWlpaWlpaWlpaWg$RO2LFuOid0m4cf+SroCSSvFC2OPkluKtEY4ZLZ2dqpU";
+        let repo = make_repo(empty_pg_connection());
+        assert!(
+            repo.verify_key("kid1", "pin-secret", LEGACY_PINNED_HASH),
+            "存量固定向量必须可验证"
+        );
+        assert!(
+            !repo.verify_key("kid1", "wrong-secret", LEGACY_PINNED_HASH),
+            "错误凭证必须验不过"
+        );
     }
 
     #[test]

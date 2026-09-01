@@ -471,7 +471,7 @@ fn generate_test_cert_files() -> (NamedTempFile, NamedTempFile) {
     let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
         .expect("generate self-signed cert");
     let cert_pem = certified.cert.pem();
-    let key_pem = certified.key_pair.serialize_pem();
+    let key_pem = certified.signing_key.serialize_pem();
 
     let mut cert_file = NamedTempFile::new().expect("cert tmp file");
     cert_file

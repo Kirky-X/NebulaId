@@ -333,6 +333,10 @@ impl SeaOrmRepository {
     /// 因此到期时刻之后旧凭证立即不再被采信（惰性时间判定，无需清理任务）。
     /// 抽成纯函数是为了把"候选只有几项"这一性质变成可断言的测试目标 ——
     /// Argon2 校验次数无法从 `MockDatabase` 观测。
+    ///
+    /// INVARIANT: 此函数桥接 DB schema（`key_secret_hash` + `prev_secret_hash` +
+    /// `rotate_expires_at`）与 auth 决策层。若 `Model` 结构体重构（如拆分读写投影），
+    /// 此函数必须同步更新，否则双窗口判定静默失效。
     fn credential_candidates(model: &ApiKeyModel, now: NaiveDateTime) -> Vec<(String, bool)> {
         let mut candidates = vec![(model.key_secret_hash.clone(), false)];
 

@@ -794,9 +794,7 @@ impl TryFrom<crate::core::database::ApiKeyResponse> for ApiKeyResponse {
 impl TryFrom<crate::core::database::ApiKey> for ApiKeyResponse {
     type Error = crate::core::types::CoreError;
 
-    fn try_from(
-        key: crate::core::database::ApiKey,
-    ) -> std::result::Result<Self, Self::Error> {
+    fn try_from(key: crate::core::database::ApiKey) -> std::result::Result<Self, Self::Error> {
         Self::try_from(crate::core::database::ApiKeyResponse::from(key))
     }
 }

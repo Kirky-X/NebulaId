@@ -39,7 +39,10 @@ pub struct RedisConfig {
 impl std::fmt::Debug for RedisConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RedisConfig")
-            .field("url", &crate::core::config::app::redact_optional_url(&self.url))
+            .field(
+                "url",
+                &crate::core::config::app::redact_optional_url(&self.url),
+            )
             .field("pool_size", &self.pool_size)
             .field("key_prefix", &self.key_prefix)
             .field("ttl_seconds", &self.ttl_seconds)

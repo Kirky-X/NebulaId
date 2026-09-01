@@ -123,7 +123,7 @@ impl_async_auto_builder!(RouterModule, Arc<AlgorithmRouter>, CoreError, |kit| {
 
 impl AsyncLifecycle for RouterModule {
     /// `on_ready`：trait-kit 在 `build()` 完成后按注册顺序触发——启动降级
-    /// 后台任务（替代旧 `NebulaIdClientBuilder::build()` 第 4 步）。
+    /// 后台任务（替代旧 SDK 构建器手工装配的第 4 步（T008 前））。
     fn on_ready<'a>(
         kit: &'a AsyncKit<AsyncReady>,
     ) -> Pin<Box<dyn Future<Output = std::result::Result<(), Self::Error>> + Send + 'a>> {
@@ -203,7 +203,7 @@ impl_async_auto_builder!(IdGenModule, IdGenerator, CoreError, |kit| Box::pin(
 
 /// 嵌入式 ID 生成 handle。
 ///
-/// 生成方法语义与旧 `NebulaIdClient` 完全等价（迁移非重设计）：默认算法解析、
+/// 生成方法语义与旧 SDK 客户端完全等价（迁移非重设计）：默认算法解析、
 /// `require_repository_for_segment` 守卫、`GenerateContext { format: Numeric,
 /// prefix: None }` 构造均逐字保留。`Clone` 廉价（内部 `Arc`），可跨任务共享。
 #[derive(Clone)]
@@ -318,7 +318,7 @@ async fn create_distributed_lock(_config: &Config) -> Arc<dyn DistributedLock + 
 /// audit_logger 的 TypeMap 注入包装（`pub(crate)`，不 re-export，不扩大 SDK 公共面）。
 ///
 /// RouterModule 经 `kit.config::<AuditLoggerInput>()` 拉取。`Option` 语义保留
-/// 旧 `NebulaIdClientBuilder.audit_logger` 的可选性。
+/// 旧 SDK 构建器 audit_logger 字段的可选性。
 #[derive(Clone)]
 pub(crate) struct AuditLoggerInput(pub Option<DynAuditLogger>);
 
@@ -370,7 +370,7 @@ impl NebulaIdKit {
     }
 
     /// 停机：手动按逆拓扑调用 `RouterModule::on_shutdown`（执行
-    /// `stop_background_check().await`，语义等价旧 `NebulaIdClient::shutdown`）
+    /// `stop_background_check().await`，语义等价旧 SDK 客户端 shutdown）
     /// 后再调 `kit.shutdown()` 完成其余同步清理。
     ///
     /// **为何手动**：trait-kit 0.5.0-rc.1 的 `AsyncKit::shutdown()` 是同步方法，
@@ -385,7 +385,7 @@ impl NebulaIdKit {
     }
 
     /// 是否注入了数据库仓储（决定 Segment 可用性；语义 = 旧
-    /// `NebulaIdClient::has_repository`，经 TypeMap optional 拉取判定）。
+    /// 旧 SDK 客户端 has_repository，经 TypeMap optional 拉取判定）。
     pub fn has_repository(&self) -> bool {
         self.kit.optional::<RepositoryModule>().is_some()
     }
@@ -883,5 +883,84 @@ mod tests {
             result.is_err(),
             "缺失依赖链（RouterModule/DistributedLockModule 未注册）时 build() 必须 Err"
         );
+    }
+
+    /// R-sdk-emb-002：8 并发 × 1000 次 snowflake 生成，去重后零重复
+    ///（旧 `client.rs` `sdk_concurrent_snowflake_generation_is_unique` 迁移）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn test_kit_concurrent_snowflake_generation_is_unique() {
+        use std::collections::HashSet;
+
+        let kit = Arc::new(
+            NebulaIdKitBuilder::new(snowflake_config())
+                .build()
+                .await
+                .expect("build 必须成功"),
+        );
+        let generator = Arc::new(kit.id_generator().expect("id_generator() 必须成功"));
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let generator = generator.clone();
+            handles.push(tokio::spawn(async move {
+                let mut ids = Vec::with_capacity(1000);
+                for _ in 0..1000 {
+                    let id = generator
+                        .generate("ws", "group", "biz")
+                        .await
+                        .expect("snowflake generate 必须成功");
+                    ids.push(id);
+                }
+                ids
+            }));
+        }
+
+        let mut unique: HashSet<u128> = HashSet::new();
+        let mut total = 0usize;
+        for handle in handles {
+            for id in handle.await.expect("worker task panicked") {
+                unique.insert(id.as_u128());
+                total += 1;
+            }
+        }
+
+        assert_eq!(total, 8_000);
+        assert_eq!(unique.len(), 8_000, "snowflake 并发生成必须零重复");
+    }
+
+    /// R-sdk-emb-002：显式指定 Segment 算法在零仓储注入下同样被守卫拒绝
+    ///（`generate_with_algorithm` 路径，旧 `client.rs` 用例覆盖）。
+    #[tokio::test]
+    async fn test_kit_generate_with_algorithm_segment_without_repository_returns_configuration_error(
+    ) {
+        let kit = NebulaIdKitBuilder::new(snowflake_config())
+            .build()
+            .await
+            .expect("build 必须成功");
+        let generator = kit.id_generator().expect("id_generator() 必须成功");
+
+        let err = generator
+            .generate_with_algorithm(AlgorithmType::Segment, "ws", "group", "biz")
+            .await
+            .expect_err("显式 Segment 请求在无仓储时必须失败");
+        assert!(matches!(err, CoreError::ConfigurationError(_)));
+    }
+
+    /// R-sdk-emb-002：uuid_v8 批量生成零 DB 可用（旧 `client.rs` 用例迁移）。
+    #[tokio::test]
+    async fn test_kit_batch_generate_uuid_v8_without_repository() {
+        let mut config = snowflake_config();
+        config.algorithm.default = "uuid_v8".to_string();
+        let kit = NebulaIdKitBuilder::new(config)
+            .build()
+            .await
+            .expect("build 必须成功");
+        let generator = kit.id_generator().expect("id_generator() 必须成功");
+
+        let batch = generator
+            .batch_generate("ws", "group", "biz", 10)
+            .await
+            .expect("uuid_v8 批量应零 DB 可用");
+        assert_eq!(batch.ids.len(), 10);
     }
 }

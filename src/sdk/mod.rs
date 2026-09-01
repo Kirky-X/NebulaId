@@ -14,11 +14,8 @@
 
 //! 嵌入式 SDK（trait-kit Kit 范式装配，feature `sdk` 门控）。
 //!
-//! 规则 25：本 `mod.rs` 只做模块声明与 re-export，实现位于 [`kit`]（`client` 为
-//! 旧 API，T008 移除）。
+//! 规则 25：本 `mod.rs` 只做模块声明与 re-export，实现位于 [`kit`]。
 
-pub mod client;
 pub mod kit;
 
-pub use client::{NebulaIdClient, NebulaIdClientBuilder};
 pub use kit::{NebulaIdKit, NebulaIdKitBuilder};

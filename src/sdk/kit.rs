@@ -23,11 +23,11 @@ use trait_kit::{
     AsyncReady,
 };
 
-use crate::core::algorithm::{AlgorithmRouter, CpuMonitor, DynAuditLogger};
+use crate::core::algorithm::{AlgorithmRouter, CpuMonitor, DynAuditLogger, GenerateContext};
 use crate::core::config::Config;
 use crate::core::coordinator::{DistributedLock, LocalDistributedLock};
 use crate::core::database::SeaOrmRepository;
-use crate::core::types::Result;
+use crate::core::types::{AlgorithmType, Id, IdBatch, IdFormat, Result};
 use crate::core::CoreError;
 
 #[cfg(feature = "etcd")]
@@ -173,6 +173,110 @@ impl AsyncHealthCheck for RouterModule {
     }
 }
 
+/// ID 生成能力模块（能力：`IdGenerator`——Clone handle，内部 `Arc` 共享）。
+///
+/// 依赖 `RouterModule`（硬链 Router→IdGen）；对仓储 optional 拉取（守卫用，
+/// 不进硬依赖图）。`generate*` 热路径直调 `Arc<AlgorithmRouter>`，不经过
+/// AsyncKit 的 `Arc<RwLock>`。
+pub struct IdGenModule;
+
+impl_module_meta!(IdGenModule, "id-generation", deps = [RouterModule]);
+
+impl_async_auto_builder!(IdGenModule, IdGenerator, CoreError, |kit| Box::pin(
+    async move {
+        let router = kit.require::<RouterModule>().map_err(|e| {
+            CoreError::InternalError(format!("id-generation 模块依赖路由缺失: {e}"))
+        })?;
+        // 可选依赖拉取（同 RouterModule.build 的 RC 限制处理）：RepositoryModule
+        // 缺席时 `IdGenerator.repository` 为 None，Segment 守卫在生成期显性报错。
+        let repository = kit.require::<RepositoryModule>().ok();
+        let config = kit
+            .config::<Config>()
+            .map_err(|e| CoreError::InternalError(format!("id-generation 模块配置缺失: {e}")))?;
+        Ok(IdGenerator {
+            router,
+            repository,
+            default_algorithm: config.algorithm.get_default_algorithm(),
+        })
+    }
+));
+
+/// 嵌入式 ID 生成 handle。
+///
+/// 生成方法语义与旧 `NebulaIdClient` 完全等价（迁移非重设计）：默认算法解析、
+/// `require_repository_for_segment` 守卫、`GenerateContext { format: Numeric,
+/// prefix: None }` 构造均逐字保留。`Clone` 廉价（内部 `Arc`），可跨任务共享。
+#[derive(Clone)]
+pub struct IdGenerator {
+    router: Arc<AlgorithmRouter>,
+    repository: Option<Arc<SeaOrmRepository>>,
+    default_algorithm: AlgorithmType,
+}
+
+// Send + Sync 编译期断言（R-sdk-emb-002：clone 后可在 tokio::spawn 任务中生成）
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<IdGenerator>();
+};
+
+impl IdGenerator {
+    /// 按默认算法生成单个 ID。
+    pub async fn generate(&self, workspace: &str, group: &str, biz_tag: &str) -> Result<Id> {
+        self.require_repository_for_segment(self.default_algorithm)?;
+        let ctx = Self::make_ctx(workspace, group, biz_tag);
+        self.router.generate(&ctx).await
+    }
+
+    /// 按默认算法批量生成 ID。
+    pub async fn batch_generate(
+        &self,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+        size: usize,
+    ) -> Result<IdBatch> {
+        self.require_repository_for_segment(self.default_algorithm)?;
+        let ctx = Self::make_ctx(workspace, group, biz_tag);
+        self.router.batch_generate(&ctx, size).await
+    }
+
+    /// 指定算法生成单个 ID。
+    pub async fn generate_with_algorithm(
+        &self,
+        algorithm: AlgorithmType,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+    ) -> Result<Id> {
+        self.require_repository_for_segment(algorithm)?;
+        self.router
+            .generate_with_algorithm(algorithm, workspace, group, biz_tag)
+            .await
+    }
+
+    fn make_ctx(workspace: &str, group: &str, biz_tag: &str) -> GenerateContext {
+        GenerateContext {
+            workspace_id: workspace.to_string(),
+            group_id: group.to_string(),
+            biz_tag: biz_tag.to_string(),
+            format: IdFormat::Numeric,
+            prefix: None,
+        }
+    }
+
+    /// Segment 需要数据库号段分配：未注入仓储时显性报错，禁止静默降级。
+    fn require_repository_for_segment(&self, algorithm: AlgorithmType) -> Result<()> {
+        if algorithm == AlgorithmType::Segment && self.repository.is_none() {
+            return Err(CoreError::ConfigurationError(
+                "Segment algorithm requires a database repository; \
+                 call NebulaIdKitBuilder::with_repository() before build()"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// 分布式锁创建：`etcd` feature 且 endpoints 已配置 → `EtcdDistributedLock`；
 /// 任何失败回退 `LocalDistributedLock` 并显性 warn（与 main.rs 行为一致）。
 #[cfg(feature = "etcd")]
@@ -295,6 +399,8 @@ impl NebulaIdKitBuilder {
             kit.set_config(RepositoryInput(repository));
         }
         kit.register::<RouterModule>()
+            .map_err(|e| CoreError::InternalError(format!("trait-kit 模块注册失败: {e}")))?;
+        kit.register::<IdGenModule>()
             .map_err(|e| CoreError::InternalError(format!("trait-kit 模块注册失败: {e}")))?;
 
         // 生命周期与健康检查接线（on_ready 在 build() 完成后触发）
@@ -510,5 +616,105 @@ mod tests {
             report.iter().any(|(name, _)| *name == "router"),
             "health_report 必须包含 router 模块，实际: {report:?}"
         );
+    }
+
+    /// R-sdk-emb-002：纯算法（snowflake）在零仓储注入下可用。
+    #[tokio::test]
+    async fn test_id_generator_pure_algorithm_without_repository() {
+        let kit = NebulaIdKitBuilder::new(snowflake_config())
+            .build()
+            .await
+            .expect("build 必须成功");
+        let generator = kit
+            .inner()
+            .require::<IdGenModule>()
+            .expect("require ID 生成能力必须成功");
+
+        let id = generator
+            .generate("ws", "group", "biz")
+            .await
+            .expect("snowflake 生成必须成功");
+        assert!(id.as_u128() > 0);
+    }
+
+    /// R-sdk-emb-002：零仓储注入下 Segment 请求返回 `CoreError::ConfigurationError`
+    /// 且消息文本含 `with_repository`（错误消息是公共 API 的一部分，经 Display
+    /// 可观测）。
+    #[tokio::test]
+    async fn test_id_generator_segment_without_repository_returns_configuration_error() {
+        // Config::default() 默认算法为 segment
+        let kit = NebulaIdKitBuilder::new(Config::default())
+            .build()
+            .await
+            .expect("build 必须成功（未注入仓储不阻断）");
+        let generator = kit
+            .inner()
+            .require::<IdGenModule>()
+            .expect("require ID 生成能力必须成功");
+
+        let err = generator
+            .generate("ws", "group", "biz")
+            .await
+            .expect_err("无 DB 时默认 Segment 请求必须失败");
+        assert!(
+            matches!(err, CoreError::ConfigurationError(_)),
+            "期望 ConfigurationError，实际：{err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("with_repository"),
+            "错误消息必须指向 NebulaIdKitBuilder::with_repository，实际：{msg}"
+        );
+    }
+
+    /// R-sdk-emb-002：注入仓储后 Segment 请求通过守卫并可生成
+    ///（Segment 算法自带默认 loader，无需真实 DB；守卫放行即语义达成）。
+    #[tokio::test]
+    async fn test_id_generator_segment_with_repository_succeeds() {
+        use dbnexus::sea_orm::{DatabaseBackend, MockDatabase};
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let kit = NebulaIdKitBuilder::new(Config::default())
+            .with_repository(crate::core::database::SeaOrmRepository::new(
+                db,
+                "test_salt".to_string(),
+            ))
+            .build()
+            .await
+            .expect("注入仓储后 build 必须成功");
+        let generator = kit
+            .inner()
+            .require::<IdGenModule>()
+            .expect("require ID 生成能力必须成功");
+
+        let id = generator
+            .generate("ws", "group", "biz")
+            .await
+            .expect("注入仓储后 Segment 生成必须成功");
+        assert!(id.as_u128() > 0);
+    }
+
+    /// R-sdk-emb-002：`IdGenerator` 为 Clone handle，克隆后在独立 tokio 任务中
+    /// 生成（Send + Sync 语义的运行时验证）。
+    #[tokio::test]
+    async fn test_id_generator_handle_is_clone_and_cross_task() {
+        let kit = NebulaIdKitBuilder::new(snowflake_config())
+            .build()
+            .await
+            .expect("build 必须成功");
+        let generator = kit
+            .inner()
+            .require::<IdGenModule>()
+            .expect("require ID 生成能力必须成功");
+
+        let cloned = generator.clone();
+        let handle = tokio::spawn(async move {
+            cloned
+                .generate("ws", "group", "biz")
+                .await
+                .expect("task 内生成必须成功")
+        });
+        let id = handle.await.expect("worker task panicked");
+        assert!(id.as_u128() > 0);
     }
 }

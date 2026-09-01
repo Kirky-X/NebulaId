@@ -1141,7 +1141,7 @@ GET /health/sdforge
 
 sdforge integration health check. The endpoint is registered via the
 `#[forge]` macro (see `src/server/sdforge_adapter.rs::sdforge_health`) and
-exposed through the `sdforge` 0.4.2 inventory route merger. It returns the
+exposed through the `sdforge` 0.5 inventory route merger. It returns the
 Nebula ID crate version so callers can confirm the route is served by the
 running binary.
 

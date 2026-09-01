@@ -81,7 +81,7 @@ RUN chown -R appuser:appgroup /app && \
 USER appuser
 
 # Expose ports
-EXPOSE 8080 50051 9091
+EXPOSE 8080 9091 9092
 
 # Environment variables
 ENV RUST_LOG=info \

@@ -96,17 +96,17 @@ graph LR
 
 | 库 | 版本 | 角色 | 使用方式 |
 |----|------|------|----------|
-| `confers` | 0.4 | 配置管理 | 提供 `ConfigProvider` trait 与环境变量展开 |
-| `oxcache` | 0.3 | 多级缓存 | 提供 `Cache` 抽象（内存 + Redis） |
-| `dbnexus` | 0.4 | 数据库抽象 | 提供 PostgreSQL 连接池与事务管理 |
-| `limiteron` | 0.2 | 限流 | 提供 quota-control 与 ban-manager 特性 |
-| `sdforge` | 0.4 | 服务发现 | 提供 HTTP 与 gRPC 服务发现 |
+| `confers` | 0.5 | 配置管理 | 提供 `ConfigProvider` trait 与环境变量展开 |
+| `oxcache` | 0.4 | 多级缓存 | 提供 `Cache` 抽象（内存 + Redis） |
+| `dbnexus` | 0.5 | 数据库抽象 | 提供 PostgreSQL 连接池与事务管理 |
+| `limiteron` | 0.2 | 限流 | 提供 core 限流原语（TokenBucket / ConcurrencyLimiter） |
+| `sdforge` | 0.5 | 服务发现 | 提供 HTTP 与 gRPC 服务发现 |
 
 **依赖特性化原则（规则 28）：**
 - 所有外部库均使用 `default-features = false`，显式声明所需特性
-- `dbnexus`: `features = ["postgres", "runtime-tokio-rustls"]`
-- `sdforge`: `features = ["http", "grpc"]`
-- `limiteron`: `features = ["postgres", "quota-control", "ban-manager"]`
+- `dbnexus`: `features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"]`（`postgres` 由本 crate 的 `postgresql` feature 按需传入）
+- `sdforge`: `features = ["http", "grpc", "openapi"]`
+- `limiteron`: 零显式特性（postgres / quota-control / ban-manager 全仓零使用）
 
 ## 4. 算法优化设计
 

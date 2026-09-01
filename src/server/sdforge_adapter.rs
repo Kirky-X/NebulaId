@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! sdforge 0.4.2 adapter — bridges inventory-registered `#[forge]` handlers
+//! sdforge 0.5 adapter — bridges inventory-registered `#[forge]` handlers
 //! into the nebulaid axum router.
 //!
 //! Provides:
@@ -27,7 +27,7 @@
 //!
 //! The `#[forge]` macro's `name` parameter uses the underscore-separated form
 //! `sdforge_health` rather than the hyphenated form `sdforge-health` cited in
-//! spec T035. Root cause: `sdforge_macros` 0.4.2 validates that `name` is a
+//! spec T035. Root cause: `sdforge_macros` 0.5 validates that `name` is a
 //! valid Rust identifier (hyphens are not allowed in identifiers). The HTTP
 //! route path is unaffected — `path = "/health/sdforge"` is independent of
 //! `name` and is what clients hit. This annotation makes the spec-vs-code
@@ -58,7 +58,7 @@ pub fn merge_sdforge_routes(router: Router) -> Router {
     router
 }
 
-/// Sample `#[forge]`-annotated health endpoint — verifies sdforge 0.4.2
+/// Sample `#[forge]`-annotated health endpoint — verifies sdforge 0.5
 /// macro expansion wires correctly into the nebulaid binary. Returns the
 /// nebulaid crate version so callers can confirm the route is served.
 #[forge(

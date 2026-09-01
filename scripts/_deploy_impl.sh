@@ -264,7 +264,7 @@ show_status() {
     echo "🌐 访问地址"
     echo "============"
     echo "  HTTP API:  http://localhost:8080"
-    echo "  Metrics:   http://localhost:9091"
+    echo "  Metrics:   http://localhost:9092"
     echo "  Health:    http://localhost:8080/health"
 
     echo ""

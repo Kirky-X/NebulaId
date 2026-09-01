@@ -343,7 +343,7 @@ mod tests {
 name = "test"
 host = "127.0.0.1"
 http_port = 8080
-grpc_port = 50051
+grpc_port = 9091
 dc_id = 1
 worker_id = 1
 
@@ -440,7 +440,7 @@ max_batch_size = 100
 name = "updated"
 host = "127.0.0.1"
 http_port = 8080
-grpc_port = 50051
+grpc_port = 9091
 dc_id = 1
 worker_id = 1
 
@@ -834,7 +834,7 @@ max_batch_size = 100
 name = "{app_name}"
 host = "127.0.0.1"
 http_port = {http_port}
-grpc_port = 50051
+grpc_port = 9091
 dc_id = 1
 worker_id = 1
 

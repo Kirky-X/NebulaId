@@ -91,7 +91,7 @@ fn write_test_config_file(
 name = "{app_name}"
 host = "127.0.0.1"
 http_port = {http_port}
-grpc_port = 50051
+grpc_port = 9091
 dc_id = 1
 worker_id = 1
 

@@ -93,7 +93,7 @@ cleanup_on_exit() {
 # ============================================
 # Server Configuration - defaults to production server
 BASE_URL="${BASE_URL:-https://nebulaid.onrender.com}"
-METRICS_URL="${METRICS_URL:-http://localhost:9091}"
+METRICS_URL="${METRICS_URL:-http://localhost:9092}"
 
 # Admin API Key (Required for setup)
 # SECURITY: These must be set via environment variables for security

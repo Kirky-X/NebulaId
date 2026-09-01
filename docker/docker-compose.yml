@@ -161,8 +161,8 @@ services:
     container_name: nebula-app
     ports:
       - "${APP_HTTP_PORT:-8080}:8080"
-      - "${APP_GRPC_PORT:-50051}:50051"
-      - "${APP_METRICS_PORT:-9091}:9091"
+      - "${APP_GRPC_PORT:-9091}:9091"
+      - "${APP_METRICS_PORT:-9092}:9092"
     environment:
       - DATABASE_URL=postgresql://idgen:${POSTGRES_PASSWORD:-idgen123}@postgres:5432/idgen
       - REDIS_URL=redis://redis:6379/0
@@ -174,7 +174,7 @@ services:
       - SERVER_HTTP_PORT=8080
       - METRICS_ENABLED=true
       - METRICS_HOST=0.0.0.0
-      - METRICS_PORT=9091
+      - METRICS_PORT=9092
       - TZ=Asia/Shanghai
       # SECURITY: API Key salt should be set via environment for production
       # For development, this will use a generated value (see entrypoint script)

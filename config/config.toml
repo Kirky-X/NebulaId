@@ -2,14 +2,14 @@
 name = "nebula-id"
 host = "0.0.0.0"
 http_port = 8080
-grpc_port = 50051
+grpc_port = 9091
 dc_id = 0
 worker_id = 0
 
 [logging]
 level = "info"
 format = "json"
-include_location = false
+include_location = true
 
 [database]
 engine = "postgresql"
@@ -55,9 +55,9 @@ tracing_enabled = false
 otlp_endpoint = ""
 
 [rate_limit]
-enabled = false
+enabled = true
 default_rps = 10000
-burst_size = 5000
+burst_size = 100
 
 [tls]
 enabled = false

@@ -7,7 +7,7 @@
 ```mermaid
 graph TB
     subgraph Docker Compose
-        App[Nebula ID App<br/>nebula-app<br/>:8080 HTTP<br/>:50051 gRPC<br/>:9091 Metrics]
+        App[Nebula ID App<br/>nebula-app<br/>:8080 HTTP<br/>:9091 gRPC<br/>:9092 Metrics]
         PG[(PostgreSQL 16<br/>nebula-postgres<br/>:5432)]
         Redis[(Redis 7.2<br/>nebula-redis<br/>:6379)]
         Etcd[(Etcd 3.5<br/>nebula-etcd<br/>:2379)]
@@ -60,7 +60,7 @@ docker compose -f docker/docker-compose.yml logs -f app
 | `postgres` | postgres:16-alpine | 5432 | 2 CPU / 2G RAM | `pg_isready` |
 | `redis` | redis:7.2-alpine | 6379 | 0.5 CPU / 512M RAM | `redis-cli ping` |
 | `etcd` | quay.io/coreos/etcd:v3.5.11 | 2379, 2380 | 0.5 CPU / 512M RAM | `etcdctl endpoint health` |
-| `app` | 本地构建 nebula-id:latest | 8080, 50051, 9091 | 2 CPU / 2G RAM | `curl /health` |
+| `app` | 本地构建 nebula-id:latest | 8080, 9091, 9092 | 2 CPU / 2G RAM | `curl /health` |
 
 ### 2.4 单独构建镜像
 
@@ -71,7 +71,7 @@ docker build -f docker/Dockerfile -t nebula-id:latest .
 # 运行（需要外部 PostgreSQL/Redis/Etcd）
 docker run -d \
   --name nebula-id \
-  -p 8080:8080 -p 50051:50051 -p 9091:9091 \
+  -p 8080:8080 -p 9091:9091 -p 9092:9092 \
   -e DATABASE_URL=postgresql://idgen:password@host:5432/idgen \
   -e REDIS_URL=redis://host:6379/0 \
   -e ETCD_ENDPOINTS=host:2379 \
@@ -95,21 +95,20 @@ docker run -d \
 | `[app]` | `dc_id` | 数据中心 ID (0-7) | 0 |
 | `[app]` | `worker_id` | 工作节点 ID (0-255) | 0 |
 | `[app]` | `http_port` | HTTP 服务端口 | 8080 |
-| `[app]` | `grpc_port` | gRPC 服务端口 | 50051 |
+| `[app]` | `grpc_port` | gRPC 服务端口 | 9091 |
 | `[database]` | `password` | 数据库密码（环境变量展开） | `${NEBULA_DATABASE_PASSWORD}` |
 | `[algorithm]` | `default` | 默认算法 | snowflake |
 | `[algorithm.segment]` | `base_step` | 号段基础步长 | 1000 |
 | `[algorithm.snowflake]` | `sequence_bits` | 序列号位数 | 10 |
 | `[tls]` | `enabled` | 启用 TLS | false |
 | `[auth]` | `enabled` | 启用 API Key 认证 | true |
-| `[rate_limit]` | `enabled` | 启用限流 | 代码默认 true / 仓库样例 false |
+| `[rate_limit]` | `enabled` | 启用限流 | true |
 | `[etcd]` | `endpoints` | Etcd 端点列表 | `["http://localhost:2379"]` |
 
-> ⚠️ **全局限流默认不启用（仓库样例口径）**：限流开关是**顶层** `[rate_limit].enabled`
+> ⚠️ **全局限流默认启用**：限流开关是**顶层** `[rate_limit].enabled`
 > （不是 `auth.rate_limit.enabled`），由 `src/main.rs` 读取 `config.rate_limit.enabled`
 > 决定是否挂载 `RateLimitMiddleware`。`RateLimitConfig::default()` 的 `enabled` 是 `true`，
-> 但仓库自带的 `config/config.toml` 里 `[rate_limit].enabled = false`，
-> 因此**直接使用该样例配置启动时全局限流不会生效**，需要限流请显式改为 `true`。
+> 仓库自带的 `config/config.toml` 里 `[rate_limit].enabled = true`，与默认值一致。
 > 注意 `[rate_limit]` 段三个字段（`enabled` / `default_rps` / `burst_size`）都没有
 > `#[serde(default)]`，整段或单字段缺失都会导致配置解析失败。
 
@@ -141,8 +140,8 @@ docker run -d \
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `APP_HTTP_PORT` | 8080 | HTTP 端口 |
-| `APP_GRPC_PORT` | 50051 | gRPC 端口 |
-| `APP_METRICS_PORT` | 9091 | 指标端口 |
+| `APP_GRPC_PORT` | 9091 | gRPC 端口 |
+| `APP_METRICS_PORT` | 9092 | 指标端口 |
 | `DC_ID` | 0 | 数据中心 ID |
 | `RUST_LOG` | info | 日志级别 (trace/debug/info/warn/error) |
 | `RUST_BACKTRACE` | 0 | 错误堆栈 (0/1/full) |
@@ -188,10 +187,10 @@ Docker Compose 配置了 `HEALTHCHECK`，每 30 秒检查一次。
 
 ```bash
 # 抓取指标
-curl http://localhost:9091/metrics
+curl http://localhost:9092/metrics
 ```
 
-指标端口（9091）暴露 Prometheus 格式指标，包含：
+指标端口（9092）暴露 Prometheus 格式指标，包含：
 - ID 生成总数（按算法分类）
 - 缓存命中率
 - 请求延迟分布

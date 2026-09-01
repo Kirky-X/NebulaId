@@ -14,11 +14,16 @@
 
 //! trait-kit Kit 范式装配的嵌入式 SDK 门面（wiring T012，feature `sdk` 门控）。
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
-use trait_kit::{impl_async_auto_builder, impl_module_meta, AsyncKit, AsyncReady};
+use trait_kit::{
+    impl_async_auto_builder, impl_module_meta, AsyncHealthCheck, AsyncKit, AsyncLifecycle,
+    AsyncReady,
+};
 
-use crate::core::algorithm::DynAuditLogger;
+use crate::core::algorithm::{AlgorithmRouter, CpuMonitor, DynAuditLogger};
 use crate::core::config::Config;
 use crate::core::coordinator::{DistributedLock, LocalDistributedLock};
 use crate::core::database::SeaOrmRepository;
@@ -81,6 +86,92 @@ impl_async_auto_builder!(RepositoryModule, Arc<SeaOrmRepository>, CoreError, |ki
         Ok(Arc::new(repository.with_distributed_lock(lock)))
     })
 });
+
+/// 路由模块（能力：`Arc<AlgorithmRouter>`，已 `initialize()`）。
+///
+/// 依赖 `DistributedLockModule`（design 硬链 Lock→Router），对仓储是**可选**
+/// 依赖（Segment 才需要，不进硬依赖图——纯算法零 DB 时本模块仍须构建成功）。
+/// 同时注册 trait-kit lifecycle（`on_ready` 启动降级后台任务 / `on_shutdown`
+/// 停止）与 health check（模块级健康报告来源）。
+pub struct RouterModule;
+
+impl_module_meta!(RouterModule, "router", deps = [DistributedLockModule]);
+
+impl_async_auto_builder!(RouterModule, Arc<AlgorithmRouter>, CoreError, |kit| {
+    Box::pin(async move {
+        let config = kit
+            .config::<Config>()
+            .map_err(|e| CoreError::InternalError(format!("router 模块配置缺失: {e}")))?;
+        let AuditLoggerInput(audit_logger) = kit
+            .config::<AuditLoggerInput>()
+            .map_err(|e| CoreError::InternalError(format!("router 模块审计日志器缺失: {e}")))?;
+        // 可选依赖拉取：RepositoryModule 缺席（纯算法零 DB）时 build 必须成功。
+        // trait-kit RC 的 `optional()` 仅在 `AsyncKit<Ready>` 上可用，build 回调
+        //（Unbuilt 阶段）以 `require().ok()` 实现同语义（模块缺席 →
+        // `MissingCapability` → `None`）。
+        let _repository = kit.require::<RepositoryModule>().ok();
+
+        let cpu_monitor = Arc::new(CpuMonitor::new());
+        let router = AlgorithmRouter::new(config, audit_logger).with_cpu_monitor(cpu_monitor);
+        router
+            .initialize()
+            .await
+            .map_err(|e| CoreError::InternalError(format!("router 模块初始化失败: {e}")))?;
+        Ok(Arc::new(router))
+    })
+});
+
+impl AsyncLifecycle for RouterModule {
+    /// `on_ready`：trait-kit 在 `build()` 完成后按注册顺序触发——启动降级
+    /// 后台任务（替代旧 `NebulaIdClientBuilder::build()` 第 4 步）。
+    fn on_ready<'a>(
+        kit: &'a AsyncKit<AsyncReady>,
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<(), Self::Error>> + Send + 'a>> {
+        Box::pin(async move {
+            let router = kit
+                .require::<RouterModule>()
+                .map_err(|e| CoreError::InternalError(format!("router on_ready 能力缺失: {e}")))?;
+            router.get_degradation_manager().start_background_check();
+            Ok(())
+        })
+    }
+
+    /// `on_shutdown`：停止降级后台任务。trait-kit RC 版 `AsyncKit::shutdown()`
+    /// 是同步方法、不执行 async 回调（库源码 async_kit.rs 明示 "intentionally
+    /// skipped"）——实际停止路径由门面 `NebulaIdKit::shutdown()` 手动按逆拓扑
+    /// 调用本方法（见 design Lifecycle 接线）；此处注册保证语义声明完整。
+    fn on_shutdown<'a>(cap: &'a Self::Capability) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            cap.get_degradation_manager().stop_background_check().await;
+        })
+    }
+}
+
+impl AsyncHealthCheck for RouterModule {
+    /// 模块级健康：全部算法健康 → Healthy；部分健康 → Degraded；全不健康/无
+    /// 算法 → Unhealthy。注意返回的是 trait-kit 的 `HealthStatus`（与 nebulaid
+    /// 核心的 `HealthStatus` 同名不同源，此处完全限定）。
+    fn check(cap: &Self::Capability) -> trait_kit::HealthStatus {
+        let states = cap.get_degradation_manager().get_all_states();
+        if states.is_empty() {
+            return trait_kit::HealthStatus::Unhealthy {
+                detail: "no algorithms registered".to_string(),
+            };
+        }
+        let healthy = states.iter().filter(|s| s.is_healthy).count();
+        if healthy == states.len() {
+            trait_kit::HealthStatus::Healthy
+        } else if healthy > 0 {
+            trait_kit::HealthStatus::Degraded {
+                detail: format!("{healthy}/{} algorithms healthy", states.len()),
+            }
+        } else {
+            trait_kit::HealthStatus::Unhealthy {
+                detail: "all algorithms unhealthy".to_string(),
+            }
+        }
+    }
+}
 
 /// 分布式锁创建：`etcd` feature 且 endpoints 已配置 → `EtcdDistributedLock`；
 /// 任何失败回退 `LocalDistributedLock` 并显性 warn（与 main.rs 行为一致）。
@@ -203,6 +294,12 @@ impl NebulaIdKitBuilder {
             // 用户注入的仓储也要作为配置入 TypeMap（RepositoryModule build 回调读取）
             kit.set_config(RepositoryInput(repository));
         }
+        kit.register::<RouterModule>()
+            .map_err(|e| CoreError::InternalError(format!("trait-kit 模块注册失败: {e}")))?;
+
+        // 生命周期与健康检查接线（on_ready 在 build() 完成后触发）
+        kit.register_lifecycle::<RouterModule>();
+        kit.register_health_check::<RouterModule>();
 
         // 注入完整性显性校验（装配错误提前暴露，不落入模块回调的隐式
         // MissingConfig）；同时确认 audit_logger 注入形态，供启动观测。
@@ -230,6 +327,7 @@ impl NebulaIdKitBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::algorithm::GenerateContext;
     use crate::core::config::Config;
 
     /// R-sdk-emb-001：仅 config、无任何模块注册时 `build()` 成功返回 Ready Kit
@@ -326,6 +424,91 @@ mod tests {
         assert!(
             kit.inner().optional::<RepositoryModule>().is_none(),
             "optional 拉取也必须为 None"
+        );
+    }
+
+    /// 测试共享：纯算法（snowflake）配置。
+    fn snowflake_config() -> Config {
+        let mut config = Config::default();
+        config.algorithm.default = "snowflake".to_string();
+        config
+    }
+
+    fn sample_ctx() -> GenerateContext {
+        GenerateContext {
+            workspace_id: "ws".to_string(),
+            group_id: "group".to_string(),
+            biz_tag: "biz".to_string(),
+            format: crate::core::types::IdFormat::Numeric,
+            prefix: None,
+        }
+    }
+
+    /// R-sdk-emb-001：RouterModule 注册后 build 成功，require 返回已初始化
+    /// router（可直接生成 ID）。
+    #[tokio::test]
+    async fn test_router_module_builds_and_initializes() {
+        let kit = NebulaIdKitBuilder::new(snowflake_config())
+            .build()
+            .await
+            .expect("纯算法配置 build 必须成功");
+        assert!(
+            kit.inner().contains::<RouterModule>(),
+            "RouterModule 必须已注册并构建"
+        );
+
+        let router = kit
+            .inner()
+            .require::<RouterModule>()
+            .expect("require router 必须成功");
+        let id = router
+            .generate(&sample_ctx())
+            .await
+            .expect("snowflake 生成必须成功");
+        assert!(id.as_u128() > 0);
+    }
+
+    /// R-sdk-emb-003：`on_ready` 启动降级后台任务——等待 ≥1 个 check_interval
+    /// tick 后，经 pub 接缝 `get_algorithm_metrics()` 观测 snowflake 的连续
+    /// 成功计数被后台任务刷新（仅后台任务运行时 `record_success` 才发生；
+    /// 禁止依赖私有字段）。
+    #[tokio::test]
+    async fn test_router_lifecycle_on_ready_starts_degradation() {
+        let kit = NebulaIdKitBuilder::new(snowflake_config())
+            .build()
+            .await
+            .expect("build 必须成功");
+        let router = kit
+            .inner()
+            .require::<RouterModule>()
+            .expect("require router 必须成功");
+        let dm = router.get_degradation_manager();
+
+        // 默认 check_interval_ms = 5000；等待 ≥1 tick（含首 tick 立即触发）
+        tokio::time::sleep(std::time::Duration::from_millis(5_500)).await;
+
+        let metrics = dm.get_algorithm_metrics();
+        let snowflake = metrics.get("snowflake").expect("snowflake 指标必须存在");
+        assert!(
+            snowflake.consecutive_successes > 0,
+            "后台任务应已刷新健康指标（Healthy → record_success），实际计数: {}",
+            snowflake.consecutive_successes
+        );
+    }
+
+    /// R-sdk-emb-003：`health_report()`（同步）基于 trait-kit health feature
+    /// 返回包含 `router` 模块的报告。
+    #[tokio::test]
+    async fn test_health_report_contains_router_module() {
+        let kit = NebulaIdKitBuilder::new(snowflake_config())
+            .build()
+            .await
+            .expect("build 必须成功");
+
+        let report = kit.inner().health_report();
+        assert!(
+            report.iter().any(|(name, _)| *name == "router"),
+            "health_report 必须包含 router 模块，实际: {report:?}"
         );
     }
 }

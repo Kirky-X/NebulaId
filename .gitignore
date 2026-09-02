@@ -237,3 +237,6 @@ grafana/log/
 !protos/build.rs
 # wiring T011: Docker vendor stage (docker/vendor-deps.sh)
 .docker-vendor/
+
+# WorkBuddy AI local notes
+.workbuddy-ai/

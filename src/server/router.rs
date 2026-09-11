@@ -2818,4 +2818,81 @@ mod tests {
         // Without repository, revoke_api_key returns Err.
         assert!(status == StatusCode::INTERNAL_SERVER_ERROR || status == StatusCode::NOT_FOUND);
     }
+
+    #[test]
+    fn test_verify_user_role_matrix() {
+        use crate::server::middleware::ApiKeyRole;
+
+        assert!(verify_user_role(ApiKeyRole::User, Locale::En).is_ok());
+        assert!(verify_user_role(ApiKeyRole::Admin, Locale::En).is_err());
+        assert!(verify_user_role(ApiKeyRole::Anonymous, Locale::En).is_err());
+    }
+
+    #[test]
+    fn test_validate_request_ok_and_err() {
+        let ok = GenerateRequest {
+            workspace: "w".to_string(),
+            group: "g".to_string(),
+            biz_tag: "t".to_string(),
+            algorithm: None,
+        };
+        assert!(validate_request(&ok, Locale::En).is_ok());
+
+        let bad = GenerateRequest {
+            workspace: String::new(),
+            group: "g".to_string(),
+            biz_tag: "t".to_string(),
+            algorithm: None,
+        };
+        assert!(validate_request(&bad, Locale::En).is_err());
+    }
+
+    #[test]
+    fn test_verify_workspace_id_match_matrix() {
+        let id = uuid::Uuid::new_v4();
+        assert!(verify_workspace_id_match(id, &None, Locale::En).is_ok());
+        assert!(verify_workspace_id_match(id, &Some(id), Locale::En).is_ok());
+        assert!(verify_workspace_id_match(id, &Some(uuid::Uuid::new_v4()), Locale::En).is_err());
+        assert!(verify_workspace_id(id, &None, Locale::En).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_verify_user_workspace_paths() {
+        use crate::server::handlers::mock_generator::MockIdGenerator;
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let ws_id = uuid::Uuid::new_v4();
+        let mut mock_config = MockConfigManagementService::new();
+        mock_config.expect_get_workspace().returning(move |_| {
+            Ok(Some(WorkspaceResponse {
+                id: ws_id.to_string(),
+                name: "ws".to_string(),
+                description: None,
+                status: "active".to_string(),
+                max_groups: 10,
+                max_biz_tags: 100,
+                created_at: String::new(),
+                updated_at: String::new(),
+                user_api_key: None,
+            }))
+        });
+        let handlers = Arc::new(ApiHandlers::new(
+            Arc::new(MockIdGenerator::new()),
+            Arc::new(mock_config),
+        ));
+
+        assert!(
+            verify_user_workspace("ws", &Some(ws_id), &handlers, Locale::En)
+                .await
+                .is_ok()
+        );
+        assert!(
+            verify_user_workspace("ws", &Some(uuid::Uuid::new_v4()), &handlers, Locale::En)
+                .await
+                .is_err()
+        );
+        assert!(verify_user_workspace("ws", &None, &handlers, Locale::En)
+            .await
+            .is_ok());
+    }
 }

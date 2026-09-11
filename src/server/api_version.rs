@@ -261,4 +261,28 @@ mod tests {
         );
         assert!(TryInto::<ApiVersion>::try_into("v3".to_string()).is_err());
     }
+
+    #[test]
+    fn test_try_from_str_ref() {
+        assert_eq!(ApiVersion::try_from("v2").unwrap(), ApiVersion::V2);
+        assert!(ApiVersion::try_from("v9").is_err());
+    }
+
+    #[test]
+    fn test_parse_api_version_from_request() {
+        let req = Request::builder().body(Body::empty()).unwrap();
+        assert_eq!(parse_api_version_from_request(&req), ApiVersion::V1);
+
+        let req = Request::builder()
+            .header("x-api-version", "v2")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(parse_api_version_from_request(&req), ApiVersion::V2);
+
+        let req = Request::builder()
+            .header("x-api-version", "v9")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(parse_api_version_from_request(&req), ApiVersion::V1);
+    }
 }

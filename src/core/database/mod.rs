@@ -20,7 +20,7 @@ mod connection;
 mod group_entity;
 mod repository;
 mod segment_entity;
-mod workspace_entity;
+pub(crate) mod workspace_entity;
 
 pub use crate::core::types::id::{AlgorithmType, IdFormat};
 pub use api_key_entity::{

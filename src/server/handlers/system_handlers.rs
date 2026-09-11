@@ -425,6 +425,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handle_metrics_includes_registered_algorithm_degradation() {
+        let gen = Arc::new(ControllableIdGenerator::new(CoreHealthStatus::Healthy));
+        let algo: Arc<dyn crate::core::algorithm::IdAlgorithm> = Arc::new(
+            crate::core::algorithm::snowflake::SnowflakeAlgorithm::new(1, 1),
+        );
+        gen.degradation_manager
+            .register_algorithm(AlgorithmType::Snowflake, algo);
+        let handlers = create_handlers_with_generator(gen);
+
+        let response = handlers.metrics().await;
+        assert_eq!(response.degradation_metrics.len(), 1);
+        let entry = &response.degradation_metrics[0];
+        assert_eq!(entry.algorithm, AlgorithmType::Snowflake.to_string());
+        assert_eq!(entry.total_requests, 0);
+        assert!(!entry.is_degraded);
+    }
+
+    #[tokio::test]
     async fn test_health_returns_healthy_with_mock_generator() {
         let (handlers, _) = create_test_api_handlers();
         let response = handlers.health().await;

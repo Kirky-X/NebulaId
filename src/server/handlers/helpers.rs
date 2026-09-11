@@ -1096,4 +1096,18 @@ mod tests {
             json.message
         );
     }
+
+    #[test]
+    fn test_workspace_not_found_and_invalid_id_responses() {
+        let _g = LocaleGuard::new();
+        rust_i18n::set_locale("en");
+
+        let (status, json) = workspace_not_found_response(Locale::En);
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(!json.message.is_empty());
+
+        let (status, json) = invalid_workspace_id_response(Locale::En);
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(!json.message.is_empty());
+    }
 }

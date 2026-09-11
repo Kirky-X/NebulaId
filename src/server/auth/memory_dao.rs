@@ -540,4 +540,35 @@ mod tests {
         ));
         assert!(!glob_match("hello", "hell"));
     }
+
+    #[test]
+    fn test_len_is_empty_and_default() {
+        let dao = MemoryGarrisonDao::default();
+        assert!(dao.is_empty());
+        assert_eq!(dao.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_expired_entries_follow_expired_branches() {
+        let dao = MemoryGarrisonDao::new();
+        dao.set("e1", "v", 100).await.unwrap();
+        dao.set("e2", "5", 100).await.unwrap();
+        assert_eq!(dao.len(), 2);
+        assert!(!dao.is_empty());
+        assert!(dao.keys(&"x".repeat(300)).await.is_err());
+
+        dao.expire("e1", 1).await.unwrap();
+        dao.expire("e2", 1).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+
+        assert_eq!(dao.get("e1").await.unwrap(), None);
+        assert_eq!(dao.get_with_ttl("e1").await.unwrap(), None);
+        assert_eq!(dao.get_timeout("e1").await.unwrap(), None);
+        assert!(dao.keys("*").await.unwrap().is_empty());
+        assert!(dao.rename("e1", "e1-new").await.is_err());
+        assert!(dao.update("e1", "v2").await.is_err());
+        assert_eq!(dao.get_and_delete("e1").await.unwrap(), None);
+        assert_eq!(dao.incr("e2", 100).await.unwrap(), 1);
+        assert_eq!(dao.decr("missing").await.unwrap(), 0);
+    }
 }

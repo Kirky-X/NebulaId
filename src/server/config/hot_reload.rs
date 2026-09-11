@@ -1144,6 +1144,33 @@ max_batch_size = 100
     //   poisoning at all.
     //
     // These paths are documented as known coverage gaps.
+
+    #[tokio::test]
+    async fn test_reload_config_missing_file_returns_false() {
+        setup_test_env();
+        let config = HotReloadConfig::new(
+            Config::default(),
+            "/nonexistent-dir-nebulaid-test/config.toml".to_string(),
+        );
+        assert!(!config
+            .reload_config()
+            .await
+            .expect("读失败应返回 Ok(false)"));
+    }
+
+    #[tokio::test]
+    async fn test_reload_config_invalid_content_returns_false() {
+        setup_test_env();
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.toml");
+        std::fs::write(&config_path, "[[[invalid toml").unwrap();
+        let config =
+            HotReloadConfig::new(Config::default(), config_path.to_str().unwrap().to_string());
+        assert!(!config
+            .reload_config()
+            .await
+            .expect("解析失败应返回 Ok(false)"));
+    }
 }
 
 /// T011：auto_watch 关闭（缺省）时不产生任何行为；watch 循环在文件

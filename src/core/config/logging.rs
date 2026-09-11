@@ -119,3 +119,40 @@ impl Default for LoggingConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_log_level_display_all_variants() {
+        assert_eq!(LogLevel::Trace.to_string(), "trace");
+        assert_eq!(LogLevel::Debug.to_string(), "debug");
+        assert_eq!(LogLevel::Info.to_string(), "info");
+        assert_eq!(LogLevel::Warn.to_string(), "warn");
+        assert_eq!(LogLevel::Error.to_string(), "error");
+    }
+
+    #[test]
+    fn test_log_level_from_str_all_branches() {
+        assert_eq!(LogLevel::from("trace"), LogLevel::Trace);
+        assert_eq!(LogLevel::from("debug"), LogLevel::Debug);
+        assert_eq!(LogLevel::from("info"), LogLevel::Info);
+        assert_eq!(LogLevel::from("warn"), LogLevel::Warn);
+        assert_eq!(LogLevel::from("error"), LogLevel::Error);
+        assert_eq!(LogLevel::from("TRACE"), LogLevel::Trace);
+        assert_eq!(LogLevel::from("unknown"), LogLevel::Info);
+        assert_eq!(LogLevel::from("".to_string()), LogLevel::Info);
+    }
+
+    #[test]
+    fn test_log_format_display_and_from() {
+        assert_eq!(LogFormat::Json.to_string(), "json");
+        assert_eq!(LogFormat::Pretty.to_string(), "pretty");
+        assert_eq!(LogFormat::from("json"), LogFormat::Json);
+        assert_eq!(LogFormat::from("pretty"), LogFormat::Pretty);
+        assert_eq!(LogFormat::from("JSON"), LogFormat::Json);
+        assert_eq!(LogFormat::from("xml"), LogFormat::Json);
+        assert_eq!(LogFormat::from("pretty".to_string()), LogFormat::Pretty);
+    }
+}

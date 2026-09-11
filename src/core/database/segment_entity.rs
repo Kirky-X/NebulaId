@@ -40,3 +40,14 @@ impl From<Entity> for Model {
         unreachable!("Entity cannot be directly converted to Model")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "Entity cannot be directly converted")]
+    fn test_entity_to_model_is_unreachable() {
+        let _ = Model::from(Entity);
+    }
+}

@@ -285,3 +285,31 @@ pub fn algorithm_factories() -> &'static HashMap<AlgorithmType, Arc<dyn Algorith
         m
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_algorithm_metrics_snapshot_new_is_default() {
+        let snapshot = AlgorithmMetricsSnapshot::new();
+        assert_eq!(snapshot.total_generated, 0);
+        assert_eq!(snapshot.total_failed, 0);
+        assert!(snapshot.cache_hit_rate.is_none());
+    }
+
+    #[cfg(feature = "etcd")]
+    #[test]
+    fn test_builder_with_etcd_health_monitor() {
+        use crate::core::config::EtcdConfig;
+        use crate::core::coordinator::EtcdClusterHealthMonitor;
+
+        let monitor = Arc::new(EtcdClusterHealthMonitor::new(
+            EtcdConfig::default(),
+            "/tmp/nebulaid-test-etcd-cache.json".to_string(),
+        ));
+        let builder =
+            AlgorithmBuilder::new(AlgorithmType::Segment).with_etcd_health_monitor(monitor);
+        let _ = builder;
+    }
+}

@@ -961,4 +961,35 @@ mod tests {
             prefix: None,
         }
     }
+
+    #[test]
+    fn test_dc_health_state_transitions() {
+        let state = DcHealthState::new(3);
+        assert_eq!(state.dc_id, 3);
+        assert_eq!(state.get_status(), DcStatus::Healthy);
+        state.set_status(DcStatus::Degraded);
+        assert_eq!(state.get_status(), DcStatus::Degraded);
+        state.set_status(DcStatus::Failed);
+        assert_eq!(state.get_status(), DcStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn test_check_recovery_degrades_stale_failed_dc() {
+        let detector = DcFailureDetector::new(3, Duration::from_secs(1));
+        detector.add_dc(1);
+        let failed = DcHealthState::new(2);
+        failed.set_status(DcStatus::Failed);
+        *failed.last_success.lock() = Instant::now() - Duration::from_secs(3600);
+        detector.dc_states.write().insert(2, Arc::new(failed));
+        detector.check_recovery().await;
+        let states = detector.dc_states.read();
+        assert_eq!(
+            states.get(&2).expect("dc 2").get_status(),
+            DcStatus::Degraded
+        );
+        assert_eq!(
+            states.get(&1).expect("dc 1").get_status(),
+            DcStatus::Healthy
+        );
+    }
 }

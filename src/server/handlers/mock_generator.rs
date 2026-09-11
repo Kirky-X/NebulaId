@@ -144,4 +144,12 @@ mod tests {
         // Just verify it doesn't panic
         assert!(id.to_string().parse::<u128>().is_ok());
     }
+
+    #[tokio::test]
+    async fn test_mock_generator_default_and_empty_workspace() {
+        let generator = MockIdGenerator::default();
+        assert!(generator.generate("", "g", "t").await.is_err());
+        let id = generator.generate("w", "g", "t").await.unwrap();
+        assert!(id.to_string().parse::<u128>().is_ok());
+    }
 }

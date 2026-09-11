@@ -1152,4 +1152,82 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_auth_failure_map_capacity_valve_clears_on_overflow() {
+        let auth = ApiKeyAuth::new(Arc::new(make_mock_repo()), true);
+        for i in 0..=10_000 {
+            auth.record_auth_failure(&format!("10.9.{}.{}", i / 256, i % 256));
+        }
+        auth.record_auth_failure("192.0.2.1");
+        assert!(auth.check_auth_failure_rate("192.0.2.1"));
+        assert!(
+            auth.auth_failures.read().is_empty(),
+            "overflow must trigger the capacity safety valve"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_key_previous_credential_skips_cache() {
+        use crate::server::handlers::mock_tests::MockApiKeyRepository;
+
+        let mut mock = MockApiKeyRepository::new();
+        mock.expect_validate_api_key().returning(|_, _| {
+            Ok(Some(AuthenticatedKey {
+                workspace_id: None,
+                role: ApiKeyRole::User,
+                used_previous_credential: true,
+            }))
+        });
+        let auth = ApiKeyAuth::new(Arc::new(mock), true);
+        let got = auth
+            .validate_key("k", "old-secret")
+            .await
+            .expect("grace credential must authenticate");
+        assert!(got.used_previous_credential);
+    }
+
+    #[cfg(feature = "garrison-auth")]
+    #[tokio::test]
+    async fn test_validate_key_cache_hit_skips_repository() {
+        use crate::server::auth::AuthCache;
+        use crate::server::handlers::mock_tests::MockApiKeyRepository;
+
+        fn info() -> crate::core::database::ApiKeyInfo {
+            let now = chrono::Utc::now().naive_utc();
+            crate::core::database::ApiKeyInfo {
+                id: Uuid::new_v4(),
+                key_id: "k".to_string(),
+                key_prefix: "k".to_string(),
+                role: ApiKeyRole::User,
+                workspace_id: None,
+                name: "test".to_string(),
+                description: None,
+                rate_limit: 100,
+                enabled: true,
+                expires_at: None,
+                last_used_at: None,
+                created_at: now,
+            }
+        }
+
+        let mut mock = MockApiKeyRepository::new();
+        mock.expect_validate_api_key().times(1).returning(|_, _| {
+            Ok(Some(AuthenticatedKey {
+                workspace_id: None,
+                role: ApiKeyRole::User,
+                used_previous_credential: false,
+            }))
+        });
+        mock.expect_get_api_key_by_id()
+            .returning(|_| Ok(Some(info())));
+        let auth = ApiKeyAuth::new(Arc::new(mock), true).with_cache(Arc::new(AuthCache::new(300)));
+
+        let first = auth.validate_key("k", "s").await;
+        assert!(first.is_some());
+        // 第二次必须走缓存（mock 限定 validate 只调一次，否则 panic）。
+        let second = auth.validate_key("k", "s").await;
+        assert!(second.is_some());
+        assert!(!second.unwrap().used_previous_credential);
+    }
 }

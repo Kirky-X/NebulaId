@@ -1244,4 +1244,153 @@ mod grpc_auth {
 
         jh.abort();
     }
+
+    /// `authenticate` 直调：未装配认证器时直接放行。
+    #[tokio::test]
+    async fn authenticate_passthrough_without_auth() {
+        let server = create_test_grpc_server();
+        let req = Request::new(GrpcGenerateRequest {
+            namespace: "ns".to_string(),
+            tag: "tag".to_string(),
+            metadata: HashMap::new(),
+        });
+        assert!(server.authenticate(req).await.is_ok());
+    }
+
+    /// `authenticate` 直调：认证器存在但已禁用时放行并记审计 warn。
+    #[tokio::test]
+    async fn authenticate_passthrough_when_auth_disabled() {
+        let server = auth_server(ApiKeyAuth::new(Arc::new(FixedKeyRepo), false));
+        let req = Request::new(GrpcGenerateRequest {
+            namespace: "ns".to_string(),
+            tag: "tag".to_string(),
+            metadata: HashMap::new(),
+        });
+        assert!(server.authenticate(req).await.is_ok());
+    }
+
+    /// `authenticate` 直调：格式错误的 authorization 被拒绝。
+    #[tokio::test]
+    async fn authenticate_invalid_format_rejected_directly() {
+        let server = auth_server(ApiKeyAuth::new(Arc::new(FixedKeyRepo), true));
+        let mut req = Request::new(GrpcGenerateRequest {
+            namespace: "ns".to_string(),
+            tag: "tag".to_string(),
+            metadata: HashMap::new(),
+        });
+        req.metadata_mut()
+            .insert("authorization", "Bearer junk".parse().unwrap());
+        let err = server
+            .authenticate(req)
+            .await
+            .expect_err("格式错误的凭证必须被拒绝");
+        assert_eq!(err.code(), Code::Unauthenticated);
+    }
+
+    /// 判因回查失败时保守拒绝：`validate` miss 且 key 行读不到（DB 异常）
+    /// 不得放行，给 `Unauthenticated` 而非 `permission_denied`。
+    #[tokio::test]
+    async fn authenticate_db_lookup_failure_is_conservative() {
+        use crate::server::handlers::mock_tests::MockApiKeyRepository;
+
+        let mut mock = MockApiKeyRepository::new();
+        mock.expect_validate_api_key().returning(|_, _| Ok(None));
+        mock.expect_get_api_key_by_id()
+            .returning(|_| Err(CoreError::InternalError("db down".to_string())));
+        let server = auth_server(ApiKeyAuth::new(Arc::new(mock), true));
+
+        let mut req = Request::new(GrpcGenerateRequest {
+            namespace: "ns".to_string(),
+            tag: "tag".to_string(),
+            metadata: HashMap::new(),
+        });
+        req.metadata_mut().insert(
+            "authorization",
+            basic_header("ghost", "secret").parse().unwrap(),
+        );
+        let err = server
+            .authenticate(req)
+            .await
+            .expect_err("回查失败必须拒绝");
+        assert_eq!(err.code(), Code::Unauthenticated);
+        assert_eq!(err.message(), "invalid or unknown api key");
+    }
+
+    /// 认证通过的流式调用走真实传输：首个流项必须产出有效 ID。
+    /// 覆盖 `batch_generate_stream` 的成功发送路径。
+    #[tokio::test]
+    async fn authenticated_stream_yields_ids_over_real_transport() {
+        let (addr, jh) = spawn_auth_server().await;
+
+        let mut client =
+            v1::nebula_id_service_client::NebulaIdServiceClient::connect(format!("http://{addr}"))
+                .await
+                .expect("client connect");
+
+        let item = v1::BatchGenerateStreamRequest {
+            namespace: "ns".to_string(),
+            tag: "tag".to_string(),
+            count: 2,
+            metadata: HashMap::new(),
+        };
+        let mut req = Request::new(tokio_stream::once(item));
+        req.metadata_mut().insert(
+            "authorization",
+            api_key_header("grpc-key", "grpc-secret").parse().unwrap(),
+        );
+        let mut stream = client
+            .batch_generate_stream(req)
+            .await
+            .expect("认证流式调用必须建立")
+            .into_inner();
+        let first = tokio_stream::StreamExt::next(&mut stream)
+            .await
+            .expect("流必须产出首项")
+            .expect("首项必须是正常响应");
+        let id = first.id.expect("响应必须含 ID").id;
+        assert!(!id.is_empty(), "流式首项 ID 不得为空");
+
+        jh.abort();
+    }
+
+    /// 流式 batch 失败分支：count=0 触发批大小校验错误，流内以
+    /// `algorithm: "error: ..."` 的错误项回传而非断流。
+    #[tokio::test]
+    async fn stream_batch_validation_error_yields_error_item() {
+        let (addr, jh) = spawn_auth_server().await;
+
+        let mut client =
+            v1::nebula_id_service_client::NebulaIdServiceClient::connect(format!("http://{addr}"))
+                .await
+                .expect("client connect");
+
+        let item = v1::BatchGenerateStreamRequest {
+            namespace: "ns".to_string(),
+            tag: "tag".to_string(),
+            count: 0,
+            metadata: HashMap::new(),
+        };
+        let mut req = Request::new(tokio_stream::once(item));
+        req.metadata_mut().insert(
+            "authorization",
+            api_key_header("grpc-key", "grpc-secret").parse().unwrap(),
+        );
+        let mut stream = client
+            .batch_generate_stream(req)
+            .await
+            .expect("调用必须建立")
+            .into_inner();
+        let first = tokio_stream::StreamExt::next(&mut stream)
+            .await
+            .expect("流必须产出首项")
+            .expect("首项必须是正常响应");
+        let inner = first.id.expect("响应必须含 ID");
+        assert!(
+            inner.algorithm.starts_with("error:"),
+            "校验失败必须以 error 项回传，实际: {:?}",
+            inner.algorithm
+        );
+
+        jh.abort();
+    }
 }

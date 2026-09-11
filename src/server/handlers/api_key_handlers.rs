@@ -423,4 +423,54 @@ mod tests {
             "disabled admin row must not count as the last admin key, got {result:?}"
         );
     }
+
+    #[tokio::test]
+    async fn test_create_user_key_when_user_key_exists_is_rejected() {
+        let mut mock_repo = MockApiKeyRepository::new();
+        mock_repo.expect_count_admin_keys().return_once(|| Ok(0));
+        mock_repo.expect_list_api_keys().return_once(|_, _, _| {
+            Ok(vec![make_api_key_info(
+                crate::core::database::ApiKeyRole::User,
+                true,
+            )])
+        });
+        mock_repo.expect_create_api_key().never();
+
+        let handlers = make_handlers_with_repo(mock_repo);
+        let req = CreateApiKeyRequest {
+            workspace_id: Some(Uuid::new_v4().to_string()),
+            name: "second-user-key".to_string(),
+            description: None,
+            role: Some("user".to_string()),
+            rate_limit: None,
+            expires_at: None,
+        };
+        let result = handlers.create_api_key(Some(Uuid::new_v4()), req).await;
+        assert!(
+            matches!(result, Err(CoreError::AuthenticationError(_))),
+            "duplicate user key must be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_key_with_invalid_expires_at_is_rejected() {
+        let mut mock_repo = MockApiKeyRepository::new();
+        mock_repo.expect_count_admin_keys().return_once(|| Ok(0));
+        mock_repo.expect_create_api_key().never();
+
+        let handlers = make_handlers_with_repo(mock_repo);
+        let req = CreateApiKeyRequest {
+            workspace_id: None,
+            name: "admin-key".to_string(),
+            description: None,
+            role: Some("admin".to_string()),
+            rate_limit: None,
+            expires_at: Some("not-a-date".to_string()),
+        };
+        let result = handlers.create_api_key(None, req).await;
+        assert!(
+            matches!(result, Err(CoreError::InvalidIdFormat(_))),
+            "bad expires_at must be rejected, got {result:?}"
+        );
+    }
 }

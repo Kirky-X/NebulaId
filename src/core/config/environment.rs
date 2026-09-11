@@ -86,3 +86,60 @@ impl Environment {
 pub fn is_production() -> bool {
     Environment::from_env().is_production()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_environment_display() {
+        assert_eq!(Environment::Development.to_string(), "development");
+        assert_eq!(Environment::Production.to_string(), "production");
+    }
+
+    #[test]
+    fn test_environment_from_str() {
+        assert_eq!(
+            Environment::from_str("development").unwrap(),
+            Environment::Development
+        );
+        assert_eq!(
+            Environment::from_str("dev").unwrap(),
+            Environment::Development
+        );
+        assert_eq!(
+            Environment::from_str("PROD").unwrap(),
+            Environment::Production
+        );
+        assert_eq!(
+            Environment::from_str("production").unwrap(),
+            Environment::Production
+        );
+        let err = Environment::from_str("staging").unwrap_err();
+        assert!(err.to_string().contains("staging"));
+    }
+
+    #[test]
+    fn test_environment_from_string_and_str() {
+        assert_eq!(
+            Environment::from("production".to_string()),
+            Environment::Production
+        );
+        assert_eq!(
+            Environment::from("anything-else".to_string()),
+            Environment::Development
+        );
+        assert_eq!(Environment::from("prod"), Environment::Production);
+        assert_eq!(Environment::from("dev"), Environment::Development);
+        assert_eq!(Environment::default(), Environment::Development);
+    }
+
+    #[test]
+    fn test_environment_predicates() {
+        assert!(Environment::Production.is_production());
+        assert!(!Environment::Development.is_production());
+        assert!(Environment::Development.is_development());
+        assert!(!Environment::Production.is_development());
+    }
+}

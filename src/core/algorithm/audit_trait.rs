@@ -166,3 +166,95 @@ pub trait AuditLogger: Send + Sync {
 }
 
 pub type DynAuditLogger = Arc<dyn AuditLogger>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct RecordingLogger {
+        events: Mutex<Vec<AuditEvent>>,
+    }
+
+    #[async_trait]
+    impl AuditLogger for RecordingLogger {
+        async fn log(&self, event: AuditEvent) {
+            self.events.lock().expect("lock").push(event);
+        }
+    }
+
+    fn logger() -> RecordingLogger {
+        RecordingLogger {
+            events: Mutex::new(Vec::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_default_log_id_generation_records_success_and_failure() {
+        let ok_logger = logger();
+        ok_logger
+            .log_id_generation(
+                Some("ws".to_string()),
+                "generate".to_string(),
+                "snowflake".to_string(),
+                "42".to_string(),
+                true,
+            )
+            .await;
+        let events = ok_logger.events.lock().expect("lock");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].result, AuditResult::Success);
+        assert!(events[0].resource.contains("42"));
+
+        let fail_logger = logger();
+        fail_logger
+            .log_id_generation(
+                None,
+                "generate".to_string(),
+                "segment".to_string(),
+                "".to_string(),
+                false,
+            )
+            .await;
+        let events = fail_logger.events.lock().expect("lock");
+        assert_eq!(events[0].result, AuditResult::Failure);
+    }
+
+    #[tokio::test]
+    async fn test_default_log_config_change_and_degradation_event() {
+        let logger = logger();
+        logger
+            .log_config_change(
+                None,
+                "update".to_string(),
+                "rate_limit".to_string(),
+                serde_json::json!({"enabled": true}),
+            )
+            .await;
+        logger
+            .log_degradation_event(
+                Some("ws".to_string()),
+                "degrade".to_string(),
+                "segment".to_string(),
+                "Normal".to_string(),
+                "Critical".to_string(),
+                serde_json::json!({}),
+            )
+            .await;
+        logger
+            .log_degradation_event(
+                None,
+                "recover".to_string(),
+                "segment".to_string(),
+                "Critical".to_string(),
+                "Normal".to_string(),
+                serde_json::json!({}),
+            )
+            .await;
+        let events = logger.events.lock().expect("lock");
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].result, AuditResult::Success);
+        assert_eq!(events[1].result, AuditResult::Failure);
+        assert_eq!(events[2].result, AuditResult::Success);
+    }
+}

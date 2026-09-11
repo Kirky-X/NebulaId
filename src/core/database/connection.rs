@@ -766,4 +766,27 @@ mod tests {
             other => panic!("expected DatabaseError for ALTER failure, got {other:?}"),
         }
     }
+
+    #[tokio::test]
+    async fn test_create_connection_mysql_url_branch_fails_to_connect() {
+        let mut config = make_pg_config("secret", "user");
+        config.engine = DatabaseEngine::Mysql;
+        // 无 MySQL 服务：断言只能是连接失败（URL 拼装分支已执行）。
+        assert!(create_connection(&config).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_create_connection_postgres_alias_url_branch() {
+        let mut config = make_pg_config("secret", "user");
+        config.engine = DatabaseEngine::Postgres;
+        assert!(create_connection(&config).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_create_connection_full_url_skips_validation() {
+        let mut config = make_pg_config("", "");
+        config.url = "postgresql://user:pass@localhost:1/db".to_string();
+        // 完整 URL 跳过账号密码校验，直接进入连接（端口 1 必定失败）。
+        assert!(create_connection(&config).await.is_err());
+    }
 }

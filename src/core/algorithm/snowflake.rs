@@ -753,4 +753,14 @@ mod tests {
             .expect("generate via trait should succeed");
         assert!(id.as_u128() > 0);
     }
+
+    #[test]
+    fn test_layout_info_from_config_matches_defaults() {
+        let layout = SnowflakeLayoutInfo::from_config(&SnowflakeAlgorithmConfig::default());
+        // 默认 3 / 8 / 10 位宽，时间戳占剩余位：64 - 3 - 8 - 10 = 43
+        assert_eq!(layout.datacenter_id_bits, 3);
+        assert_eq!(layout.worker_id_bits, 8);
+        assert_eq!(layout.sequence_bits, 10);
+        assert_eq!(layout.timestamp_bits, 43);
+    }
 }

@@ -358,4 +358,22 @@ mod tests {
         keys.sort_unstable();
         assert_eq!(keys, vec!["key_expires_at", "role", "workspace_id"]);
     }
+
+    #[test]
+    fn test_ttl_seconds_accessor() {
+        assert_eq!(AuthCache::new(300).ttl_seconds(), 300);
+        assert_eq!(AuthCache::new(0).ttl_seconds(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_put_with_already_expired_identity_writes_nothing() {
+        let cache = AuthCache::new(300);
+        cache.put("k1", "s1", &identity(None, Some(1))).await;
+        let keys = cache
+            .dao
+            .keys(&AuthCache::namespace_pattern())
+            .await
+            .unwrap();
+        assert!(keys.is_empty());
+    }
 }

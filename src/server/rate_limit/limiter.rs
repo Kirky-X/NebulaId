@@ -664,4 +664,32 @@ mod tests {
         let result = limiter.check_rate_limit("key", None, None).await;
         assert!(result.allowed, "Should allow after token refill");
     }
+
+    #[tokio::test]
+    async fn test_custom_rate_cleanup_stats_and_config_update() {
+        let limiter = RateLimiter::new(10, 5);
+
+        let first = limiter.check_rate_limit("custom", Some(1), Some(1)).await;
+        assert!(first.allowed);
+        let second = limiter.check_rate_limit("custom", Some(1), Some(1)).await;
+        assert!(!second.allowed, "1 rps / 1 burst must deny the second call");
+
+        assert_eq!(limiter.active_limiters_count(), 1);
+        assert_eq!(limiter.bucket_count(), 1);
+        let stats = limiter.memory_stats();
+        assert_eq!(stats.active_limiters, 1);
+        assert_eq!(stats.default_rps, 10);
+        assert_eq!(stats.default_burst, 5);
+
+        let removed = limiter.cleanup(Duration::ZERO);
+        assert_eq!(removed, 1);
+        assert_eq!(limiter.active_limiters_count(), 0);
+
+        limiter.update_config(30, 15);
+        let stats = limiter.memory_stats();
+        assert_eq!(stats.default_rps, 30);
+        assert_eq!(stats.default_burst, 15);
+
+        drop(RateLimiter::get_concurrency_limiter(4));
+    }
 }

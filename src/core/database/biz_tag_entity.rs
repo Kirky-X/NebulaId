@@ -196,3 +196,37 @@ impl From<IdFormat> for IdFormatDb {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dbnexus::sea_orm::Related;
+
+    #[test]
+    fn test_relations_point_at_expected_entities() {
+        let workspace = <Entity as Related<crate::core::database::workspace_entity::Entity>>::to();
+        let group = <Entity as Related<crate::core::database::group_entity::Entity>>::to();
+        assert!(!format!("{workspace:?}").is_empty());
+        assert!(!format!("{group:?}").is_empty());
+    }
+
+    #[test]
+    fn test_algorithm_type_db_roundtrip() {
+        for variant in [
+            AlgorithmType::Segment,
+            AlgorithmType::Snowflake,
+            AlgorithmType::UuidV8,
+        ] {
+            let db_value = AlgorithmTypeDb::from(variant);
+            assert_eq!(AlgorithmType::from(db_value), variant);
+        }
+    }
+
+    #[test]
+    fn test_id_format_db_roundtrip() {
+        for variant in [IdFormat::Numeric, IdFormat::Prefixed, IdFormat::Uuid] {
+            let db_value = IdFormatDb::from(variant.clone());
+            assert_eq!(IdFormat::from(db_value), variant);
+        }
+    }
+}

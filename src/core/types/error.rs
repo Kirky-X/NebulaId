@@ -640,4 +640,50 @@ mod tests {
             rust_i18n::set_locale(&self.saved);
         }
     }
+
+    #[test]
+    fn test_core_error_from_impls_map_to_expected_variants() {
+        let parse_err = "not-a-number".parse::<i32>().unwrap_err();
+        assert!(matches!(
+            CoreError::from(parse_err),
+            CoreError::ParseError(_)
+        ));
+
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
+        assert!(matches!(CoreError::from(io_err), CoreError::IoError(_)));
+
+        let uuid_err = "not-a-uuid".parse::<uuid::Uuid>().unwrap_err();
+        assert!(matches!(
+            CoreError::from(uuid_err),
+            CoreError::ParseError(_)
+        ));
+
+        let cache_err = oxcache::OxCacheError::Serialization("bad payload".to_string());
+        assert!(matches!(
+            CoreError::from(cache_err),
+            CoreError::CacheError(_)
+        ));
+
+        let log_err = inklog::InklogError::ConfigError("bad config".to_string());
+        assert!(matches!(
+            CoreError::from(log_err),
+            CoreError::ConfigurationError(_)
+        ));
+    }
+
+    #[test]
+    fn test_error_response_constructors() {
+        let plain = ErrorResponse::new(400, "bad request".to_string());
+        assert_eq!(plain.code, 400);
+        assert_eq!(plain.message, "bad request");
+        assert!(plain.details.is_none());
+
+        let detailed = ErrorResponse::with_details(
+            500,
+            "internal".to_string(),
+            serde_json::json!({"retry": false}),
+        );
+        assert_eq!(detailed.code, 500);
+        assert_eq!(detailed.details, Some(serde_json::json!({"retry": false})));
+    }
 }

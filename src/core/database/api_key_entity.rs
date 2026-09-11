@@ -269,3 +269,50 @@ impl From<Model> for ApiKeyResponse {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_model() -> Model {
+        let now = chrono::Utc::now().naive_utc();
+        Model {
+            id: uuid::Uuid::new_v4(),
+            key_id: "test-key-id".to_string(),
+            key_secret_hash: "super-secret-hash".to_string(),
+            prev_secret_hash: Some("old-hash".to_string()),
+            rotate_expires_at: None,
+            key_prefix: "test".to_string(),
+            role: "admin".to_string(),
+            workspace_id: None,
+            name: "test".to_string(),
+            description: None,
+            rate_limit: 100,
+            enabled: true,
+            expires_at: None,
+            last_used_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn test_model_debug_redacts_credential_hashes() {
+        let debug = format!("{:?}", sample_model());
+        assert!(!debug.contains("super-secret-hash"));
+        assert!(!debug.contains("old-hash"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(debug.contains("test-key-id"));
+    }
+
+    #[test]
+    fn test_api_key_role_display_and_from() {
+        assert_eq!(ApiKeyRole::Admin.to_string(), "admin");
+        assert_eq!(ApiKeyRole::User.to_string(), "user");
+        assert_eq!(ApiKeyRole::Anonymous.to_string(), "anonymous");
+        assert_eq!(ApiKeyRole::from("admin".to_string()), ApiKeyRole::Admin);
+        assert_eq!(ApiKeyRole::from("user"), ApiKeyRole::User);
+        assert_eq!(ApiKeyRole::from("anonymous"), ApiKeyRole::User);
+        assert_eq!(ApiKeyRole::from("bogus"), ApiKeyRole::User);
+    }
+}

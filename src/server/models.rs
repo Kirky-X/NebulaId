@@ -905,6 +905,37 @@ pub struct GroupListResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::database::{ApiKeyResponse as CoreApiKeyResponse, ApiKeyRole as CoreRole};
+
+    fn core_api_key_response(role: CoreRole) -> CoreApiKeyResponse {
+        let now = chrono::Utc::now().naive_utc();
+        CoreApiKeyResponse {
+            id: uuid::Uuid::new_v4(),
+            key_id: "k".to_string(),
+            key_prefix: "nino_".to_string(),
+            name: "test".to_string(),
+            description: None,
+            role,
+            rate_limit: 100,
+            enabled: true,
+            expires_at: None,
+            created_at: now,
+        }
+    }
+
+    #[test]
+    fn test_api_key_response_try_from_admin_and_user() {
+        let admin = ApiKeyResponse::try_from(core_api_key_response(CoreRole::Admin)).unwrap();
+        assert_eq!(admin.role, "admin");
+        let user = ApiKeyResponse::try_from(core_api_key_response(CoreRole::User)).unwrap();
+        assert_eq!(user.role, "user");
+    }
+
+    #[test]
+    fn test_api_key_response_try_from_anonymous_is_rejected() {
+        let err = ApiKeyResponse::try_from(core_api_key_response(CoreRole::Anonymous)).unwrap_err();
+        assert!(err.to_string().contains("Anonymous"));
+    }
 
     // ========== HealthStatus::Display ==========
 

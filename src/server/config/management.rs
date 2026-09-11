@@ -1430,4 +1430,63 @@ mod tests {
             ) -> ConfigManager,
         >();
     }
+
+    #[tokio::test]
+    async fn test_unconfigured_repositories_return_internal_error() {
+        let hot_config = Arc::new(HotReloadConfig::new(
+            test_config(),
+            "config/config.toml".to_string(),
+        ));
+        let service = ConfigManager::new(hot_config, create_test_algorithm_router());
+
+        let err = service.list_workspaces().await.unwrap_err();
+        assert!(err.to_string().contains("not configured"));
+        let err = service.get_workspace("ws").await.unwrap_err();
+        assert!(err.to_string().contains("not configured"));
+        let err = service.list_groups("ws").await.unwrap_err();
+        assert!(err.to_string().contains("not configured"));
+    }
+
+    #[tokio::test]
+    async fn test_with_repository_and_rate_limiter_builders() {
+        use dbnexus::sea_orm::{DatabaseBackend, MockDatabase};
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![
+                Vec::<crate::core::database::workspace_entity::Model>::new(),
+            ])
+            .append_query_results(vec![
+                Vec::<crate::core::database::workspace_entity::Model>::new(),
+            ])
+            .into_connection();
+        let repo = Arc::new(crate::core::database::SeaOrmRepository::new(
+            db,
+            "test-salt".to_string(),
+        ));
+        let hot_config = Arc::new(HotReloadConfig::new(
+            test_config(),
+            "config/config.toml".to_string(),
+        ));
+        let limiter = Arc::new(crate::server::rate_limit::limiter::RateLimiter::new(10, 5));
+        let service = ConfigManager::with_repository(
+            hot_config,
+            create_test_algorithm_router(),
+            repo.clone() as Arc<dyn crate::core::database::BizTagRepository + Send + Sync>,
+            repo.clone() as Arc<dyn crate::core::database::WorkspaceRepository + Send + Sync>,
+            repo as Arc<dyn crate::core::database::GroupRepository + Send + Sync>,
+        )
+        .with_rate_limiter(limiter);
+
+        // 空 mock 库：list 走 Some(repo) 分支并返回空列表。
+        let workspaces = service
+            .list_workspaces()
+            .await
+            .expect("empty mock must list");
+        assert_eq!(workspaces.total, 0);
+        assert!(service
+            .get_workspace("ws")
+            .await
+            .expect("empty mock must query")
+            .is_none());
+    }
 }

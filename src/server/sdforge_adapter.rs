@@ -101,4 +101,14 @@ mod tests {
         // plus the init_sdforge count check above is sufficient.
         drop(router);
     }
+
+    #[tokio::test]
+    async fn test_sdforge_health_returns_ok_with_version() {
+        let value = sdforge_health().await.expect("health handler must succeed");
+        assert_eq!(value.get("status").and_then(|v| v.as_str()), Some("ok"));
+        assert_eq!(
+            value.get("sdforge_version").and_then(|v| v.as_str()),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+    }
 }

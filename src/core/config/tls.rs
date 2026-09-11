@@ -75,3 +75,21 @@ impl Default for TlsConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tls_version_display() {
+        assert_eq!(TlsVersion::Tls12.to_string(), "TLSv1.2");
+        assert_eq!(TlsVersion::Tls13.to_string(), "TLSv1.3");
+    }
+
+    #[test]
+    fn test_tls_config_default_uses_tls13() {
+        let config = TlsConfig::default();
+        assert_eq!(config.min_tls_version, TlsVersion::Tls13);
+        assert!(!config.enabled);
+    }
+}

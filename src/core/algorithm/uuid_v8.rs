@@ -429,4 +429,25 @@ mod tests {
             "backward drift 50ms must be tolerated under threshold 200ms"
         );
     }
+
+    #[test]
+    fn test_shard_of_empty_ids_is_zero() {
+        assert_eq!(shard_of("", "", ""), 0);
+        assert_ne!(shard_of("ws1", "g1", "order"), 0);
+    }
+
+    #[tokio::test]
+    async fn test_uuid_v8_default_and_trivial_trait_methods() {
+        let algo = UuidV8Impl::default();
+        assert_eq!(algo.algorithm_type(), AlgorithmType::UuidV8);
+        assert_eq!(algo.health_check(), HealthStatus::Healthy);
+        assert!(algo.metrics().cache_hit_rate.is_none());
+        assert!(algo.shutdown().await.is_ok());
+
+        let empty = algo
+            .batch_generate(&ctx(), 0)
+            .await
+            .expect("size 0 must succeed");
+        assert!(empty.ids.is_empty());
+    }
 }

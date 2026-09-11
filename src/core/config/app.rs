@@ -486,4 +486,14 @@ mod tests {
         assert!(cfg.password.is_empty());
         assert!(cfg.database.is_empty());
     }
+
+    #[test]
+    fn test_redact_optional_url() {
+        assert_eq!(redact_optional_url(""), "");
+        assert_eq!(
+            redact_optional_url("postgresql://u:p@localhost:5432/db"),
+            "postgresql://u:***@localhost:5432/db"
+        );
+        assert_eq!(redact_optional_url("not a url"), "<redacted>");
+    }
 }

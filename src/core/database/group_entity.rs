@@ -94,3 +94,17 @@ impl From<Model> for Group {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dbnexus::sea_orm::Related;
+
+    #[test]
+    fn test_relations_point_at_expected_entities() {
+        let workspace = <Entity as Related<crate::core::database::workspace_entity::Entity>>::to();
+        let biz_tag = <Entity as Related<crate::core::database::biz_tag_entity::Entity>>::to();
+        assert!(!format!("{workspace:?}").is_empty());
+        assert!(!format!("{biz_tag:?}").is_empty());
+    }
+}

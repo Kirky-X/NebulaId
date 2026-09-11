@@ -1105,6 +1105,19 @@ mod tests {
 
     // ===== DegradationManager 扩展测试 =====
 
+    #[test]
+    fn test_circuit_breaker_transitions_and_timeout() {
+        let state = AlgorithmHealthState::new(AlgorithmType::Segment);
+        assert!(!state.is_circuit_open(1000));
+        state.open_circuit_breaker();
+        assert!(state.is_circuit_open(60_000));
+        assert!(!state.is_circuit_open(0));
+        state.half_open_circuit_breaker();
+        assert!(!state.is_circuit_open(60_000));
+        state.close_circuit_breaker();
+        assert!(!state.is_circuit_open(60_000));
+    }
+
     fn build_manager_with_thresholds(failure: u8, recovery: u8) -> DegradationManager {
         let config = DegradationConfig {
             failure_threshold: failure,

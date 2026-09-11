@@ -134,3 +134,27 @@ impl From<Model> for Workspace {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_workspace_status_conversions() {
+        assert_eq!(WorkspaceStatus::Active.as_str(), "active");
+        assert_eq!(WorkspaceStatus::Inactive.as_str(), "inactive");
+        assert_eq!(WorkspaceStatus::Suspended.as_str(), "suspended");
+        assert_eq!(WorkspaceStatus::Active.to_string(), "active");
+        assert_eq!(
+            WorkspaceStatus::from("active".to_string()),
+            WorkspaceStatus::Active
+        );
+        assert_eq!(WorkspaceStatus::from("inactive"), WorkspaceStatus::Inactive);
+        assert_eq!(
+            WorkspaceStatus::from("suspended"),
+            WorkspaceStatus::Suspended
+        );
+        assert_eq!(WorkspaceStatus::from("bogus"), WorkspaceStatus::Inactive);
+        assert_eq!(String::from(WorkspaceStatus::Suspended), "suspended");
+    }
+}

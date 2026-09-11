@@ -395,4 +395,30 @@ mod tests {
         };
         let _response = handlers.parse(parse_req).await;
     }
+
+    #[tokio::test]
+    async fn test_handle_parse_all_algorithm_branches() {
+        use crate::core::algorithm::IdGenerator as CoreIdGenerator;
+
+        let (handlers, mock_gen) = create_test_api_handlers();
+        let id = mock_gen
+            .generate("w", "g", "t")
+            .await
+            .expect("mock must generate")
+            .to_string();
+        for algorithm in ["snowflake", "uuid_v8", "segment", "mystery", ""] {
+            let req = ParseRequest {
+                id: id.clone(),
+                workspace: "w".to_string(),
+                group: "g".to_string(),
+                biz_tag: "t".to_string(),
+                algorithm: algorithm.to_string(),
+            };
+            let resp = handlers
+                .parse(req)
+                .await
+                .unwrap_or_else(|e| panic!("{algorithm:?} parse must succeed, got {e:?}"));
+            assert_eq!(resp.numeric_value, id);
+        }
+    }
 }

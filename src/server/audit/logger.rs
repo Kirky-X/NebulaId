@@ -2545,4 +2545,36 @@ mod tests {
         let recent = logger.get_recent_events(10).await;
         assert_eq!(recent.len(), 1);
     }
+
+    fn sample_event() -> AuditEvent {
+        AuditEvent::new(
+            AuditEventType::IdGeneration,
+            None,
+            "generate_id".to_string(),
+            "biz_tag:test".to_string(),
+            AuditResult::Success,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_file_logging_persists_and_flushes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("audit.log").to_str().unwrap().to_string();
+        let logger = AuditLogger::with_file_logging(100, path.clone()).await;
+        logger.log(sample_event()).await;
+        logger.flush().await;
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("generate_id"),
+            "audit file must contain the event, got: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_invalid_log_path_falls_back_to_memory() {
+        let logger = AuditLogger::with_file_logging(10, "../evil.log".to_string()).await;
+        logger.log(sample_event()).await;
+        assert_eq!(logger.total_logged(), 1);
+    }
 }

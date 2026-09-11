@@ -1118,6 +1118,84 @@ mod tests {
         assert!(!state.is_circuit_open(60_000));
     }
 
+    #[tokio::test]
+    async fn test_record_failures_trigger_degradation_then_recovery() {
+        let manager = build_manager_with_thresholds(2, 2);
+        manager.set_primary_algorithm(AlgorithmType::Segment);
+        manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+        manager.register_algorithm(
+            AlgorithmType::Snowflake,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
+        );
+
+        manager
+            .record_generation_result(AlgorithmType::Segment, false)
+            .await;
+        manager
+            .record_generation_result(AlgorithmType::Segment, false)
+            .await;
+        assert!(
+            health_state_of(&manager, AlgorithmType::Segment)
+                .is_degraded
+                .load(Ordering::SeqCst),
+            "two failures at threshold 2 must degrade"
+        );
+
+        manager
+            .record_generation_result(AlgorithmType::Segment, true)
+            .await;
+        manager
+            .record_generation_result(AlgorithmType::Segment, true)
+            .await;
+        assert!(
+            !health_state_of(&manager, AlgorithmType::Segment)
+                .is_degraded
+                .load(Ordering::SeqCst),
+            "two successes at recovery threshold 2 must recover"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_all_health_recovers_timed_out_open_circuit() {
+        let manager = build_manager_with_thresholds(10, 10);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+        let state = health_state_of(&manager, AlgorithmType::Segment);
+        state.open_circuit_breaker();
+        *state.circuit_breaker_opened_at.write() = Some(Instant::now() - Duration::from_secs(3600));
+
+        manager.check_all_health().await;
+        assert_eq!(
+            state.get_circuit_breaker_state(),
+            CircuitBreakerState::HalfOpen
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_all_health_closes_healthy_half_open_circuit() {
+        let manager = build_manager_with_thresholds(10, 2);
+        manager.register_algorithm(
+            AlgorithmType::Segment,
+            Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
+        );
+        let state = health_state_of(&manager, AlgorithmType::Segment);
+        state.half_open_circuit_breaker();
+        state.record_success();
+        state.record_success();
+
+        manager.check_all_health().await;
+        assert_eq!(
+            state.get_circuit_breaker_state(),
+            CircuitBreakerState::Closed
+        );
+    }
+
     fn build_manager_with_thresholds(failure: u8, recovery: u8) -> DegradationManager {
         let config = DegradationConfig {
             failure_threshold: failure,

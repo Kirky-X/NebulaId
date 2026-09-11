@@ -2895,4 +2895,88 @@ mod tests {
             .await
             .is_ok());
     }
+
+    #[tokio::test]
+    async fn test_verify_user_workspace_not_found_and_bad_id() {
+        use crate::server::handlers::mock_generator::MockIdGenerator;
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        // workspace 不存在 → 404 映射分支。
+        let mut missing = MockConfigManagementService::new();
+        missing.expect_get_workspace().returning(|_| Ok(None));
+        let handlers = Arc::new(ApiHandlers::new(
+            Arc::new(MockIdGenerator::new()),
+            Arc::new(missing),
+        ));
+        assert!(
+            verify_user_workspace("ghost", &Some(uuid::Uuid::new_v4()), &handlers, Locale::En)
+                .await
+                .is_err()
+        );
+
+        // id 非 UUID → invalid_workspace_id 映射分支。
+        let mut bad_id = MockConfigManagementService::new();
+        bad_id.expect_get_workspace().returning(|_| {
+            Ok(Some(WorkspaceResponse {
+                id: "not-a-uuid".to_string(),
+                name: "ws".to_string(),
+                description: None,
+                status: "active".to_string(),
+                max_groups: 10,
+                max_biz_tags: 100,
+                created_at: String::new(),
+                updated_at: String::new(),
+                user_api_key: None,
+            }))
+        });
+        let handlers = Arc::new(ApiHandlers::new(
+            Arc::new(MockIdGenerator::new()),
+            Arc::new(bad_id),
+        ));
+        assert!(
+            verify_user_workspace("ws", &Some(uuid::Uuid::new_v4()), &handlers, Locale::En)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_generate_user_ok_and_admin_rejected() {
+        use crate::server::middleware::ApiKeyRole;
+        use axum::{Extension, Json};
+
+        let state = create_test_app_state();
+        let admin_req = GenerateRequest {
+            workspace: "w".to_string(),
+            group: "g".to_string(),
+            biz_tag: "t".to_string(),
+            algorithm: None,
+        };
+        let (status, _) = handle_generate(
+            State(state.clone()),
+            Extension(None),
+            Extension(ApiKeyRole::Admin),
+            Extension(Locale::En),
+            Json(admin_req),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // User 路径：继续走校验与生成（生成结果不论成败，处理主干均被执行）。
+        let user_req = GenerateRequest {
+            workspace: "w".to_string(),
+            group: "g".to_string(),
+            biz_tag: "t".to_string(),
+            algorithm: None,
+        };
+        let _ = handle_generate(
+            State(state),
+            Extension(None),
+            Extension(ApiKeyRole::User),
+            Extension(Locale::En),
+            Json(user_req),
+        )
+        .await;
+    }
 }

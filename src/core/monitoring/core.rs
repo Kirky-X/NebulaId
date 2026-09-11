@@ -3142,4 +3142,40 @@ mod tests {
         manager.remove_rule("nonexistent_rule");
         assert_eq!(manager.get_all_states().len(), original_count);
     }
+
+    fn evaluate_expression(expression: &str, metrics: &GlobalMetrics) -> (bool, Option<String>) {
+        let evaluator = DefaultEvaluator;
+        let rule = AlertRule::new("test_rule", expression, AlertSeverity::Warning);
+        evaluator.evaluate(&rule, metrics)
+    }
+
+    #[test]
+    fn test_evaluate_segment_exhausted_signal_fires() {
+        let metrics = GlobalMetrics::new();
+        let (firing, value) = evaluate_expression("segment_exhausted", &metrics);
+        assert!(firing);
+        assert_eq!(value.as_deref(), Some("segment_buffer_exhausted"));
+    }
+
+    #[test]
+    fn test_evaluate_clock_backward_fires_when_recorded() {
+        let metrics = GlobalMetrics::new();
+        metrics
+            .get_or_create_metrics(crate::core::types::AlgorithmType::Segment)
+            .record_clock_backward();
+        let (firing, value) = evaluate_expression("clock_backward", &metrics);
+        assert!(firing);
+        assert!(value
+            .as_deref()
+            .unwrap()
+            .starts_with("clock_backward_count: "));
+    }
+
+    #[test]
+    fn test_evaluate_unknown_expression_returns_none() {
+        let metrics = GlobalMetrics::new();
+        let (firing, value) = evaluate_expression("bogus_expression", &metrics);
+        assert!(!firing);
+        assert!(value.is_none());
+    }
 }

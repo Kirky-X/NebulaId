@@ -1230,4 +1230,60 @@ mod tests {
         assert!(second.is_some());
         assert!(!second.unwrap().used_previous_credential);
     }
+
+    #[tokio::test]
+    async fn test_middleware_disabled_auth_passthrough() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, false));
+        let router = build_test_router(auth);
+        let resp = router.oneshot(make_request(None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_middleware_malformed_headers_rejected() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        for header in [
+            "Bearer sometoken",
+            "Basic !!!",
+            "ApiKey no-colon-here",
+            "Basic Og==",
+        ] {
+            let auth = Arc::new(ApiKeyAuth::new(repo.clone(), true));
+            let router = build_test_router(auth);
+            let resp = router
+                .oneshot(make_request(Some(&header.to_string())))
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "{header:?} must be rejected"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_middleware_valid_key_succeeds() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let router = build_test_router(auth);
+        let header = basic_auth_header("user-key", "user-secret");
+        let resp = router.oneshot(make_request(Some(&header))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_middleware_rate_limits_repeated_failures() {
+        let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
+        let auth = Arc::new(ApiKeyAuth::new(repo, true));
+        let bad = basic_auth_header("user-key", "wrong-secret");
+        let mut last_status = StatusCode::UNAUTHORIZED;
+        for _ in 0..12 {
+            let router = build_test_router(auth.clone());
+            let resp = router.oneshot(make_request(Some(&bad))).await.unwrap();
+            last_status = resp.status();
+        }
+        assert_eq!(last_status, StatusCode::TOO_MANY_REQUESTS);
+    }
 }

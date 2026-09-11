@@ -1895,4 +1895,18 @@ mod tests {
         router.shutdown().await;
         // 不 panic 即通过
     }
+
+    #[tokio::test]
+    async fn test_initialize_with_cpu_monitor_and_layout() {
+        let config = Config::default();
+        let router = AlgorithmRouter::new(config, None)
+            .with_cpu_monitor(Arc::new(crate::core::algorithm::segment::CpuMonitor::new()));
+        router
+            .initialize()
+            .await
+            .expect("init with cpu monitor must succeed");
+        let layout = router.snowflake_layout().expect("layout available");
+        assert_eq!(layout.sequence_bits, 10);
+        router.shutdown().await;
+    }
 }

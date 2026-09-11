@@ -162,11 +162,14 @@ jobs:
           fi
 
       - name: Run Tests with Coverage
+        # --ignore-filename-regex 排除 prost/tonic 生成的 proto 胶水代码：
+        # 生成代码无法被单元测试有意义地覆盖（编译器产物），计入覆盖率
+        # 只会稀释人工代码的真实覆盖率。main.rs 等手写代码仍全量计入。
         run: |
           if [ "${{ matrix.feature }}" = "default" ]; then
-            cargo llvm-cov --package ${{ env.PKG }} --fail-under-lines 95 --lcov --output-path lcov.info
+            cargo llvm-cov --package ${{ env.PKG }} --fail-under-lines 95 --ignore-filename-regex "server/proto/" --lcov --output-path lcov.info
           else
-            cargo llvm-cov --package ${{ env.PKG }} --features ${{ matrix.feature }} --fail-under-lines 95 --lcov --output-path lcov.info
+            cargo llvm-cov --package ${{ env.PKG }} --features ${{ matrix.feature }} --fail-under-lines 95 --ignore-filename-regex "server/proto/" --lcov --output-path lcov.info
           fi
 
       - name: Upload Coverage Report

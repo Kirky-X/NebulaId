@@ -2803,7 +2803,7 @@ dependencies = [
  "log",
  "nix 0.31.3",
  "owo-colors",
- "oxcache 0.5.0-rc.1",
+ "oxcache 0.5.0-rc.3",
  "parking_lot",
  "pbkdf2",
  "rand 0.10.2",
@@ -3357,7 +3357,7 @@ dependencies = [
  "inklog 0.3.0-rc.1",
  "limiteron",
  "mockall",
- "oxcache 0.4.3",
+ "oxcache 0.5.0-rc.3",
  "parking_lot",
  "prost",
  "rand 0.10.2",
@@ -3592,9 +3592,9 @@ dependencies = [
 
 [[package]]
 name = "oxcache"
-version = "0.4.3"
+version = "0.5.0-rc.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "985b963bd0d5a36076847f9bb33cb1de9a1d91ceb2a03d6d8b1b50e86118a5fb"
+checksum = "f987440575b26daa27237e83a691a47fb2a891a346706f0b8751420a649270f9"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3602,27 +3602,7 @@ dependencies = [
  "icu",
  "moka",
  "once_cell",
- "serde",
- "serde_json",
- "serde_stacker",
- "tokio",
- "uuid",
- "writeable",
-]
-
-[[package]]
-name = "oxcache"
-version = "0.5.0-rc.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3f59fdece16e0b8ccea2d88ce4f953591263870584e56af5ba0d17f43325473"
-dependencies = [
- "async-trait",
- "chrono",
- "dashmap",
- "icu",
- "moka",
- "once_cell",
- "oxcache_macros 0.5.0-rc.1",
+ "oxcache_macros 0.5.0-rc.4",
  "serde",
  "serde_json",
  "serde_stacker",
@@ -3644,9 +3624,9 @@ dependencies = [
 
 [[package]]
 name = "oxcache_macros"
-version = "0.5.0-rc.1"
+version = "0.5.0-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86a584f68cc647544459ef65fe459b3773fbeb805615437802de748fc5f1aee2"
+checksum = "9e39e745ea7f2dc5fc4f8d72a2682532bbcaa0c1184b413e67ae311ab1f9648a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5501,7 +5481,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

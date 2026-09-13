@@ -1435,6 +1435,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dirs"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
 name = "dirs-sys"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2752,7 +2761,7 @@ dependencies = [
  "bytes",
  "chrono",
  "crossbeam-channel",
- "dirs",
+ "dirs 6.0.0",
  "flate2",
  "futures",
  "ipnet",
@@ -2781,9 +2790,9 @@ dependencies = [
 
 [[package]]
 name = "inklog"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cddf426cd2ecab649da66e9275e316df11a70fbe4c2c663c222b80fc8cd0f9c"
+checksum = "2e2aab6d331c8e049413de33030b484319c0494d54bb1aa0ab6744f961e15785"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2792,7 +2801,7 @@ dependencies = [
  "bytes",
  "chrono",
  "crossbeam-channel",
- "dirs",
+ "dirs 7.0.0",
  "flate2",
  "fluent-bundle",
  "futures",
@@ -2803,7 +2812,7 @@ dependencies = [
  "log",
  "nix 0.31.3",
  "owo-colors",
- "oxcache 0.5.0-rc.1",
+ "oxcache 0.5.0-rc.4",
  "parking_lot",
  "pbkdf2",
  "rand 0.10.2",
@@ -3354,7 +3363,7 @@ dependencies = [
  "futures-util",
  "garrison",
  "hex",
- "inklog 0.3.0-rc.1",
+ "inklog 0.3.0-rc.2",
  "limiteron",
  "mockall",
  "oxcache 0.4.3",
@@ -3612,9 +3621,9 @@ dependencies = [
 
 [[package]]
 name = "oxcache"
-version = "0.5.0-rc.1"
+version = "0.5.0-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3f59fdece16e0b8ccea2d88ce4f953591263870584e56af5ba0d17f43325473"
+checksum = "5d6c9870fdf44705199a23baf0ecfa891ba9b4b58fe56d556fb2afacf7e507f4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3622,7 +3631,7 @@ dependencies = [
  "icu",
  "moka",
  "once_cell",
- "oxcache_macros 0.5.0-rc.1",
+ "oxcache_macros 0.5.0-rc.4",
  "serde",
  "serde_json",
  "serde_stacker",
@@ -3644,9 +3653,9 @@ dependencies = [
 
 [[package]]
 name = "oxcache_macros"
-version = "0.5.0-rc.1"
+version = "0.5.0-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86a584f68cc647544459ef65fe459b3773fbeb805615437802de748fc5f1aee2"
+checksum = "9e39e745ea7f2dc5fc4f8d72a2682532bbcaa0c1184b413e67ae311ab1f9648a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5501,7 +5510,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

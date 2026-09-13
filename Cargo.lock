@@ -3384,7 +3384,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tracing",
- "trait-kit 0.5.0-rc.1",
+ "trait-kit 0.5.0-rc.2",
  "url",
  "utoipa",
  "uuid",
@@ -5501,7 +5501,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -5997,9 +5997,9 @@ dependencies = [
 
 [[package]]
 name = "trait-kit"
-version = "0.5.0-rc.1"
+version = "0.5.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d96cd88d570b452befb747951cb6a15abd88fe9b9348af1ab47d8975b91fea49"
+checksum = "c42ac2757a63f328830f85ba42387a06ee475791dbf260cb9107014c5969dab1"
 
 [[package]]
 name = "triomphe"

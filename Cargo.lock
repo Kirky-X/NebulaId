@@ -3367,7 +3367,7 @@ dependencies = [
  "rust-i18n",
  "rustls",
  "rustls-pemfile",
- "sdforge 0.5.0-rc.1",
+ "sdforge 0.5.0-rc.2",
  "sea-orm",
  "serde",
  "serde_json",
@@ -4636,9 +4636,9 @@ dependencies = [
 
 [[package]]
 name = "sdforge"
-version = "0.5.0-rc.1"
+version = "0.5.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0b4f681518e922d5e4b66cac4b419351344e8907baf52127d60d99a6b80dd14"
+checksum = "808a6472dc4d2b17b049e0c264dc702040014ea7e12b42417d966b1d52c039b5"
 dependencies = [
  "axum",
  "axum-extra",
@@ -4648,7 +4648,7 @@ dependencies = [
  "once_cell",
  "prost",
  "regex",
- "sdforge-macros 0.5.0-rc.1",
+ "sdforge-macros 0.5.0-rc.2",
  "serde",
  "serde_json",
  "thiserror",
@@ -4662,7 +4662,7 @@ dependencies = [
  "tower-http 0.7.1",
  "utoipa",
  "uuid",
- "validator 0.20.0",
+ "validator 0.21.0",
 ]
 
 [[package]]
@@ -4680,9 +4680,9 @@ dependencies = [
 
 [[package]]
 name = "sdforge-macros"
-version = "0.5.0-rc.1"
+version = "0.5.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7971747ccbf1694c4b127de1b6862b41a9150595405dea780539b52579023769"
+checksum = "51577fcca7ba3a68ce29a4b1e6135fa9ebd622692380fab9b5e3861cd3b2fd0b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5501,7 +5501,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

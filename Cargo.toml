@@ -172,6 +172,10 @@ toml = { version = "1.1", default-features = false, features = ["std", "serde"] 
 name = "i18n"
 harness = false
 
+[[bench]]
+name = "algorithms"
+harness = false
+
 # SDK 示例 —— 仅启用 `sdk` 特性时构建（示例引用被 #[cfg(feature = "sdk")]
 # 门控的 `nebulaid::sdk`）。未启用时 `cargo build`/`cargo test` 跳过它们。
 [[example]]

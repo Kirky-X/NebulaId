@@ -1194,13 +1194,16 @@ mod tests {
         ) -> std::result::Result<bool, EtcdError> {
             Ok(true)
         }
-    async fn ping(&self) -> std::result::Result<(), EtcdError> {
-        std::future::pending().await
+        async fn ping(&self) -> std::result::Result<(), EtcdError> {
+            std::future::pending().await
+        }
+        async fn lease_keep_alive_once(
+            &self,
+            _lease_id: i64,
+        ) -> std::result::Result<(), EtcdError> {
+            Ok(())
+        }
     }
-    async fn lease_keep_alive_once(&self, _lease_id: i64) -> std::result::Result<(), EtcdError> {
-        Ok(())
-    }
-}
 
     #[tokio::test]
     async fn test_etcd_cluster_health_monitor() {
@@ -2711,8 +2714,10 @@ mod tests {
 
     /// T017 测试共享 —— 有状态 KV mock：txn 写入对 kv_get 可见（模拟 etcd KV），
     /// kv_delete 真删除。返回 (mock, store)。
-    fn stateful_store_mock() -> (MockEtcdClientOps, Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>)
-    {
+    fn stateful_store_mock() -> (
+        MockEtcdClientOps,
+        Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>,
+    ) {
         let store: Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
         let mut mock = MockEtcdClientOps::new();
@@ -2723,10 +2728,11 @@ mod tests {
         }
         {
             let store = store.clone();
-            mock.expect_txn_check_create_rev_and_put().returning(move |k, v, _| {
-                store.lock().unwrap().insert(k.to_string(), v);
-                Ok(true)
-            });
+            mock.expect_txn_check_create_rev_and_put()
+                .returning(move |k, v, _| {
+                    store.lock().unwrap().insert(k.to_string(), v);
+                    Ok(true)
+                });
         }
         {
             let store = store.clone();
@@ -2789,12 +2795,19 @@ mod tests {
 
         // 写入的 value 必须是本实例 instance_id（allocator 状态中记录的同一值）
         assert_eq!(
-            store.lock().unwrap().get(&path).map(|v| String::from_utf8_lossy(v).into_owned()),
+            store
+                .lock()
+                .unwrap()
+                .get(&path)
+                .map(|v| String::from_utf8_lossy(v).into_owned()),
             allocator.allocated_value.read().clone(),
             "worker key value 必须为 allocator 记录的 instance value"
         );
 
-        allocator.release(worker_id).await.expect("归属匹配时 release 必须成功");
+        allocator
+            .release(worker_id)
+            .await
+            .expect("归属匹配时 release 必须成功");
         assert!(
             !store.lock().unwrap().contains_key(&path),
             "release 后 worker key 必须被删除"
@@ -2970,10 +2983,9 @@ mod tests {
             .await
             .expect("etcd 必须可达（ETCD_TEST_ENDPOINTS）");
 
-        let allocator =
-            EtcdWorkerAllocator::new(client.clone(), 1, EtcdConfig::default())
-                .await
-                .unwrap();
+        let allocator = EtcdWorkerAllocator::new(client.clone(), 1, EtcdConfig::default())
+            .await
+            .unwrap();
         let worker_id = allocator.allocate().await.expect("allocate 必须成功");
         assert!((1..=255).contains(&worker_id));
 
@@ -2981,7 +2993,10 @@ mod tests {
             .keep_alive_once()
             .await
             .expect("lease 续期必须成功");
-        allocator.release(worker_id).await.expect("归属校验 release 必须成功");
+        allocator
+            .release(worker_id)
+            .await
+            .expect("归属校验 release 必须成功");
         assert_eq!(allocator.get_allocated_id(), None);
     }
 
@@ -3021,10 +3036,7 @@ mod tests {
             observer.record_failure();
         }
         assert_eq!(monitor.get_status(), EtcdClusterStatus::Failed);
-        assert!(
-            monitor.is_using_cache(),
-            "is_using_cache 也必须跨句柄共享"
-        );
+        assert!(monitor.is_using_cache(), "is_using_cache 也必须跨句柄共享");
     }
 
     /// T027 —— 巡检接线后的生产形态：注入长连接 client（真实
@@ -3042,11 +3054,8 @@ mod tests {
         };
         let cache_file = NamedTempFile::new().expect("Failed to create temp file");
         let cache_path = cache_file.path().to_string_lossy().to_string();
-        let monitor = EtcdClusterHealthMonitor::new_with_client(
-            config,
-            cache_path,
-            Arc::new(wrapper),
-        );
+        let monitor =
+            EtcdClusterHealthMonitor::new_with_client(config, cache_path, Arc::new(wrapper));
 
         // 连续 5 次真实 ping 失败（连接拒绝）→ Failed + 启用本地缓存降级
         for _ in 0..5 {

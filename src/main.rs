@@ -647,28 +647,31 @@ async fn assemble_coordination(config: &Config) -> Result<CoordinationComponents
     match tokio::time::timeout(probe_timeout, client.ping()).await {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
-            return Err(nebulaid::core::types::CoreError::ConfigurationError(format!(
-                "etcd ping failed for endpoints {:?}: {}",
-                config.etcd.endpoints, e
-            )));
+            return Err(nebulaid::core::types::CoreError::ConfigurationError(
+                format!(
+                    "etcd ping failed for endpoints {:?}: {}",
+                    config.etcd.endpoints, e
+                ),
+            ));
         }
         Err(_) => {
-            return Err(nebulaid::core::types::CoreError::ConfigurationError(format!(
-                "etcd ping timed out after {}ms for endpoints {:?}",
-                config.etcd.connect_timeout_ms, config.etcd.endpoints
-            )));
+            return Err(nebulaid::core::types::CoreError::ConfigurationError(
+                format!(
+                    "etcd ping timed out after {}ms for endpoints {:?}",
+                    config.etcd.connect_timeout_ms, config.etcd.endpoints
+                ),
+            ));
         }
     }
 
-    let etcd_lock =
-        EtcdDistributedLock::new(client.clone(), SEGMENT_LOCK_PATH_PREFIX.to_string())
-            .await
-            .map_err(|e| {
-                nebulaid::core::types::CoreError::ConfigurationError(format!(
-                    "failed to create EtcdDistributedLock: {}",
-                    e
-                ))
-            })?;
+    let etcd_lock = EtcdDistributedLock::new(client.clone(), SEGMENT_LOCK_PATH_PREFIX.to_string())
+        .await
+        .map_err(|e| {
+            nebulaid::core::types::CoreError::ConfigurationError(format!(
+                "failed to create EtcdDistributedLock: {}",
+                e
+            ))
+        })?;
 
     Ok(CoordinationComponents {
         lock: std::sync::Arc::new(etcd_lock),
@@ -794,20 +797,18 @@ async fn main() -> Result<()> {
     // T035 —— 进程默认 locale 配置化：NEBULA_LOCALE > config.app.locale > "en"，
     // 非法值回退 "en" 并告警。此后所有 t!() 输出按生效 locale 渲染。
     let nebula_locale_env = env::var("NEBULA_LOCALE").ok();
-    let (locale, invalid_locale) =
-        resolve_locale(nebula_locale_env.as_deref(), &config.app.locale);
+    let (locale, invalid_locale) = resolve_locale(nebula_locale_env.as_deref(), &config.app.locale);
     if invalid_locale {
-        let invalid_value =
-            nebula_locale_env.unwrap_or_else(|| config.app.locale.clone());
+        let invalid_value = nebula_locale_env.unwrap_or_else(|| config.app.locale.clone());
         warn!(
             "{}",
-            t!("log.main.invalid_locale_falling_back", locale = invalid_value.as_str())
+            t!(
+                "log.main.invalid_locale_falling_back",
+                locale = invalid_value.as_str()
+            )
         );
     }
-    info!(
-        "{}",
-        t!("log.main.locale_initialized", locale = &locale)
-    );
+    info!("{}", t!("log.main.locale_initialized", locale = &locale));
     nebulaid::core::i18n::init_i18n(&locale);
 
     // T018 —— 无 etcd 时默认 worker 标识多实例风险告警：etcd 未配置意味着
@@ -1083,7 +1084,10 @@ async fn main() -> Result<()> {
                 match allocate_worker_id(client.clone(), &config, lease_failure_tx).await {
                     Ok(guard) => Some(guard),
                     Err(e) => {
-                        error!("{}", t!("error.main.worker_id_allocation_failed", error = e));
+                        error!(
+                            "{}",
+                            t!("error.main.worker_id_allocation_failed", error = e)
+                        );
                         error!("{}", t!("log.main.shutting_down"));
                         std::process::exit(1);
                     }
@@ -1845,7 +1849,10 @@ mod tests {
             components.client.is_none(),
             "未配置 etcd 时不应产出共享 client"
         );
-        assert!(components.lock.is_healthy(), "LocalDistributedLock 应恒健康");
+        assert!(
+            components.lock.is_healthy(),
+            "LocalDistributedLock 应恒健康"
+        );
 
         // 本地锁应可正常 acquire/release（号段分配互斥在单机内仍生效）
         let guard = components

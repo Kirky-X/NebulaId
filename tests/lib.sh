@@ -24,6 +24,11 @@
 #   source lib.sh
 #   load_test_config
 #
+# 注意: 本库启用严格模式（set -euo pipefail），source 本库的脚本将继承；
+#       需要宽松错误处理的脚本请在 source 之后自行 set +e/+u。
+
+# 严格模式：未定义变量、命令失败、管道中间失败一律视为错误
+set -euo pipefail
 
 # 全局配置变量
 AUTH_HEADER=""
@@ -83,7 +88,7 @@ get_config_path() {
 
 # 加载 API 基础地址
 _load_api_base() {
-    if [ -n "$NEBULA_API_BASE" ]; then
+    if [ -n "${NEBULA_API_BASE:-}" ]; then
         API_BASE="$NEBULA_API_BASE"
     else
         API_BASE=$(read_config 'api_base' 'http://localhost:8080')
@@ -107,7 +112,7 @@ load_test_config() {
     fi
 
     # 优先级1: 环境变量
-    if [ -n "$TEST_AUTH_HEADER" ]; then
+    if [ -n "${TEST_AUTH_HEADER:-}" ]; then
         AUTH_HEADER="$TEST_AUTH_HEADER"
         echo "[INFO] 使用环境变量提供的认证头 (TEST_AUTH_HEADER)"
         config_loaded=true
@@ -181,7 +186,7 @@ check_prerequisites() {
 
 check_api_health() {
     echo -e "\n${YELLOW}【健康检查】${NC}"
-    local health=$(curl -s "$(get_api_base)/health")
+    local health=$(curl -s --retry 3 --retry-connrefused "$(get_api_base)/health")
     local status=$(echo "$health" | jq -r '.status')
     echo "系统状态: $status"
 
@@ -193,12 +198,38 @@ check_api_health() {
     return 0
 }
 
+# ========== 就绪轮询 ==========
+
+# 轮询等待 HTTP 服务就绪，消除"脚本先于服务启动"的竞态误报。
+# 仅探测连接可达性（curl 退出码），不校验业务健康状态——后者由 check_api_health 负责。
+#
+# @param $1 URL（如 "$(get_api_base)/health"）
+# @param $2 超时秒数（可选，默认 30）
+# @return 0 服务可达；1 超时未就绪
+wait_http_ready() {
+    local url="$1"
+    local timeout="${2:-30}"
+    local elapsed=0
+
+    while [ "$elapsed" -lt "$timeout" ]; do
+        if curl -s -o /dev/null "$url"; then
+            echo "[INFO] 服务已就绪: $url（等待 ${elapsed}s）"
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    echo "[ERROR] 等待服务就绪超时（${timeout}s）: $url" >&2
+    return 1
+}
+
 # ========== API 调用 ==========
 
 switch_algorithm() {
     local biz_tag="$1"
     local algorithm="$2"
-    curl -s -X POST "$(get_api_base)/api/v1/config/algorithm" \
+    curl -s --retry 3 --retry-connrefused -X POST "$(get_api_base)/api/v1/config/algorithm" \
         -H "Content-Type: application/json" \
         -H "$AUTH_HEADER" \
         -d "{\"biz_tag\": \"${biz_tag}\", \"algorithm\": \"${algorithm}\"}"
@@ -208,7 +239,7 @@ generate_id() {
     local workspace="$1"
     local group="$2"
     local biz_tag="$3"
-    curl -s -X POST "$(get_api_base)/api/v1/generate" \
+    curl -s --retry 3 --retry-connrefused -X POST "$(get_api_base)/api/v1/generate" \
         -H "Content-Type: application/json" \
         -H "$AUTH_HEADER" \
         -d "{\"workspace\": \"${workspace}\", \"group\": \"${group}\", \"biz_tag\": \"${biz_tag}\"}"
@@ -219,7 +250,7 @@ generate_id_with_algo() {
     local group="$2"
     local biz_tag="$3"
     local algorithm="$4"
-    curl -s -X POST "$(get_api_base)/api/v1/generate" \
+    curl -s --retry 3 --retry-connrefused -X POST "$(get_api_base)/api/v1/generate" \
         -H "Content-Type: application/json" \
         -H "$AUTH_HEADER" \
         -d "{\"workspace\": \"${workspace}\", \"group\": \"${group}\", \"biz_tag\": \"${biz_tag}\", \"algorithm\": \"${algorithm}\"}"
@@ -230,7 +261,7 @@ generate_batch() {
     local group="$2"
     local biz_tag="$3"
     local size="$4"
-    curl -s -X POST "$(get_api_base)/api/v1/generate/batch" \
+    curl -s --retry 3 --retry-connrefused -X POST "$(get_api_base)/api/v1/generate/batch" \
         -H "Content-Type: application/json" \
         -H "$AUTH_HEADER" \
         -d "{\"workspace\": \"${workspace}\", \"group\": \"${group}\", \"biz_tag\": \"${biz_tag}\", \"size\": ${size}}"
@@ -242,7 +273,7 @@ parse_id() {
     local group="$3"
     local biz_tag="$4"
     local algorithm="$5"
-    curl -s -X POST "$(get_api_base)/api/v1/parse" \
+    curl -s --retry 3 --retry-connrefused -X POST "$(get_api_base)/api/v1/parse" \
         -H "Content-Type: application/json" \
         -H "$AUTH_HEADER" \
         -d "{\"id\": \"${id}\", \"workspace\": \"${workspace}\", \"group\": \"${group}\", \"biz_tag\": \"${biz_tag}\", \"algorithm\": \"${algorithm}\"}"
@@ -485,7 +516,7 @@ run_concurrent_test() {
         (
             local local_success=0
             for r in $(seq 1 $requests_per_worker); do
-                local http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$(get_api_base)/api/v1/generate" \
+                local http_code=$(curl -s --retry 3 --retry-connrefused -o /dev/null -w "%{http_code}" -X POST "$(get_api_base)/api/v1/generate" \
                     -H "Content-Type: application/json" \
                     -H "$AUTH_HEADER" \
                     -d "{\"workspace\": \"${workspace}\", \"group\": \"${group}\", \"biz_tag\": \"${biz_tag}\", \"algorithm\": \"${algorithm}\"}")
@@ -527,7 +558,7 @@ measure_performance() {
     local success=0
 
     for i in $(seq 1 $request_count); do
-        local http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$(get_api_base)/api/v1/generate" \
+        local http_code=$(curl -s --retry 3 --retry-connrefused -o /dev/null -w "%{http_code}" -X POST "$(get_api_base)/api/v1/generate" \
             -H "Content-Type: application/json" \
             -H "$AUTH_HEADER" \
             -d "{\"workspace\": \"${workspace}\", \"group\": \"${group}\", \"biz_tag\": \"${biz_tag}\"}")

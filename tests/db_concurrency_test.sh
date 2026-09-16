@@ -43,7 +43,7 @@
 #     distributed_test.sh - 分布式一致性测试
 #
 # @author      Nebula ID Team
-# @version     1.1.0
+# @version     1.2.0
 # @date        2026-01-12
 #
 # @changelog
@@ -51,10 +51,17 @@
 #         - 移除硬编码认证凭据，改用配置加载
 #         - 添加测试数据清理机制
 #         - 改进错误处理
+#     1.2.0 - 2026-09-17
+#         - 启用严格模式（set -e，继承 lib.sh 的 -euo pipefail）
+#         - 启动前以 wait_http_ready 轮询服务就绪（默认 30s）
+#         - 对被测服务的 curl 增加连接级重试（--retry 3 --retry-connrefused）
 #
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib.sh"
+
+# 严格模式（lib.sh 已置 -euo pipefail，此处显式声明 -e 保证脚本自持）
+set -e
 
 # 确保配置已加载
 if [ -z "$AUTH_HEADER" ]; then
@@ -63,6 +70,12 @@ if [ -z "$AUTH_HEADER" ]; then
     else
         load_test_config
     fi
+fi
+
+# 等待被测服务就绪（默认最长 30s，消除启动竞态误报；超时按文档语义返回 2）
+if ! wait_http_ready "$(get_api_base)/health" 30; then
+    echo "[ERROR] 被测服务不可用: $(get_api_base)" >&2
+    exit 2
 fi
 
 # ========== 测试配置 ==========
@@ -81,7 +94,7 @@ cleanup_test_data() {
     local cleanup_count=0
 
     # 清理临时文件
-    if [ -n "$TMPDIR" ] && [ -d "$TMPDIR" ]; then
+    if [ -n "${TMPDIR:-}" ] && [ -d "${TMPDIR:-}" ]; then
         rm -rf "$TMPDIR" 2>/dev/null && cleanup_count=$((cleanup_count + 1))
     fi
 
@@ -130,7 +143,7 @@ init_report
 # 清理之前的测试数据
 echo -e "\n【0】初始化测试环境"
 echo "----------------------------------------"
-curl -s -X POST "$(get_api_base)/api/v1/config/algorithm" \
+curl -s --retry 3 --retry-connrefused -X POST "$(get_api_base)/api/v1/config/algorithm" \
   -H "Content-Type: application/json" \
   -H "$AUTH_HEADER" \
   -d '{"biz_tag": "concurrency:test", "algorithm": "segment"}'
@@ -151,7 +164,7 @@ start_time=$(date +%s%N)
 
 for i in {1..50}; do
     (
-        result=$(curl -s -X POST "$(get_api_base)/api/v1/generate" \
+        result=$(curl -s --retry 3 --retry-connrefused -X POST "$(get_api_base)/api/v1/generate" \
           -H "Content-Type: application/json" \
           -H "$AUTH_HEADER" \
           -d '{"workspace": "concurrency", "group": "test", "biz_tag": "concurrency:test"}')
@@ -168,9 +181,9 @@ for i in {1..50}; do
     pids+=($!)
 done
 
-# 等待所有进程完成
+# 等待所有进程完成（单个 worker 失败不中止汇总）
 for pid in "${pids[@]}"; do
-    wait $pid
+    wait "$pid" || true
 done
 
 end_time=$(date +%s%N)
@@ -195,7 +208,7 @@ start_time=$(date +%s%N)
 
 for i in {1..20}; do
     (
-        batch_result=$(curl -s -X POST "$(get_api_base)/api/v1/generate/batch" \
+        batch_result=$(curl -s --retry 3 --retry-connrefused -X POST "$(get_api_base)/api/v1/generate/batch" \
           -H "Content-Type: application/json" \
           -H "$AUTH_HEADER" \
           -d '{"workspace": "concurrency", "group": "test", "biz_tag": "concurrency:test", "size": 100}')
@@ -209,9 +222,9 @@ for i in {1..20}; do
     batch_pids+=($!)
 done
 
-# 等待所有批次完成
+# 等待所有批次完成（单个 worker 失败不中止汇总）
 for pid in "${batch_pids[@]}"; do
-    wait $pid
+    wait "$pid" || true
 done
 
 end_time=$(date +%s%N)
@@ -233,15 +246,15 @@ error_count=0
 request_count=0
 
 for i in {1..100}; do
-    result=$(curl -s -X POST "$(get_api_base)/api/v1/generate" \
+    result=$(curl -s --retry 3 --retry-connrefused -X POST "$(get_api_base)/api/v1/generate" \
       -H "Content-Type: application/json" \
       -H "$AUTH_HEADER" \
       -d '{"workspace": "concurrency", "group": "test", "biz_tag": "concurrency:test"}')
     
     if echo "$result" | jq -e '.id' > /dev/null 2>&1; then
-        ((request_count++))
+        request_count=$((request_count + 1))
     else
-        ((error_count++))
+        error_count=$((error_count + 1))
     fi
 done
 
@@ -264,7 +277,7 @@ echo "----------------------------------------"
 echo "获取一批ID并检查唯一性..."
 
 # 获取100个ID
-unique_test=$(curl -s -X POST "$(get_api_base)/api/v1/generate/batch" \
+unique_test=$(curl -s --retry 3 --retry-connrefused -X POST "$(get_api_base)/api/v1/generate/batch" \
   -H "Content-Type: application/json" \
   -H "$AUTH_HEADER" \
   -d '{"workspace": "concurrency", "group": "test", "biz_tag": "concurrency:test", "size": 100}')

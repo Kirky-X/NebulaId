@@ -185,6 +185,10 @@ log.core.auth.manager.salt_generation_failed: "Failed to generate secure random 
 # src/core/config/app.rs
 log.core.config.app.weak_database_password_detected: "Weak or empty database password detected. Please set a strong password using NEBULA_DATABASE_PASSWORD environment variable."
 
+# src/core/config/environment.rs
+log.core.config.environment.missing_nebula_env_treated_as_production: "NEBULA_ENV is not set; defaulting to production validation. Set NEBULA_ENV=development explicitly to return to development mode."
+log.core.config.environment.unknown_nebula_env_treated_as_production: "NEBULA_ENV has unrecognized value '%{value}'; treating it as production. Set NEBULA_ENV=development or NEBULA_ENV=production explicitly."
+
 # src/core/config/app_config.rs
 log.core.config.app_config.config_expanded: "Configuration expanded"
 log.core.config.app_config.toml_parsed: "Raw parsed auth enabled"

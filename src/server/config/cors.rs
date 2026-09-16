@@ -116,15 +116,15 @@ pub fn create_dev_cors_layer() -> CorsLayer {
 ///
 /// 从环境变量读取配置：
 /// - `ALLOWED_ORIGINS`: 逗号分隔的允许源列表
-/// - `NEBULA_ENV`: 环境类型（production/development）
+/// - `NEBULA_ENV`: 环境类型（production/development；缺失或无法识别按生产处理）
 ///
 /// # 返回
 /// 返回根据环境配置的 CorsLayer
 pub fn create_env_aware_cors_layer() -> CorsLayer {
-    let is_production = std::env::var("NEBULA_ENV")
-        .unwrap_or_else(|_| "development".to_string())
-        .to_lowercase()
-        == "production";
+    // 环境判定唯一来源：core::config::is_production（含 NEBULA_ENV 缺失/未知
+    // 值反向默认为生产的 fail-closed 语义）。此处原先自读环境变量并回退
+    // "development"，会在缺省环境时绕开生产强校验。
+    let is_production = crate::core::config::is_production();
 
     let allowed_origins: Vec<String> = std::env::var("ALLOWED_ORIGINS")
         .ok()

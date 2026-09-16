@@ -181,6 +181,10 @@ log.core.auth.manager.salt_generation_failed: "生成安全随机盐值失败（
 # src/core/config/app.rs
 log.core.config.app.weak_database_password_detected: "检测到弱密码或空密码。请通过 NEBULA_DATABASE_PASSWORD 环境变量设置强密码。"
 
+# src/core/config/environment.rs
+log.core.config.environment.missing_nebula_env_treated_as_production: "未设置 NEBULA_ENV，将按生产环境校验执行。如需开发模式，请显式设置 NEBULA_ENV=development。"
+log.core.config.environment.unknown_nebula_env_treated_as_production: "NEBULA_ENV 取值无法识别：'%{value}'，将按生产环境处理。请显式设置 NEBULA_ENV=development 或 NEBULA_ENV=production。"
+
 # src/core/config/app_config.rs
 log.core.config.app_config.config_expanded: "配置已展开"
 log.core.config.app_config.toml_parsed: "原始解析的 auth enabled"

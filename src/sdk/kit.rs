@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! trait-kit Kit 范式装配的嵌入式 SDK 门面（wiring T012，feature `sdk` 门控）。
+//! trait-kit Kit 范式装配的嵌入式 SDK 门面（feature `sdk` 门控）。
 
 use std::future::Future;
 use std::pin::Pin;
@@ -123,7 +123,7 @@ impl_async_auto_builder!(RouterModule, Arc<AlgorithmRouter>, CoreError, |kit| {
 
 impl AsyncLifecycle for RouterModule {
     /// `on_ready`：trait-kit 在 `build()` 完成后按注册顺序触发——启动降级
-    /// 后台任务（替代旧 SDK 构建器手工装配的第 4 步（T008 前））。
+    /// 后台任务（替代旧 SDK 构建器手工装配的第 4 步）。
     fn on_ready<'a>(
         kit: &'a AsyncKit<AsyncReady>,
     ) -> Pin<Box<dyn Future<Output = std::result::Result<(), Self::Error>> + Send + 'a>> {
@@ -136,10 +136,9 @@ impl AsyncLifecycle for RouterModule {
         })
     }
 
-    /// `on_shutdown`：停止降级后台任务。trait-kit RC 版 `AsyncKit::shutdown()`
-    /// 是同步方法、不执行 async 回调（库源码 async_kit.rs 明示 "intentionally
-    /// skipped"）——实际停止路径由门面 `NebulaIdKit::shutdown()` 手动按逆拓扑
-    /// 调用本方法（见 design Lifecycle 接线）；此处注册保证语义声明完整。
+    /// `on_shutdown`：停止降级后台任务。trait-kit 0.5.0-rc.5 起
+    /// `AsyncKit::shutdown_async()` 接管执行——按逆拓扑序 drain 本钩子
+    /// （依赖者先于被依赖者），门面 `NebulaIdKit::shutdown()` 直接 await。
     fn on_shutdown<'a>(cap: &'a Self::Capability) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             cap.get_degradation_manager().stop_background_check().await;
@@ -213,7 +212,7 @@ pub struct IdGenerator {
     default_algorithm: AlgorithmType,
 }
 
-// Send + Sync 编译期断言（R-sdk-emb-002：clone 后可在 tokio::spawn 任务中生成）
+// Send + Sync 编译期断言（clone 后可在 tokio::spawn 任务中生成）
 const _: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<IdGenerator>();
@@ -369,19 +368,62 @@ impl NebulaIdKit {
         self.kit.health_report()
     }
 
-    /// 停机：手动按逆拓扑调用 `RouterModule::on_shutdown`（执行
-    /// `stop_background_check().await`，语义等价旧 SDK 客户端 shutdown）
-    /// 后再调 `kit.shutdown()` 完成其余同步清理。
+    /// 聚合健康摘要（吸收 trait-kit sync 侧 `health_aggregate`/`health_json`
+    /// 语义到 async 侧：worst-of 全局状态 + 模块明细）。
     ///
-    /// **为何手动**：trait-kit 0.5.0-rc.1 的 `AsyncKit::shutdown()` 是同步方法，
-    /// 不执行 async `on_shutdown` 回调（库源码 async_kit.rs 明示 "intentionally
-    /// skipped... users must invoke it manually"）。trait-kit 正式版提供 async
-    /// shutdown 后可迁移回纯钩子。
+    /// `status` 取全部模块中最差者（unhealthy > degraded > healthy）；
+    /// `healthy` 为 `status == "healthy"` 的便捷位；`modules` 为逐模块明细。
+    /// 返回值可直接作为嵌入式宿主 `/ready` 端点的 JSON 负载。
+    pub fn health_summary(&self) -> serde_json::Value {
+        let worst_rank = |s: &trait_kit::HealthStatus| match s {
+            trait_kit::HealthStatus::Healthy => 0,
+            trait_kit::HealthStatus::Degraded { .. } => 1,
+            trait_kit::HealthStatus::Unhealthy { .. } => 2,
+        };
+        let status_name = |s: &trait_kit::HealthStatus| match s {
+            trait_kit::HealthStatus::Healthy => "healthy",
+            trait_kit::HealthStatus::Degraded { .. } => "degraded",
+            trait_kit::HealthStatus::Unhealthy { .. } => "unhealthy",
+        };
+        let detail_of = |s: &trait_kit::HealthStatus| match s {
+            trait_kit::HealthStatus::Degraded { detail } => Some(detail.clone()),
+            trait_kit::HealthStatus::Unhealthy { detail } => Some(detail.clone()),
+            trait_kit::HealthStatus::Healthy => None,
+        };
+
+        let report = self.health_report();
+        let overall = report
+            .iter()
+            .map(|(_, status)| worst_rank(status))
+            .max()
+            .unwrap_or(0);
+        let status = ["healthy", "degraded", "unhealthy"][overall];
+
+        serde_json::json!({
+            "status": status,
+            "healthy": status == "healthy",
+            "modules": report
+                .into_iter()
+                .map(|(name, hs)| {
+                    serde_json::json!({
+                        "module": name,
+                        "status": status_name(&hs),
+                        "detail": detail_of(&hs),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        })
+    }
+
+    /// 停机：await `AsyncKit::shutdown_async()`，由 trait-kit 按逆拓扑序
+    /// 执行各模块 `on_shutdown` 钩子（RouterModule 执行
+    /// `stop_background_check().await`，语义等价旧 SDK 客户端 shutdown）。
+    ///
+    /// **迁移注**：trait-kit 0.5.0-rc.1 的 `AsyncKit::shutdown()` 是同步方法、
+    /// 不执行 async 回调，彼时门面需手动调用 `RouterModule::on_shutdown`；
+    /// rc.5 提供 one-shot 的 `shutdown_async()`（二次调用 no-op）后回归纯钩子。
     pub async fn shutdown(self) {
-        if let Ok(router) = self.kit.require::<RouterModule>() {
-            RouterModule::on_shutdown(&router).await;
-        }
-        self.kit.shutdown();
+        self.kit.shutdown_async().await;
     }
 
     /// 是否注入了数据库仓储（决定 Segment 可用性；语义 = 旧
@@ -487,7 +529,7 @@ mod tests {
     use crate::core::algorithm::GenerateContext;
     use crate::core::config::Config;
 
-    /// R-sdk-emb-001：默认 Config 下 `build()` 成功返回 Ready Kit，TypeMap 中
+    /// 默认 Config 下 `build()` 成功返回 Ready Kit，TypeMap 中
     /// 已注入 Config 与 audit_logger（空图断言随模块演进由
     /// `test_health_report_contains_router_module` / `test_kit_full_build_*`
     /// 取代）。
@@ -507,7 +549,7 @@ mod tests {
         assert!(audit.0.is_none(), "未注入审计日志器时应为 None");
     }
 
-    /// R-sdk-emb-001：`DistributedLockModule` 注册后 `build()` 成功；`require`
+    /// `DistributedLockModule` 注册后 `build()` 成功；`require`
     /// 返回的锁可 `acquire`/`release` 且 `is_healthy()` 为 true
     ///（`DistributedLock` trait 无 `lock()/unlock()` 方法，断言只走既有面）。
     #[tokio::test]
@@ -534,7 +576,7 @@ mod tests {
         guard.release().await.expect("release 必须成功");
     }
 
-    /// R-sdk-emb-001：注入仓储时 `RepositoryModule` 注册且 `require` 返回的仓储
+    /// 注入仓储时 `RepositoryModule` 注册且 `require` 返回的仓储
     /// 能力可用。
     ///
     /// 锁注入本身无 pub 观测接缝（repository.rs 注释自认 "No public getter for
@@ -566,7 +608,7 @@ mod tests {
         let _ = repository.get_db_connection();
     }
 
-    /// R-sdk-emb-001：未注入仓储时 `RepositoryModule` 缺席且 `build()` 不失败
+    /// 未注入仓储时 `RepositoryModule` 缺席且 `build()` 不失败
     ///（`register_if` 语义——纯算法零 DB 场景成立）。
     #[tokio::test]
     async fn test_repository_module_absent_without_injection() {
@@ -601,7 +643,7 @@ mod tests {
         }
     }
 
-    /// R-sdk-emb-001：RouterModule 注册后 build 成功，require 返回已初始化
+    /// RouterModule 注册后 build 成功，require 返回已初始化
     /// router（可直接生成 ID）。
     #[tokio::test]
     async fn test_router_module_builds_and_initializes() {
@@ -625,7 +667,7 @@ mod tests {
         assert!(id.as_u128() > 0);
     }
 
-    /// R-sdk-emb-003：`on_ready` 启动降级后台任务——等待 ≥1 个 check_interval
+    /// `on_ready` 启动降级后台任务 ——等待 ≥1 个 check_interval
     /// tick 后，经 pub 接缝 `get_algorithm_metrics()` 观测 snowflake 的连续
     /// 成功计数被后台任务刷新（仅后台任务运行时 `record_success` 才发生；
     /// 禁止依赖私有字段）。
@@ -653,7 +695,7 @@ mod tests {
         );
     }
 
-    /// R-sdk-emb-003：`health_report()`（同步）基于 trait-kit health feature
+    /// `health_report()`（同步）基于 trait-kit health feature
     /// 返回包含 `router` 模块的报告。
     #[tokio::test]
     async fn test_health_report_contains_router_module() {
@@ -669,7 +711,28 @@ mod tests {
         );
     }
 
-    /// R-sdk-emb-002：纯算法（snowflake）在零仓储注入下可用。
+    /// health_summary 聚合：全模块健康时 status=healthy 且明细齐全。
+    #[tokio::test]
+    async fn test_health_summary_aggregates_worst_of() {
+        let kit = NebulaIdKitBuilder::new(snowflake_config())
+            .build()
+            .await
+            .expect("build 必须成功");
+
+        let summary = kit.health_summary();
+        assert_eq!(summary["status"], "healthy");
+        assert_eq!(summary["healthy"], true);
+
+        let modules = summary["modules"].as_array().expect("modules 必须为数组");
+        assert!(
+            modules
+                .iter()
+                .any(|m| m["module"] == "router" && m["status"] == "healthy"),
+            "聚合明细必须含 router 模块，实际: {summary}"
+        );
+    }
+
+    /// 纯算法（snowflake）在零仓储注入下可用。
     #[tokio::test]
     async fn test_id_generator_pure_algorithm_without_repository() {
         let kit = NebulaIdKitBuilder::new(snowflake_config())
@@ -688,7 +751,7 @@ mod tests {
         assert!(id.as_u128() > 0);
     }
 
-    /// R-sdk-emb-002：零仓储注入下 Segment 请求返回 `CoreError::ConfigurationError`
+    /// 零仓储注入下 Segment 请求返回 `CoreError::ConfigurationError`
     /// 且消息文本含 `with_repository`（错误消息是公共 API 的一部分，经 Display
     /// 可观测）。
     #[tokio::test]
@@ -718,7 +781,7 @@ mod tests {
         );
     }
 
-    /// R-sdk-emb-002：注入仓储后 Segment 请求通过守卫并可生成
+    /// 注入仓储后 Segment 请求通过守卫并可生成
     ///（Segment 算法自带默认 loader，无需真实 DB；守卫放行即语义达成）。
     #[tokio::test]
     async fn test_id_generator_segment_with_repository_succeeds() {
@@ -745,7 +808,7 @@ mod tests {
         assert!(id.as_u128() > 0);
     }
 
-    /// R-sdk-emb-002：`IdGenerator` 为 Clone handle，克隆后在独立 tokio 任务中
+    /// `IdGenerator` 为 Clone handle，克隆后在独立 tokio 任务中
     /// 生成（Send + Sync 语义的运行时验证）。
     #[tokio::test]
     async fn test_id_generator_handle_is_clone_and_cross_task() {
@@ -769,7 +832,7 @@ mod tests {
         assert!(id.as_u128() > 0);
     }
 
-    /// R-sdk-emb-001：完整 build 后四模块（除未注入的仓储）全部在场。
+    /// 完整 build 后四模块（除未注入的仓储）全部在场。
     #[tokio::test]
     async fn test_kit_full_build_all_modules_present() {
         let kit = NebulaIdKitBuilder::new(snowflake_config())
@@ -782,7 +845,7 @@ mod tests {
         assert!(!kit.inner().contains::<RepositoryModule>());
     }
 
-    /// R-sdk-emb-002：门面 `id_generator()` 取用的 handle 可 generate 与
+    /// 门面 `id_generator()` 取用的 handle 可 generate 与
     /// batch_generate。
     #[tokio::test]
     async fn test_kit_id_generator_generates_and_batches() {
@@ -805,7 +868,7 @@ mod tests {
         assert_eq!(batch.ids.len(), 10);
     }
 
-    /// R-sdk-emb-002：指定算法（uuid_v8）生成走通。
+    /// 指定算法（uuid_v8）生成走通。
     #[tokio::test]
     async fn test_kit_generate_with_algorithm_uuid_v8() {
         let kit = NebulaIdKitBuilder::new(snowflake_config())
@@ -821,7 +884,7 @@ mod tests {
         assert!(id.as_u128() > 0);
     }
 
-    /// R-sdk-emb-003：`health_check()` 保留算法级快照语义（返回
+    /// `health_check()` 保留算法级快照语义（返回
     /// `Vec<(AlgorithmType, HealthStatus)>`，与旧 API 一致）。
     #[tokio::test]
     async fn test_kit_health_check_returns_algorithm_snapshot() {
@@ -838,7 +901,7 @@ mod tests {
         );
     }
 
-    /// R-sdk-emb-003：门面 `shutdown()` 后降级后台任务停止——先证明任务在运行
+    /// 门面 `shutdown()` 后降级后台任务停止 ——先证明任务在运行
     ///（≥1 tick 后计数刷新），再 shutdown，等待一个完整 interval 断言计数不再
     /// 增长（pub 接缝 `get_algorithm_metrics()`，禁止依赖私有字段）。
     #[tokio::test]
@@ -869,7 +932,7 @@ mod tests {
         );
     }
 
-    /// R-sdk-emb-001：依赖图校验核心价值——裸 `AsyncKit` 只注册 `IdGenModule`
+    /// 依赖图校验核心价值 ——裸 `AsyncKit` 只注册 `IdGenModule`
     /// 而不注册其依赖链（RouterModule→DistributedLockModule），`build()` 必须
     /// 返回 `Err`（缺依赖检测，不允许绕过）。
     #[tokio::test]
@@ -885,7 +948,7 @@ mod tests {
         );
     }
 
-    /// R-sdk-emb-002：8 并发 × 1000 次 snowflake 生成，去重后零重复
+    /// 8 并发 × 1000 次 snowflake 生成，去重后零重复
     ///（旧 `client.rs` `sdk_concurrent_snowflake_generation_is_unique` 迁移）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn test_kit_concurrent_snowflake_generation_is_unique() {
@@ -928,7 +991,7 @@ mod tests {
         assert_eq!(unique.len(), 8_000, "snowflake 并发生成必须零重复");
     }
 
-    /// R-sdk-emb-002：显式指定 Segment 算法在零仓储注入下同样被守卫拒绝
+    /// 显式指定 Segment 算法在零仓储注入下同样被守卫拒绝
     ///（`generate_with_algorithm` 路径，旧 `client.rs` 用例覆盖）。
     #[tokio::test]
     async fn test_kit_generate_with_algorithm_segment_without_repository_returns_configuration_error(
@@ -946,7 +1009,7 @@ mod tests {
         assert!(matches!(err, CoreError::ConfigurationError(_)));
     }
 
-    /// R-sdk-emb-002：uuid_v8 批量生成零 DB 可用（旧 `client.rs` 用例迁移）。
+    /// uuid_v8 批量生成零 DB 可用（旧 `client.rs` 用例迁移）。
     #[tokio::test]
     async fn test_kit_batch_generate_uuid_v8_without_repository() {
         let mut config = snowflake_config();

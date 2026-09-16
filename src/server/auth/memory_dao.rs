@@ -16,8 +16,8 @@
 //!
 //! 用 `parking_lot::RwLock<HashMap<String, Entry>>` 存储，每个 entry 附带
 //! `Option<Instant>` 过期时间。所有读写操作在同一个 `RwLock` 临界区内完成，
-//! 保证 `get_and_delete` / `incr` / `decr` / `compare_and_update_if_greater`
-//! 等原子操作的进程内原子性。
+//! 保证 `get_and_delete` / `incr` / `decr` / `compare_and_update_if_greater` /
+//! `set_if_absent` / `compare_and_swap` 等原子操作的进程内原子性。
 //!
 //! 适用场景：单实例部署、集成测试、开发环境。多实例部署需使用 Redis 后端
 //! （garrison `cache-redis` feature）。
@@ -107,6 +107,32 @@ impl GarrisonDao for MemoryGarrisonDao {
             },
         );
         Ok(())
+    }
+
+    async fn set_if_absent(
+        &self,
+        key: &str,
+        value: &str,
+        ttl_seconds: u64,
+    ) -> GarrisonResult<bool> {
+        let expire_at = if ttl_seconds == 0 {
+            None
+        } else {
+            Some(Instant::now() + Duration::from_secs(ttl_seconds))
+        };
+        let mut map = self.inner.write();
+        // SETNX 语义：已存在（未过期）即放弃写入；过期键视为不存在，原地覆盖。
+        if map.get(key).map(|e| !e.is_expired()).unwrap_or(false) {
+            return Ok(false);
+        }
+        map.insert(
+            key.to_string(),
+            Entry {
+                value: value.to_string(),
+                expire_at,
+            },
+        );
+        Ok(true)
     }
 
     async fn update(&self, key: &str, value: &str) -> GarrisonResult<()> {
@@ -318,6 +344,40 @@ impl GarrisonDao for MemoryGarrisonDao {
             Ok(false)
         }
     }
+    async fn compare_and_swap(
+        &self,
+        key: &str,
+        expected: Option<&str>,
+        new_value: &str,
+        ttl_seconds: u64,
+    ) -> GarrisonResult<bool> {
+        let mut map = self.inner.write();
+        let current = map
+            .get(key)
+            .filter(|e| !e.is_expired())
+            .map(|e| e.value.as_str());
+        let matched = match (expected, current) {
+            (None, None) => true,
+            (Some(expected), Some(current)) => expected == current,
+            _ => false,
+        };
+        if !matched {
+            return Ok(false);
+        }
+        let expire_at = if ttl_seconds == 0 {
+            None
+        } else {
+            Some(Instant::now() + Duration::from_secs(ttl_seconds))
+        };
+        map.insert(
+            key.to_string(),
+            Entry {
+                value: new_value.to_string(),
+                expire_at,
+            },
+        );
+        Ok(true)
+    }
 }
 
 /// 简化版 glob 匹配，支持 `*`（任意字符序列）与 `?`（单字符）。
@@ -363,6 +423,7 @@ fn glob_match_inner(p: &[char], mut pi: usize, t: &[char], mut ti: usize) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_set_get_basic() {
@@ -539,6 +600,63 @@ mod tests {
             "garrison:apikey:default:def"
         ));
         assert!(!glob_match("hello", "hell"));
+    }
+
+    #[tokio::test]
+    async fn test_set_if_absent_and_expired_overwrite() {
+        let dao = MemoryGarrisonDao::new();
+        assert!(dao.set_if_absent("k1", "v1", 0).await.unwrap());
+        assert!(!dao.set_if_absent("k1", "v2", 0).await.unwrap());
+        assert_eq!(dao.get("k1").await.unwrap(), Some("v1".to_string()));
+
+        // 过期键视为不存在：SETNX 重新写入成功。
+        dao.expire("k1", 1).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(dao.set_if_absent("k1", "v3", 0).await.unwrap());
+        assert_eq!(dao.get("k1").await.unwrap(), Some("v3".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_set_if_absent_concurrent_only_one_succeeds() {
+        let dao = Arc::new(MemoryGarrisonDao::new());
+        let handles: Vec<_> = (0..10)
+            .map(|i| {
+                let dao = Arc::clone(&dao);
+                tokio::spawn(async move { dao.set_if_absent("race", &format!("v{i}"), 0).await })
+            })
+            .collect();
+        let wins = futures_util::future::join_all(handles)
+            .await
+            .into_iter()
+            .filter(|r| matches!(r, Ok(Ok(true))))
+            .count();
+        assert_eq!(wins, 1, "并发 SETNX 同一 key 仅一个调用成功");
+    }
+
+    #[tokio::test]
+    async fn test_compare_and_swap_semantics() {
+        let dao = MemoryGarrisonDao::new();
+        // expected=None：期望 key 不存在——absent 时写入成功。
+        assert!(dao.compare_and_swap("cas", None, "v1", 0).await.unwrap());
+        // key 已存在，expected=None 失败。
+        assert!(!dao.compare_and_swap("cas", None, "v2", 0).await.unwrap());
+        // 期望值不匹配，未写入。
+        assert!(!dao
+            .compare_and_swap("cas", Some("other"), "v2", 0)
+            .await
+            .unwrap());
+        assert_eq!(dao.get("cas").await.unwrap(), Some("v1".to_string()));
+        // 期望值匹配，写入成功并带 TTL。
+        assert!(dao
+            .compare_and_swap("cas", Some("v1"), "v2", 100)
+            .await
+            .unwrap());
+        assert_eq!(dao.get("cas").await.unwrap(), Some("v2".to_string()));
+        assert!(dao.get_timeout("cas").await.unwrap().is_some());
+        // 过期键视为不存在：expected=None 成功。
+        dao.expire("cas", 1).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(dao.compare_and_swap("cas", None, "v3", 0).await.unwrap());
     }
 
     #[test]

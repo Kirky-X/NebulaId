@@ -71,8 +71,18 @@ pub struct AppConfig {
     /// gRPC server port
     pub grpc_port: u16,
     /// Datacenter ID (0-31)
+    ///
+    /// 多实例约束：未配置 etcd（无 worker_id 运行时分配）时，本值与
+    /// [`AppConfig::worker_id`] 共同构成 Snowflake 的机器标识；多实例部署
+    /// 必须显式配置（环境变量 `DC_ID` 或配置文件），默认值 0 会使多实例
+    /// 生成重复 ID（启动时进程会输出 warn 提醒，见 main.rs T018）。
     pub dc_id: u8,
     /// Worker ID (0-255)
+    ///
+    /// 多实例约束：配置了 etcd endpoints 时本值会被运行时分配的 worker_id
+    /// 覆盖（T017）；未配置 etcd 时即为 Snowflake 的最终机器标识，多实例
+    /// 部署必须显式配置（环境变量 `WORKER_ID` 或配置文件），默认值 0 会使
+    /// 多实例生成重复 ID（启动时进程会输出 warn 提醒，见 main.rs T018）。
     pub worker_id: u8,
     /// Graceful shutdown timeout (seconds)
     #[serde(default = "default_shutdown_timeout_seconds")]

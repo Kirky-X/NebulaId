@@ -411,3 +411,4 @@ error.main.worker_lease_renewal_failed: "worker 租约连续续期失败：%{rea
 log.main.worker_id_allocated_from_etcd: "已从 etcd 分配 worker_id %{worker_id}（lease %{lease_id}），覆盖静态配置"
 log.main.worker_id_released_on_shutdown: "停机时已通过 etcd 释放 worker_id %{worker_id}"
 log.main.worker_id_release_on_shutdown_failed: "停机时释放 worker_id %{worker_id} 失败：%{error}（key 将随 lease TTL 到期自动回收）"
+log.main.default_worker_id_warning: "未配置 etcd 且 worker_id/dc_id 为默认值（worker_id=%{worker_id}，dc_id=%{dc_id}）。多实例部署必须显式配置 WORKER_ID/DC_ID，否则 Snowflake 会产生重复 ID"

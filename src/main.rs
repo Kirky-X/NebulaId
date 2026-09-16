@@ -675,6 +675,20 @@ async fn assemble_coordination(config: &Config) -> Result<CoordinationComponents
     })
 }
 
+/// T018 —— 无 etcd 路径默认 worker 标识风险判定（纯判定，便于单测）。
+///
+/// 未配置 etcd（无运行时 worker 分配）且 worker_id / dc_id 任一仍为默认值 0
+/// 时返回 true：此时 Snowflake 直接以配置值作为机器标识，多实例部署若不显式
+/// 配置 `WORKER_ID` / `DC_ID`（或写进配置文件），两实例拿到同一 (dc_id,
+/// worker_id) 组合必然产生重复 ID。仅告警不拦截 —— 单实例部署取默认值合法。
+fn should_warn_default_worker_identity(
+    etcd_endpoints_configured: bool,
+    worker_id: u8,
+    dc_id: u8,
+) -> bool {
+    !etcd_endpoints_configured && (worker_id == 0 || dc_id == 0)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // 日志初始化由 inklog 接管（替换原手写的 tracing_subscriber::fmt() 链）。
@@ -753,6 +767,24 @@ async fn main() -> Result<()> {
         ))
     })?);
     info!("{}", t!("log.main.config_loaded"));
+
+    // T018 —— 无 etcd 时默认 worker 标识多实例风险告警：etcd 未配置意味着
+    // 没有 worker_id 运行时分配兜底，worker_id/dc_id 任一为默认 0 时显性
+    // 提醒（多实例必须显式配置，否则 Snowflake 会重复）。
+    if should_warn_default_worker_identity(
+        !config.etcd.endpoints.is_empty(),
+        config.app.worker_id,
+        config.app.dc_id,
+    ) {
+        warn!(
+            "{}",
+            t!(
+                "log.main.default_worker_id_warning",
+                worker_id = config.app.worker_id,
+                dc_id = config.app.dc_id
+            )
+        );
+    }
 
     // T008 —— 生产环境强制 TLS（fail-fast）。环境判定经 Environment::from_env()
     //（含 T007 反向默认：NEBULA_ENV 缺失/未知值按生产执行，缺失时此处顺带
@@ -1790,5 +1822,29 @@ mod tests {
         // 构造成功即证明 re-export 与泛型约束（SeaOrmRepository: SegmentRepository）
         // 在 bin 侧可用；字段与步长断言归 lib 侧单测（segment.rs）所有。
         let _loader = nebulaid::core::algorithm::DbSegmentLoader::new(repo);
+    }
+
+    // ==================== T018: 无 etcd 默认 worker 标识告警 ====================
+
+    /// T018 —— 未配置 etcd + worker_id/dc_id 默认 0 → 必须告警。
+    #[test]
+    fn test_warn_default_worker_identity_triggers_on_defaults() {
+        assert!(should_warn_default_worker_identity(false, 0, 0));
+        assert!(should_warn_default_worker_identity(false, 0, 3));
+        assert!(should_warn_default_worker_identity(false, 5, 0));
+    }
+
+    /// T018 —— 已配置 etcd（有运行时分配兜底）→ 不告警，即使值为默认 0。
+    #[test]
+    fn test_warn_default_worker_identity_skipped_when_etcd_configured() {
+        assert!(!should_warn_default_worker_identity(true, 0, 0));
+        assert!(!should_warn_default_worker_identity(true, 0, 3));
+    }
+
+    /// T018 —— 未配置 etcd 但标识均已显式配置（非 0）→ 不告警。
+    #[test]
+    fn test_warn_default_worker_identity_skipped_when_explicitly_configured() {
+        assert!(!should_warn_default_worker_identity(false, 1, 1));
+        assert!(!should_warn_default_worker_identity(false, 255, 31));
     }
 }

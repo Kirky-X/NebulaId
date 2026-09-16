@@ -44,6 +44,7 @@
 //! require either a fake `CoreError` variant or a separate trait — both
 //! add complexity without value.
 
+use crate::core::database::ApiKeyRole;
 use crate::core::i18n::{translate_with_locale, translate_with_locale_args};
 use crate::core::CoreError;
 use crate::server::middleware::locale::Locale;
@@ -249,6 +250,52 @@ pub fn core_error_to_response(e: &CoreError, locale: Locale) -> (StatusCode, Jso
 
     let code = status.as_u16() as i32;
     (status, Json(ErrorResponse::new(code, message)))
+}
+
+// ========== 共享授权（T010）==========
+
+/// 共享的 workspace 资源级授权决策（HTTP 与 gRPC 同源）。
+///
+/// 语义 = `router.rs` 既有 `verify_user_role` / `verify_user_workspace`
+/// 泛化：User 仅可访问自身 workspace，Admin 跨租户放行，Anonymous 一律拒绝。
+/// 「按 workspace 名反查 UUID」「NotFound 处理」等传输相关步骤由调用方完成，
+/// 本函数只做**确定性角色-租户判定**，保证两条传输线的判定不会漂移。
+///
+/// # 错误变体契约（与现实现映射表一致）
+///
+/// 返回的 `CoreError` 是「拒绝类别」的载体，其选择与
+/// [`core_error_status_code`] 既有 variant→状态码表保持一致：
+///
+/// - User 跨 workspace → `CoreError::WorkspaceDisabled`：映射表中唯一落到
+///   `FORBIDDEN`（403）的变体，即 HTTP 侧 `workspace_mismatch_response` 的
+///   同类。HTTP 调用点将其重新映射回 locale 化的 workspace mismatch 响应，
+///   gRPC 调用点映射为 `Status::permission_denied`；内层 String 不面向客户端
+///   透出，仅作服务端日志/判因用途。
+/// - Anonymous → `CoreError::AuthenticationError`：映射表中 401 载体，与
+///   HTTP 侧 `auth_required_response` 同状态码语义。
+///
+/// # Errors
+///
+/// 见上方错误变体契约；放行时返回 `Ok(())`。
+pub(crate) async fn authorize_workspace_access(
+    role: &ApiKeyRole,
+    key_workspace_id: uuid::Uuid,
+    target_workspace_id: uuid::Uuid,
+) -> Result<(), CoreError> {
+    match role {
+        // Admin：跨租户放行（管理面语义）。
+        ApiKeyRole::Admin => Ok(()),
+        // User：仅自身 workspace。
+        ApiKeyRole::User if key_workspace_id == target_workspace_id => Ok(()),
+        ApiKeyRole::User => Err(CoreError::WorkspaceDisabled(format!(
+            "workspace {} is not owned by the caller",
+            target_workspace_id
+        ))),
+        // Anonymous（认证禁用时注入）：无业务权限，fail-closed。
+        ApiKeyRole::Anonymous => Err(CoreError::AuthenticationError(
+            "authentication required".to_string(),
+        )),
+    }
 }
 
 /// Build a 400 response for an invalid UUID path parameter, with the
@@ -806,6 +853,62 @@ mod tests {
         // and at most MAX_CLIENT_MESSAGE_LEN.
         assert_eq!(prefix_end % 4, 0);
         assert!(prefix_end <= MAX_CLIENT_MESSAGE_LEN);
+    }
+
+    // ========== authorize_workspace_access（T010 共享授权）==========
+
+    /// User 访问自身 workspace → 放行。
+    #[tokio::test]
+    async fn test_authorize_workspace_access_user_own_workspace_ok() {
+        let ws = uuid::Uuid::new_v4();
+        let result = authorize_workspace_access(&ApiKeyRole::User, ws, ws).await;
+        assert!(result.is_ok(), "User must access its own workspace");
+    }
+
+    /// User 跨 workspace → 拒绝，错误变体为 `WorkspaceDisabled`
+    /// （core_error_status_code 映射表中唯一的 403/FORBIDDEN 载体，
+    /// 与 HTTP 侧 workspace_mismatch 响应同类）。
+    #[tokio::test]
+    async fn test_authorize_workspace_access_user_cross_workspace_denied() {
+        let key_ws = uuid::Uuid::new_v4();
+        let other_ws = uuid::Uuid::new_v4();
+        assert_ne!(key_ws, other_ws);
+        let err = authorize_workspace_access(&ApiKeyRole::User, key_ws, other_ws)
+            .await
+            .expect_err("cross-workspace access must be denied");
+        assert!(
+            matches!(err, CoreError::WorkspaceDisabled(_)),
+            "expected WorkspaceDisabled (403 carrier), got {:?}",
+            err
+        );
+        // 同源映射：该变体必须落到 403。
+        let (status, _) = core_error_to_response(&err, Locale::En);
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    /// Admin 跨租户 → 放行。
+    #[tokio::test]
+    async fn test_authorize_workspace_access_admin_cross_tenant_ok() {
+        let result = authorize_workspace_access(
+            &ApiKeyRole::Admin,
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+        )
+        .await;
+        assert!(result.is_ok(), "Admin must have cross-tenant access");
+    }
+
+    /// Anonymous（认证禁用时注入的角色）→ 一律拒绝（fail-closed），
+    /// 变体为 AuthenticationError（映射表 401 载体）。
+    #[tokio::test]
+    async fn test_authorize_workspace_access_anonymous_denied() {
+        let ws = uuid::Uuid::new_v4();
+        let err = authorize_workspace_access(&ApiKeyRole::Anonymous, ws, ws)
+            .await
+            .expect_err("Anonymous must never pass resource authorization");
+        assert!(matches!(err, CoreError::AuthenticationError(_)));
+        let (status, _) = core_error_to_response(&err, Locale::En);
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[test]

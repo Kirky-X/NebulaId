@@ -385,34 +385,44 @@ async fn verify_user_workspace(
     let workspace_uuid =
         uuid::Uuid::parse_str(&workspace.id).map_err(|_| invalid_workspace_id_response(locale))?;
 
-    verify_workspace_id_match(workspace_uuid, key_workspace_id, locale)
+    verify_workspace_id_match(workspace_uuid, key_workspace_id, locale).await
 }
 
 /// 提取通用的 workspace_id 比较逻辑
 ///
 /// Phase 8 — returns locale-translated error on mismatch.
-fn verify_workspace_id_match(
+///
+/// T010 — 比较/角色判定决策委托给共享授权函数
+/// `helpers::authorize_workspace_access`（HTTP 与 gRPC 同源），本函数只保留
+/// HTTP 传输相关的部分：认证禁用（key_workspace_id = None）放行与 locale
+/// 错误响应装配。所有调用点上游均已通过 `verify_user_role` 保证角色为
+/// User（Admin/Anonymous 已被拒），故此处以 User 语义走共享判定，行为与
+/// 既有实现逐字节一致（mismatch 仍返回 403 workspace_mismatch）。
+async fn verify_workspace_id_match(
     workspace_uuid: uuid::Uuid,
     key_workspace_id: &Option<uuid::Uuid>,
     locale: Locale,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     // 当认证禁用时，key_workspace_id 为 None，允许访问任何 workspace
-    if key_workspace_id.is_none() {
+    let Some(key_workspace_id) = *key_workspace_id else {
         return Ok(());
-    }
-    if Some(workspace_uuid) != *key_workspace_id {
-        return Err(workspace_mismatch_response(locale));
-    }
-    Ok(())
+    };
+    crate::server::handlers::helpers::authorize_workspace_access(
+        &crate::server::middleware::ApiKeyRole::User,
+        key_workspace_id,
+        workspace_uuid,
+    )
+    .await
+    .map_err(|_| workspace_mismatch_response(locale))
 }
 
 /// Verify workspace_id match for User API Key (direct Uuid comparison)
-fn verify_workspace_id(
+async fn verify_workspace_id(
     req_workspace_id: uuid::Uuid,
     key_workspace_id: &Option<uuid::Uuid>,
     locale: Locale,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    verify_workspace_id_match(req_workspace_id, key_workspace_id, locale)
+    verify_workspace_id_match(req_workspace_id, key_workspace_id, locale).await
 }
 
 async fn handle_generate(
@@ -633,7 +643,7 @@ async fn handle_create_biz_tag(
     verify_user_role(extensions_role.0, locale)?;
 
     // Verify workspace_id match for User API Key
-    verify_workspace_id(req.workspace_id, &extensions.0, locale)?;
+    verify_workspace_id(req.workspace_id, &extensions.0, locale).await?;
 
     state
         .handlers
@@ -665,7 +675,7 @@ async fn handle_get_biz_tag(
 
     let biz_tag_workspace =
         uuid::Uuid::parse_str(&response.workspace_id).map_err(|_| invalid_uuid_response(locale))?;
-    verify_workspace_id(biz_tag_workspace, &extensions.0, locale)?;
+    verify_workspace_id(biz_tag_workspace, &extensions.0, locale).await?;
 
     Ok(Json(response))
 }
@@ -695,7 +705,7 @@ async fn handle_update_biz_tag(
         .map_err(|e| core_error_to_response(&e, locale))?;
     let biz_tag_workspace =
         uuid::Uuid::parse_str(&existing.workspace_id).map_err(|_| invalid_uuid_response(locale))?;
-    verify_workspace_id(biz_tag_workspace, &extensions.0, locale)?;
+    verify_workspace_id(biz_tag_workspace, &extensions.0, locale).await?;
 
     state
         .handlers
@@ -725,7 +735,7 @@ async fn handle_delete_biz_tag(
         .map_err(|e| core_error_to_response(&e, locale))?;
     let biz_tag_workspace =
         uuid::Uuid::parse_str(&existing.workspace_id).map_err(|_| invalid_uuid_response(locale))?;
-    verify_workspace_id(biz_tag_workspace, &extensions.0, locale)?;
+    verify_workspace_id(biz_tag_workspace, &extensions.0, locale).await?;
 
     state
         .handlers
@@ -1365,59 +1375,59 @@ mod tests {
 
     // ========== verify_workspace_id_match tests ==========
 
-    #[test]
-    fn test_verify_workspace_id_match_matching_returns_ok() {
+    #[tokio::test]
+    async fn test_verify_workspace_id_match_matching_returns_ok() {
         let workspace_uuid = uuid::Uuid::new_v4();
         let key_workspace_id = Some(workspace_uuid);
-        let result = verify_workspace_id_match(workspace_uuid, &key_workspace_id, Locale::En);
+        let result = verify_workspace_id_match(workspace_uuid, &key_workspace_id, Locale::En).await;
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn test_verify_workspace_id_match_mismatch_returns_forbidden() {
+    #[tokio::test]
+    async fn test_verify_workspace_id_match_mismatch_returns_forbidden() {
         let workspace_uuid = uuid::Uuid::new_v4();
         let key_workspace_id = Some(uuid::Uuid::new_v4());
-        let result = verify_workspace_id_match(workspace_uuid, &key_workspace_id, Locale::En);
+        let result = verify_workspace_id_match(workspace_uuid, &key_workspace_id, Locale::En).await;
         assert!(result.is_err());
         let (status, _) = result.unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
-    #[test]
-    fn test_verify_workspace_id_match_none_key_workspace_returns_ok() {
+    #[tokio::test]
+    async fn test_verify_workspace_id_match_none_key_workspace_returns_ok() {
         // When key_workspace_id is None (admin key or auth disabled),
         // any workspace_uuid should be accepted.
         let workspace_uuid = uuid::Uuid::new_v4();
         let key_workspace_id: Option<uuid::Uuid> = None;
-        let result = verify_workspace_id_match(workspace_uuid, &key_workspace_id, Locale::En);
+        let result = verify_workspace_id_match(workspace_uuid, &key_workspace_id, Locale::En).await;
         assert!(result.is_ok());
     }
 
     // ========== verify_workspace_id tests ==========
 
-    #[test]
-    fn test_verify_workspace_id_matching_returns_ok() {
+    #[tokio::test]
+    async fn test_verify_workspace_id_matching_returns_ok() {
         let workspace_uuid = uuid::Uuid::new_v4();
         let key_workspace_id = Some(workspace_uuid);
-        let result = verify_workspace_id(workspace_uuid, &key_workspace_id, Locale::En);
+        let result = verify_workspace_id(workspace_uuid, &key_workspace_id, Locale::En).await;
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn test_verify_workspace_id_mismatch_returns_forbidden() {
+    #[tokio::test]
+    async fn test_verify_workspace_id_mismatch_returns_forbidden() {
         let workspace_uuid = uuid::Uuid::new_v4();
         let key_workspace_id = Some(uuid::Uuid::new_v4());
-        let result = verify_workspace_id(workspace_uuid, &key_workspace_id, Locale::En);
+        let result = verify_workspace_id(workspace_uuid, &key_workspace_id, Locale::En).await;
         assert!(result.is_err());
         let (status, _) = result.unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
-    #[test]
-    fn test_verify_workspace_id_none_key_returns_ok() {
+    #[tokio::test]
+    async fn test_verify_workspace_id_none_key_returns_ok() {
         let workspace_uuid = uuid::Uuid::new_v4();
         let key_workspace_id: Option<uuid::Uuid> = None;
-        let result = verify_workspace_id(workspace_uuid, &key_workspace_id, Locale::En);
+        let result = verify_workspace_id(workspace_uuid, &key_workspace_id, Locale::En).await;
         assert!(result.is_ok());
     }
 
@@ -2861,13 +2871,21 @@ mod tests {
         assert!(validate_request(&bad, Locale::En).is_err());
     }
 
-    #[test]
-    fn test_verify_workspace_id_match_matrix() {
+    #[tokio::test]
+    async fn test_verify_workspace_id_match_matrix() {
         let id = uuid::Uuid::new_v4();
-        assert!(verify_workspace_id_match(id, &None, Locale::En).is_ok());
-        assert!(verify_workspace_id_match(id, &Some(id), Locale::En).is_ok());
-        assert!(verify_workspace_id_match(id, &Some(uuid::Uuid::new_v4()), Locale::En).is_err());
-        assert!(verify_workspace_id(id, &None, Locale::En).is_ok());
+        assert!(verify_workspace_id_match(id, &None, Locale::En)
+            .await
+            .is_ok());
+        assert!(verify_workspace_id_match(id, &Some(id), Locale::En)
+            .await
+            .is_ok());
+        assert!(
+            verify_workspace_id_match(id, &Some(uuid::Uuid::new_v4()), Locale::En)
+                .await
+                .is_err()
+        );
+        assert!(verify_workspace_id(id, &None, Locale::En).await.is_ok());
     }
 
     #[tokio::test]

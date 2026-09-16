@@ -15,7 +15,7 @@
 use nebulaid::core::algorithm::AlgorithmRouter;
 use nebulaid::core::config::{resolve_startup_config, Config, Environment, StartupConfig};
 #[cfg(feature = "etcd")]
-use nebulaid::core::coordinator::{EtcdClientWrapper, EtcdClusterHealthMonitor};
+use nebulaid::core::coordinator::{EtcdClientWrapper, EtcdClusterHealthMonitor, WorkerIdAllocator};
 use nebulaid::core::database::{self, ApiKeyRepository};
 use nebulaid::core::types::Result;
 use nebulaid::server::audit::AuditLogger;
@@ -526,9 +526,84 @@ fn validate_tls_required_in_production(
 #[cfg(feature = "etcd")]
 struct CoordinationComponents {
     lock: std::sync::Arc<dyn nebulaid::core::coordinator::DistributedLock + Send + Sync>,
-    // T017（worker_id 运行时分配）与 T027（健康巡检注入）接线后移除 allow。
-    #[allow(dead_code)]
+    /// 共享长连接 etcd client（T017 worker 分配 / T027 健康巡检注入复用）；
+    /// `None` = 未配置 etcd 的单机模式。
     client: Option<std::sync::Arc<dyn nebulaid::core::coordinator::EtcdClientOps>>,
+}
+
+/// T017 —— worker 租约守护（仅 etcd feature）：持有分配器与 keepalive 停机通道。
+///
+/// 续期连续失败的致命错误经独立的 oneshot 通道（`allocate_worker_id` 的
+/// `failure_tx` 入参）上报，main 的 select 接入后触发优雅停机（fail-stop）；
+/// `stop_tx` 用于正常停机时让 keepalive 任务退出。
+#[cfg(feature = "etcd")]
+struct WorkerLeaseGuard {
+    allocator: std::sync::Arc<nebulaid::core::coordinator::EtcdWorkerAllocator>,
+    worker_id: u16,
+    stop_tx: tokio::sync::watch::Sender<bool>,
+}
+
+/// T017 —— worker_id 运行时分配（Snowflake 构造前调用）。
+///
+/// 经 `EtcdWorkerAllocator::allocate()` 从 etcd 抢占 worker key（key value =
+/// 本实例 instance_id，lease 30s 绑定存活），成功后 spawn lease keepalive
+/// 任务（interval = lease_ttl/3）。任一步失败返回 `Err`，调用方拒绝启动 ——
+/// 多实例部署回退静态默认 0 必然产生重复 worker_id（数据正确性事故）。
+#[cfg(feature = "etcd")]
+async fn allocate_worker_id(
+    client: std::sync::Arc<dyn nebulaid::core::coordinator::EtcdClientOps>,
+    config: &Config,
+    failure_tx: tokio::sync::oneshot::Sender<String>,
+) -> Result<WorkerLeaseGuard> {
+    use nebulaid::core::coordinator::EtcdWorkerAllocator;
+
+    let allocator = EtcdWorkerAllocator::new(client.clone(), config.app.dc_id, config.etcd.clone())
+        .await
+        .map_err(|e| {
+            nebulaid::core::types::CoreError::ConfigurationError(format!(
+                "etcd worker allocator init failed: {}",
+                e
+            ))
+        })?;
+    let worker_id = allocator.allocate().await.map_err(|e| {
+        nebulaid::core::types::CoreError::ConfigurationError(format!(
+            "etcd worker_id allocation failed: {}",
+            e
+        ))
+    })?;
+    if worker_id > u8::MAX as u16 {
+        return Err(nebulaid::core::types::CoreError::ConfigurationError(
+            format!(
+                "etcd allocated worker_id {} exceeds config.worker_id u8 range",
+                worker_id
+            ),
+        ));
+    }
+
+    let lease_id = allocator.current_lease_id();
+    let allocator = std::sync::Arc::new(allocator);
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(EtcdWorkerAllocator::run_lease_keepalive_loop(
+        client,
+        lease_id,
+        EtcdWorkerAllocator::keepalive_interval(),
+        EtcdWorkerAllocator::KEEPALIVE_MAX_CONSECUTIVE_FAILURES,
+        stop_rx,
+        failure_tx,
+    ));
+    info!(
+        "{}",
+        t!(
+            "log.main.worker_id_allocated_from_etcd",
+            worker_id = worker_id,
+            lease_id = lease_id
+        )
+    );
+    Ok(WorkerLeaseGuard {
+        allocator,
+        worker_id,
+        stop_tx,
+    })
 }
 
 /// T016 —— etcd 协调组件装配（fail-closed）。
@@ -919,6 +994,28 @@ async fn main() -> Result<()> {
 
         info!("{}", t!("log.main.etcd_health_monitor_initialized"));
 
+        // T017 —— worker_id 运行时分配：etcd 已配置（coordination.client 为
+        // Some）时于 Snowflake 构造前分配并覆盖静态配置值；分配失败 fail-closed
+        // （多实例回退静态默认 0 必然重复 ID）。
+        let (lease_failure_tx, lease_failure_rx) = tokio::sync::oneshot::channel::<String>();
+        let worker_lease: Option<WorkerLeaseGuard> = match &coordination.client {
+            Some(client) => {
+                match allocate_worker_id(client.clone(), &config, lease_failure_tx).await {
+                    Ok(guard) => Some(guard),
+                    Err(e) => {
+                        error!("{}", t!("error.main.worker_id_allocation_failed", error = e));
+                        error!("{}", t!("log.main.shutting_down"));
+                        std::process::exit(1);
+                    }
+                }
+            }
+            None => None,
+        };
+        if let Some(guard) = &worker_lease {
+            // 分配器 MAX_WORKER_ID=255，覆盖值必在 config.worker_id 的 u8 值域内
+            config.app.worker_id = guard.worker_id as u8;
+        }
+
         let id_generator = create_id_generator(
             &config,
             audit_logger.clone(),
@@ -1050,10 +1147,56 @@ async fn main() -> Result<()> {
                 info!("{}", t!("log.main.shutdown_signal_received"));
                 Ok(())
             }
+            // T017 —— lease 续期连续失败 fail-stop：etcd 不可达使 lease 失效后，
+            // 该 worker_id 可能已被其他实例接管，继续发号会重复 ID → 触发优雅停机。
+            // 未配置 etcd（worker_lease 为 None）时该臂永不触发。
+            lease_reason = async {
+                if worker_lease.is_some() {
+                    lease_failure_rx
+                        .await
+                        .unwrap_or_else(|_| "lease keepalive task dropped".to_string())
+                } else {
+                    std::future::pending::<String>().await
+                }
+            } => {
+                error!(
+                    "{}",
+                    t!("error.main.worker_lease_renewal_failed", reason = lease_reason)
+                );
+                error!("{}", t!("log.main.shutting_down"));
+                Err(nebulaid::core::types::CoreError::InternalError(format!(
+                    "worker lease renewal failed: {}",
+                    lease_reason
+                )))
+            }
         };
 
         degradation_manager.stop_background_check().await;
         rate_limit_cleanup.abort();
+
+        // T017 —— 停机收尾：停 keepalive 任务，并经归属校验释放 worker_id
+        //（best-effort：失败仅告警，lease TTL 到期后 etcd 会自动回收 key）。
+        if let Some(guard) = &worker_lease {
+            let _ = guard.stop_tx.send(true);
+            if let Err(e) = guard.allocator.release(guard.worker_id).await {
+                warn!(
+                    "{}",
+                    t!(
+                        "log.main.worker_id_release_on_shutdown_failed",
+                        worker_id = guard.worker_id,
+                        error = e
+                    )
+                );
+            } else {
+                info!(
+                    "{}",
+                    t!(
+                        "log.main.worker_id_released_on_shutdown",
+                        worker_id = guard.worker_id
+                    )
+                );
+            }
+        }
 
         server_result
     }

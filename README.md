@@ -4,151 +4,117 @@
 
 [![GitHub release](https://img.shields.io/github/v/release/Kirky-X/NebulaId)](https://github.com/Kirky-X/NebulaId/releases) [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green)](./LICENSE) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/NebulaId/ci.yml?branch=main)](https://github.com/Kirky-X/NebulaId/actions/workflows/ci.yml) [![Security](https://img.shields.io/github/actions/workflow/status/Kirky-X/NebulaId/codeql.yml?branch=main&label=security)](https://github.com/Kirky-X/NebulaId/actions/workflows/codeql.yml)
 
-<p align="center"><a href="./README_zh.md">中文文档</a> | <b>English</b></p>
+**中文** | [English](README_EN.md)
 
-<p align="center">
-  <strong>Enterprise-grade distributed ID generation system for high-performance applications</strong>
-</p>
+**企业级高性能分布式 ID 生成系统**
 
-<p align="center">
-  <a href="#-features">Features</a> •
-  <a href="#-quick-start">Quick Start</a> •
-  <a href="#-documentation">Documentation</a> •
-  <a href="#-examples">Examples</a> •
-  <a href="#-contributing">Contributing</a>
-</p>
+[✨ 功能特性](#-功能特性) • [🚀 快速开始](#-快速开始) • [📚 文档](#-文档) • [💻 示例](#-示例) • [🤝 参与贡献](#-参与贡献)
 
 </div>
 
 ---
-
-## 📋 Table of Contents
-
-<details open>
-<summary>Click to expand</summary>
-
-- [✨ Features](#-features)
-- [🎯 Use Cases](#-use-cases)
-- [🚀 Quick Start](#-quick-start)
-  - [Installation](#installation)
-  - [Basic Usage](#basic-usage)
-- [📚 Documentation](#-documentation)
-- [🎨 Examples](#-examples)
-- [🏗️ Architecture](#️-architecture)
-- [⚙️ Configuration](#️-configuration)
-- [🧪 Testing](#-testing)
-- [📊 Performance](#-performance)
-- [🔒 Security](#-security)
-- [🌐 Internationalization](#-internationalization)
-- [🛠️ scripts/run.sh Usage](#️-scriptsrunsh-usage)
-- [🗺️ Roadmap](#️-roadmap)
-- [🤝 Contributing](#-contributing)
-- [📄 License](#-license)
-- [🙏 Acknowledgments](#-acknowledgments)
-
-</details>
-
----
-
-## ✨ Features
-
-<table>
-<tr>
-<td width="50%">
-
-### 🎯 Core Features
-
-- ✅ **Multiple ID Algorithms** - Segment, Snowflake, UUID v8
-- ✅ **Distributed Coordination** - Etcd-based leader election and coordination
-- ✅ **High Availability** - Datacenter health monitoring and automatic failover
-- ✅ **Type-Safe Design** - Full Rust type safety with async/await patterns
-
-</td>
-<td width="50%">
-
-### ⚡ Advanced Features
-
-- 🚀 **High Performance** - Million+ IDs per second with concurrent access
-- 🔐 **API Security** - API key authentication and rate limiting
-- 📊 **Monitoring** - Built-in metrics, health checks, and alerting
-- 🌐 **Multi-Protocol** - HTTP/HTTPS REST API and gRPC/gRPCS support
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-### 🌟 v0.2.0 New Features
-
-- 🌍 **ICU i18n** - `rust-i18n 3.1` with `Accept-Language` negotiation (RFC 7231 §5.3.5), `en` + `zh-CN` locales, 1989 `t!()` call sites
-- 🔧 **Trait Abstractions** - `EtcdClientOps` & `ConfigManagementService` traits for mock-injectable business logic
-- 🛡️ **SAST Hardened** - `tiangang` SAST + `diting` three-axis review, 0 CRITICAL / 0 HIGH
-- 📦 **Unified Script Entry** - `scripts/run.sh` dispatches to `deploy` / `lint` / `redis-test` / `api-test` / `install-hooks` / `help`
-
-</td>
-<td width="50%">
-
-### 🎯 v0.2.0 Quality Gates
-
-- ✅ **0 warnings** on `cargo build --package nebulaid --features etcd` & `cargo clippy --features etcd -D warnings`
-- ✅ **4000+ tests** with 89.91% line coverage (CI gate: `--fail-under-lines 95`)
-- ✅ **0 dead code** findings (`cargo udeps` + `cargo rustc -W dead_code`)
-- ✅ **mod.rs interface isolation** enforced (rule 25 — `mod.rs` only exposes traits + pub types)
-
-</td>
-</tr>
-</table>
 
 <div align="center">
 
-### 🎨 Feature Highlights
+### 🎯 一套服务，三种发号算法
+
+号段双缓冲、位切片防回拨、UUID v8 自定义布局，HTTP 与 gRPC 同源直达：
+
+<table style="width:100%; border-collapse: collapse">
+<tr>
+<td align="center" width="25%">🧮<br><b>Segment 号段</b><br><span style="color:#64748B">双缓冲 · 动态步长</span></td>
+<td align="center" width="25%">❄️<br><b>Snowflake</b><br><span style="color:#64748B">位切片 · 抗时钟回拨</span></td>
+<td align="center" width="25%">🧬<br><b>UUID v8</b><br><span style="color:#64748B">自定义位布局 · 趋势有序</span></td>
+<td align="center" width="25%">🔐<br><b>API 安全</b><br><span style="color:#64748B">密钥认证 · 限流审计</span></td>
+</tr>
+</table>
 
 </div>
 
-```mermaid
-graph LR
-    A[Client Applications] --> B[Nebula ID Service]
-    B --> C[Algorithm Router]
-    C --> D[Segment Algorithm]
-    C --> E[Snowflake Algorithm]
-    C --> F[UUID v8 Algorithm]
-    B --> G[Distributed Coordination]
-    G --> H[Etcd]
-    B --> I[Monitoring]
-    I --> J[Health Checks]
-    I --> K[Metrics]
-```
+---
+
+## 📋 目录
+
+- [✨ 功能特性](#-功能特性)
+- [🎯 使用场景](#-使用场景)
+- [🚀 快速开始](#-快速开始)
+- [📚 文档](#-文档)
+- [💻 示例](#-示例)
+- [🏗️ 架构](#️-架构)
+- [⚙️ 配置](#️-配置)
+- [🌐 国际化](#-国际化)
+- [🛠️ scripts/run.sh 用法](#️-scriptsrunsh-用法)
+- [🧪 测试](#-测试)
+- [📊 性能](#-性能)
+- [🔒 安全](#-安全)
+- [🗺️ 开发路线图](#️-开发路线图)
+- [🤝 参与贡献](#-参与贡献)
+- [📋 更新日志](#-更新日志)
+- [📄 许可证](#-许可证)
+- [🙏 致谢](#-致谢)
+- [📞 联系与支持](#-联系与支持)
+- [⭐ Star 历史](#-star-历史)
 
 ---
 
-## 🎯 Use Cases
+## ✨ 功能特性
 
-<details>
-<summary><b>💼 Distributed Systems</b></summary>
+<table style="width:100%; border-collapse: collapse">
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">🔢 <b>多算法引擎</b><br><span style="color:#64748B">Segment 号段（双缓冲 + 动态步长）、Snowflake（位布局可配 + 时钟回拨防护）、UUID v8（RFC 9562 §5.8），运行时按 <code>workspace / group / biz_tag</code> 路由</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>双协议接入</b><br><span style="color:#64748B">HTTP/HTTPS REST 与 gRPC/gRPCS 共用同一算法路由，sdforge <code>#[forge]</code> 自动产出 OpenAPI 文档</span></td>
+</tr>
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">🧩 <b>嵌入式 SDK</b><br><span style="color:#64748B"><code>sdk</code> feature 提供 <code>NebulaIdKit</code>：trait-kit AsyncKit 依赖图装配，缺失依赖在 <code>build()</code> 期报错；<code>embedded</code> 示例零 DB 零网络运行</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🏗️ <b>分布式协调</b><br><span style="color:#64748B"><code>etcd</code> feature 提供工作器分配与协调，端点为空时自动退回进程内本地锁</span></td>
+</tr>
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">🔐 <b>garrison 认证</b><br><span style="color:#64748B"><code>garrison-auth</code> feature 接管 API key 验证：Argon2id 哈希、常量时间比较、进程内缓存、轮换宽限期</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🚦 <b>全局限流</b><br><span style="color:#64748B">令牌桶真实挂载 HTTP 栈，<code>burst ≤ 10 × rps</code> 启动校验，<code>x-ratelimit-*</code> 响应头，管理接口热更新</span></td>
+</tr>
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">📊 <b>可观测性</b><br><span style="color:#64748B">Prometheus <code>/metrics</code> 逐算法暴露 p50/p99/p999 与 <code>clock_backwards</code>，OTLP tracing，健康检查端点</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🌍 <b>ICU 国际化</b><br><span style="color:#64748B"><code>rust-i18n</code> + <code>Accept-Language</code> 协商（RFC 7231 §5.3.5），<code>en</code> 与 <code>zh-CN</code> 全量错误文案与日志</span></td>
+</tr>
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">🛡️ <b>传输与响应安全</b><br><span style="color:#64748B">rustls TLS 1.2/1.3（<code>min_tls_version</code> 强制）、安全响应头、严格 CORS、可信代理 IP 归属</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🧾 <b>审计日志</b><br><span style="color:#64748B">ID 生成与密钥操作全量审计，客户端 IP 解析到真实对端连接地址</span></td>
+</tr>
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">⚙️ <b>配置 fail-fast</b><br><span style="color:#64748B">17 个配置结构体全部 <code>deny_unknown_fields</code>，坏配置以退出码 1 终止启动；<code>${VAR}</code> 环境变量展开</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>统一脚本入口</b><br><span style="color:#64748B"><code>scripts/run.sh</code> 调度 deploy / lint / redis-test / api-test / install-hooks，本地与 CI 同源</span></td>
+</tr>
+</table>
 
-<br>
+除上述核心能力外，PostgreSQL 之外的引擎声明（`sqlite` 当前不可构建）、需要真实数据库的 `integration-tests` 门控、热重载监听与 Redis 缓存等也以配置或 feature 形式提供；逐项说明见 [⚙️ 配置](#️-配置) 一节与 [配置迁移指南](docs/CONFIG_MIGRATION_GUIDE.md)。
+
+---
+
+## 🎯 使用场景
+
+### 💼 嵌入既有 Rust 服务
+
+把发号能力作为库内嵌，无需独立部署（改编自 [`examples/embedded.rs`](examples/embedded.rs)）：
 
 ```rust
-use nebulaid::core::types::AlgorithmType;
 use nebulaid::core::Config;
 use nebulaid::sdk::NebulaIdKitBuilder; // feature `sdk`
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
-    // Segment allocates number ranges from the database and needs
-    // `NebulaIdKitBuilder::with_repository(..)`; pure algorithms do not.
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
 
     let kit = NebulaIdKitBuilder::new(config).build().await?;
     let generator = kit.id_generator()?;
 
-    // Default algorithm (`config.algorithm.default`)
+    // 默认算法（`config.algorithm.default`）
     let id = generator.generate("prod", "core", "order").await?;
 
-    // Or pin one algorithm per call
+    // 或按次指定算法
     let uuid = generator
-        .generate_with_algorithm(AlgorithmType::UuidV8, "prod", "core", "trace")
+        .generate_with_algorithm(nebulaid::core::types::AlgorithmType::UuidV8,
+                                 "prod", "core", "trace")
         .await?;
 
     println!("snowflake={id} uuid_v8={uuid}");
@@ -157,188 +123,71 @@ async fn main() -> nebulaid::core::Result<()> {
 }
 ```
 
-Perfect for large-scale distributed systems requiring unique, ordered identifiers with high availability.
+### 🔧 微服务唯一标识
 
-</details>
-
-<details>
-<summary><b>🔧 Microservices</b></summary>
-
-<br>
+`Id` 是对 UUID 的零成本包装，可无损互转，适合跨服务传递与存储：
 
 ```rust
 use nebulaid::core::types::Id;
 use uuid::Uuid;
 
-// Wrap any Uuid into a Nebula `Id` (the only constructor is `from_uuid_v8`)
+// 任意 Uuid 都用同一构造函数包装为 Nebula `Id`（仅有 `from_uuid_v8`）
 let id = Id::from_uuid_v8(Uuid::now_v7());
-let id_string = id.to_string(); // renders as a standard 36-char UUID string
+let id_string = id.to_string(); // 输出标准 36 字符 UUID 字符串
 
-// Random identifiers use the same constructor
-let id_v4 = Id::from_uuid_v8(Uuid::new_v4());
-
-// And convert back losslessly
-let uuid = id_v4.to_uuid_v8();
+// 可无损转回 Uuid
+let uuid = id.to_uuid_v8();
 ```
 
-Ideal for microservices requiring unique identifiers with different ordering guarantees.
+### ⚡ 高吞吐批量发号
 
-</details>
-
-<details>
-<summary><b>🌐 High-Performance Applications</b></summary>
-
-<br>
+Segment 的双缓冲是内部机制，对外一次调用申请 N 个 ID（`IdAlgorithm::batch_generate`）：
 
 ```rust
-use nebulaid::core::Config;
-use nebulaid::sdk::NebulaIdKitBuilder;
-
-#[tokio::main]
-async fn main() -> nebulaid::core::Result<()> {
-    let mut config = Config::default();
-    config.algorithm.default = "snowflake".to_string();
-    let kit = NebulaIdKitBuilder::new(config).build().await?;
-    let generator = kit.id_generator()?;
-
-    // One call, one batch. Segment's double buffering is internal — from the
-    // outside you just ask for N ids at a time (`IdAlgorithm::batch_generate`).
-    let batch = generator.batch_generate("prod", "core", "order", 1000).await?;
-    println!("{} ids via {:?}", batch.len(), batch.algorithm);
-
-    kit.shutdown().await;
-    Ok(())
-}
+let batch = generator.batch_generate("prod", "core", "order", 1000).await?;
+println!("{} ids via {:?}", batch.len(), batch.algorithm);
 ```
-
-Great for high-performance applications requiring millions of IDs per second with low latency.
-
-</details>
 
 ---
 
-## 🚀 Quick Start
+## 🚀 快速开始
 
-### Installation
-
-<table>
-<tr>
-<td width="50%">
-
-#### 🦀 Build from Source
+### 📦 安装
 
 ```bash
-# Clone the repository
+# 克隆仓库并构建（default 特性：postgresql + http + grpc + garrison-auth）
 git clone https://github.com/Kirky-X/NebulaId.git
 cd NebulaId
-
-# Build (default features: postgresql + http + grpc + garrison-auth)
 cargo build --release
 
-# Run the server
+# 运行服务（默认读取 config/config.toml，--config 可指定路径）
 ./target/release/nebula-id
 ```
 
-</td>
-<td width="50%">
+| feature | 默认 | 说明 |
+|---------|:----:|------|
+| `postgresql` | ✅ | dbnexus PostgreSQL 存储后端 |
+| `http` / `grpc` | ✅ | REST 与 gRPC 接入（sdforge 镜像 feature） |
+| `garrison-auth` | ✅ | garrison 接管 API key 验证 |
+| `etcd` | ➖ | etcd 分布式协调（可构建的最大特性集为 default + etcd） |
+| `sdk` | ➖ | 嵌入式 SDK facade（`NebulaIdKit`，蕴含 `openapi`） |
+| `integration-tests` | ➖ | 门控需要真实数据库的 `#[ignore]` 测试 |
+| `sqlite` | ➖ | 保留定义但**当前不可构建**：default 恒含 dbnexus/postgres，叠加 sqlite 会触发 dbnexus 的 compile_error |
 
-#### 📦 Feature Flags
+> ⚠️ 本项目**不存在可用的「全特性」构建**（原因见上表 sqlite 行），CI 与文档均不推荐该开关。
 
-```toml
-# Cargo.toml features
-[features]
-default = ["postgresql", "http", "grpc", "garrison-auth"]
-postgresql = ["dbnexus/postgres"]
-sqlite    = ["dbnexus/sqlite"]   # 见下方说明：当前不可单独构建
-etcd      = ["dep:etcd-client"]
-garrison-auth = ["dep:garrison"]
-sdk       = ["openapi"]          # 嵌入式 SDK facade
-# 镜像 feature：sdforge #[forge] 宏在下游 crate 求值 cfg(feature=...)
-http = []
-grpc = []
-openapi = []
-integration-tests = []           # 需要真实数据库的 #[ignore] 测试
-```
+### 💡 最小示例
 
-**Build with specific features:**
-```bash
-# Default (PostgreSQL + HTTP + gRPC + garrison auth)
-cargo build --release
-
-# Maximal buildable feature set
-cargo build --release --features etcd
-
-# Embedded SDK facade (src/sdk + examples/{embedded,sdk_server})
-cargo build --release --features sdk
-
-# NOTE: sqlite is currently NOT buildable — the default feature set always
-# enables dbnexus/postgres while dbnexus forbids mixing sqlite and postgres
-# (compile_error). The same constraint makes the all-features build invalid.
-```
-
-</td>
-</tr>
-</table>
-
-### Basic Usage
-
-<div align="center">
-
-#### 🎬 5-Minute Quick Start
-
-</div>
-
-<table>
-<tr>
-<td width="50%">
-
-**Step 1: Create Configuration**
-
-```bash
-# Start from the repository sample — it is the smallest config that parses.
-cp config/config.toml my-config.toml
-
-# Then edit at least: [database].password (via ${NEBULA_DATABASE_PASSWORD}),
-# [database].url / host / port, and [algorithm].default
-```
-
-</td>
-<td width="50%">
-
-**Step 2: Start The Service**
-
-```bash
-# The binary reads config/config.toml by default; --config overrides the path.
-./target/release/nebula-id --config my-config.toml &
-
-# Probe it
-curl -s http://localhost:8080/health
-curl -s http://localhost:8080/metrics
-```
-
-Embedding the crate as a library instead of running the server is covered by the
-`examples/embedded.rs` snippet in the Complete Example below.
-
-</td>
-</tr>
-</table>
-
-<details>
-<summary><b>📖 Complete Example</b></summary>
-
-<br>
+以下示例改编自 [`examples/embedded.rs`](examples/embedded.rs)，零 DB 零网络即可生成 ID：
 
 ```rust
-// Mirrors examples/embedded.rs — run it with:
-//   cargo run --package nebulaid --example embedded --features sdk
 use nebulaid::core::Config;
 use nebulaid::sdk::NebulaIdKitBuilder;
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
-    // Pure algorithms only: `segment` would additionally require
-    // NebulaIdKitBuilder::with_repository(..) because it allocates
-    // number ranges from the database.
+    // 纯算法（snowflake/uuid_v8）用 Config::default() 即可；
+    // segment 需 NebulaIdKitBuilder::with_repository(..) 注入仓储。
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
 
@@ -355,256 +204,85 @@ async fn main() -> nebulaid::core::Result<()> {
 }
 ```
 
-</details>
+```bash
+cargo run --package nebulaid --example embedded --features sdk
+```
+
+### 🧭 核心概念
+
+- **三元组命名空间**：`generate(workspace_id, group_id, biz_tag)`，workspace 即租户隔离边界（biz-tags 查询按角色过滤）。
+- **算法选择**：`[algorithm].default` 全局默认，`generate_with_algorithm` 按次覆盖；纯算法（snowflake/uuid_v8）零 DB 可用，segment 必须注入仓储。
+- **双协议同源**：HTTP 与 gRPC 共用同一算法路由与认证中间件；未带凭证的 gRPC 请求收到 `Unauthenticated`。
+- **Kit 装配**：SDK 经 trait-kit AsyncKit 依赖图校验（缺失依赖/环在 `build()` 期报错），`IdGenerator` handle 可 `Clone` 后跨任务共享。
+- **降级兜底**：主算法不可用时按 `[Snowflake, UuidV8]` 降级链继续发号。
 
 ---
 
-## 📚 Documentation
+## 📚 文档
 
-<div align="center">
-
-<table>
-<tr>
-<td align="center" width="25%">
-<a href="https://docs.rs/nebula-id">
-<img src="https://img.icons8.com/fluency/96/000000/api.png" width="64" height="64"><br>
-<b>API Reference</b>
-</a><br>
-Full API documentation
-</td>
-<td align="center" width="25%">
-<a href="examples/">
-<img src="https://img.icons8.com/fluency/96/000000/code.png" width="64" height="64"><br>
-<b>Examples</b>
-</a><br>
-Code examples
-</td>
-<td align="center" width="25%">
-<a href="https://github.com/nebula-id/nebula-id">
-<img src="https://img.icons8.com/fluency/96/000000/github.png" width="64" height="64"><br>
-<b>GitHub</b>
-</a><br>
-Source code
-</td>
-<td align="center" width="25%">
-<a href="https://crates.io/crates/nebula-id">
-<img src="https://img.icons8.com/fluency/96/000000/package.png" width="64" height="64"><br>
-<b>Crates.io</b>
-</a><br>
-Package registry
-</td>
-</tr>
-</table>
-
-</div>
-
-### 📖 Additional Resources
-
-- 🎓 **Algorithm Selection** - Choosing the right ID generation algorithm
-- 🔧 **Configuration Guide** - Complete configuration reference
-- ❓ **FAQ** - Frequently asked questions about distributed ID generation
+| 文档 | 说明 |
+|------|------|
+| [📖 用户指南](docs/USER_GUIDE.md) | 从安装到进阶的完整使用教程 |
+| [📘 API 参考](docs/API_REFERENCE.md) | HTTP / gRPC 端点、请求头、错误码与类型定义 |
+| [🏗️ 架构文档](docs/ARCHITECTURE.md) | 模块依赖、外部库角色与算法优化设计 |
+| [🔧 配置迁移指南](docs/CONFIG_MIGRATION_GUIDE.md) | 配置全表、校验规则与版本间迁移操作 |
+| [🚀 部署指南](docs/DEPLOYMENT.md) | Docker 部署、环境变量、监控与脚本子命令 |
+| [📈 性能指南](docs/PERFORMANCE.md) | 基准口径、热路径设计与优化建议 |
+| [🔒 安全文档](docs/SECURITY.md) | 安全设计、供应链门禁与漏洞处理流程 |
+| [🧪 测试场景矩阵](docs/TEST_SCENARIOS.md) | 分层测试策略与场景穷举 |
+| [❓ FAQ](docs/FAQ.md) | 常见问题解答 |
+| [📋 更新日志](docs/CHANGELOG.md) | 每个版本的变更记录 |
+| [🤝 贡献指南](docs/CONTRIBUTING.md) | 如何参与项目开发 |
 
 ---
 
-## 🎨 Examples
+## 💻 示例
 
-<div align="center">
+全部示例位于 [`examples/`](examples/) 目录，仅启用 `sdk` 特性时构建：
 
-### 💡 Real-world Examples
+```bash
+# 嵌入式 SDK：零 DB 零网络生成 ID
+cargo run --package nebulaid --example embedded --features sdk
 
-</div>
-
-<table>
-<tr>
-<td width="50%">
-
-#### 📝 Example 1: Segment Algorithm
-
-```rust
-use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
-use nebulaid::core::types::AlgorithmType;
-use nebulaid::core::Config;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // `dc_id` comes from [app]; the concrete SegmentAlgorithm type is
-    // crate-internal, so it is built through the public AlgorithmBuilder.
-    let mut config = Config::default();
-    config.app.dc_id = 1;
-
-    let segment = AlgorithmBuilder::new(AlgorithmType::Segment)
-        .build(&config)
-        .await?;
-
-    let ctx = GenerateContext {
-        workspace_id: "prod".into(),
-        group_id: "core".into(),
-        biz_tag: "order".into(),
-        ..Default::default()
-    };
-    let id = segment.generate(&ctx).await?;
-
-    println!("Generated ID: {}", id);
-    Ok(())
-}
+# SDK 服务器：sdforge #[forge] 封装 + OpenAPI 文档
+cargo run --package nebulaid --example sdk_server --features sdk,http
 ```
 
-<details>
-<summary>View output</summary>
+### 🧩 embedded.rs
 
-```
-Generated ID: 17731488000000
-```
+`NebulaIdKitBuilder` 装配 → `id_generator()` 取句柄 → `generate` / `batch_generate` 发号 → `shutdown` 优雅停机。适合把发号能力直接内嵌进既有 Rust 服务。
 
-Without an injected repository the built-in loader starts each segment at
-`unix_seconds × 10000`; with a repository the ranges are allocated in the database.
+### 🚀 sdk_server.rs
 
-</details>
-
-</td>
-<td width="50%">
-
-#### 🔥 Example 2: Snowflake Algorithm
-
-```rust
-use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
-use nebulaid::core::types::AlgorithmType;
-use nebulaid::core::Config;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // dc/worker come from [app]; the bit layout comes from [algorithm.snowflake]
-    let mut config = Config::default();
-    config.app.dc_id = 1;
-    config.app.worker_id = 1;
-
-    let snowflake = AlgorithmBuilder::new(AlgorithmType::Snowflake)
-        .build(&config)
-        .await?;
-
-    let id = snowflake.generate(&GenerateContext::default()).await?;
-    println!("Generated Snowflake ID: {}", id);
-
-    let s = &config.algorithm.snowflake;
-    println!(
-        "layout: timestamp({}) | dc({}) | worker({}) | seq({})",
-        s.timestamp_bits(),
-        s.datacenter_id_bits,
-        s.worker_id_bits,
-        s.sequence_bits
-    );
-    Ok(())
-}
-```
-
-<details>
-<summary>View output</summary>
-
-```
-Generated Snowflake ID: <64-bit numeric, grows with the clock>
-layout: timestamp(43) | dc(3) | worker(8) | seq(10)
-```
-
-</details>
-
-</td>
-</tr>
-</table>
-
-<div align="center">
-
-**[📂 View All Examples →](examples/)**
-
-</div>
+同一个 Kit 经 sdforge `#[forge]` 暴露为 HTTP 服务并注册 OpenAPI 路由（`/api-docs/openapi.json`），适合以「库 → 服务」一行切换的方式验证双协议接入。
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ 架构
 
-<div align="center">
+Nebula ID 采用「server → core → 自研生态」三层设计：`src/server/` 承载 HTTP（axum）与 gRPC（tonic）端点、中间件（认证、限流、CORS、locale、安全头）与 handlers；`src/core/` 包含算法路由器与三种算法实现、数据库仓储、etcd 协调器、监控与 i18n；数据库、配置、日志、缓存、限流、服务发现与认证分别委托给同作者生态 `dbnexus` / `confers` / `inklog` / `oxcache` / `limiteron` / `sdforge` / `garrison` / `trait-kit`。Segment 以双缓冲 + 动态步长从数据库领取号段，Snowflake 串行化 `(last_timestamp, sequence)` 迁移防并发重复，主算法不可用时按降级链兜底。
 
-### System Overview
-
-</div>
-
-```mermaid
-graph TB
-    A[Client Applications] --> B[API Gateway]
-    B --> C[HTTP REST API]
-    B --> D[gRPC Service]
-    C --> E[Algorithm Router]
-    D --> E
-    E --> F[Segment Algorithm]
-    E --> G[Snowflake Algorithm]
-    E --> H[UUID v8]
-    F --> I[(Database)]
-    G --> J[Distributed Coordination]
-    J --> K[Etcd]
-    H --> L[(Cache)]
-    E --> M[Monitoring]
-    M --> N[Health Checks]
-    M --> O[Metrics]
-    
-    style A fill:#e1f5ff
-    style B fill:#b3e5fc
-    style C fill:#81d4fa
-    style D fill:#4fc3f7
-    style E fill:#29b6f6
-    style F fill:#03a9f4
-    style G fill:#03a9f4
-    style H fill:#03a9f4
-```
-
-<details>
-<summary><b>📐 Component Details</b></summary>
-
-<br>
-
-| Component | Description | Status |
-|-----------|-------------|--------|
-| **Algorithm Router** | Routes ID generation requests to appropriate algorithm | ✅ Stable |
-| **Segment Algorithm** | Database-based segment ID generation with double buffering | ✅ Stable |
-| **Snowflake Algorithm** | Twitter Snowflake variant for distributed unique IDs | ✅ Stable |
-| **UUID Generator** | UUID v8 (RFC 9562 §5.8 custom structured) implementation | ✅ Stable |
-| **Distributed Coordination** | Etcd-based leader election and coordination | ✅ Stable |
-| **Monitoring** | Health checks, metrics collection, and alerting | ✅ Stable |
-| **API Gateway** | HTTP/HTTPS and gRPC/gRPCS endpoint management | ✅ Stable |
-
-</details>
+架构图、模块依赖关系、外部库角色、`mod.rs` 接口隔离标准（规则 25）与 trait 关系图的完整说明见 [🏗️ 架构文档](docs/ARCHITECTURE.md)。
 
 ---
 
-## ⚙️ Configuration
+## ⚙️ 配置
 
-<div align="center">
+`Config` 覆盖 `app`、`database`、`etcd`、`auth`、`algorithm`、`monitoring`、`logging`、`rate_limit`、`tls`、`batch_generate` 十个段，全部**必填**（仅 `[redis]` 与 `[hot_reload]` 可整体省略）；17 个配置结构体均带 `#[serde(deny_unknown_fields)]`，未知键与缺失必填键同样导致整份文件解析失败、进程以退出码 1 终止。环境变量有两种机制：`APP_HOST`、`DATABASE_URL`、`ETCD_ENDPOINTS` 等在启动时覆盖文件配置；`NEBULA_DATABASE_PASSWORD`、`NEBULA_API_KEY_SALT` 等以 `${VAR}` 形式在文件内引用、解析前展开。
 
-### 🎛️ Configuration Options
-
-</div>
-
-**Minimal configuration that parses (`config.toml`)**
-
-`Config` declares `app`, `database`, `etcd`, `auth`, `algorithm`, `monitoring`,
-`logging`, `rate_limit`, `tls` and `batch_generate` **without** `#[serde(default)]`
-(`src/core/config/app_config.rs:37-64`). A missing required field fails the whole file, and so
-does any **unknown** key — every config struct carries `deny_unknown_fields`. A failed parse
-aborts startup with exit code 1 (`resolve_startup_config`, `src/main.rs:542`); it no longer
-degrades to `Config::default()`. Built-in defaults apply only when no `--config` was given
-*and* `config/config.toml` does not exist, and that fallback emits a `warn`. Copy this shape,
-do not trim it. Only `[redis]` and `[hot_reload]` may be omitted.
+能被完整解析的最小配置见 [`config/config.toml`](config/config.toml)，形如：
 
 ```toml
 [app]
 name = "nebula-id"
 host = "0.0.0.0"
-http_port = 8080                 # there is no `app.port`
+http_port = 8080            # 不存在 `app.port`
 grpc_port = 9091
-dc_id = 0                        # 0..=31
+dc_id = 0                   # 0..=31
 worker_id = 0
-# shutdown_timeout_seconds = 30  # optional
 
 [database]
-engine = "postgresql"            # postgresql | postgres | mysql | sqlite
+engine = "postgresql"
 host = "localhost"
 port = 5432
 username = "idgen"
@@ -614,7 +292,6 @@ max_connections = 100
 min_connections = 10
 acquire_timeout_seconds = 30
 idle_timeout_seconds = 300
-# url = "postgresql://idgen:pw@localhost:5432/idgen"   # optional alternative
 
 [etcd]
 endpoints = ["http://localhost:2379"]
@@ -624,27 +301,9 @@ watch_timeout_ms = 5000
 [auth]
 enabled = true
 cache_ttl_seconds = 300
-# api_keys = []                  # optional; only the FIRST entry is provisioned at startup; needs key_id/key_secret/workspace (UUID or "global")/role/rate_limit/name
-# api_key_salt = "..."           # optional (falls back to $NEBULA_API_KEY_SALT)
-# key_rotation_grace_period_seconds = 0      # optional; 0 (default) = grace disabled
 
 [algorithm]
-default = "segment"              # segment | snowflake | uuid_v8 (no `type` key)
-
-[algorithm.segment]
-base_step = 1000
-min_step = 500
-max_step = 100000
-switch_threshold = 0.1
-
-[algorithm.snowflake]
-datacenter_id_bits = 3
-worker_id_bits = 8
-sequence_bits = 10
-clock_drift_threshold_ms = 1000
-
-[algorithm.uuid_v8]
-enabled = true
+default = "segment"         # segment | snowflake | uuid_v8
 
 [monitoring]
 metrics_enabled = true
@@ -653,14 +312,14 @@ tracing_enabled = false
 otlp_endpoint = ""
 
 [logging]
-level = "info"                   # trace | debug | info | warn | error
-format = "json"                  # json | pretty
+level = "info"
+format = "json"
 include_location = true
 
 [rate_limit]
 enabled = true
 default_rps = 10000
-burst_size = 100                 # validate(): must be <= 10 × default_rps
+burst_size = 100            # validate(): 必须 <= 10 × default_rps
 
 [tls]
 enabled = false
@@ -668,441 +327,162 @@ cert_path = ""
 key_path = ""
 http_enabled = false
 grpc_enabled = false
-# ca_path = ""                   # optional
-# min_tls_version = "tls13"      # optional: tls12 | tls13
-# alpn_protocols = ["h2", "http/1.1"]   # optional
 
 [batch_generate]
-max_batch_size = 100             # validate(): 1..=10000
-
-# Fully optional sections:
-# [redis]
-# url = "redis://localhost:6379"
-# pool_size = 16                 # optional
-# key_prefix = "nebula:id:"      # optional
-# ttl_seconds = 600              # optional
-# [hot_reload]
-# auto_watch_enabled = false
+max_batch_size = 100        # validate(): 1..=10000
 ```
 
-> ⚠️ **Code reality check**: at server startup `Config::merge()` overwrites
-> `algorithm.segment` / `algorithm.snowflake` / `algorithm.uuid_v8` with the values of the
-> environment-derived config, which are always the defaults
-> (`src/core/config/app_config.rs:393-395`, called from `src/main.rs:559`). Only
-> `algorithm.default` survives; tune the three sub-tables in code until that merge is fixed.
+> ⚠️ 注意：服务端启动时 `Config::merge()` 会用环境派生配置覆盖 `algorithm.segment` / `algorithm.snowflake` / `algorithm.uuid_v8` 三个子表（仅 `algorithm.default` 保留），该合并修正前请勿依赖子表配置。
 
-**Environment Variables**
-
-There is no `NEBULA_APP_*` / `NEBULA_AUTH_API_KEY` family. Two mechanisms exist:
-
-```bash
-# 1. Overridden onto the file config by `Config::load_from_env()` at startup
-#    (only values that differ from the default are applied):
-export APP_HOST="0.0.0.0"
-export APP_HTTP_PORT="8080"
-export APP_GRPC_PORT="9091"
-export DC_ID="0"
-export WORKER_ID="0"
-export DATABASE_URL="postgresql://idgen:pass@localhost:5432/idgen"
-export ETCD_ENDPOINTS="http://localhost:2379,http://localhost:22379"
-export RUST_LOG="info"
-
-# 2. Referenced as ${VAR} inside the file; expanded before parsing
-#    (`Config::expand_env_vars`):
-export NEBULA_DATABASE_PASSWORD="..."   # [database].password / url
-export NEBULA_API_KEY_SALT="..."        # [auth].api_key_salt fallback
-```
-
-<details>
-<summary><b>🔧 All Configuration Options</b></summary>
-
-<br>
-
-| Option | Type | `Config::default()` | Required in file | Description |
-|--------|------|---------------------|------------------|-------------|
-| `app.name` | String | `"nebula-id"` | ✅ | Application name |
-| `app.host` | String | `"0.0.0.0"` | ✅ | Server bind address |
-| `app.http_port` | u16 | `8080` | ✅ | HTTP port, must be > 0 |
-| `app.grpc_port` | u16 | `9091` | ✅ | gRPC port, must be > 0 |
-| `app.dc_id` | u8 | `0` | ✅ | Datacenter ID, must be ≤ 31 |
-| `app.worker_id` | u8 | `0` | ✅ | Worker ID |
-| `app.shutdown_timeout_seconds` | u64 | `30` | ➖ | Graceful shutdown timeout, must be > 0 |
-| `database.engine` | String | `"postgresql"` | ✅ | `postgresql` / `postgres` / `mysql` / `sqlite` |
-| `database.host` / `port` / `username` / `password` / `database` | — | `localhost` / `5432` / `idgen` / `$NEBULA_DATABASE_PASSWORD` / `idgen` | ✅ | Individual connection settings |
-| `database.url` | String | `""` | ➖ | Full-URL alternative to the fields above |
-| `database.max_connections` | u32 | `100` | ✅ | Pool size, must be > 0 |
-| `database.min_connections` | u32 | `10` | ✅ | Must be ≤ `max_connections` |
-| `database.acquire_timeout_seconds` | u64 | `30` | ✅ | Must be > 0 |
-| `database.idle_timeout_seconds` | u64 | `300` | ✅ | Idle connection timeout |
-| `redis` | table | — | ➖ | Whole section is optional |
-| `redis.url` | String | `redis://$REDIS_URL` or `redis://localhost:6379` | ✅ if `[redis]` is present | Redis connection URL |
-| `redis.pool_size` / `key_prefix` / `ttl_seconds` | u32 / String / u64 | `16` / `"nebula:id:"` / `600` | ➖ | Cache tuning |
-| `etcd.endpoints` | Vec&lt;String&gt; | `["etcd:2379"]` | ✅ | `[]` disables etcd → `LocalDistributedLock` |
-| `etcd.connect_timeout_ms` / `watch_timeout_ms` | u64 | `5000` / `5000` | ✅ | etcd timeouts |
-| `auth.enabled` | bool | `true` | ✅ | Gates the API-key middleware |
-| `auth.cache_ttl_seconds` | u64 | `300` | ✅ | Auth cache TTL |
-| `auth.api_keys` | array | `[]` | ➖ | Entry = `key_id`, `key_secret`, `workspace`, `role`, `rate_limit`, `name` (all required). Startup provisions **only the first** entry; `workspace` must be a UUID string or `global`; `role` is admin only for the exact value `admin` |
-| `auth.api_key_salt` | String | `$NEBULA_API_KEY_SALT` or `""` | ➖ | Salt for key hashing |
-| `auth.key_rotation_grace_period_seconds` | u64 | `0` (grace disabled) | ➖ | Set `> 0` to keep the previous credential valid that long after a rotation; `> 30 days` is clamped to 30 days with a warning; requires the two grace columns, which startup migrations add automatically (manual DDL only if the DB role lacks DDL grants; see `docs/CONFIG_MIGRATION_GUIDE.md`) |
-| `algorithm.default` | String | `"segment"` | ✅ | `segment` / `snowflake` / `uuid_v8` |
-| `algorithm.segment.base_step` / `min_step` / `max_step` / `switch_threshold` | u64 / u64 / u64 / f64 | `1000` / `500` / `100000` / `0.1` | ✅ | Dynamic step sizing (see note above about `merge`) |
-| `algorithm.snowflake.datacenter_id_bits` / `worker_id_bits` / `sequence_bits` / `clock_drift_threshold_ms` | u8 / u8 / u8 / u64 | `3` / `8` / `10` / `1000` | ✅ | Bit layout; remainder = timestamp bits |
-| `algorithm.uuid_v8.enabled` | bool | `true` | ✅ | UUID v8 switch |
-| `monitoring.metrics_enabled` / `metrics_path` / `tracing_enabled` / `otlp_endpoint` | bool / String / bool / String | `true` / `"/metrics"` / `false` / `""` | ✅ | Prometheus + OTLP |
-| `logging.level` / `format` / `include_location` | String / String / bool | `"info"` / `"json"` / `true` | ✅ | `level`: trace…error, `format`: json/pretty |
-| `rate_limit.enabled` | bool | `true` | ✅ | Enable rate limiting |
-| `rate_limit.default_rps` | u32 | `10000` | ✅ | Requests per second, must be > 0 when enabled |
-| `rate_limit.burst_size` | u32 | `100` | ✅ | Must be ≤ 10 × `default_rps` when enabled |
-| `hot_reload` | table | `auto_watch_enabled = false` | ➖ | Whole section is optional |
-| `tls.enabled` / `cert_path` / `key_path` / `http_enabled` / `grpc_enabled` | bool / String / String / bool / bool | `false` / `""` / `""` / `false` / `false` | ✅ | TLS for HTTP and gRPC |
-| `tls.ca_path` | String? | `null` | ➖ | Optional CA bundle |
-| `tls.min_tls_version` | String | `"tls13"` | ➖ | `tls12` / `tls13` |
-| `tls.alpn_protocols` | Vec&lt;String&gt; | `["h2", "http/1.1"]` | ➖ | ALPN list |
-| `batch_generate.max_batch_size` | u32 | `100` | ✅ | Must be in 1..=10000 |
-
-Defaults are the values of `Config::default()`; **required** columns show whether the key
-carries a serde default. All 17 config structs carry `#[serde(deny_unknown_fields)]`, so an
-unknown key is rejected exactly like a missing required key: both fail parsing of the **entire**
-file and abort startup. A mistyped section name can no longer be silently dropped.
-
-### Validation Rules
-
-`Config::validate()` (`src/core/config/app_config.rs:173-293`) runs right after parsing; a
-violation makes `Config::load_from_file` return `ConfigError::InvalidValue`, which at server
-startup aborts the process with exit code 1, naming both the file path and the violated rule
-(e.g. `failed to load configuration from 'config/config.toml': Invalid configuration value:
-HTTP port must be between 1 and 65535`):
-
-| Rule | Source |
-|------|--------|
-| `http_port > 0`, `grpc_port > 0`, `shutdown_timeout_seconds > 0` | `Config::validate` |
-| `dc_id <= 31` | `Config::validate` |
-| `max_connections > 0`, `min_connections <= max_connections`, `acquire_timeout_seconds > 0` | `Config::validate` |
-| `rate_limit.enabled` ⇒ `default_rps > 0`, `burst_size > 0`, `burst_size <= 10 × default_rps` | `Config::validate` |
-| `algorithm.default ∈ {segment, snowflake, uuid_v8}` | `Config::validate` |
-| `segment.min_step <= segment.max_step` and `min_step <= base_step <= max_step` | `Config::validate` |
-| `0.0 <= segment.switch_threshold <= 1.0` | `Config::validate` |
-| `snowflake.datacenter_id_bits + worker_id_bits + sequence_bits < 64` (default ⇒ 43 timestamp bits) | `Config::validate` |
-| `snowflake.clock_drift_threshold_ms > 0` | `Config::validate` |
-| `1 <= batch_generate.max_batch_size <= 10000` | `Config::validate` |
-
-> Full reference: [`config/config.toml`](config/config.toml) and
-> [CONFIG_MIGRATION_GUIDE.md](docs/CONFIG_MIGRATION_GUIDE.md).
-
-</details>
+**全量选项表（类型 / 默认值 / 是否必填）、`Config::validate()` 校验规则清单与各版本迁移操作，见 [🔧 配置迁移指南](docs/CONFIG_MIGRATION_GUIDE.md)。**
 
 ---
 
-## 🧪 Testing
+## 🌐 国际化
 
-<div align="center">
+Nebula ID 自 v0.2.0 起内置 ICU 国际化（`rust-i18n`），覆盖错误消息与日志的运行时翻译：
 
-### 🎯 Test Coverage
+| Locale 标签 | 语言 | locales 文件 | 状态 |
+|-------------|------|--------------|------|
+| `en` | English（默认） | `locales/en.yml` | ✅ 完整 |
+| `zh-CN` | 简体中文 | `locales/zh-CN.yml` | ✅ 完整 |
 
-</div>
+协商机制：`locale_middleware` 解析 HTTP `Accept-Language` 头（RFC 7231 §5.3.5），按 q-value 降序匹配首个受支持 locale（精确优先、其次前缀匹配），缺失时回退 `en`；业务 handler 经 `Extension<Locale>` 读取并翻译错误响应。`Locale` 派生自用户输入、可被伪造，**不得**用于认证、授权或任何安全决策。
 
-```bash
-# Run all tests
-cargo test --features etcd
-
-# Run with coverage
-cargo tarpaulin --out Html
-
-# Run specific test
-cargo test test_name
-
-# Run integration tests
-cargo test --test integration
-
-# Run pre-commit checks (format, lint, build, test, security, docs, coverage)
-./scripts/run.sh pre-commit
-```
-
-<details>
-<summary><b>📊 Test Statistics</b></summary>
-
-<br>
-
-| Category | Tests | Coverage |
-|----------|-------|----------|
-| Unit Tests | 4000+ | 89.91% |
-| Integration Tests | 42 | 89.91% |
-| **Total** | **4000+** | **89.91%** |
-
-> Since v0.2.0, the CI coverage gate has been raised to `--fail-under-lines 95` (see `.github/workflows/ci.yml`). Actual line coverage as of v0.2.0 release is 89.91%; the gate enforces the floor, not the current value.
-
-</details>
+curl 示例、请求头语义与 i18n 模块在架构中的位置，见 [📘 API 参考 · Accept-Language](docs/API_REFERENCE.md#accept-language-header) 与 [🏗️ 架构文档 · i18n 模块](docs/ARCHITECTURE.md#8-i18n-模块位置)。
 
 ---
 
-## 📊 Performance
+## 🛠️ scripts/run.sh 用法
 
-<div align="center">
+自 v0.2.0 起所有开发/部署脚本合并为统一入口 `scripts/run.sh`（旧脚本已重命名为 `_*_impl.sh` 内部实现，不再直接调用）：
 
-### ⚡ Benchmark Results
-
-</div>
-
-<table>
-<tr>
-<td width="50%">
-
-**ID Generation Throughput**
-
-```
-Segment: 100,000+ IDs/sec
-Snowflake: 1,000,000+ IDs/sec
-UUID v8: 500,000+ IDs/sec
-```
-
-</td>
-<td width="50%">
-
-**Latency (P99)**
-
-```
-Segment: ~0.5ms
-Snowflake: ~0.1ms
-UUID v8: ~0.05ms
-```
-
-</td>
-</tr>
-</table>
-
-<details>
-<summary><b>📈 Detailed Benchmarks</b></summary>
-
-<br>
+| 子命令 | 别名 | 作用 |
+|--------|------|------|
+| `deploy` | — | 通过 docker-compose 部署全栈（PostgreSQL + Redis + Etcd + App） |
+| `lint` / `pre-commit` | 互为别名 | 本地 CI 预检（fmt + clippy + test + 安全/文档/覆盖率） |
+| `redis-test` | — | Redis 集成测试（需 Redis 监听 6379） |
+| `api-test` | — | API 端点测试，可选 `server_url` 参数 |
+| `install-hooks` | — | 安装 git pre-commit hooks |
+| `help` | `--help`、`-h` | 显示 Usage |
 
 ```bash
-# Run the benchmarks shipped by this repository
-cargo bench --bench i18n
-```
-
-The only Criterion target declared in `Cargo.toml` is `i18n` (`benches/i18n.rs`);
-there is no ID-generation benchmark harness, so no `*_next_id` numbers are published here.
-
-</details>
-
----
-
-## 🔒 Security
-
-<div align="center">
-
-### 🛡️ Security Features
-
-</div>
-
-<table>
-<tr>
-<td align="center" width="33%">
-<img src="https://img.icons8.com/fluency/96/000000/lock.png" width="64" height="64"><br>
-<b>API Authentication</b><br>
-API key-based authentication with timing attack protection
-</td>
-<td align="center" width="33%">
-<img src="https://img.icons8.com/fluency/96/000000/security-checked.png" width="64" height="64"><br>
-<b>Rate Limiting</b><br>
-Configurable rate limits to prevent abuse
-</td>
-<td align="center" width="33%">
-<img src="https://img.icons8.com/fluency/96/000000/privacy.png" width="64" height="64"><br>
-<b>Audit Logging</b><br>
-Track all ID generation operations
-</td>
-</tr>
-</table>
-
-<details>
-<summary><b>🔐 Security Details</b></summary>
-
-<br>
-
-### Security Measures
-
-- ✅ **API Key Authentication** - Secure API access with API key authentication using constant-time comparison to prevent timing attacks
-- ✅ **Rate Limiting** - Configurable rate limits to prevent abuse and DoS attacks (max batch size: 100)
-- ✅ **Audit Logging** - Full operation tracking for compliance and monitoring with IP spoofing protection
-- ✅ **TLS Support** - HTTPS and gRPCS for encrypted communication (TLS 1.2/1.3)
-- ✅ **CORS Restrictions** - Strict cross-origin resource sharing policies
-- ✅ **Security Headers** - X-Content-Type-Options, X-Frame-Options, CSP, HSTS, X-XSS-Protection, Referrer-Policy
-- ✅ **IP Spoofing Protection** - Trusted proxy validation for X-Forwarded-For headers
-
-### Feature Flags
-
-```toml
-# Cargo package name is `nebulaid`; the audit logger and TLS are runtime
-# configuration ([auth] / [tls]), not Cargo features.
-[dependencies]
-nebulaid = { version = "0.2", features = ["sdk"] }      # embedded client facade
-# nebulaid = { version = "0.2", features = ["etcd"] }   # distributed coordination
-# Available features: postgresql (default), etcd, garrison-auth (default),
-# sdk, http/grpc/openapi (sdforge mirrors, http+grpc default), integration-tests.
-```
-
-</details>
-
----
-
-## 🌐 Internationalization
-
-<div align="center">
-
-### 🌍 ICU i18n Support (new in v0.2.0)
-
-</div>
-
-Nebula ID ships with built-in ICU internationalization since v0.2.0, powered by [`rust-i18n`](https://crates.io/crates/rust-i18n) `3.1`. It covers runtime translation of error messages and log entries.
-
-**Supported locale matrix:**
-
-| Locale tag | Language | Locales file | Status |
-|------------|----------|--------------|--------|
-| `en` | English (default) | `locales/en.yml` | ✅ Complete |
-| `zh-CN` | Simplified Chinese | `locales/zh-CN.yml` | ✅ Complete |
-
-**Negotiation flow:**
-
-1. The client declares preferred languages via the HTTP `Accept-Language` header (per [RFC 7231 5.3.5](https://www.rfc-editor.org/rfc/rfc7231#section-5.3.5)), e.g. `Accept-Language: zh-CN,zh;q=0.9,en;q=0.8`.
-2. `locale_middleware` (`src/server/middleware/locale.rs`) parses the header, sorts candidates by descending q-value, and picks the first supported locale (exact match wins; otherwise prefix match such as `zh` → `zh-CN`).
-3. On missing header or no match, the default locale `en` is used.
-4. Business handlers read the negotiated result via `Extension<Locale>` and translate error response messages with `translate_with_locale_args`.
-
-**curl examples:**
-
-```bash
-# Chinese error response
-curl -H "Accept-Language: zh-CN" http://localhost:8080/api/v1/invalid
-# {
-#   "code": 404,
-#   "message": "未找到路径",
-#   "details": "..."
-# }
-
-# English error response (default)
-curl http://localhost:8080/api/v1/invalid
-# {
-#   "code": 404,
-#   "message": "Path not found",
-#   "details": "..."
-# }
-```
-
-> **Security note**: `Locale` is derived from user input (the `Accept-Language` header) and is forgeable. Do **not** use it for any authentication, authorization, or security decision it is intended solely for content negotiation.
-
-See [API Reference  Accept-Language](docs/API_REFERENCE.md#accept-language-header) and [Architecture  i18n module](docs/ARCHITECTURE.md#8-i18n-module-position) for details.
-
----
-
-## 🛠️ scripts/run.sh Usage
-
-<div align="center">
-
-### 📦 Unified Script Entry (new in v0.2.0)
-
-</div>
-
-Since v0.2.0 all development/deployment scripts are merged into a single entry point `scripts/run.sh`, replacing the scattered v0.1.x scripts (`deploy`, `pre-commit-check`, `redis_test`, `test_api`, `install-pre-commit-hooks`, etc.). The legacy scripts have been renamed to `_*_impl.sh` internal implementations and are no longer invoked directly.
-
-**Subcommand overview:**
-
-| Subcommand | Alias | Purpose | Internal impl |
-|------------|-------|---------|---------------|
-| `deploy` | — | Deploy Nebula ID via docker-compose | `_deploy_impl.sh` |
-| `lint` | `pre-commit` | Run local CI pre-checks (fmt + clippy + test + security/docs/coverage) | `_pre_commit_impl.sh` |
-| `redis-test` | — | Run Redis integration tests | `_redis_test_impl.sh` |
-| `api-test` | — | Run API endpoint tests, optional `server_url` argument | `tests/api_test.sh` |
-| `install-hooks` | — | Install git pre-commit hooks | `_install_hooks_impl.sh` |
-| `pre-commit` | `lint` | Same as `lint`, runs local CI pre-checks | `_pre_commit_impl.sh` |
-| `help` | `--help`, `-h` | Show usage information | — |
-
-**Examples:**
-
-```bash
-# Show help
-./scripts/run.sh help
-
-# Deploy (docker-compose full stack)
-./scripts/run.sh deploy
-
-# Local CI pre-checks (must run before commit)
-./scripts/run.sh pre-commit
-# Or the equivalent alias
-./scripts/run.sh lint
-
-# Redis integration tests (requires Redis listening on 6379)
-./scripts/run.sh redis-test
-
-# API endpoint tests (defaults to http://localhost:8080)
-./scripts/run.sh api-test
-# Specify server URL
+./scripts/run.sh pre-commit            # 提交前必跑
 ./scripts/run.sh api-test http://localhost:8080
-
-# Install git pre-commit hooks
-./scripts/run.sh install-hooks
 ```
 
-**GitHub Actions integration:**
-
-CI calls go through the same entry point (see `.github/workflows/ci.yml`, `release.yml`, `health-check.yml`), keeping local and CI behavior identical.
-
-See [Deployment Guide  scripts/run.sh Subcommands](docs/DEPLOYMENT.md#8-scriptsrunsh-subcommands) for details.
+CI（`ci.yml` / `release.yml` / `health-check.yml`）也通过同一入口调用，本地与 CI 行为一致。各子命令的内部实现与完整参数见 [🚀 部署指南 · scripts/run.sh 子命令](docs/DEPLOYMENT.md#8-scriptsrunsh-子命令)。
 
 ---
 
-## 🗺️ Roadmap
+## 🧪 测试
 
-<div align="center">
+### 🎯 测试策略
 
-### 🎯 Development Timeline
+测试分层覆盖：`src/` 内联单元测试（`#[cfg(test)]`）、`src/core/tests/` 下按层组织的 E2E 模块（算法、认证、缓存、降级、gRPC 监控、基础设施、服务层等 13 个文件）、`tests/i18n_e2e.rs` 端到端 i18n 测试、`tests/*.sh` shell 端到端脚本（API、降级、分布式、数据库并发）与 Criterion 基准（`benches/i18n.rs`）。逐域场景矩阵与文件映射见 [🧪 测试场景文档](docs/TEST_SCENARIOS.md)。
 
-</div>
+### ▶️ 运行命令（与 CI 一致）
 
-<table>
+```bash
+# 全量测试（CI 矩阵按 default / postgresql / etcd 三档运行）
+cargo test --package nebulaid --features etcd
+
+# Lint 与格式门禁
+cargo fmt --package nebulaid -- --check
+cargo clippy --package nebulaid --features etcd -- -D warnings
+
+# 覆盖率门禁：行覆盖率 ≥ 95%（排除 server/proto/ 生成代码）
+cargo llvm-cov --package nebulaid --features etcd \
+  --fail-under-lines 95 --ignore-filename-regex "server/proto/"
+
+# SDK 特性面（独立 CI job）
+cargo clippy --package nebulaid --features sdk -- -D warnings
+cargo test --package nebulaid --features sdk
+
+# 基准测试
+cargo bench --bench i18n
+
+# shell 端到端脚本
+./scripts/run.sh api-test
+```
+
+### 📊 测试规模
+
+截至 v0.2.x 工作区：约 1780 个 Rust 测试函数（`src/` 内联 + `src/core/tests/` E2E 模块 + `tests/i18n_e2e.rs`）、4 个 shell 端到端脚本、1 组 Criterion 基准（i18n 热路径，4 个基准函数）。CI 覆盖率门禁为行覆盖率 ≥ 95%，pre-push 钩子另执行 ≥ 80% 的本地门禁；v0.2.0 发布时实际行覆盖率 89.91%。逐模块统计与统计口径见 [🧪 测试场景文档 · 统计汇总](docs/TEST_SCENARIOS.md#统计汇总)。
+
+---
+
+## 📊 性能
+
+本仓库唯一声明的 Criterion 基准是 i18n 热路径（`benches/i18n.rs`，`cargo bench --bench i18n` 复现），覆盖翻译查表、带参翻译、错误本地化与 Accept-Language 解析；ID 生成吞吐暂无公开基准数字（尚无对应基准框架，发布前请以自身负载实测）。设计层面的热路径要点——Segment 双缓冲与动态步长、Snowflake 串行化时间戳迁移、p50/p99/p999 环形缓冲分位数、release profile（thin LTO + `panic = "abort"`）——见 [📈 性能指南](docs/PERFORMANCE.md)。
+
+---
+
+## 🔒 安全
+
+### 🛡️ 安全设计
+
+安全设计围绕「认证 → 流控 → 传输 → 审计」展开：garrison API key 认证（Argon2id 哈希 + 常量时间比较 + 缓存 + 轮换宽限期，超 30 天钳制）、令牌桶限流（真实挂载 HTTP 栈，429 携带规范化响应头）、rustls TLS（`tls13` 时拒绝低于 1.3 的握手）、安全响应头与严格 CORS、可信代理 X-Forwarded-For 校验、gRPC 认证失败码区分（`Unauthenticated` / `PermissionDenied`）、单 admin key 守卫与 biz-tags 租户隔离（IDOR 修复）。逐项机制的代码级细节见 [🔒 安全文档](docs/SECURITY.md)。
+
+### ⛓️ 供应链与门禁
+
+CI 五阶段门禁（fmt + clippy → cargo-deny → cargo-audit `--deny warnings` → 多 feature 矩阵测试 + 覆盖率 ≥ 95% → 聚合 gate）与 CodeQL 静态分析、pre-commit 的 gitleaks 私钥扫描、pre-push 的测试 + 覆盖率门禁共同构成供应链防线，完整清单见 [🔒 安全文档 · 供应链与门禁](docs/SECURITY.md#供应链与门禁)。
+
+### 🚨 报告安全漏洞
+
+请勿通过公开 issue 报告安全漏洞。请使用 GitHub [Security Advisories](https://github.com/Kirky-X/NebulaId/security/advisories/new) 私密披露通道提交报告。完整政策见 [SECURITY.md](docs/SECURITY.md)。
+
+---
+
+## 🗺️ 开发路线图
+
+<table style="width:100%; border-collapse: collapse">
+<tr><th style="text-align:center">状态</th><th style="text-align:left">方向</th><th style="text-align:left">条目</th></tr>
+<tr><td align="center">✅</td><td>核心算法</td><td>Segment 双缓冲与动态步长、Snowflake、UUID v8、算法路由与降级链</td></tr>
+<tr><td align="center">✅</td><td>服务与协议</td><td>HTTP + gRPC 双协议、OpenAPI 文档、TLS、限流、garrison API key 认证、审计日志</td></tr>
+<tr><td align="center">✅</td><td>可观测与国际化</td><td>逐算法 p50/p99/p999 指标、健康检查、OTLP tracing、en / zh-CN i18n</td></tr>
+<tr><td align="center">✅</td><td>质量门禁</td><td>CI 五阶段门禁、覆盖率 ≥ 95%、cargo-deny / cargo-audit / CodeQL、约 1780 个测试</td></tr>
+<tr><td align="center">🚧</td><td>SDK 与分布式协调</td><td><code>sdk</code> facade（trait-kit 装配）持续强化；<code>etcd</code> 协调的生产化验证（feature 默认关闭）</td></tr>
+<tr><td align="center">📋</td><td>性能工程</td><td>ID 生成吞吐基准框架（criterion）、发布基线记录、批量生成调优</td></tr>
+<tr><td align="center">📋</td><td>云原生与容灾</td><td>Kubernetes Operator、多数据中心与自动故障转移、动态算法切换</td></tr>
+</table>
+
+---
+
+## 🤝 参与贡献
+
+详细的贡献流程与代码规范请参阅 [🤝 贡献指南](docs/CONTRIBUTING.md)。
+
+### 🛠️ 开发环境
+
+提交前运行 `./scripts/run.sh pre-commit`（或 lefthook 等价钩子：pre-commit 执行 rustfmt、clippy 与 gitleaks 私钥扫描，pre-push 执行 `cargo test --package nebulaid --features etcd` 与覆盖率门禁）；commit message 遵循 Conventional Commits。完整环境搭建步骤见 [🤝 贡献指南 · 快速开始](docs/CONTRIBUTING.md#快速开始)。
+
+### 💖 贡献方式
+
+<table style="width:100%; border-collapse: collapse">
 <tr>
-<td width="50%">
+<td width="33%" align="center" style="padding: 16px">
 
-### ✅ Completed
+### 🐛 报告 Bug
 
-- [x] Core ID generation algorithms
-- [x] Segment algorithm with double buffering
-- [x] Snowflake algorithm
-- [x] UUID v8 implementation
-- [x] Distributed coordination with Etcd
+发现问题？<br>
+<a href="https://github.com/Kirky-X/NebulaId/issues/new">创建 Issue</a>
 
 </td>
-<td width="50%">
+<td width="33%" align="center" style="padding: 16px">
 
-### 🚧 In Progress
+### 💡 功能建议
 
-- [ ] Enhanced monitoring and alerting
-- [ ] Multi-datacenter support
-- [ ] Performance optimization
-- [ ] Client SDK improvements
+有好想法？<br>
+<a href="https://github.com/Kirky-X/NebulaId/discussions">开始讨论</a>
 
 </td>
-</tr>
-<tr>
-<td width="50%">
+<td width="33%" align="center" style="padding: 16px">
 
-### 📋 Planned
+### 🔧 提交 PR
 
-- [ ] Automatic failover
-- [ ] Dynamic algorithm switching
-- [ ] Custom ID format support
-- [ ] Cloud provider integrations
-
-</td>
-<td width="50%">
-
-### 💡 Future Ideas
-
-- [ ] Kubernetes operator
-- [ ] Multi-region deployment
-- [ ] GraphQL API
-- [ ] ID namespace management
+想贡献代码？<br>
+<a href="https://github.com/Kirky-X/NebulaId/pulls">Fork 并提交 PR</a>
 
 </td>
 </tr>
@@ -1110,190 +490,81 @@ See [Deployment Guide  scripts/run.sh Subcommands](docs/DEPLOYMENT.md#8-scriptsr
 
 ---
 
-## 🤝 Contributing
+## 📋 更新日志
 
-<div align="center">
+完整版本历史见 [📋 更新日志](docs/CHANGELOG.md)（遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 格式，语义化版本）。
 
-### 💖 We Love Contributors!
+| 版本 | 日期 | 要点 |
+|------|------|------|
+| Unreleased | — | SDK 迁移 trait-kit 装配（`NebulaIdKit`）、gRPC 全 RPC 认证、限流真实挂载、TLS fail-fast、配置 `deny_unknown_fields` + 退出码 1、密钥轮换宽限期 |
+| 0.2.0 | 2026-07-23 | garrison DAO 基础设施、e2e 套件扩充（95% 模块覆盖）、dbnexus / sdforge / confers 架构接管、3 项 strix 安全修复 |
 
-</div>
+---
 
-<table>
+## 📄 许可证
+
+本项目采用 `MIT OR Apache-2.0` 双许可证，您可任选其一使用。详见 [LICENSE](LICENSE)。
+
+---
+
+## 🙏 致谢
+
+### 🌟 核心依赖
+
+Nebula ID 站在以下优秀开源项目的肩膀上：
+
+| 依赖 | 用途 |
+|------|------|
+| [tokio](https://github.com/tokio-rs/tokio) | 异步运行时 |
+| [axum](https://github.com/tokio-rs/axum) | HTTP 框架 |
+| [tonic](https://github.com/hyperium/tonic) | gRPC 框架 |
+| [sea-orm](https://github.com/SeaQL/sea-orm) | 数据库 ORM |
+| [uuid](https://github.com/uuid-rs/uuid) | UUID 生成 |
+| [rustls](https://github.com/rustls/rustls) | TLS 实现 |
+| [confers](https://crates.io/crates/confers) | 配置管理（Kirky.X 自研生态） |
+| [dbnexus](https://crates.io/crates/dbnexus) | 数据库抽象（Kirky.X 自研生态） |
+| [sdforge](https://crates.io/crates/sdforge) | 服务框架与 OpenAPI（Kirky.X 自研生态） |
+| [garrison](https://crates.io/crates/garrison) | API key 认证（Kirky.X 自研生态） |
+| [trait-kit](https://crates.io/crates/trait-kit) | 模块接口与 Kit 装配（Kirky.X 自研生态） |
+| [limiteron](https://crates.io/crates/limiteron) | 限流原语（Kirky.X 自研生态） |
+| [oxcache](https://crates.io/crates/oxcache) | 多级缓存（Kirky.X 自研生态） |
+| [rust-i18n](https://crates.io/crates/rust-i18n) | ICU 国际化 |
+
+### 💝 特别感谢
+
+感谢 Rust 社区与所有 [贡献者](https://github.com/Kirky-X/NebulaId/graphs/contributors)。
+
+---
+
+## 📞 联系与支持
+
+<table style="width:100%; max-width: 600px">
 <tr>
-<td width="33%" align="center">
-
-### 🐛 Report Bugs
-
-Found a bug?<br>
-[Create an Issue](https://github.com/nebula-id/nebula-id/issues)
-
+<td align="center" width="33%">
+<a href="https://github.com/Kirky-X/NebulaId/issues"><b style="color:#991B1B">Issues</b></a><br>
+<span style="color:#64748B">报告问题和 Bug</span>
 </td>
-<td width="33%" align="center">
-
-### 💡 Request Features
-
-Have an idea?<br>
-[Start a Discussion](https://github.com/nebula-id/nebula-id/discussions)
-
+<td align="center" width="33%">
+<a href="https://github.com/Kirky-X/NebulaId/discussions"><b style="color:#1E40AF">讨论区</b></a><br>
+<span style="color:#64748B">提问和分享想法</span>
 </td>
-<td width="33%" align="center">
-
-### 🔧 Submit PRs
-
-Want to contribute?<br>
-[Fork & PR](https://github.com/nebula-id/nebula-id/pulls)
-
+<td align="center" width="33%">
+<a href="https://github.com/Kirky-X/NebulaId"><b style="color:#1E293B">GitHub</b></a><br>
+<span style="color:#64748B">查看源代码</span>
 </td>
 </tr>
 </table>
 
-<details>
-<summary><b>📝 Contribution Guidelines</b></summary>
+---
 
-<br>
+## ⭐ Star 历史
 
-### How to Contribute
+[![Star History Chart](https://api.star-history.com/svg?repos=Kirky-X/NebulaId&type=Date)](https://star-history.com/#Kirky-X/NebulaId&Date)
 
-1. **Fork** the repository
-2. **Clone** your fork: `git clone https://github.com/yourusername/nebula-id.git`
-3. **Create** a branch: `git checkout -b feature/amazing-feature`
-4. **Make** your changes
-5. **Test** your changes: `cargo test --features etcd`
-6. **Commit** your changes: `git commit -m 'Add amazing feature'`
-7. **Push** to branch: `git push origin feature/amazing-feature`
-8. **Create** a Pull Request
+如果这个项目对您有帮助，请考虑给它一个 ⭐️！
 
-### Code Style
-
-- Follow Rust standard coding conventions
-- Run `cargo fmt` and `cargo clippy` before committing
-- Write comprehensive tests
-- Update documentation
-
-</details>
+**由 Kirky.X 构建**
 
 ---
 
-## 📄 License
-
-<div align="center">
-
-This project is licensed under dual license:
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE-APACHE)
-
-You may choose either license for your use.
-
-</div>
-
----
-
-## 🙏 Acknowledgments
-
-<div align="center">
-
-### Built With Amazing Tools
-
-</div>
-
-<table>
-<tr>
-<td align="center" width="25%">
-<a href="https://www.rust-lang.org/">
-<img src="https://www.rust-lang.org/static/images/rust-logo-blk.svg" width="64" height="64"><br>
-<b>Rust</b>
-</a>
-</td>
-<td align="center" width="25%">
-<a href="https://github.com/">
-<img src="https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" width="64" height="64"><br>
-<b>GitHub</b>
-</a>
-</td>
-<td align="center" width="25%">
-<img src="https://img.icons8.com/fluency/96/000000/code.png" width="64" height="64"><br>
-<b>Open Source</b>
-</td>
-<td align="center" width="25%">
-<img src="https://img.icons8.com/fluency/96/000000/community.png" width="64" height="64"><br>
-<b>Community</b>
-</td>
-</tr>
-</table>
-
-### Special Thanks
-
-- 🌟 **Dependencies** - Built on these amazing projects:
-  - [tokio](https://github.com/tokio-rs/tokio) - Async runtime
-  - [axum](https://github.com/tokio-rs/axum) - HTTP framework
-  - [tonic](https://github.com/hyperium/tonic) - gRPC framework
-  - [sea-orm](https://github.com/SeaQL/sea-orm) - Database ORM
-  - [etcd-client](https://github.com/etcd-rs/etcd-client) - Etcd client (optional, `etcd` feature)
-  - [uuid](https://github.com/uuid-rs/uuid) - UUID generation
-  - [confers](https://crates.io/crates/confers) - Configuration management
-  - [oxcache](https://crates.io/crates/oxcache) - Multi-level cache
-  - [dbnexus](https://crates.io/crates/dbnexus) - Database abstraction
-  - [limiteron](https://crates.io/crates/limiteron) - Rate limiting
-  - [sdforge](https://crates.io/crates/sdforge) - Service discovery
-  - [prometheus-client](https://github.com/prometheus/client_rust) - Metrics
-
-- 👥 **Contributors** - Thanks to all our amazing contributors!
-
----
-
-## 📞 Contact & Support
-
-<div align="center">
-
-<table>
-<tr>
-<td align="center" width="50%">
-<a href="https://github.com/nebula-id/nebula-id/issues">
-<img src="https://img.icons8.com/fluency/96/000000/bug.png" width="48" height="48"><br>
-<b>Issues</b>
-</a><br>
-Report bugs & issues
-</td>
-<td align="center" width="50%">
-<a href="https://github.com/nebula-id/nebula-id/discussions">
-<img src="https://img.icons8.com/fluency/96/000000/chat.png" width="48" height="48"><br>
-<b>Discussions</b>
-</a><br>
-Ask questions & share ideas
-</td>
-</tr>
-</table>
-
-### Stay Connected
-
-[![GitHub](https://img.shields.io/badge/GitHub-Follow-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/nebula-id)
-[![Crates.io](https://img.shields.io/badge/Crates.io-Version-DF5500?style=for-the-badge&logo=rust&logoColor=white)](https://crates.io/crates/nebula-id)
-
-</div>
-
----
-
-## ⭐ Star History
-
-<div align="center">
-
-[![Star History Chart](https://api.star-history.com/svg?repos=nebula-id/nebula-id&type=Date)](https://star-history.com/#nebula-id/nebula-id&Date)
-
-</div>
-
----
-
-<div align="center">
-
-### 💝 Support This Project
-
-If you find this project useful, please consider giving it a ⭐️!
-
-**Built with ❤️ by the Nebula ID Team**
-
-[⬆ Back to Top](#-nebula-id)
-
----
-
-<sub>© 2025 Nebula ID. All rights reserved.</sub>
+<sub>© 2026 Kirky.X. 保留所有权利。</sub>

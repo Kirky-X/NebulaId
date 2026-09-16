@@ -1,16 +1,12 @@
-<div align="center">
+# 📘 Nebula ID API Reference
 
-# 📘 API Reference
+> Complete API documentation for Nebula ID: HTTP / gRPC endpoints, request headers, error codes, and type definitions.
 
-### Complete API Documentation for Nebula ID
-
-[🏠 Home](../README.md) • [📖 User Guide](../USER_GUIDE.md) • [🏗️ Architecture](ARCHITECTURE.md)
+[🏠 Home](../README.md) • [📖 User Guide](USER_GUIDE.md) • [🏗️ Architecture](ARCHITECTURE.md)
 
 ---
 
-</div>
-
-## 📋 Table of Contents
+## 📋 目录
 
 - [Overview](#overview)
 - [Core API](#core-api)

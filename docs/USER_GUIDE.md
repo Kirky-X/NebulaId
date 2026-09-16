@@ -1,14 +1,10 @@
-<div align="center">
+# 📖 Nebula ID 用户指南
 
-# 📖 User Guide
+> 完整的 Nebula ID 使用指南：从安装入门到进阶用法与最佳实践。
 
-### 完整的 Nebula ID 使用指南
-
-[🏠 首页](../README.md) • [📚 文档](../README.md) • [🎯 示例](../examples/) • [❓ 常见问题](FAQ.md)
+[🏠 首页](../README.md) • [🎯 示例](../examples/) • [❓ 常见问题](FAQ.md)
 
 ---
-
-</div>
 
 ## 📋 目录
 

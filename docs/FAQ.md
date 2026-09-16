@@ -1,16 +1,12 @@
-<div align="center">
+# ❓ Nebula ID FAQ
 
-# ❓ Frequently Asked Questions (FAQ)
-
-### Quick Answers to Common Questions about Nebula ID
+> Quick answers to common questions about Nebula ID.
 
 [🏠 Home](../README.md) • [📖 User Guide](USER_GUIDE.md) • [🔧 API Reference](API_REFERENCE.md)
 
 ---
 
-</div>
-
-## 📋 Table of Contents
+## 📋 目录
 
 - [General Questions](#general-questions)
 - [Installation & Setup](#installation--setup)

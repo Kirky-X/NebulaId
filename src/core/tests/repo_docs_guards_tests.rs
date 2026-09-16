@@ -35,7 +35,7 @@ fn all_features_flag() -> String {
 /// 扫描范围：面向用户的 README、CI 配置目录、全部文档目录。
 fn scanned_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    for name in ["README.md", "README_zh.md"] {
+    for name in ["README.md", "README_EN.md"] {
         let path = root.join(name);
         if path.is_file() {
             files.push(path);

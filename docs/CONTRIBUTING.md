@@ -1,14 +1,10 @@
-<div align="center">
+# 🤝 Nebula ID 贡献指南
 
-# 🤝 贡献指南
+> 加入我们，共同打造卓越的分布式 ID 生成系统！欢迎 Issue、讨论与 PR。
 
-### 加入我们，共同打造卓越的分布式 ID 生成系统！
-
-[🏠 主页](README.md) • [📖 文档](../USER_GUIDE.md) • [💬 讨论](../../discussions)
+[🏠 主页](../README.md) • [📖 用户指南](USER_GUIDE.md) • [💬 讨论](https://github.com/Kirky-X/NebulaId/discussions)
 
 ---
-
-</div>
 
 ## 🎯 欢迎贡献者！
 

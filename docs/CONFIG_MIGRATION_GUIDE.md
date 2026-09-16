@@ -1,4 +1,13 @@
-# Nebula ID 配置迁移指南
+# 🔧 Nebula ID 配置迁移指南
+
+## 📋 目录
+
+- [安全加固更新 (v0.1.2)](#安全加固更新-v012)
+- [algorithm_type ENUM 迁移（uuid_v7 / uuid_v4 -> uuid_v8）](#algorithm_type-enum-迁移uuid_v7--uuid_v4---uuid_v8)
+- [密钥轮换宽限期与配置 fail-fast（未发布版本）](#密钥轮换宽限期与配置-fail-fast未发布版本)
+- [配置全表（全量选项与校验规则）](#配置全表全量选项与校验规则)
+
+---
 
 ## 安全加固更新 (v0.1.2)
 
@@ -752,3 +761,115 @@ WHERE role = 'admin' AND enabled;
   （`src/core/database/connection.rs:90`）没有 feature 门控，只是把 `database` 当作 URL
   传给 `Database::connect` —— 在没有 sqlite 驱动的构建里这一步必然失败。
   该文件能通过解析与 `validate`，却不可能被真实二进制跑起来。
+
+---
+
+## 配置全表（全量选项与校验规则）
+
+`Config` 覆盖 `app`、`database`、`etcd`、`auth`、`algorithm`、`monitoring`、`logging`、
+`rate_limit`、`tls`、`batch_generate` 十个段，对它们都**没有**标注 `#[serde(default)]`
+（`src/core/config/app_config.rs:37-64`）。缺任一必填字段会让**整份**文件解析失败，
+**未知键**同样会被拒绝 —— 17 个配置结构体全部带 `deny_unknown_fields`。解析失败会让进程
+以退出码 1 终止（`resolve_startup_config`，`src/main.rs:542`），不再退回
+`Config::default()`；只有在既没给 `--config`、`config/config.toml` 也确实不存在时，才使用
+内置默认配置，并额外输出一条 `warn`。只有 `[redis]` 与 `[hot_reload]` 可以整体省略。
+
+> ⚠️ **代码事实核对**：服务端启动时 `Config::merge()` 会用
+> 「环境变量配置」的 `algorithm.segment` / `algorithm.snowflake` /
+> `algorithm.uuid_v8` 覆盖文件值，而它们恒为默认值
+> （`src/core/config/app_config.rs:393-395`，由 `src/main.rs:559` 调用）。
+> 合并后只有 `algorithm.default` 保留；在该合并逻辑修正前，三个子表请在代码里调。
+
+### 选项总表
+
+| 选项 | 类型 | `Config::default()` | 文件内必填 | 说明 |
+|--------|------|---------------------|--------------|------|
+| `app.name` | String | `"nebula-id"` | ✅ | 应用名称 |
+| `app.host` | String | `"0.0.0.0"` | ✅ | 服务器绑定地址 |
+| `app.http_port` | u16 | `8080` | ✅ | HTTP 端口，必须 > 0 |
+| `app.grpc_port` | u16 | `9091` | ✅ | gRPC 端口，必须 > 0 |
+| `app.dc_id` | u8 | `0` | ✅ | 数据中心 ID，必须 ≤ 31 |
+| `app.worker_id` | u8 | `0` | ✅ | 工作节点 ID |
+| `app.shutdown_timeout_seconds` | u64 | `30` | ➖ | 优雅停机超时，必须 > 0 |
+| `database.engine` | String | `"postgresql"` | ✅ | `postgresql` / `postgres` / `mysql` / `sqlite` |
+| `database.host` / `port` / `username` / `password` / `database` | — | `localhost` / `5432` / `idgen` / `$NEBULA_DATABASE_PASSWORD` / `idgen` | ✅ | 逐项连接参数 |
+| `database.url` | String | `""` | ➖ | 上面各项的整串替代写法 |
+| `database.max_connections` | u32 | `100` | ✅ | 连接池大小，必须 > 0 |
+| `database.min_connections` | u32 | `10` | ✅ | 必须 ≤ `max_connections` |
+| `database.acquire_timeout_seconds` | u64 | `30` | ✅ | 必须 > 0 |
+| `database.idle_timeout_seconds` | u64 | `300` | ✅ | 空闲连接超时 |
+| `redis` | 段 | — | ➖ | 整段可省略 |
+| `redis.url` | String | `$REDIS_URL` 或 `redis://localhost:6379` | ✅（写了 `[redis]` 就必填） | Redis 连接 URL |
+| `redis.pool_size` / `key_prefix` / `ttl_seconds` | u32 / String / u64 | `16` / `"nebula:id:"` / `600` | ➖ | 缓存调优 |
+| `etcd.endpoints` | Vec&lt;String&gt; | `["etcd:2379"]` | ✅ | `[]` 时退回 `LocalDistributedLock` |
+| `etcd.connect_timeout_ms` / `watch_timeout_ms` | u64 | `5000` / `5000` | ✅ | etcd 超时 |
+| `auth.enabled` | bool | `true` | ✅ | API Key 中间件总开关 |
+| `auth.cache_ttl_seconds` | u64 | `300` | ✅ | 认证缓存 TTL |
+| `auth.api_keys` | 数组 | `[]` | ➖ | 条目字段：`key_id`、`key_secret`、`workspace`、`role`、`rate_limit`、`name`（全部必填）。启动时**只创建第一条**；`workspace` 必须是 UUID 字符串或 `global`；`role` 仅精确取 `admin` 时才建管理员 |
+| `auth.api_key_salt` | String | `$NEBULA_API_KEY_SALT` 或 `""` | ➖ | 密钥哈希盐值 |
+| `auth.key_rotation_grace_period_seconds` | u64 | `0`（关闭宽限期） | ➖ | 设为 `> 0` 才在轮换后保留上一代凭证该秒数；超过 30 天会被钳制到 30 天并告警；需库中存在宽限期两列，启动期迁移会自动补齐（仅数据库账号无 DDL 权限时需手工执行，见本文「密钥轮换宽限期」章节） |
+| `algorithm.default` | String | `"segment"` | ✅ | `segment` / `snowflake` / `uuid_v8` |
+| `algorithm.segment.base_step` / `min_step` / `max_step` / `switch_threshold` | u64 / u64 / u64 / f64 | `1000` / `500` / `100000` / `0.1` | ✅ | 动态步长（注意上文的 `merge` 说明） |
+| `algorithm.snowflake.datacenter_id_bits` / `worker_id_bits` / `sequence_bits` / `clock_drift_threshold_ms` | u8 / u8 / u8 / u64 | `3` / `8` / `10` / `1000` | ✅ | 位布局；余量为时间戳位 |
+| `algorithm.uuid_v8.enabled` | bool | `true` | ✅ | UUID v8 开关 |
+| `monitoring.metrics_enabled` / `metrics_path` / `tracing_enabled` / `otlp_endpoint` | bool / String / bool / String | `true` / `"/metrics"` / `false` / `""` | ✅ | Prometheus + OTLP |
+| `logging.level` / `format` / `include_location` | String / String / bool | `"info"` / `"json"` / `true` | ✅ | `level`: trace…error，`format`: json/pretty |
+| `rate_limit.enabled` | bool | `true` | ✅ | 限流总开关 |
+| `rate_limit.default_rps` | u32 | `10000` | ✅ | 每秒请求数，启用时必须 > 0 |
+| `rate_limit.burst_size` | u32 | `100` | ✅ | 启用时必须 ≤ 10 × `default_rps` |
+| `hot_reload` | 段 | `auto_watch_enabled = false` | ➖ | 整段可省略 |
+| `tls.enabled` / `cert_path` / `key_path` / `http_enabled` / `grpc_enabled` | bool / String / String / bool / bool | `false` / `""` / `""` / `false` / `false` | ✅ | HTTP 与 gRPC 的 TLS |
+| `tls.ca_path` | String? | `null` | ➖ | 可选 CA |
+| `tls.min_tls_version` | String | `"tls13"` | ➖ | `tls12` / `tls13` |
+| `tls.alpn_protocols` | Vec&lt;String&gt; | `["h2", "http/1.1"]` | ➖ | ALPN 列表 |
+| `batch_generate.max_batch_size` | u32 | `100` | ✅ | 必须在 1..=10000 |
+
+默认值即 `Config::default()` 的取值；「文件内必填」表示该字段
+是否带 serde 默认值。17 个配置结构体全部带 `#[serde(deny_unknown_fields)]`，
+未知键的严重后果与缺必填键完全一样：两者都让**整份**文件解析失败并终止启动，
+段名拼错不再可能被静默丢弃。
+
+### 环境变量
+
+并不存在 `NEBULA_APP_*` / `NEBULA_AUTH_API_KEY` 这一族变量。真实机制只有两种：
+
+```bash
+# 1. 启动时由 `Config::load_from_env()` 覆盖到文件配置之上
+#    （只有与默认值不同的项才生效）：
+export APP_HOST="0.0.0.0"
+export APP_HTTP_PORT="8080"
+export APP_GRPC_PORT="9091"
+export DC_ID="0"
+export WORKER_ID="0"
+export DATABASE_URL="postgresql://idgen:pass@localhost:5432/idgen"
+export ETCD_ENDPOINTS="http://localhost:2379,http://localhost:22379"
+export RUST_LOG="info"
+
+# 2. 在文件里以 ${VAR} 引用，解析前先展开
+#    （`Config::expand_env_vars`）：
+export NEBULA_DATABASE_PASSWORD="..."   # [database].password / url
+export NEBULA_API_KEY_SALT="..."        # [auth].api_key_salt 回退值
+```
+
+### 校验规则
+
+解析成功后立刻执行 `Config::validate()`（`src/core/config/app_config.rs:173-293`）；违反
+即 `Config::load_from_file` 返回 `ConfigError::InvalidValue`，服务端启动会以退出码 1 终止，
+并在消息里同时给出文件路径与违规项（例如
+`failed to load configuration from 'config/config.toml': Invalid configuration value:
+HTTP port must be between 1 and 65535`）：
+
+| 约束 | 来源 |
+|------|------|
+| `http_port > 0`、`grpc_port > 0`、`shutdown_timeout_seconds > 0` | `Config::validate` |
+| `dc_id <= 31` | `Config::validate` |
+| `max_connections > 0`、`min_connections <= max_connections`、`acquire_timeout_seconds > 0` | `Config::validate` |
+| `rate_limit.enabled` ⇒ `default_rps > 0`、`burst_size > 0`、`burst_size <= 10 × default_rps` | `Config::validate` |
+| `algorithm.default ∈ {segment, snowflake, uuid_v8}` | `Config::validate` |
+| `segment.min_step <= segment.max_step` 且 `min_step <= base_step <= max_step` | `Config::validate` |
+| `0.0 <= segment.switch_threshold <= 1.0` | `Config::validate` |
+| `snowflake.datacenter_id_bits + worker_id_bits + sequence_bits < 64`（默认 ⇒ 43 位时间戳） | `Config::validate` |
+| `snowflake.clock_drift_threshold_ms > 0` | `Config::validate` |
+| `1 <= batch_generate.max_batch_size <= 10000` | `Config::validate` |
+
+> 完整参考：[`config/config.toml`](../config/config.toml)。

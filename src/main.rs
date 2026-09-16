@@ -519,6 +519,87 @@ fn validate_tls_required_in_production(
     ))
 }
 
+/// T016 —— etcd 协调组件装配产物（仅 etcd feature）。
+///
+/// `lock` 供仓储号段分配跨进程互斥；`client` 为共享长连接 etcd 客户端，
+/// 供 T017 worker 分配与 T027 健康巡检注入复用；`None` = 未配置 etcd 的单机模式。
+#[cfg(feature = "etcd")]
+struct CoordinationComponents {
+    lock: std::sync::Arc<dyn nebulaid::core::coordinator::DistributedLock + Send + Sync>,
+    // T017（worker_id 运行时分配）与 T027（健康巡检注入）接线后移除 allow。
+    #[allow(dead_code)]
+    client: Option<std::sync::Arc<dyn nebulaid::core::coordinator::EtcdClientOps>>,
+}
+
+/// T016 —— etcd 协调组件装配（fail-closed）。
+///
+/// 规则：
+/// - 未配置 etcd endpoints → 单机部署合法，返回 `LocalDistributedLock`
+///   （`client` 为 `None`），不拒绝启动；
+/// - 配置了 endpoints → 建立长连接 client 并 ping 探活（`etcd_client::Client`
+///   的 connect 是 lazy 的，构造成功不代表可达），再构造 `EtcdDistributedLock`；
+///   任一步失败返回 `Err`，调用方打印本地化 error 并以非零码退出 —— 多实例
+///   部署静默回退进程内锁必然产生重复 ID（数据正确性事故），禁止降级。
+#[cfg(feature = "etcd")]
+async fn assemble_coordination(config: &Config) -> Result<CoordinationComponents> {
+    use nebulaid::core::coordinator::{
+        EtcdClientWrapper, EtcdDistributedLock, LocalDistributedLock, SEGMENT_LOCK_PATH_PREFIX,
+    };
+
+    if config.etcd.endpoints.is_empty() {
+        warn!("Etcd endpoints not configured, using LocalDistributedLock (single-process only)");
+        return Ok(CoordinationComponents {
+            lock: std::sync::Arc::new(LocalDistributedLock::new()),
+            client: None,
+        });
+    }
+
+    // fail-closed：配置显式含 etcd endpoints，装配任一步失败 → Err（拒绝启动）。
+    let wrapper = EtcdClientWrapper::new(config.etcd.endpoints.clone())
+        .await
+        .map_err(|e| {
+            nebulaid::core::types::CoreError::ConfigurationError(format!(
+                "etcd client connect failed for endpoints {:?}: {}",
+                config.etcd.endpoints, e
+            ))
+        })?;
+    let client: std::sync::Arc<dyn nebulaid::core::coordinator::EtcdClientOps> =
+        std::sync::Arc::new(wrapper);
+
+    // lazy connect 探活：ping 不通 = etcd 实际不可用，与连接失败同口径 fail-closed。
+    let probe_timeout = std::time::Duration::from_millis(config.etcd.connect_timeout_ms.max(1));
+    match tokio::time::timeout(probe_timeout, client.ping()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            return Err(nebulaid::core::types::CoreError::ConfigurationError(format!(
+                "etcd ping failed for endpoints {:?}: {}",
+                config.etcd.endpoints, e
+            )));
+        }
+        Err(_) => {
+            return Err(nebulaid::core::types::CoreError::ConfigurationError(format!(
+                "etcd ping timed out after {}ms for endpoints {:?}",
+                config.etcd.connect_timeout_ms, config.etcd.endpoints
+            )));
+        }
+    }
+
+    let etcd_lock =
+        EtcdDistributedLock::new(client.clone(), SEGMENT_LOCK_PATH_PREFIX.to_string())
+            .await
+            .map_err(|e| {
+                nebulaid::core::types::CoreError::ConfigurationError(format!(
+                    "failed to create EtcdDistributedLock: {}",
+                    e
+                ))
+            })?;
+
+    Ok(CoordinationComponents {
+        lock: std::sync::Arc::new(etcd_lock),
+        client: Some(client),
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // 日志初始化由 inklog 接管（替换原手写的 tracing_subscriber::fmt() 链）。
@@ -664,54 +745,29 @@ async fn main() -> Result<()> {
         }
     };
 
-    let repository: Option<Arc<database::SeaOrmRepository>> = if let Some(conn) = db_connection {
-        // 修复：注入分布式锁，避免 allocate_segment 在无锁降级时产生重复 ID。
-        // 默认构建（无 etcd feature）使用 LocalDistributedLock（进程内互斥）。
-        #[cfg(not(feature = "etcd"))]
-        let lock: std::sync::Arc<
-            dyn nebulaid::core::coordinator::DistributedLock + Send + Sync,
-        > = std::sync::Arc::new(nebulaid::core::coordinator::LocalDistributedLock::new());
-        // etcd feature 构建下，若 etcd 端点已配置，先创建 EtcdClientWrapper，
-        // 再用它构造 EtcdDistributedLock；任一步失败回退到 LocalDistributedLock。
-        #[cfg(feature = "etcd")]
-        let lock: std::sync::Arc<
-            dyn nebulaid::core::coordinator::DistributedLock + Send + Sync,
-        > = if !config.etcd.endpoints.is_empty() {
-            match nebulaid::core::coordinator::EtcdClientWrapper::new(config.etcd.endpoints.clone())
-                .await
-            {
-                Ok(client) => {
-                    let client: std::sync::Arc<dyn nebulaid::core::coordinator::EtcdClientOps> =
-                        std::sync::Arc::new(client);
-                    match nebulaid::core::coordinator::EtcdDistributedLock::new(
-                        client,
-                        nebulaid::core::coordinator::SEGMENT_LOCK_PATH_PREFIX.to_string(),
-                    )
-                    .await
-                    {
-                        Ok(etcd_lock) => std::sync::Arc::new(etcd_lock),
-                        Err(_) => {
-                            warn!("Failed to create EtcdDistributedLock, falling back to LocalDistributedLock");
-                            std::sync::Arc::new(
-                                nebulaid::core::coordinator::LocalDistributedLock::new(),
-                            )
-                        }
-                    }
-                }
-                Err(_) => {
-                    warn!(
-                        "Failed to create EtcdClientWrapper, falling back to LocalDistributedLock"
-                    );
-                    std::sync::Arc::new(nebulaid::core::coordinator::LocalDistributedLock::new())
-                }
-            }
-        } else {
-            warn!(
-                "Etcd endpoints not configured, using LocalDistributedLock (single-process only)"
+    // T016 —— 分布式锁装配（fail-closed），提前到仓储构造之前：
+    // 配置显式含 etcd endpoints 时，etcd 不可用直接拒绝启动（多实例场景
+    // 静默回退进程内锁必然重复 ID）；未配置 endpoints 才允许单机本地锁。
+    #[cfg(not(feature = "etcd"))]
+    let lock: std::sync::Arc<dyn nebulaid::core::coordinator::DistributedLock + Send + Sync> =
+        std::sync::Arc::new(nebulaid::core::coordinator::LocalDistributedLock::new());
+    #[cfg(feature = "etcd")]
+    let coordination = match assemble_coordination(&config).await {
+        Ok(components) => components,
+        Err(e) => {
+            error!(
+                "{}",
+                t!("error.main.etcd_required_but_unavailable", error = e)
             );
-            std::sync::Arc::new(nebulaid::core::coordinator::LocalDistributedLock::new())
-        };
+            error!("{}", t!("log.main.shutting_down"));
+            std::process::exit(1);
+        }
+    };
+    #[cfg(feature = "etcd")]
+    let lock: std::sync::Arc<dyn nebulaid::core::coordinator::DistributedLock + Send + Sync> =
+        coordination.lock.clone();
 
+    let repository: Option<Arc<database::SeaOrmRepository>> = if let Some(conn) = db_connection {
         // tiangang C1 修复：生产环境强制校验 api_key_salt 非空且非弱默认值。
         // 规则 12（失败必须显性化）：校验失败时 panic，禁止弱 pepper 静默放行。
         if nebulaid::core::config::is_production() {
@@ -1524,5 +1580,72 @@ mod tests {
         assert!(result.is_err());
         let result = validate_tls_required_in_production(Environment::Production, false, Some(""));
         assert!(result.is_err());
+    }
+
+    // ==================== T016: 分布式锁装配 fail-closed ====================
+
+    /// T016 —— 配置显式含 etcd endpoints + 不可达端点 → 装配必须失败（fail-closed）。
+    ///
+    /// `etcd_client::Client::connect` 是 lazy 的，`EtcdClientWrapper::new` 对不可达
+    /// endpoint 也返回 Ok；`assemble_coordination` 因此在构造后 ping 探活，把
+    /// "配置要求 etcd 但实际不可用" 确定性地转为 Err（main 据此打印本地化错误
+    /// 并以非零码退出），不再静默回退 LocalDistributedLock。
+    #[cfg(feature = "etcd")]
+    #[tokio::test]
+    async fn test_assemble_coordination_fail_closed_on_unreachable_etcd() {
+        let mut config = Config::default();
+        config.etcd.endpoints = vec!["http://127.0.0.1:1".to_string()];
+        config.etcd.connect_timeout_ms = 300;
+
+        let result = assemble_coordination(&config).await;
+        let err_msg = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("配置显式含 etcd endpoints 但端点不可达时必须拒绝装配（fail-closed）"),
+        };
+        assert!(
+            err_msg.contains("127.0.0.1:1") || err_msg.contains("ping"),
+            "错误信息应指向不可达端点或 ping 探活，实际: {err_msg}"
+        );
+    }
+
+    /// T016 —— 未配置 endpoints → 单机本地锁放行（合法），共享 client 为 None。
+    #[cfg(feature = "etcd")]
+    #[tokio::test]
+    async fn test_assemble_coordination_local_lock_when_no_endpoints() {
+        let mut config = Config::default();
+        config.etcd.endpoints = vec![];
+
+        let components = assemble_coordination(&config)
+            .await
+            .expect("未配置 etcd 时装配必须放行（单机合法）");
+        assert!(
+            components.client.is_none(),
+            "未配置 etcd 时不应产出共享 client"
+        );
+        assert!(components.lock.is_healthy(), "LocalDistributedLock 应恒健康");
+
+        // 本地锁应可正常 acquire/release（号段分配互斥在单机内仍生效）
+        let guard = components
+            .lock
+            .acquire("t016-local-key", 5)
+            .await
+            .expect("本地锁 acquire 必须成功");
+        guard.release().await.expect("本地锁 release 必须成功");
+    }
+
+    /// T016 verify 钉（bin 侧可达性）—— `DbSegmentLoader` 经 mod.rs re-export
+    /// 后可从 bin crate 构造（`SegmentAlgorithm::new(dc).with_segment_loader(...)`
+    /// 装配契约的 bin 侧入口）。注意：服务端 Segment 实例由
+    /// `AlgorithmRouter::initialize` 经 `SegmentFactory` 内部构建，bin 侧
+    /// 注入缝（router/traits 增设）不在本 lane 文件所有权内。
+    #[test]
+    fn test_db_segment_loader_assembly_api_reachable_from_bin() {
+        use dbnexus::sea_orm::{DatabaseBackend, MockDatabase};
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let repo = Arc::new(database::SeaOrmRepository::new(db, "test_salt".to_string()));
+        // 构造成功即证明 re-export 与泛型约束（SeaOrmRepository: SegmentRepository）
+        // 在 bin 侧可用；字段与步长断言归 lib 侧单测（segment.rs）所有。
+        let _loader = nebulaid::core::algorithm::DbSegmentLoader::new(repo);
     }
 }

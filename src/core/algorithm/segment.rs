@@ -460,12 +460,14 @@ impl SegmentAlgorithm {
         }
     }
 
-    /// 注入自定义号段装载器（仅测试构建）。
+    /// 注入自定义号段装载器（T016 pub 化：装配处注入入口）。
     ///
-    /// 生产装配路径由后续 lane 在组装层完成注入；本方法仅供本模块单测
-    /// 显式替换造段行为（T014：依赖造段器行为的单测必须显式注入）。
-    #[cfg(test)]
-    fn with_segment_loader(mut self, loader: Arc<dyn SegmentLoader + Send + Sync>) -> Self {
+    /// 生产装配方（main.rs / 嵌入式 SDK）经 mod.rs re-export 拿到
+    /// `SegmentAlgorithm` 与 `DbSegmentLoader` 后，用本方法把
+    /// `DbSegmentLoader`（真连 DB 号段）替换掉 `new()` 的默认
+    /// `UnconfiguredSegmentLoader`；测试同理可注入内存造段器
+    /// （T014：依赖造段器行为的单测必须显式注入）。
+    pub fn with_segment_loader(mut self, loader: Arc<dyn SegmentLoader + Send + Sync>) -> Self {
         self.segment_loader = loader;
         self
     }

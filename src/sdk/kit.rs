@@ -38,7 +38,8 @@ use crate::core::coordinator::{
 /// 分布式锁模块（能力：`Arc<dyn DistributedLock + Send + Sync>`）。
 ///
 /// 无依赖；从 TypeMap 拉 `Config` 经 `create_distributed_lock` 构造锁
-///（etcd 优先、任何失败回退 Local 并显性 warn —— 与 `main.rs` 行为一致）。
+///（etcd 优先、fail-closed：配置要求 etcd 但构建失败 → build 返回错误，
+/// 与 `main.rs` T016 行为一致）。
 pub struct DistributedLockModule;
 
 impl_module_meta!(DistributedLockModule, "distributed-lock");
@@ -51,8 +52,7 @@ impl_async_auto_builder!(
         let config = kit
             .config::<Config>()
             .map_err(|e| CoreError::InternalError(format!("distributed-lock 模块配置缺失: {e}")))?;
-        let lock = create_distributed_lock(&config).await;
-        Ok(lock)
+        create_distributed_lock(&config).await
     })
 );
 
@@ -276,42 +276,61 @@ impl IdGenerator {
     }
 }
 
-/// 分布式锁创建：`etcd` feature 且 endpoints 已配置 → `EtcdDistributedLock`；
-/// 任何失败回退 `LocalDistributedLock` 并显性 warn（与 main.rs 行为一致）。
+/// 分布式锁创建（T016 fail-closed）：`etcd` feature 且 endpoints 已配置 →
+/// `EtcdDistributedLock`（构造后 ping 探活，lazy connect 不代表可达）；
+/// 任一步失败返回 `Err`（SDK 宿主 `build()` 显性失败），**不再静默回退**
+/// 进程内锁 —— 多实例部署静默回退必然重复 ID。未配置 endpoints →
+/// `LocalDistributedLock`（单机合法）并 warn。
 #[cfg(feature = "etcd")]
-async fn create_distributed_lock(config: &Config) -> Arc<dyn DistributedLock + Send + Sync> {
-    if !config.etcd.endpoints.is_empty() {
-        match EtcdClientWrapper::new(config.etcd.endpoints.clone()).await {
-            Ok(client) => {
-                let client: Arc<dyn EtcdClientOps> = Arc::new(client);
-                match EtcdDistributedLock::new(client, SEGMENT_LOCK_PATH_PREFIX.to_string()).await {
-                    Ok(etcd_lock) => return Arc::new(etcd_lock),
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "sdk: failed to create EtcdDistributedLock, falling back to LocalDistributedLock"
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "sdk: failed to connect etcd, falling back to LocalDistributedLock"
-                );
-            }
-        }
-    } else {
+async fn create_distributed_lock(
+    config: &Config,
+) -> Result<Arc<dyn DistributedLock + Send + Sync>> {
+    if config.etcd.endpoints.is_empty() {
         tracing::warn!(
             "sdk: etcd endpoints not configured, using LocalDistributedLock (single-process only)"
         );
+        return Ok(Arc::new(LocalDistributedLock::new()));
     }
-    Arc::new(LocalDistributedLock::new())
+
+    let wrapper = EtcdClientWrapper::new(config.etcd.endpoints.clone()).await.map_err(|e| {
+        CoreError::ConfigurationError(format!(
+            "sdk: etcd endpoints are configured but the client is unavailable (endpoints: {:?}): {e}; refusing to fall back to LocalDistributedLock",
+            config.etcd.endpoints
+        ))
+    })?;
+    let client: Arc<dyn EtcdClientOps> = Arc::new(wrapper);
+
+    // lazy connect 探活：ping 不通 = etcd 实际不可用，与连接失败同口径 fail-closed。
+    let probe_timeout = std::time::Duration::from_millis(config.etcd.connect_timeout_ms.max(1));
+    match tokio::time::timeout(probe_timeout, client.ping()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            return Err(CoreError::ConfigurationError(format!(
+                "sdk: etcd ping failed (endpoints: {:?}): {e}; refusing to fall back to LocalDistributedLock",
+                config.etcd.endpoints
+            )));
+        }
+        Err(_) => {
+            return Err(CoreError::ConfigurationError(format!(
+                "sdk: etcd ping timed out after {}ms (endpoints: {:?}); refusing to fall back to LocalDistributedLock",
+                config.etcd.connect_timeout_ms, config.etcd.endpoints
+            )));
+        }
+    }
+
+    let etcd_lock = EtcdDistributedLock::new(client, SEGMENT_LOCK_PATH_PREFIX.to_string())
+        .await
+        .map_err(|e| {
+            CoreError::ConfigurationError(format!("sdk: failed to create EtcdDistributedLock: {e}"))
+        })?;
+    Ok(Arc::new(etcd_lock))
 }
 
 #[cfg(not(feature = "etcd"))]
-async fn create_distributed_lock(_config: &Config) -> Arc<dyn DistributedLock + Send + Sync> {
-    Arc::new(LocalDistributedLock::new())
+async fn create_distributed_lock(
+    _config: &Config,
+) -> Result<Arc<dyn DistributedLock + Send + Sync>> {
+    Ok(Arc::new(LocalDistributedLock::new()))
 }
 
 /// audit_logger 的 TypeMap 注入包装（`pub(crate)`，不 re-export，不扩大 SDK 公共面）。
@@ -535,7 +554,7 @@ mod tests {
     /// 取代）。
     #[tokio::test]
     async fn test_kit_builder_builds_empty_ready_kit() {
-        let kit = NebulaIdKitBuilder::new(Config::default())
+        let kit = NebulaIdKitBuilder::new(local_config())
             .build()
             .await
             .expect("build 必须成功");
@@ -554,7 +573,7 @@ mod tests {
     ///（`DistributedLock` trait 无 `lock()/unlock()` 方法，断言只走既有面）。
     #[tokio::test]
     async fn test_kit_builds_distributed_lock_module() {
-        let kit = NebulaIdKitBuilder::new(Config::default())
+        let kit = NebulaIdKitBuilder::new(local_config())
             .build()
             .await
             .expect("build 必须成功");
@@ -588,7 +607,7 @@ mod tests {
         use dbnexus::sea_orm::{DatabaseBackend, MockDatabase};
 
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-        let kit = NebulaIdKitBuilder::new(Config::default())
+        let kit = NebulaIdKitBuilder::new(local_config())
             .with_repository(crate::core::database::SeaOrmRepository::new(
                 db,
                 "test_salt".to_string(),
@@ -612,7 +631,7 @@ mod tests {
     ///（`register_if` 语义——纯算法零 DB 场景成立）。
     #[tokio::test]
     async fn test_repository_module_absent_without_injection() {
-        let kit = NebulaIdKitBuilder::new(Config::default())
+        let kit = NebulaIdKitBuilder::new(local_config())
             .build()
             .await
             .expect("无仓储注入时 build 必须成功（纯算法零 DB 场景）");
@@ -626,9 +645,19 @@ mod tests {
         );
     }
 
+    /// 测试共享：单机配置（清空 etcd endpoints → T016 fail-closed 语义下
+    /// `create_distributed_lock` 走 LocalDistributedLock，构建零外部依赖）。
+    /// 注意 `Config::default()` 的 etcd.endpoints 非空（["etcd:2379"]），
+    /// 在 T016 之后未配置可达 etcd 的默认配置会让 build 显性失败。
+    fn local_config() -> Config {
+        let mut config = Config::default();
+        config.etcd.endpoints = Vec::new();
+        config
+    }
+
     /// 测试共享：纯算法（snowflake）配置。
     fn snowflake_config() -> Config {
-        let mut config = Config::default();
+        let mut config = local_config();
         config.algorithm.default = "snowflake".to_string();
         config
     }
@@ -756,8 +785,8 @@ mod tests {
     /// 可观测）。
     #[tokio::test]
     async fn test_id_generator_segment_without_repository_returns_configuration_error() {
-        // Config::default() 默认算法为 segment
-        let kit = NebulaIdKitBuilder::new(Config::default())
+        // local_config()（同 Config::default()）默认算法为 segment
+        let kit = NebulaIdKitBuilder::new(local_config())
             .build()
             .await
             .expect("build 必须成功（未注入仓储不阻断）");
@@ -788,7 +817,7 @@ mod tests {
         use dbnexus::sea_orm::{DatabaseBackend, MockDatabase};
 
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-        let kit = NebulaIdKitBuilder::new(Config::default())
+        let kit = NebulaIdKitBuilder::new(local_config())
             .with_repository(crate::core::database::SeaOrmRepository::new(
                 db,
                 "test_salt".to_string(),
@@ -1017,13 +1046,166 @@ mod tests {
         let kit = NebulaIdKitBuilder::new(config)
             .build()
             .await
-            .expect("build 必须成功");
+            .expect("uuid_v8 批量应零 DB 可用");
         let generator = kit.id_generator().expect("id_generator() 必须成功");
 
         let batch = generator
             .batch_generate("ws", "group", "biz", 10)
             .await
-            .expect("uuid_v8 批量应零 DB 可用");
+            .expect("uuid_v8 批量生成必须成功");
         assert_eq!(batch.ids.len(), 10);
+    }
+
+    // ==================== T016: 分布式锁 fail-closed 与号段装配契约 ====================
+
+    /// T016 —— 未配置 endpoints → 本地锁（单机合法，构建不依赖外部 etcd）。
+    #[cfg(feature = "etcd")]
+    #[tokio::test]
+    async fn test_create_distributed_lock_local_when_no_endpoints() {
+        let config = local_config();
+        let lock = create_distributed_lock(&config)
+            .await
+            .expect("未配置 etcd 时必须放行本地锁");
+        assert!(lock.is_healthy());
+        let guard = lock
+            .acquire("kit-local-key", 5)
+            .await
+            .expect("本地锁 acquire 必须成功");
+        guard.release().await.expect("本地锁 release 必须成功");
+    }
+
+    /// T016 fail-closed —— 配置要求 etcd 但端点不可达 → `create_distributed_lock`
+    /// 返回 `Err`（lazy connect 下 `EtcdClientWrapper::new` 可能 Ok，由 ping 探活
+    /// 确定性拒绝），错误显性声明拒绝回退。
+    #[cfg(feature = "etcd")]
+    #[tokio::test]
+    async fn test_create_distributed_lock_fails_closed_when_etcd_unreachable() {
+        let mut config = local_config();
+        config.etcd.endpoints = vec!["http://127.0.0.1:1".to_string()];
+        config.etcd.connect_timeout_ms = 300;
+
+        let result = create_distributed_lock(&config).await;
+        let msg = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("配置要求 etcd 但不可达时必须 Err（fail-closed）"),
+        };
+        assert!(
+            msg.contains("refusing to fall back"),
+            "错误必须显性声明拒绝回退，实际: {msg}"
+        );
+    }
+
+    /// T016 fail-closed —— 完整 kit build 路径：配置要求 etcd 但不可达 →
+    /// `DistributedLockModule` 构建失败必须让 `build()` 显性失败。
+    #[cfg(feature = "etcd")]
+    #[tokio::test]
+    async fn test_kit_build_fails_when_etcd_required_but_unreachable() {
+        let mut config = snowflake_config();
+        config.etcd.endpoints = vec!["http://127.0.0.1:1".to_string()];
+        config.etcd.connect_timeout_ms = 300;
+
+        let result = NebulaIdKitBuilder::new(config).build().await;
+        assert!(
+            result.is_err(),
+            "分布式锁模块 fail-closed 失败必须让 build() 显性失败，实际: {:?}",
+            result.ok().map(|_| ())
+        );
+    }
+
+    /// T016 verify 钉 —— 号段装配契约：`DbSegmentLoader`（真连仓储）经
+    /// `SegmentAlgorithm::new(dc).with_segment_loader(...)` 注入后，generate
+    /// 消费的就是 `allocate_segment` 返回的号段区间（生产装配的算法级语义）。
+    #[tokio::test]
+    async fn test_db_backed_segment_assembly_contract() {
+        use crate::core::algorithm::{
+            DbSegmentLoader, IdAlgorithm, SegmentAlgorithm, SegmentLoader,
+        };
+        use crate::core::database::SegmentRepository;
+        use crate::core::types::SegmentInfo;
+
+        /// 受控 mock 仓储：allocate_segment 固定返回 [1000, 2000) 号段。
+        struct MockRepo;
+
+        #[async_trait::async_trait]
+        impl SegmentRepository for MockRepo {
+            async fn get_segment(
+                &self,
+                _workspace_id: &str,
+                _biz_tag: &str,
+            ) -> Result<Option<SegmentInfo>> {
+                Ok(None)
+            }
+
+            async fn allocate_segment(
+                &self,
+                _workspace_id: &str,
+                _biz_tag: &str,
+                _step: i32,
+            ) -> Result<SegmentInfo> {
+                Ok(SegmentInfo {
+                    id: 1,
+                    workspace_id: "ws".to_string(),
+                    biz_tag: "biz".to_string(),
+                    current_id: 1000,
+                    max_id: 2000,
+                    step: 1000,
+                    delta: 1,
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                })
+            }
+
+            async fn allocate_segment_with_dc(
+                &self,
+                _workspace_id: &str,
+                _biz_tag: &str,
+                _step: i32,
+                _dc_id: i32,
+            ) -> Result<SegmentInfo> {
+                unimplemented!("装配契约单测只走 allocate_segment");
+            }
+
+            async fn update_segment(
+                &self,
+                _workspace_id: &str,
+                _biz_tag: &str,
+                _current_id: i64,
+                _max_id: i64,
+            ) -> Result<()> {
+                unimplemented!("装配契约单测只走 allocate_segment");
+            }
+
+            async fn create_segment(
+                &self,
+                _workspace_id: &str,
+                _biz_tag: &str,
+                _start_id: i64,
+                _max_id: i64,
+                _step: i32,
+                _delta: i32,
+            ) -> Result<SegmentInfo> {
+                unimplemented!("装配契约单测只走 allocate_segment");
+            }
+
+            async fn list_segments(&self, _workspace_id: &str) -> Result<Vec<SegmentInfo>> {
+                unimplemented!("装配契约单测只走 allocate_segment");
+            }
+
+            async fn delete_segment(&self, _workspace_id: &str, _biz_tag: &str) -> Result<()> {
+                unimplemented!("装配契约单测只走 allocate_segment");
+            }
+        }
+
+        let algo = SegmentAlgorithm::new(0)
+            .with_segment_loader(Arc::new(DbSegmentLoader::new(Arc::new(MockRepo))));
+        let id = algo
+            .generate(&sample_ctx())
+            .await
+            .expect("DB 号段注入后 generate 必须成功");
+        let value = id.as_u128();
+        assert!(
+            (1000..2000).contains(&value),
+            "生成值必须落在 allocate_segment 返回区间 [1000, 2000) 内，实际: {value}"
+        );
     }
 }

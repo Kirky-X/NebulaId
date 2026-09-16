@@ -14,8 +14,9 @@
 
 use nebulaid::core::algorithm::AlgorithmRouter;
 use nebulaid::core::config::{resolve_startup_config, Config, Environment, StartupConfig};
+// EtcdClientWrapper 仅在 assemble_coordination 内部经局部 use 引入。
 #[cfg(feature = "etcd")]
-use nebulaid::core::coordinator::{EtcdClientWrapper, EtcdClusterHealthMonitor, WorkerIdAllocator};
+use nebulaid::core::coordinator::{EtcdClusterHealthMonitor, WorkerIdAllocator};
 use nebulaid::core::database::{self, ApiKeyRepository};
 use nebulaid::core::types::Result;
 use nebulaid::server::audit::AuditLogger;
@@ -988,41 +989,47 @@ async fn main() -> Result<()> {
     #[cfg(feature = "etcd")]
     {
         info!("{}", t!("log.main.initializing_etcd_health_monitor"));
-        let etcd_cache_path = format!("./data/etcd_cache_{}.json", config.app.dc_id);
+        // T027 —— 缓存文件名追加 pid 段：同机多副本共用 dc_id 时
+        // `./data/etcd_cache_{dc_id}.json` 会互相踩踏覆盖。
+        let etcd_cache_path = format!(
+            "./data/etcd_cache_{}_{}.json",
+            config.app.dc_id,
+            std::process::id()
+        );
 
-        // F-01 修复：生产路径注入 EtcdClientWrapper，让 check_etcd_health 走 trait 抽象层。
-        // 尝试建立长连接 client；失败则回退到 new()（每次检查新建 client 的 fallback 路径）。
-        let etcd_health_monitor = if !config.etcd.endpoints.is_empty() {
-            match EtcdClientWrapper::new(config.etcd.endpoints.clone()).await {
-                Ok(client) => {
-                    info!("{}", t!("log.main.etcd_client_wrapper_initialized"));
-                    Arc::new(EtcdClusterHealthMonitor::new_with_client(
-                        config.etcd.clone(),
-                        etcd_cache_path,
-                        Arc::new(client),
-                    ))
-                }
-                Err(e) => {
-                    warn!(
-                        "{}",
-                        t!("log.main.etcd_client_wrapper_init_failed", error = e)
-                    );
-                    Arc::new(EtcdClusterHealthMonitor::new(
-                        config.etcd.clone(),
-                        etcd_cache_path,
-                    ))
-                }
+        // T027 —— 健康巡检统一走注入的长连接 client：复用 T016 协调装配
+        // 的 EtcdClientWrapper（fail-closed 已 ping 探活）。原实现此处再建
+        // 一个 client 且 fallback 路径每次检查新建 client —— etcd connect
+        // 是 lazy 的，构造成功不代表可达，Failed 判定几乎永不触发。
+        let etcd_health_monitor = match &coordination.client {
+            Some(client) => {
+                info!("{}", t!("log.main.etcd_client_wrapper_initialized"));
+                Arc::new(EtcdClusterHealthMonitor::new_with_client(
+                    config.etcd.clone(),
+                    etcd_cache_path,
+                    client.clone(),
+                ))
             }
-        } else {
-            Arc::new(EtcdClusterHealthMonitor::new(
+            None => Arc::new(EtcdClusterHealthMonitor::new(
                 config.etcd.clone(),
                 etcd_cache_path,
-            ))
+            )),
         };
 
         if let Err(e) = etcd_health_monitor.load_local_cache().await {
             warn!("{}", t!("log.main.etcd_local_cache_load_failed", error = e));
         }
+
+        // T027 —— 巡检与缓存持久化接线：健康状态周期刷新（真实 ping 判定
+        // Degraded/Failed 并驱动降级），本地缓存周期落盘（etcd 故障时
+        // 供重启后的实例读取）。未配置 etcd（单机）时同样不启动巡检意义
+        // 不大，但保持一致行为无副作用（check 走 no_endpoints early-return）。
+        etcd_health_monitor
+            .start_health_check(std::time::Duration::from_secs(30))
+            .await;
+        etcd_health_monitor
+            .start_cache_persistence(std::time::Duration::from_secs(300))
+            .await;
 
         info!("{}", t!("log.main.etcd_health_monitor_initialized"));
 

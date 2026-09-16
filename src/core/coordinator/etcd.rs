@@ -214,17 +214,23 @@ impl EtcdClientOps for EtcdClientWrapper {
 }
 
 /// etcd 集群健康监控器。
+///
+/// T027 —— 状态字段（status/failure_count/consecutive_failures/is_using_cache）
+/// 以 `Arc<Atomic*>` 持有：`clone()` 后所有句柄读写**同一**状态。原手写 Clone
+/// 为各原子新建快照，导致后台巡检任务与外部观察者状态隔离——巡检任务内部的
+/// 降级/恢复，外部经 clone 句柄永远看不到。
 pub struct EtcdClusterHealthMonitor {
     config: EtcdConfig,
-    status: AtomicU8,
+    status: Arc<AtomicU8>,
     last_success: Arc<tokio::sync::Mutex<Instant>>,
-    failure_count: AtomicU64,
-    consecutive_failures: AtomicU64,
+    failure_count: Arc<AtomicU64>,
+    consecutive_failures: Arc<AtomicU64>,
     local_cache: Arc<RwLock<HashMap<String, LocalCacheEntry>>>,
     cache_file_path: String,
-    is_using_cache: AtomicBool,
+    is_using_cache: Arc<AtomicBool>,
     /// 可选注入的 etcd 客户端：`Some` 时 `check_etcd_health` 走可 mock 路径，
-    /// `None` 时每次健康检查新建 `etcd_client::Client`（生产默认）。
+    /// `None` 时每次健康检查新建 `etcd_client::Client`（lazy connect，Failed
+    /// 判定几乎不触发——生产装配必须注入长连接 client，见 main.rs T027）。
     client: Option<Arc<dyn EtcdClientOps>>,
 }
 
@@ -232,13 +238,13 @@ impl EtcdClusterHealthMonitor {
     pub fn new(config: EtcdConfig, cache_file_path: String) -> Self {
         Self {
             config,
-            status: AtomicU8::new(EtcdClusterStatus::Healthy as u8),
+            status: Arc::new(AtomicU8::new(EtcdClusterStatus::Healthy as u8)),
             last_success: Arc::new(tokio::sync::Mutex::new(Instant::now())),
-            failure_count: AtomicU64::new(0),
-            consecutive_failures: AtomicU64::new(0),
+            failure_count: Arc::new(AtomicU64::new(0)),
+            consecutive_failures: Arc::new(AtomicU64::new(0)),
             local_cache: Arc::new(RwLock::new(HashMap::new())),
             cache_file_path,
-            is_using_cache: AtomicBool::new(false),
+            is_using_cache: Arc::new(AtomicBool::new(false)),
             client: None,
         }
     }
@@ -251,13 +257,13 @@ impl EtcdClusterHealthMonitor {
     ) -> Self {
         Self {
             config,
-            status: AtomicU8::new(EtcdClusterStatus::Healthy as u8),
+            status: Arc::new(AtomicU8::new(EtcdClusterStatus::Healthy as u8)),
             last_success: Arc::new(tokio::sync::Mutex::new(Instant::now())),
-            failure_count: AtomicU64::new(0),
-            consecutive_failures: AtomicU64::new(0),
+            failure_count: Arc::new(AtomicU64::new(0)),
+            consecutive_failures: Arc::new(AtomicU64::new(0)),
             local_cache: Arc::new(RwLock::new(HashMap::new())),
             cache_file_path,
-            is_using_cache: AtomicBool::new(false),
+            is_using_cache: Arc::new(AtomicBool::new(false)),
             client: Some(client),
         }
     }
@@ -508,17 +514,20 @@ impl EtcdClusterHealthMonitor {
     }
 }
 
+// T027 —— Clone 语义修正：状态字段以 `Arc<Atomic*>` 共享，clone 出的句柄
+// 与原句柄读写同一状态（原实现逐原子快照复制，后台巡检任务 clone self 后
+// 的降级/恢复状态外部不可见，状态隔离）。
 impl Clone for EtcdClusterHealthMonitor {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
-            status: AtomicU8::new(self.status.load(Ordering::Relaxed)),
+            status: self.status.clone(),
             last_success: self.last_success.clone(),
-            failure_count: AtomicU64::new(self.failure_count.load(Ordering::Relaxed)),
-            consecutive_failures: AtomicU64::new(self.consecutive_failures.load(Ordering::Relaxed)),
+            failure_count: self.failure_count.clone(),
+            consecutive_failures: self.consecutive_failures.clone(),
             local_cache: self.local_cache.clone(),
             cache_file_path: self.cache_file_path.clone(),
-            is_using_cache: AtomicBool::new(self.is_using_cache.load(Ordering::Relaxed)),
+            is_using_cache: self.is_using_cache.clone(),
             client: self.client.clone(),
         }
     }
@@ -2974,5 +2983,80 @@ mod tests {
             .expect("lease 续期必须成功");
         allocator.release(worker_id).await.expect("归属校验 release 必须成功");
         assert_eq!(allocator.get_allocated_id(), None);
+    }
+
+    // ==================== T027: Clone 状态共享与巡检接线 ====================
+
+    /// T027 —— clone 后两句柄状态互通：一个句柄上的降级/恢复必须对另一句柄
+    /// 立即可见（原手写 Clone 逐原子快照复制导致状态隔离，后台巡检任务 clone
+    /// self 后外部观察者读到的永远是旧状态）。
+    #[tokio::test]
+    async fn test_monitor_clone_handles_share_state() {
+        let config = EtcdConfig::default();
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
+        let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
+
+        let observer = monitor.clone();
+        assert_eq!(observer.get_status(), EtcdClusterStatus::Healthy);
+
+        // 原句柄降级 → clone 句柄立即可见
+        monitor.record_failure();
+        monitor.record_failure();
+        monitor.record_failure();
+        assert_eq!(
+            observer.get_status(),
+            EtcdClusterStatus::Degraded,
+            "clone 句柄必须读到原句柄触发的降级状态"
+        );
+
+        // 原/clone 句柄均可继续驱动同一状态：恢复对双方可见
+        observer.record_success().await;
+        assert_eq!(monitor.get_status(), EtcdClusterStatus::Healthy);
+        assert!(!monitor.is_using_cache());
+        assert_eq!(observer.get_status(), EtcdClusterStatus::Healthy);
+
+        // clone 之后再降级到 Failed + using_cache，原句柄同样可见
+        for _ in 0..5 {
+            observer.record_failure();
+        }
+        assert_eq!(monitor.get_status(), EtcdClusterStatus::Failed);
+        assert!(
+            monitor.is_using_cache(),
+            "is_using_cache 也必须跨句柄共享"
+        );
+    }
+
+    /// T027 —— 巡检接线后的生产形态：注入长连接 client（真实
+    /// `EtcdClientWrapper`，lazy connect 对不可达端点返回 Ok），ping 探活
+    /// 连续失败能把监控器带入 `Failed` 状态（此前生产路径每次检查新建
+    /// client，lazy connect 恒 Ok，Failed 判定几乎不触发）。
+    #[tokio::test]
+    async fn test_monitor_injected_real_client_reaches_failed_on_unreachable_etcd() {
+        let wrapper = EtcdClientWrapper::new(vec!["http://127.0.0.1:1".to_string()])
+            .await
+            .expect("lazy connect 对不可达端点也可能返回 Ok（Windows/兼容路径）");
+        let config = EtcdConfig {
+            connect_timeout_ms: 300,
+            ..Default::default()
+        };
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
+        let monitor = EtcdClusterHealthMonitor::new_with_client(
+            config,
+            cache_path,
+            Arc::new(wrapper),
+        );
+
+        // 连续 5 次真实 ping 失败（连接拒绝）→ Failed + 启用本地缓存降级
+        for _ in 0..5 {
+            monitor.check_etcd_health().await;
+        }
+        assert_eq!(
+            monitor.get_status(),
+            EtcdClusterStatus::Failed,
+            "不可达端点连续巡检失败必须转入 Failed 状态"
+        );
+        assert!(monitor.is_using_cache());
     }
 }

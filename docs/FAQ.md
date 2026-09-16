@@ -1,169 +1,169 @@
 # ❓ Nebula ID FAQ
 
-> Quick answers to common questions about Nebula ID.
+> 关于 Nebula ID 常见问题的快速解答。
 
-[🏠 Home](../README.md) • [📖 User Guide](USER_GUIDE.md) • [🔧 API Reference](API_REFERENCE.md)
+[🏠 主页](../README.md) • [📖 用户指南](USER_GUIDE.md) • [🔧 API 参考](API_REFERENCE.md)
 
 ---
 
 ## 📋 目录
 
-- [General Questions](#general-questions)
-- [Installation & Setup](#installation--setup)
-- [Usage & Features](#usage--features)
-- [Performance](#performance)
-- [Security](#security)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [Licensing](#licensing)
+- [通用问题](#-通用问题)
+- [安装与配置](#-安装与配置)
+- [使用与特性](#-使用与特性)
+- [性能](#-性能)
+- [安全](#-安全)
+- [故障排查](#-故障排查)
+- [参与贡献](#-参与贡献)
+- [许可证](#-许可证)
 
 ---
 
-## General Questions
+## 🧭 通用问题
 
 <div align="center">
 
-### 🤔 About the Project
+### 🤔 关于本项目
 
 </div>
 
 <details>
-<summary><b>❓ What is Nebula ID?</b></summary>
+<summary><b>❓ 什么是 Nebula ID？</b></summary>
 
 <br>
 
-**Nebula ID** is an enterprise-grade distributed ID generation system for high-performance applications. It provides:
+**Nebula ID** 是一个面向高性能应用的企业级分布式 ID 生成系统。它提供：
 
-- ✅ **Multiple ID Algorithms** - Segment, Snowflake, UUID v8
-- ✅ **Distributed Coordination** - Etcd-based leader election and coordination
-- ✅ **High Availability** - Datacenter health monitoring and automatic failover
-- ✅ **Type-Safe Design** - Full Rust type safety with async/await patterns
+- ✅ **多种 ID 算法** - Segment、Snowflake、UUID v8
+- ✅ **分布式协调** - 基于 Etcd 的领导者选举与协调
+- ✅ **高可用** - 数据中心健康监控与自动故障转移
+- ✅ **类型安全设计** - 完整的 Rust 类型安全与 async/await 模式
 
-It's designed for **distributed systems** that require unique, ordered, and high-throughput identifier generation.
+它专为需要唯一、有序、高吞吐标识符生成能力的**分布式系统**而设计。
 
-**Learn more:** [User Guide](USER_GUIDE.md)
+**了解更多：**[用户指南](USER_GUIDE.md)
 
 </details>
 
 <details>
-<summary><b>❓ Why should I use this instead of alternatives?</b></summary>
+<summary><b>❓ 为什么选择它而不是其他方案？</b></summary>
 
 <br>
 
 <table>
 <tr>
-<th>Feature</th>
+<th>特性</th>
 <th>Nebula ID</th>
 <th>Snowflake</th>
 <th>UUID</th>
 </tr>
 <tr>
-<td>Time Ordering</td>
-<td>✅ Yes</td>
-<td>✅ Yes</td>
-<td>⚠️ v7 only</td>
+<td>时间有序</td>
+<td>✅ 是</td>
+<td>✅ 是</td>
+<td>⚠️ 仅 v7</td>
 </tr>
 <tr>
-<td>High Throughput</td>
-<td>✅ 1M+ IDs/sec</td>
-<td>✅ 1M+ IDs/sec</td>
-<td>✅ 1M+ IDs/sec</td>
+<td>高吞吐</td>
+<td>✅ 100 万+ ID/秒</td>
+<td>✅ 100 万+ ID/秒</td>
+<td>✅ 100 万+ ID/秒</td>
 </tr>
 <tr>
-<td>No Clock Sync</td>
+<td>无需时钟同步</td>
 <td>✅ Segment</td>
-<td>❌ No</td>
-<td>✅ Yes</td>
+<td>❌ 否</td>
+<td>✅ 是</td>
 </tr>
 <tr>
-<td>Fault Tolerance</td>
-<td>✅ Built-in</td>
-<td>⚠️ Manual</td>
-<td>✅ Yes</td>
+<td>容错能力</td>
+<td>✅ 内置</td>
+<td>⚠️ 手动</td>
+<td>✅ 是</td>
 </tr>
 </table>
 
-**Key Advantages:**
-- 🚀 **Multiple Algorithms**: Choose Segment for database-backed ordering, Snowflake for speed, or UUID for simplicity
-- 🔄 **Automatic Failover**: Datacenter health monitoring with automatic recovery
-- 🛡️ **Enterprise Ready**: API authentication, rate limiting, and audit logging
-- 📊 **Built-in Monitoring**: Health checks and metrics collection
+**核心优势：**
+- 🚀 **多算法**：需要数据库支撑的有序性选 Segment，追求速度选 Snowflake，追求简单选 UUID
+- 🔄 **自动故障转移**：数据中心健康监控与自动恢复
+- 🛡️ **企业级就绪**：API 认证、限流与审计日志
+- 📊 **内置监控**：健康检查与指标采集
 
 </details>
 
 <details>
-<summary><b>❓ Is this production-ready?</b></summary>
+<summary><b>❓ 它可以用于生产环境吗？</b></summary>
 
 <br>
 
-**Current Status:** ✅ **Production-ready!**
+**当前状态：**✅ **可用于生产！**
 
 <table>
 <tr>
 <td width="50%">
 
-**What's Ready:**
-- ✅ Core ID generation algorithms (Segment, Snowflake, UUID v8)
-- ✅ Distributed coordination with Etcd
-- ✅ Datacenter health monitoring and failover
-- ✅ HTTP/HTTPS and gRPC/gRPCS APIs
-- ✅ API key authentication and rate limiting
+**已就绪：**
+- ✅ 核心 ID 生成算法（Segment、Snowflake、UUID v8）
+- ✅ 基于 Etcd 的分布式协调
+- ✅ 数据中心健康监控与故障转移
+- ✅ HTTP/HTTPS 与 gRPC/gRPCS API
+- ✅ API 密钥认证与限流
 
 </td>
 <td width="50%">
 
-**Maturity Indicators:**
-- 📊 85%+ test coverage
-- 🔄 Regular maintenance
-- 🛡️ Security-focused design
-- 📖 Comprehensive documentation
+**成熟度指标：**
+- 📊 85%+ 测试覆盖率
+- 🔄 持续维护
+- 🛡️ 以安全为中心的设计
+- 📖 文档完备
 
 </td>
 </tr>
 </table>
 
-> **Note:** Always review the [CHANGELOG](../CHANGELOG.md) before upgrading versions.
+> **注意：**升级版本前请务必查阅[更新日志](../CHANGELOG.md)。
 
 </details>
 
 <details>
-<summary><b>❓ What platforms are supported?</b></summary>
+<summary><b>❓ 支持哪些平台？</b></summary>
 
 <br>
 
 <table>
 <tr>
-<th>Platform</th>
-<th>Architecture</th>
-<th>Status</th>
-<th>Notes</th>
+<th>平台</th>
+<th>架构</th>
+<th>状态</th>
+<th>说明</th>
 </tr>
 <tr>
 <td rowspan="2"><b>Linux</b></td>
 <td>x86_64</td>
-<td>✅ Fully Supported</td>
-<td>Primary platform</td>
+<td>✅ 完整支持</td>
+<td>主力平台</td>
 </tr>
 <tr>
 <td>ARM64</td>
-<td>✅ Fully Supported</td>
-<td>Tested on ARM servers</td>
+<td>✅ 完整支持</td>
+<td>已在 ARM 服务器上测试</td>
 </tr>
 <tr>
 <td rowspan="2"><b>macOS</b></td>
 <td>x86_64</td>
-<td>✅ Fully Supported</td>
-<td>Intel Macs</td>
+<td>✅ 完整支持</td>
+<td>Intel Mac</td>
 </tr>
 <tr>
 <td>ARM64</td>
-<td>✅ Fully Supported</td>
-<td>Apple Silicon (M1/M2/M3)</td>
+<td>✅ 完整支持</td>
+<td>Apple Silicon（M1/M2/M3）</td>
 </tr>
 <tr>
 <td><b>Windows</b></td>
 <td>x86_64</td>
-<td>✅ Fully Supported</td>
+<td>✅ 完整支持</td>
 <td>Windows 10+</td>
 </tr>
 </table>
@@ -171,108 +171,108 @@ It's designed for **distributed systems** that require unique, ordered, and high
 </details>
 
 <details>
-<summary><b>❓ What programming languages are supported?</b></summary>
+<summary><b>❓ 支持哪些编程语言？</b></summary>
 
 <br>
 
-**Nebula ID** is a native **Rust** library with multi-protocol service support:
+**Nebula ID** 是原生 **Rust** 库，同时提供多协议服务支持：
 
-- **Rust**: Native library (`nebula-id` crate)
-- **HTTP/REST**: Any language with HTTP client
-- **gRPC**: Any language with gRPC support (Python, Java, Go, etc.)
+- **Rust**：原生库（`nebula-id` crate）
+- **HTTP/REST**：任何具备 HTTP 客户端的语言
+- **gRPC**：任何支持 gRPC 的语言（Python、Java、Go 等）
 
-**Documentation:**
-- [Rust API Docs](https://docs.rs/nebula-id)
-- [API Reference](API_REFERENCE.md)
+**文档：**
+- [Rust API 文档](https://docs.rs/nebula-id)
+- [API 参考](API_REFERENCE.md)
 
 </details>
 
 <details>
-<summary><b>❓ What ID algorithms are supported?</b></summary>
+<summary><b>❓ 支持哪些 ID 算法？</b></summary>
 
 <br>
 
 <table>
 <tr>
-<th>Algorithm</th>
-<th>Format</th>
-<th>Time Ordered</th>
-<th>Throughput</th>
-<th>Best For</th>
+<th>算法</th>
+<th>格式</th>
+<th>时间有序</th>
+<th>吞吐量</th>
+<th>适用场景</th>
 </tr>
 <tr>
 <td>Segment</td>
-<td>64-bit</td>
-<td>✅ Yes</td>
-<td>100K+/sec</td>
-<td>Database primary keys</td>
+<td>64 位</td>
+<td>✅ 是</td>
+<td>10 万+/秒</td>
+<td>数据库主键</td>
 </tr>
 <tr>
 <td>Snowflake</td>
-<td>64-bit</td>
-<td>✅ Yes</td>
-<td>1M+/sec</td>
-<td>High-performance systems</td>
+<td>64 位</td>
+<td>✅ 是</td>
+<td>100 万+/秒</td>
+<td>高性能系统</td>
 </tr>
 <tr>
 <td>UUID v8</td>
-<td>128-bit</td>
-<td>✅ Yes</td>
-<td>500K+/sec</td>
-<td>Distributed systems</td>
+<td>128 位</td>
+<td>✅ 是</td>
+<td>50 万+/秒</td>
+<td>分布式系统</td>
 </tr>
 </table>
 
-> Throughput figures are indicative only — the repository has no `benches/` coverage for the UUID path.
+> 吞吐量数据仅供参考——本仓库尚无针对 UUID 路径的 `benches/` 基准测试覆盖。
 
 </details>
 
 ---
 
-## Installation & Setup
+## 📦 安装与配置
 
 <div align="center">
 
-### 🚀 Getting Started
+### 🚀 快速开始
 
 </div>
 
 <details>
-<summary><b>❓ How do I install this?</b></summary>
+<summary><b>❓ 如何安装？</b></summary>
 
 <br>
 
-**For Rust Projects:**
+**Rust 项目：**
 
-Add the following to your `Cargo.toml`:
+在 `Cargo.toml` 中添加：
 
 ```toml
 [dependencies]
-nebulaid = "0.2"                       # Cargo package name is `nebulaid`
+nebulaid = "0.2"                       # Cargo 包名是 `nebulaid`
 tokio = { version = "1.0", features = ["full"] }
 ```
 
-Or using cargo:
+或使用 cargo：
 
 ```bash
 cargo add nebulaid tokio
 ```
 
-**Optional Features** (`Cargo.toml` `[features]`):
+**可选特性**（`Cargo.toml` 的 `[features]`）：
 
 ```toml
 # default = ["postgresql", "http", "grpc", "garrison-auth"]
-nebulaid = { version = "0.2", features = ["etcd"] }  # distributed coordination
-# nebulaid = { version = "0.2", features = ["sdk"] } # NebulaIdKit facade
-# There is no `monitoring` / `audit` / `tls` feature: metrics, audit logging and
-# TLS are runtime configuration ([monitoring] / [auth] / [tls]).
+nebulaid = { version = "0.2", features = ["etcd"] }  # 分布式协调
+# nebulaid = { version = "0.2", features = ["sdk"] } # NebulaIdKit 门面
+# 并不存在 `monitoring` / `audit` / `tls` 特性：指标、审计日志与
+# TLS 均为运行时配置（[monitoring] / [auth] / [tls]）。
 ```
 
-**Verification:**
+**验证：**
 
 ```rust
 use nebulaid::core::Config;
-use nebulaid::sdk::NebulaIdKitBuilder; // requires feature `sdk`
+use nebulaid::sdk::NebulaIdKitBuilder; // 需要特性 `sdk`
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
@@ -289,92 +289,92 @@ async fn main() -> nebulaid::core::Result<()> {
 }
 ```
 
-**See also:** [User Guide](USER_GUIDE.md#installation)
+**另请参阅：**[用户指南](USER_GUIDE.md#安装)
 
 </details>
 
 <details>
-<summary><b>❓ What are the system requirements?</b></summary>
+<summary><b>❓ 系统要求是什么？</b></summary>
 
 <br>
 
-**Minimum Requirements:**
+**最低要求：**
 
 <table>
 <tr>
-<th>Component</th>
-<th>Requirement</th>
-<th>Recommended</th>
+<th>组件</th>
+<th>要求</th>
+<th>推荐</th>
 </tr>
 <tr>
-<td>Rust Version</td>
+<td>Rust 版本</td>
 <td>1.75+</td>
-<td>Latest stable</td>
+<td>最新稳定版</td>
 </tr>
 <tr>
-<td>Memory</td>
+<td>内存</td>
 <td>256MB</td>
 <td>1GB+</td>
 </tr>
 <tr>
-<td>Disk Space</td>
+<td>磁盘空间</td>
 <td>50MB</td>
 <td>100MB+</td>
 </tr>
 <tr>
-<td>Database</td>
+<td>数据库</td>
 <td>PostgreSQL/MySQL</td>
 <td>PostgreSQL 13+</td>
 </tr>
 </table>
 
-**Optional Dependencies:**
-- 🔧 **Etcd**: For distributed coordination (v3.4+)
-- ☁️ **Redis**: For caching (v6+)
-- 📊 **Prometheus**: For metrics visualization
+**可选依赖：**
+- 🔧 **Etcd**：用于分布式协调（v3.4+）
+- ☁️ **Redis**：用于缓存（v6+）
+- 📊 **Prometheus**：用于指标可视化
 
 </details>
 
 <details>
-<summary><b>❓ I'm getting compilation errors, what should I do?</b></summary>
+<summary><b>❓ 遇到编译错误怎么办？</b></summary>
 
 <br>
 
-**Common Solutions:**
+**常见解决办法：**
 
-1. **Check Rust version:**
+1. **检查 Rust 版本：**
    ```bash
    rustc --version
-   # Should be 1.75.0 or higher
+   # 应为 1.75.0 或更高
    ```
 
-2. **Ensure required features are enabled** (default is
-   `["postgresql", "http", "grpc", "garrison-auth"]`; `sqlite` is currently
-   unbuildable because `limiteron` hard-depends on `dbnexus/postgres`):
+2. **确保所需特性已启用**（默认为
+   `["postgresql", "http", "grpc", "garrison-auth"]`；`sqlite` 目前
+   无法构建，因为 `limiteron` 硬依赖 `dbnexus/postgres`）：
    ```toml
    nebulaid = "0.2"
    ```
 
-3. **Clean build artifacts:**
+3. **清理构建产物：**
    ```bash
    cargo clean
    cargo build
    ```
 
-**Still having issues?**
-- 📝 Check [Troubleshooting](#troubleshooting)
-- 🐛 [Open an issue](../../issues) with error details
+**仍有问题？**
+- 📝 查看[故障排查](#-故障排查)
+- 🐛 [提交 issue](../../issues) 并附上错误详情
 
 </details>
 
 <details>
-<summary><b>❓ Can I use this with Docker?</b></summary>
+<summary><b>❓ 可以在 Docker 中使用吗？</b></summary>
 
 <br>
 
-**Yes!** Nebula ID works perfectly in containerized environments.
+**可以！**Nebula ID 在容器化环境中可完美运行。
 
-**Sample Dockerfile:**
+**Dockerfile 示例：**
 
 ```dockerfile
 FROM rust:1.75 as builder
@@ -387,7 +387,7 @@ COPY --from=builder /app/target/release/nebula-id /usr/local/bin/
 CMD ["nebula-id"]
 ```
 
-**Docker Compose with Dependencies:**
+**包含依赖的 Docker Compose：**
 
 ```yaml
 services:
@@ -414,18 +414,18 @@ services:
 </details>
 
 <details>
-<summary><b>❓ How do I configure Nebula ID?</b></summary>
+<summary><b>❓ 如何配置 Nebula ID？</b></summary>
 
 <br>
 
-**Configuration File (`config.toml`):**
+**配置文件（`config.toml`）：**
 
-All ten sections below are **required** — `Config` gives them no
-`#[serde(default)]` (`src/core/config/app_config.rs:37-64`). A parse failure now aborts
-startup with exit code 1 instead of falling back to `Config::default()`; unknown keys are
-rejected the same way, because every config struct carries `deny_unknown_fields`. Built-in
-defaults are used only when no `--config` was given *and* `config/config.toml` does not
-exist, which emits a `warn`. Only `[redis]` and `[hot_reload]` may be omitted.
+以下全部十个配置段均为**必填** —— `Config` 没有为它们提供
+`#[serde(default)]`（`src/core/config/app_config.rs:37-64`）。解析失败现在会以退出码 1 中止
+启动，而不是回退到 `Config::default()`；未知键也会以同样方式被拒绝，
+因为每个配置结构体都带有 `deny_unknown_fields`。仅当未给定 `--config` *且*
+`config/config.toml` 不存在时，才会使用内置默认值，此时会输出一条 `warn`。
+只有 `[redis]` 与 `[hot_reload]` 可以省略。
 
 ```toml
 [app]
@@ -501,23 +501,23 @@ grpc_enabled = false
 [batch_generate]
 max_batch_size = 100
 
-# optional:
+# 可选项：
 # [redis] url = "redis://localhost:6379"
 # [hot_reload] auto_watch_enabled = false
 ```
 
-> ⚠️ `Config::merge()` runs the environment config on top of the file at startup
-> and unconditionally replaces `algorithm.segment` / `algorithm.snowflake` /
-> `algorithm.uuid_v8` with it (`src/core/config/app_config.rs:393-395`,
-> `src/main.rs:559`) — in practice those three sub-tables always end up as
-> defaults. Only `algorithm.default` survives. Tune them in code for now.
+> ⚠️ `Config::merge()` 在启动时会把环境变量配置叠加到文件之上，
+> 并无条件地用它替换 `algorithm.segment` / `algorithm.snowflake` /
+> `algorithm.uuid_v8`（`src/core/config/app_config.rs:393-395`、
+> `src/main.rs:559`）——实际上这三个子表最终总是默认值。
+> 只有 `algorithm.default` 能保留下来。目前请在代码中调整它们。
 
-**Environment Variables:**
+**环境变量：**
 
-There is no `NEBULA_DATABASE_URL` / `NEBULA_AUTH_API_KEY` family. The real ones are:
+并不存在 `NEBULA_DATABASE_URL` / `NEBULA_AUTH_API_KEY` 这一系列。真实的环境变量是：
 
 ```bash
-# Merged over the file by `Config::load_from_env()`:
+# 由 `Config::load_from_env()` 叠加到文件之上：
 export APP_HOST="0.0.0.0"
 export APP_HTTP_PORT="8080"
 export APP_GRPC_PORT="9091"
@@ -527,51 +527,51 @@ export DATABASE_URL="postgresql://idgen:pass@localhost:5432/idgen"
 export ETCD_ENDPOINTS="http://localhost:2379"
 export RUST_LOG="info"
 
-# Expanded inside the file as ${VAR} before parsing:
+# 在解析前于文件内部展开为 ${VAR}：
 export NEBULA_DATABASE_PASSWORD="..."   # [database].password / url
-export NEBULA_API_KEY_SALT="..."        # [auth].api_key_salt fallback
+export NEBULA_API_KEY_SALT="..."        # [auth].api_key_salt 的回退值
 ```
 
-**See also:** [Configuration Guide](USER_GUIDE.md#configuration)
+**另请参阅：**[配置迁移指南](CONFIG_MIGRATION_GUIDE.md#配置全表全量选项与校验规则)
 
 </details>
 
 ---
 
-## Usage & Features
+## 🎯 使用与特性
 
 <div align="center">
 
-### 💡 Working with the API
+### 💡 API 使用
 
 </div>
 
 <details>
-<summary><b>❓ How do I get started with basic usage?</b></summary>
+<summary><b>❓ 如何快速上手基本用法？</b></summary>
 
 <br>
 
-**5-Minute Quick Start：**
+**5 分钟快速上手：**
 
 ```rust
 use nebulaid::core::Config;
-use nebulaid::sdk::NebulaIdKitBuilder; // feature `sdk`
+use nebulaid::sdk::NebulaIdKitBuilder; // 特性 `sdk`
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
-    // Segment needs `NebulaIdKitBuilder::with_repository(..)` because it
-    // allocates ranges from the database; pure algorithms need nothing.
+    // Segment 需要 `NebulaIdKitBuilder::with_repository(..)`，因为它
+    // 要从数据库分配号段；纯算法则无需任何额外设置。
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
 
     let kit = NebulaIdKitBuilder::new(config).build().await?;
     let generator = kit.id_generator()?;
 
-    // Generate a single ID
+    // 生成单个 ID
     let id = generator.generate("prod", "core", "order").await?;
     println!("Generated ID: {} (u128: {})", id, id.as_u128());
 
-    // Generate a batch of IDs
+    // 批量生成 ID
     let batch = generator.batch_generate("prod", "core", "order", 100).await?;
     println!("Generated {} IDs", batch.len());
 
@@ -580,27 +580,27 @@ async fn main() -> nebulaid::core::Result<()> {
 }
 ```
 
-**Next Steps:**
-- 📖 [User Guide](USER_GUIDE.md)
-- 💻 [Examples](../examples/)
+**下一步：**
+- 📖 [用户指南](USER_GUIDE.md)
+- 💻 [示例](../examples/)
 
 </details>
 
 <details>
-<summary><b>❓ How do I choose the right algorithm?</b></summary>
+<summary><b>❓ 如何选择合适的算法？</b></summary>
 
 <br>
 
-**Algorithm Selection Guide:**
+**算法选择指南：**
 
-| Use Case | Recommended Algorithm | Reason |
+| 使用场景 | 推荐算法 | 原因 |
 |----------|----------------------|--------|
-| Database primary keys | Segment | Ordered, database-backed, reliable |
-| High-throughput microservices | Snowflake | Fast, no database dependency |
-| Time-ordered distributed IDs | UUID v8 | RFC 9562 §5.8 layout, time-sortable, embeds dc/worker/shard |
-| Mixed requirements | Multi-algorithm | Use different algorithms per use case |
+| 数据库主键 | Segment | 有序、由数据库支撑、可靠 |
+| 高吞吐微服务 | Snowflake | 快速、无数据库依赖 |
+| 时间有序的分布式 ID | UUID v8 | RFC 9562 §5.8 布局、按时间可排序、内嵌 dc/worker/shard |
+| 混合需求 | 多算法 | 按使用场景使用不同算法 |
 
-**Configuration**Code Example:**
+**配置代码示例：**
 
 ```rust
 use nebulaid::core::algorithm::AlgorithmBuilder;
@@ -611,10 +611,10 @@ use nebulaid::core::Config;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::default();
 
-    // Algorithm structs (SegmentAlgorithm / SnowflakeAlgorithm / UuidV8Impl) are crate-internal;
-    // build them through the public AlgorithmBuilder.
-    // Snowflake and UuidV8 are pure algorithms and need no database; Segment requires a
-    // repository to be wired up first (see the SDK notes in src/sdk/client.rs).
+    // 算法结构体（SegmentAlgorithm / SnowflakeAlgorithm / UuidV8Impl）是 crate 内部的；
+    // 请通过公开的 AlgorithmBuilder 构建。
+    // Snowflake 与 UuidV8 是纯算法、无需数据库；Segment 则需要先接入
+    // repository（见 src/sdk/client.rs 中的 SDK 说明）。
     let snowflake = AlgorithmBuilder::new(AlgorithmType::Snowflake)
         .build(&config)
         .await?;
@@ -629,11 +629,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 </details>
 
 <details>
-<summary><b>❓ How does the Segment algorithm work?</b></summary>
+<summary><b>❓ Segment 算法是如何工作的？</b></summary>
 
 <br>
 
-The Segment algorithm pre-allocates ID ranges from the database for efficient batch generation:
+Segment 算法从数据库预分配 ID 区间，以实现高效的批量生成：
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -646,12 +646,12 @@ The Segment algorithm pre-allocates ID ranges from the database for efficient ba
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Key Benefits:**
-- 🚀 **High Throughput**: Generate IDs from local memory
-- 📦 **Batch Efficiency**: Pre-allocation reduces database round-trips
-- 🔄 **Fault Tolerance**: Automatic failover to healthy datacenters
+**核心优势：**
+- 🚀 **高吞吐**：从本地内存生成 ID
+- 📦 **批量高效**：预分配减少数据库往返
+- 🔄 **容错**：自动故障转移到健康的数据中心
 
-**Code Example:**
+**代码示例：**
 
 ```rust
 use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
@@ -660,8 +660,8 @@ use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // `dc_id` comes from [app]; the concrete SegmentAlgorithm type is
-    // crate-internal, so build it through the public AlgorithmBuilder.
+    // `dc_id` 来自 [app]；具体的 SegmentAlgorithm 类型是
+    // crate 内部的，因此请通过公开的 AlgorithmBuilder 构建。
     let mut config = Config::default();
     config.app.dc_id = 1;
 
@@ -671,11 +671,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ctx = GenerateContext::default();
 
-    // Generate single ID (from the pre-allocated segment)
+    // 生成单个 ID（来自预分配的号段）
     let id = segment.generate(&ctx).await?;
     println!("Generated ID: {}", id);
 
-    // Generate a batch (one database round-trip for `size` IDs)
+    // 批量生成（为 `size` 个 ID 只做一次数据库往返）
     let batch = segment.batch_generate(&ctx, 1000).await?;
     println!("Generated {} IDs", batch.ids.len());
 
@@ -686,13 +686,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 </details>
 
 <details>
-<summary><b>❓ How does the Snowflake algorithm work?</b></summary>
+<summary><b>❓ Snowflake 算法是如何工作的？</b></summary>
 
 <br>
 
-The Snowflake algorithm generates 64-bit IDs with configurable bit allocation
-(`construct_id` in `src/core/algorithm/snowflake.rs` shifts
-`timestamp | datacenter | worker | sequence`, no sign bit):
+Snowflake 算法生成 64 位 ID，位分配可配置
+（`src/core/algorithm/snowflake.rs` 中的 `construct_id` 对
+`timestamp | datacenter | worker | sequence` 进行移位，无符号位）：
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
@@ -703,14 +703,14 @@ The Snowflake algorithm generates 64-bit IDs with configurable bit allocation
 └────────────────────────────────────────────────────────────────┘
 ```
 
-**Key Benefits:**
-- 🚀 **Fast**: No database dependency
-- 📈 **Scalable**: With the default bit layout, 8 datacenters × 256 workers
-  (`datacenter_id_bits` / `worker_id_bits` / `sequence_bits` are configurable;
-  their sum must stay < 64)
-- 🎯 **Ordered**: Time-based ordering within millisecond
+**核心优势：**
+- 🚀 **快速**：无数据库依赖
+- 📈 **可扩展**：按默认位布局可支持 8 个数据中心 × 256 个 worker
+  （`datacenter_id_bits` / `worker_id_bits` / `sequence_bits` 均可配置；
+  其总和必须保持 < 64）
+- 🎯 **有序**：毫秒内按时间排序
 
-**Code Example:**
+**代码示例：**
 
 ```rust
 use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
@@ -719,8 +719,8 @@ use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // dc/worker come from [app]; the concrete SnowflakeAlgorithm type is
-    // crate-internal, so build it through the public AlgorithmBuilder.
+    // dc/worker 来自 [app]；具体的 SnowflakeAlgorithm 类型是
+    // crate 内部的，因此请通过公开的 AlgorithmBuilder 构建。
     let mut config = Config::default();
     config.app.dc_id = 1;
     config.app.worker_id = 1;
@@ -732,8 +732,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let id = snowflake.generate(&GenerateContext::default()).await?;
     println!("Snowflake ID: {} (u128: {})", id, id.as_u128());
 
-    // The bit layout is readable from the config; the remainder of the 64 bits
-    // is the timestamp field.
+    // 位布局可从配置中读出；64 位中的剩余部分
+    // 即时间戳字段。
     let s = &config.algorithm.snowflake;
     println!(
         "timestamp({}) | dc({}) | worker({}) | seq({})",
@@ -750,15 +750,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 </details>
 
 <details>
-<summary><b>❓ What is UUID v8 and when should I use it?</b></summary>
+<summary><b>❓ 什么是 UUID v8？什么时候该用它？</b></summary>
 
 <br>
 
-Nebula ID ships a **time-ordered UUID v8** generator (RFC 9562 §5.8 custom layout). Standard
-UUID v7 also carries a 48-bit millisecond timestamp, but its remaining bits are fixed to
-clock-seq + node; Nebula's v8 composition uses the vendor-defined fields to embed
-tenant/zone context directly into the ID (UUIDP "Cluster" style: random per-instance start plus
-a strictly monotonic counter):
+Nebula ID 提供一个**按时间排序的 UUID v8** 生成器（RFC 9562 §5.8 自定义布局）。标准
+UUID v7 同样携带 48 位毫秒级时间戳，但其余位固定为
+clock-seq + node；Nebula 的 v8 组合方式则利用厂商自定义字段把
+租户/区域上下文直接嵌入 ID（UUIDP "Cluster" 风格：每实例随机起点加上
+严格单调计数器）：
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
@@ -770,13 +770,13 @@ a strictly monotonic counter):
 └────────────────────────────────────────────────────────────────┘
 ```
 
-**Benefits:**
-- ✅ **Time-Ordered**: Lexicographically sortable by creation time
-- ✅ **Self-Describing**: `dc` / `worker` / `shard` are readable from the ID itself
-- ✅ **Collision-Resistant**: monotonic counter + per-instance random start
-- ⚠️ **Version nibble is `8`**: strict "version == 7" validators will reject it
+**优势：**
+- ✅ **时间有序**：按创建时间字典序可排序
+- ✅ **自描述**：`dc` / `worker` / `shard` 可直接从 ID 本身读出
+- ✅ **抗碰撞**：单调计数器 + 每实例随机起点
+- ⚠️ **版本半字节为 `8`**：严格校验 "version == 7" 的验证器会拒绝它
 
-**Code Example:**
+**代码示例：**
 
 ```rust
 use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
@@ -793,7 +793,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let id = uuid.generate(&GenerateContext::default()).await?;
     println!("UUID v8: {}", id);
 
-    // Round-trip through the uuid crate representation
+    // 通过 uuid crate 的表示形式做往返转换
     let as_uuid = id.to_uuid_v8();
     let back = Id::from_uuid_v8(as_uuid);
     assert_eq!(back, id);
@@ -802,24 +802,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-**Use When:**
-- You need UUID-shaped identifiers that stay index-friendly
-- Time-based sorting is important
-- You want dc / worker / shard observable straight from the ID
+**适用场景：**
+- 你需要保持索引友好性的 UUID 形态标识符
+- 按时间排序很重要
+- 你希望 dc / worker / shard 能直接从 ID 中观察到
 
-> **Legacy naming**: `uuid_v7` and `uuid_v4` are no longer separate algorithms, but
-> `AlgorithmType::from_str` (`src/core/types/id.rs:195-201`) still accepts both spellings as
-> **input aliases** that resolve to `UuidV8`, so old configs and API payloads keep working.
-> Anything Nebula emits is `uuid_v8`.
+> **旧命名**：`uuid_v7` 与 `uuid_v4` 已不再是独立算法，但
+> `AlgorithmType::from_str`（`src/core/types/id.rs:195-201`）仍接受这两种拼写作为
+> 解析到 `UuidV8` 的**输入别名**，因此旧配置与 API 载荷依然可用。
+> Nebula 输出的一律是 `uuid_v8`。
 
 </details>
 
 <details>
-<summary><b>❓ How does distributed coordination work?</b></summary>
+<summary><b>❓ 分布式协调是如何工作的？</b></summary>
 
 <br>
 
-Nebula ID uses etcd for distributed coordination:
+Nebula ID 使用 etcd 进行分布式协调：
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -832,19 +832,19 @@ Nebula ID uses etcd for distributed coordination:
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Components:**
+**组件：**
 
-1. **EtcdClusterHealthMonitor**: Monitors etcd cluster health (public, feature `etcd`)
-2. **DcFailureDetector**: Tracks datacenter health status — **internal to the crate**
-   (`src/core/algorithm/segment.rs`, reached only through `SegmentAlgorithm`); there is no
-   public constructor for it, so it cannot be wired up from outside
-3. **Automatic Failover**: Routes traffic to healthy datacenters
+1. **EtcdClusterHealthMonitor**：监控 etcd 集群健康状态（公开，特性 `etcd`）
+2. **DcFailureDetector**：跟踪数据中心健康状态 —— **crate 内部**
+   （`src/core/algorithm/segment.rs`，只能通过 `SegmentAlgorithm` 访问）；它没有
+   公开构造函数，因此无法从外部装配
+3. **自动故障转移**：把流量路由到健康的数据中心
 
-**Code Example:**
+**代码示例：**
 
 ```rust
 use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
-use nebulaid::core::coordinator::EtcdClusterHealthMonitor; // feature `etcd`
+use nebulaid::core::coordinator::EtcdClusterHealthMonitor; // 特性 `etcd`
 use nebulaid::core::config::EtcdConfig;
 use nebulaid::core::types::AlgorithmType;
 use nebulaid::core::Config;
@@ -853,13 +853,13 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // new(config: EtcdConfig, cache_file_path: String) -> Self
-    // The cache file is used when etcd is unreachable.
+    // 当 etcd 不可达时使用缓存文件。
     let health_monitor = Arc::new(EtcdClusterHealthMonitor::new(
         EtcdConfig::default(),
         "./etcd-cache.json".to_string(),
     ));
 
-    // Hand it to the algorithm through the public builder.
+    // 通过公开的 builder 把它交给算法。
     let segment = AlgorithmBuilder::new(AlgorithmType::Segment)
         .with_etcd_health_monitor(health_monitor)
         .build(&Config::default())
@@ -875,11 +875,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 </details>
 
 <details>
-<summary><b>❓ How do I handle errors properly?</b></summary>
+<summary><b>❓ 如何正确处理错误？</b></summary>
 
 <br>
 
-**Recommended Pattern:**
+**推荐模式：**
 
 ```rust
 use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
@@ -897,8 +897,8 @@ async fn run() -> Result<Id, CoreError> {
 async fn main() {
     match run().await {
         Ok(id) => println!("Generated ID: {}", id.as_u128()),
-        // Variant names and payload shapes are exactly as declared in
-        // src/core/types/error.rs.
+        // 变体名称与载荷形态与
+        // src/core/types/error.rs 中的声明完全一致。
         Err(CoreError::ClockMovedBackward { last_timestamp }) => {
             eprintln!("❌ System clock regressed to {last_timestamp}, NTP sync required");
         }
@@ -916,28 +916,28 @@ async fn main() {
 }
 ```
 
-**Error Types:**
+**错误类型：**
 
-| Error | Payload | Description | Recovery |
+| 错误 | 载荷 | 说明 | 恢复方式 |
 |-------|---------|-------------|----------|
-| `ClockMovedBackward` | `{ last_timestamp }` | System clock regression | NTP sync required |
-| `DatabaseError` | `(String)` | Database unavailable or query failed | Check connection, use cache |
-| `SegmentExhausted` | `{ max_id }` | ID range depleted | Auto-refresh segment |
-| `EtcdError` | `(String)` | Etcd unavailable | Use local cache |
-| `SequenceOverflow` | `{ timestamp }` | Snowflake sequence overflow | Wait for next ms (the algorithm already sleeps 1 ms and retries) |
-| `ConfigurationError` | `(String)` | Required setting missing/invalid | Fix the config |
+| `ClockMovedBackward` | `{ last_timestamp }` | 系统时钟回拨 | 需要 NTP 同步 |
+| `DatabaseError` | `(String)` | 数据库不可用或查询失败 | 检查连接，使用缓存 |
+| `SegmentExhausted` | `{ max_id }` | ID 区间耗尽 | 自动刷新号段 |
+| `EtcdError` | `(String)` | Etcd 不可用 | 使用本地缓存 |
+| `SequenceOverflow` | `{ timestamp }` | Snowflake 序列溢出 | 等待下一毫秒（算法已自动休眠 1 毫秒并重试） |
+| `ConfigurationError` | `(String)` | 必需配置缺失或无效 | 修正配置 |
 
-There is no `DatabaseConnectionFailed` / `EtcdConnectionFailed` variant — those were
-stale names; the DB and etcd paths both report through `DatabaseError` / `EtcdError`.
+不存在 `DatabaseConnectionFailed` / `EtcdConnectionFailed` 变体 —— 那些是
+过时的名称；数据库与 etcd 路径都通过 `DatabaseError` / `EtcdError` 上报。
 
 </details>
 
 <details>
-<summary><b>❓ Is there async/await support?</b></summary>
+<summary><b>❓ 是否支持 async/await？</b></summary>
 
 <br>
 
-**Yes!** Nebula ID is designed for async/await from the ground up.
+**支持！**Nebula ID 从底层设计上就面向 async/await。
 
 ```rust
 use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
@@ -952,11 +952,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ctx = GenerateContext::default();
 
-    // Async ID generation
+    // 异步生成单个 ID
     let id = segment.generate(&ctx).await?;
     println!("Generated ID: {}", id);
 
-    // Async batch generation
+    // 异步批量生成
     let batch = segment.batch_generate(&ctx, 100).await?;
     println!("Generated {} IDs", batch.len());
 
@@ -964,61 +964,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-**Runtime requirement:**
+**运行时要求：**
 
-- ✅ **Tokio — required.** The algorithms spawn background tasks and use tokio
-  primitives internally (segment health checks, `tokio::sync` channels,
-  `tokio::time::sleep` on clock/sequence waits), so they must run inside a tokio
-  runtime.
-- ❌ Async-Std / smol: not supported; there is no runtime abstraction layer.
+- ✅ **Tokio —— 必需。**算法会派生后台任务并在内部使用 tokio
+  原语（号段健康检查、`tokio::sync` 通道、
+  时钟/序列等待时的 `tokio::time::sleep`），因此必须在 tokio
+  运行时中运行。
+- ❌ Async-Std / smol：不支持；没有运行时抽象层。
 
 </details>
 
 ---
 
-## Performance
+## 📈 性能
 
 <div align="center">
 
-### ⚡ Speed and Optimization
+### ⚡ 速度与优化
 
 </div>
 
 <details>
-<summary><b>❓ How fast is it?</b></summary>
+<summary><b>❓ 它有多快？</b></summary>
 
 <br>
 
-**Benchmark Results:**
+**基准测试结果：**
 
 <table>
 <tr>
-<th>Algorithm</th>
-<th>Throughput</th>
-<th>P50 Latency</th>
-<th>P99 Latency</th>
+<th>算法</th>
+<th>吞吐量</th>
+<th>P50 延迟</th>
+<th>P99 延迟</th>
 </tr>
 <tr>
 <td>Segment</td>
-<td>100,000+ IDs/sec</td>
+<td>100,000+ ID/秒</td>
 <td>~0.1ms</td>
 <td>~0.5ms</td>
 </tr>
 <tr>
 <td>Snowflake</td>
-<td>1,000,000+ IDs/sec</td>
+<td>1,000,000+ ID/秒</td>
 <td>~0.05ms</td>
 <td>~0.1ms</td>
 </tr>
 <tr>
 <td>UUID v8</td>
-<td>500,000+ IDs/sec</td>
+<td>500,000+ ID/秒</td>
 <td>~0.03ms</td>
 <td>~0.05ms</td>
 </tr>
 </table>
 
-**Run benchmarks yourself:**
+**自行运行基准测试：**
 
 ```bash
 cargo bench
@@ -1027,43 +1027,44 @@ cargo bench
 </details>
 
 <details>
-<summary><b>❓ How can I improve performance?</b></summary>
+<summary><b>❓ 如何提升性能？</b></summary>
 
 <br>
 
-**Optimization Tips:**
+**优化建议：**
 
-1. **Enable Release Mode:**
+1. **启用 Release 模式：**
    ```bash
    cargo build --release
    ```
 
-2. **Use Batch Generation:**
+2. **使用批量生成：**
    ```rust
-   // Instead of generating IDs one by one (`IdAlgorithm::batch_generate`)
+   // 不要逐个生成 ID（`IdAlgorithm::batch_generate`）
    let batch = segment.batch_generate(&ctx, 1000).await?;
    ```
 
-3. **Configure Appropriate Segment Size:**
+3. **配置合适的号段大小：**
    ```toml
-   # Keys of `SegmentAlgorithmConfig` — all four are required by the parser.
-   # base_step must stay within [min_step, max_step].
+   # `SegmentAlgorithmConfig` 的键 —— 四个键均为解析器必填。
+   # base_step 必须保持在 [min_step, max_step] 之间。
    [algorithm.segment]
-   base_step = 10000  # Larger step = fewer database round-trips
+   base_step = 10000  # 步长越大 = 数据库往返越少
    min_step = 500
    max_step = 100000
    switch_threshold = 0.1
    ```
-   > ⚠️ At server startup `Config::merge()` resets this sub-table to the defaults
-   > (`src/core/config/app_config.rs:393-395`); until that is fixed, tune it in code
-   > (`Config { algorithm: AlgorithmConfig { segment: .. } }` before `AlgorithmBuilder::build`).
+   > ⚠️ 服务器启动时 `Config::merge()` 会把该子表重置为默认值
+   > （`src/core/config/app_config.rs:393-395`）；在该问题修复之前，请在代码中
+   > 调整（在 `AlgorithmBuilder::build` 之前设置
+   > `Config { algorithm: AlgorithmConfig { segment: .. } }`）。
 
-4. **Use Snowflake for Speed:**
-   - No database dependency
-   - In-memory generation
-   - ~1M IDs/sec per instance
+4. **追求速度使用 Snowflake：**
+   - 无数据库依赖
+   - 内存中生成
+   - 每实例约 100 万 ID/秒
 
-5. **Enable Connection Pooling:**
+5. **启用连接池：**
    ```toml
    [database]
    max_connections = 20
@@ -1072,59 +1073,59 @@ cargo bench
 </details>
 
 <details>
-<summary><b>❓ What's the memory usage like?</b></summary>
+<summary><b>❓ 内存占用情况如何？</b></summary>
 
 <br>
 
-**Typical Memory Usage:**
+**典型内存占用：**
 
 <table>
 <tr>
-<th>Component</th>
-<th>Memory</th>
+<th>组件</th>
+<th>内存</th>
 </tr>
 <tr>
-<td>Core Library</td>
+<td>核心库</td>
 <td>~1MB</td>
 </tr>
 <tr>
-<td>Segment Cache (1M IDs)</td>
+<td>号段缓存（100 万 ID）</td>
 <td>~8MB</td>
 </tr>
 <tr>
-<td>Etcd Client</td>
+<td>Etcd 客户端</td>
 <td>~2MB</td>
 </tr>
 <tr>
-<td>HTTP Server</td>
+<td>HTTP 服务器</td>
 <td>~5MB</td>
 </tr>
 </table>
 
-**Total:** ~16MB base + algorithm-specific overhead
+**合计：**约 16MB 基础占用 + 算法相关开销
 
-**Memory Safety:**
-- ✅ No memory leaks (verified with continuous testing)
-- ✅ Efficient batch processing
-- ✅ Connection pooling
-- ✅ Async runtime efficiency
+**内存安全：**
+- ✅ 无内存泄漏（经持续测试验证）
+- ✅ 高效的批量处理
+- ✅ 连接池
+- ✅ 异步运行时高效
 
 </details>
 
 <details>
-<summary><b>❓ How does the system handle high concurrency?</b></summary>
+<summary><b>❓ 系统如何应对高并发？</b></summary>
 
 <br>
 
-Nebula ID is designed for high concurrency:
+Nebula ID 为高并发而生：
 
-**Concurrency Features:**
-- 🚀 **Async/Await**: Non-blocking operations
-- 🔀 **DashMap**: Thread-safe concurrent data structures
-- 📊 **Connection Pooling**: Efficient database connections
-- ⚡ **Lock-Free**: Minimal contention points
+**并发特性：**
+- 🚀 **Async/Await**：非阻塞操作
+- 🔀 **DashMap**：线程安全的并发数据结构
+- 📊 **连接池**：高效的数据库连接
+- ⚡ **无锁**：最小化竞争点
 
-**Best Practices:**
+**最佳实践：**
 
 ```rust
 use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
@@ -1134,14 +1135,14 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // `IdAlgorithm: Send + Sync`, so one shared handle can serve many tasks.
+    // `IdAlgorithm: Send + Sync`，因此一个共享句柄即可服务多个任务。
     let snowflake: Arc<dyn IdAlgorithm> = Arc::from(
         AlgorithmBuilder::new(AlgorithmType::Snowflake)
             .build(&Config::default())
             .await?,
     );
 
-    // Spawn concurrent tasks
+    // 派生并发任务
     let mut handles = Vec::new();
     for _ in 0..100 {
         let snowflake = Arc::clone(&snowflake);
@@ -1150,7 +1151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }));
     }
 
-    // Collect results (JoinError and CoreError both widen to Box<dyn Error>)
+    // 收集结果（JoinError 与 CoreError 都可转换为 Box<dyn Error>）
     let mut ids: Vec<Id> = Vec::with_capacity(handles.len());
     for handle in handles {
         ids.push(handle.await??);
@@ -1165,53 +1166,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ---
 
-## Security
+## 🔐 安全
 
 <div align="center">
 
-### 🔒 Security Features
+### 🔒 安全特性
 
 </div>
 
 <details>
-<summary><b>❓ What security features are included?</b></summary>
+<summary><b>❓ 包含哪些安全特性？</b></summary>
 
 <br>
 
-**Yes!** Security is a core focus of Nebula ID.
+**是的！**安全是 Nebula ID 的核心关注点。
 
-**Security Features:**
+**安全特性：**
 
 <table>
 <tr>
 <td width="50%">
 
-**Authentication**
-- ✅ API Key authentication
-- ✅ Constant-time comparison (timing attack prevention)
-- ✅ Token-based access
-- ✅ Configurable key rotation
+**认证**
+- ✅ API Key 认证
+- ✅ 恒定时间比较（防止时序攻击）
+- ✅ 基于令牌的访问
+- ✅ 可配置的密钥轮换
 
 </td>
 <td width="50%">
 
-**Protection**
-- ✅ Rate limiting (max batch size: 100)
-- ✅ Request validation
-- ✅ Audit logging with IP spoofing protection
-- ✅ CORS restrictions
-- ✅ Security headers
+**防护**
+- ✅ 限流（最大批量大小：100）
+- ✅ 请求校验
+- ✅ 审计日志（含 IP 伪造防护）
+- ✅ CORS 限制
+- ✅ 安全响应头
 
 </td>
 </tr>
 </table>
 
-**Encryption:**
-- ✅ TLS/HTTPS support (TLS 1.2/1.3)
-- ✅ gRPCS support
-- ✅ Secure communication
+**加密：**
+- ✅ TLS/HTTPS 支持（TLS 1.2/1.3）
+- ✅ gRPCS 支持
+- ✅ 安全通信
 
-**Security Headers:**
+**安全响应头：**
 - X-Content-Type-Options: nosniff
 - X-Frame-Options: DENY
 - Content-Security-Policy: default-src 'self'
@@ -1219,37 +1220,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - X-XSS-Protection: 1; mode=block
 - Referrer-Policy: strict-origin-when-cross-origin
 
-**More details:** [Security Guide](USER_GUIDE.md#security)
+**更多细节：**[安全文档](SECURITY.md#安全最佳实践)
 
 </details>
 
 <details>
-<summary><b>❓ How do I configure API authentication?</b></summary>
+<summary><b>❓ 如何配置 API 认证？</b></summary>
 
 <br>
 
-**Configuration:**
+**配置：**
 
 ```toml
 [auth]
-enabled = true                     # required
-cache_ttl_seconds = 300            # required
-# Static bootstrap keys; runtime keys live in the database / garrison.
-# Every ApiKeyEntry field is required.
-# Startup provisions ONLY the first entry (`src/main.rs:136` takes `keys.first()`);
-# entries 2..N are parsed and validated but never created, with no warning.
-# `workspace` must be a UUID string or the literal "global" (any other value fails
-# `Uuid::parse_str` and is silently replaced with the nil UUID).
-# `role` yields admin only for the exact value "admin" (case-insensitive); anything
-# else becomes user. This block is ignored entirely when
-# NEBULA_ADMIN_API_KEY_SECRET is set.
+enabled = true                     # 必填
+cache_ttl_seconds = 300            # 必填
+# 静态引导密钥；运行时密钥存放在数据库 / garrison 中。
+# ApiKeyEntry 的每个字段都是必填的。
+# 启动时只预置第一条条目（`src/main.rs:136` 取 `keys.first()`）；
+# 第 2..N 条会被解析和校验但从不创建，且没有任何警告。
+# `workspace` 必须是 UUID 字符串或字面量 "global"（其他值会使
+# `Uuid::parse_str` 失败并被静默替换为全零 UUID）。
+# `role` 只有在值恰好为 "admin"（不区分大小写）时才是 admin；其他
+# 任何值都成为 user。当设置了 NEBULA_ADMIN_API_KEY_SECRET 时，
+# 整个配置段都会被忽略。
 api_keys = [
   { key_id = "svc-billing", key_secret = "replace-me", workspace = "0f5f6c8e-1f2e-4a7b-9c3d-2b1a4e5f6071",
     role = "user", rate_limit = 1000, name = "Billing service" },
 ]
-api_key_salt = "${NEBULA_API_KEY_SALT}"   # optional; production rejects an empty salt
-key_rotation_grace_period_seconds = 0 # optional; 0 (default) = grace off; >0 needs the two
-                                      # grace columns, which startup migrations add itself
+api_key_salt = "${NEBULA_API_KEY_SALT}"   # 可选；生产环境拒绝空盐值
+key_rotation_grace_period_seconds = 0 # 可选；0（默认）= 关闭宽限期；>0 需要两个
+                                      # 宽限期列，启动迁移会自行添加
 
 [rate_limit]
 enabled = true
@@ -1257,32 +1258,32 @@ default_rps = 1000
 burst_size = 100                   # validate(): <= 10 × default_rps
 
 [batch_generate]
-max_batch_size = 100               # Maximum batch size to prevent DoS attacks
+max_batch_size = 100               # 防止 DoS 攻击的最大批量大小
 ```
 
-> There is no `[auth].api_key` string key and no `token_expiry_hours`; credentials are
-> always `key_id` + `key_secret` pairs, and expiry is not a config concept.
+> 不存在 `[auth].api_key` 字符串键，也没有 `token_expiry_hours`；凭据始终是
+> `key_id` + `key_secret` 对，过期时间不是配置概念。
 
-**Usage:**
+**用法：**
 
 ```rust
 use nebulaid::core::Config;
 
-// API key validation happens inside the HTTP/gRPC server wired up by `src/main.rs`.
+// API 密钥校验发生在由 `src/main.rs` 装配的 HTTP/gRPC 服务器内部。
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load_from_file("config/config.toml")?;
 
-    // `auth.enabled` is the switch that gates the middleware.
+    // `auth.enabled` 是控制中间件的开关。
     println!("auth enabled: {}", config.auth.enabled);
 
     Ok(())
 }
 ```
 
-**HTTP Header:**
+**HTTP 请求头：**
 
-`parse_authorization_header_detailed` accepts exactly two schemes
-(`src/server/middleware/api_key_auth.rs:414-432`) — `Bearer` is rejected:
+`parse_authorization_header_detailed` 只接受两种 scheme
+（`src/server/middleware/api_key_auth.rs:414-432`）—— `Bearer` 会被拒绝：
 
 ```
 Authorization: ApiKey <key_id>:<key_secret>
@@ -1292,34 +1293,34 @@ Authorization: Basic base64(<key_id>:<key_secret>)
 </details>
 
 <details>
-<summary><b>❓ How do I report security vulnerabilities?</b></summary>
+<summary><b>❓ 如何报告安全漏洞？</b></summary>
 
 <br>
 
-**Please report security issues responsibly:**
+**请负责任地报告安全问题：**
 
-1. **DO NOT** create public GitHub issues
-2. **Email:** security@nebula-id.io
-3. **Include:**
-   - Description of the vulnerability
-   - Steps to reproduce
-   - Potential impact
+1. **不要**创建公开的 GitHub issue
+2. **邮箱：**security@nebula-id.io
+3. **内容包括：**
+   - 漏洞描述
+   - 复现步骤
+   - 潜在影响
 
-**Response Timeline:**
-- 📧 Initial response: 24 hours
-- 🔍 Assessment: 72 hours
-- 📢 Public disclosure: After fix is released
+**响应时间线：**
+- 📧 初步响应：24 小时
+- 🔍 评估：72 小时
+- 📢 公开披露：修复发布之后
 
 </details>
 
 <details>
-<summary><b>❓ What about rate limiting?</b></summary>
+<summary><b>❓ 限流是怎样的？</b></summary>
 
 <br>
 
-Nebula ID includes built-in rate limiting:
+Nebula ID 内置限流：
 
-**Configuration:**
+**配置：**
 
 ```toml
 [rate_limit]
@@ -1328,22 +1329,22 @@ default_rps = 1000
 burst_size = 100
 ```
 
-**Rate Limits by Plan:**
+**各套餐的限流：**
 
-| Plan | Requests/Second | Burst |
+| 套餐 | 每秒请求数 | 突发 |
 |------|-----------------|-------|
-| Free | 100 | 10 |
+| 免费版 | 100 | 10 |
 | Pro | 1,000 | 100 |
-| Enterprise | 10,000 | 1,000 |
+| 企业版 | 10,000 | 1,000 |
 
-**Response Headers:**
+**响应头：**
 
 ```
 x-ratelimit-limit: 1000
 x-ratelimit-remaining: 999
 ```
 
-When a request is rate limited (HTTP 429), the response additionally carries:
+当请求被限流（HTTP 429）时，响应还会额外携带：
 
 ```
 x-ratelimit-remaining: 0
@@ -1354,28 +1355,28 @@ retry-after: 1
 
 ---
 
-## Troubleshooting
+## 🔍 故障排查
 
 <div align="center">
 
-### 🔧 Common Issues
+### 🔧 常见问题
 
 </div>
 
 <details>
-<summary><b>❓ I'm getting "ClockMovedBackward" error</b></summary>
+<summary><b>❓ 遇到 "ClockMovedBackward" 错误</b></summary>
 
 <br>
 
-**Problem:**
+**问题：**
 ```
 Error: system clock moved backward
 ```
 
-**Cause:** System clock regression detected, which could cause duplicate IDs.
+**原因：**检测到系统时钟回拨，这可能导致 ID 重复。
 
-**Solution:**
-1. **Sync system time:**
+**解决方案：**
+1. **同步系统时间：**
    ```bash
    # Linux
    sudo ntpdate pool.ntp.org
@@ -1384,38 +1385,38 @@ Error: system clock moved backward
    sudo sntp -sS pool.ntp.org
    ```
 
-2. **Configure NTP auto-sync:**
+2. **配置 NTP 自动同步：**
    ```bash
-   # Add to /etc/chrony.conf
+   # 添加到 /etc/chrony.conf
    server pool.ntp.org iburst
    ```
 
-3. **For virtualized environments:**
-   - Ensure host clock is synced
-   - Use VMware Tools time synchronization
-   - Configure Hyper-V time synchronization
+3. **对于虚拟化环境：**
+   - 确保宿主机时钟已同步
+   - 使用 VMware Tools 时间同步
+   - 配置 Hyper-V 时间同步
 
-**Prevention:**
-- Use NTP daemon (chronyd, ntpd)
-- Monitor clock drift
-- Alert on significant drift
+**预防措施：**
+- 使用 NTP 守护进程（chronyd、ntpd）
+- 监控时钟漂移
+- 对显著漂移进行告警
 
 </details>
 
 <details>
-<summary><b>❓ I'm getting "DatabaseConnectionFailed" error</b></summary>
+<summary><b>❓ 遇到 "DatabaseConnectionFailed" 错误</b></summary>
 
 <br>
 
-**Problem:**
+**问题：**
 ```
 Error: failed to connect to database
 ```
 
-**Cause:** Database connection issues.
+**原因：**数据库连接问题。
 
-**Solution:**
-1. **Verify database is running:**
+**解决方案：**
+1. **确认数据库正在运行：**
    ```bash
    # PostgreSQL
    pg_isready -h localhost -p 5432
@@ -1424,23 +1425,23 @@ Error: failed to connect to database
    mysqladmin ping -h localhost
    ```
 
-2. **Check connection string:**
+2. **检查连接字符串：**
    ```toml
    [database]
    url = "postgresql://user:pass@localhost/nebula"
    ```
 
-3. **Test network connectivity:**
+3. **测试网络连通性：**
    ```bash
    telnet localhost 5432
    ```
 
-4. **Check credentials:**
+4. **检查凭据：**
    ```bash
    psql -U user -d nebula
    ```
 
-5. **Enable local cache fallback:**
+5. **启用本地缓存回退：**
    ```rust
    let health_monitor = EtcdClusterHealthMonitor::new(config, "./cache.json");
    ```
@@ -1448,24 +1449,24 @@ Error: failed to connect to database
 </details>
 
 <details>
-<summary><b>❓ IDs are not time-ordered</b></summary>
+<summary><b>❓ ID 不是按时间有序的</b></summary>
 
 <br>
 
-**Problem:**
-Generated IDs are not monotonically increasing.
+**问题：**
+生成的 ID 不是单调递增的。
 
-**Cause:** Multiple instances generating IDs simultaneously.
+**原因：**多个实例同时生成 ID。
 
-**Solution:**
+**解决方案：**
 
-1. **For Snowflake:** Ensure clock is synchronized across instances
+1. **对于 Snowflake：**确保各实例间时钟已同步
 
-2. **For Segment:** Verify segment refresh logic
+2. **对于 Segment：**检查号段刷新逻辑
 
-3. **Use UUID v8 for time-ordering:**
+3. **使用 UUID v8 实现时间有序：**
    ```rust
-   // Inside an `async fn`:
+   // 在 `async fn` 内部：
    use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
    use nebulaid::core::types::AlgorithmType;
    use nebulaid::core::Config;
@@ -1476,16 +1477,16 @@ Generated IDs are not monotonically increasing.
    let id = uuid.generate(&GenerateContext::default()).await?;
    ```
 
-**Note:** Snowflake IDs are ordered within the same millisecond per instance.
+**注意：**Snowflake ID 在同一实例内按毫秒有序。
 
 </details>
 
 <details>
-<summary><b>❓ How do I debug ID generation issues?</b></summary>
+<summary><b>❓ 如何调试 ID 生成问题？</b></summary>
 
 <br>
 
-**Enable Debug Logging:**
+**启用调试日志：**
 
 ```rust
 use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
@@ -1508,68 +1509,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Set environment variable (the crate/module path is `nebulaid`, not the binary
-name `nebula-id`):
+设置环境变量（crate/模块路径是 `nebulaid`，而不是二进制
+名 `nebula-id`）：
 
 ```bash
 RUST_LOG=nebulaid=debug
 ```
 
-**Common Debug Commands:**
+**常用调试命令：**
 
 ```bash
-# Check etcd health
+# 检查 etcd 健康状态
 etcdctl endpoint health
 
-# Check database connections
+# 检查数据库连接
 SELECT count(*) FROM pg_stat_activity;
 
-# Monitor metrics
+# 监控指标
 curl http://localhost:8080/metrics
 ```
 
 </details>
 
 <details>
-<summary><b>❓ Performance is degraded</b></summary>
+<summary><b>❓ 性能下降</b></summary>
 
 <br>
 
-**Problem:** ID generation is slower than expected.
+**问题：**ID 生成比预期慢。
 
-**Diagnosis Steps:**
+**诊断步骤：**
 
-1. **Check database performance:**
+1. **检查数据库性能：**
    ```sql
    EXPLAIN ANALYZE SELECT * FROM nebula_segments;
    ```
 
-2. **Monitor connection pool:**
+2. **监控连接池：**
    ```bash
-   # Check active connections
+   # 检查活跃连接
    SELECT count(*) FROM pg_stat_activity WHERE datname = 'nebula';
    ```
 
-3. **Check etcd latency:**
+3. **检查 etcd 延迟：**
    ```bash
    etcdctl put test && etcdctl get test --cluster
    ```
 
-**Solutions:**
+**解决方案：**
 
-1. **Increase database connections:**
+1. **增加数据库连接数：**
    ```toml
    [database]
    max_connections = 20
    ```
 
-2. **Increase segment step:**
+2. **增大号段步长：**
    ```toml
    [algorithm.segment]
    step = 10000
    ```
 
-3. **Add Redis caching:**
+3. **添加 Redis 缓存：**
    ```toml
    [redis]
    url = "redis://localhost"
@@ -1577,110 +1578,110 @@ curl http://localhost:8080/metrics
 
 </details>
 
-**More issues?** Check [Troubleshooting Guide](TROUBLESHOOTING.md)
+**还有其他问题？**查看[故障排查指南](TROUBLESHOOTING.md)
 
 ---
 
-## Contributing
+## 👥 参与贡献
 
 <div align="center">
 
-### 🤝 Join the Community
+### 🤝 加入社区
 
 </div>
 
 <details>
-<summary><b>❓ How can I contribute?</b></summary>
+<summary><b>❓ 我能如何参与贡献？</b></summary>
 
 <br>
 
-**Ways to Contribute:**
+**参与方式：**
 
 <table>
 <tr>
 <td width="50%">
 
-**Code Contributions**
-- 🐛 Fix bugs
-- ✨ Add features
-- 📝 Improve documentation
-- ✅ Write tests
+**代码贡献**
+- 🐛 修复缺陷
+- ✨ 添加特性
+- 📝 改进文档
+- ✅ 编写测试
 
 </td>
 <td width="50%">
 
-**Non-Code Contributions**
-- 📖 Write tutorials
-- 🎨 Design assets
-- 🌍 Translate docs
-- 💬 Answer questions
+**非代码贡献**
+- 📖 编写教程
+- 🎨 设计素材
+- 🌍 翻译文档
+- 💬 解答问题
 
 </td>
 </tr>
 </table>
 
-**Getting Started:**
+**上手步骤：**
 
-1. 🍴 Fork the repository
-2. 🌱 Create a branch: `git checkout -b feature/amazing-feature`
-3. ✏️ Make changes
-4. ✅ Add tests: `cargo test --package nebulaid --features etcd`
-5. 📤 Submit PR
+1. 🍴 Fork 仓库
+2. 🌱 创建分支：`git checkout -b feature/amazing-feature`
+3. ✏️ 修改代码
+4. ✅ 添加测试：`cargo test --package nebulaid --features etcd`
+5. 📤 提交 PR
 
-**Guidelines:** [CONTRIBUTING.md](../CONTRIBUTING.md)
+**指南：**[CONTRIBUTING.md](../CONTRIBUTING.md)
 
 </details>
 
 <details>
-<summary><b>❓ I found a bug, what should I do?</b></summary>
+<summary><b>❓ 我发现了一个 bug，该怎么办？</b></summary>
 
 <br>
 
-**Before Reporting:**
+**报告之前：**
 
-1. ✅ Check [existing issues](../../issues)
-2. ✅ Try the latest version
-3. ✅ Check [troubleshooting guide](#troubleshooting)
+1. ✅ 查看[现有 issue](../../issues)
+2. ✅ 尝试最新版本
+3. ✅ 查看[故障排查指南](#-故障排查)
 
-**Creating a Good Bug Report:**
+**撰写一份高质量的 bug 报告：**
 
 ```markdown
-### Description
-Clear description of the bug
+### 描述
+清晰描述该缺陷
 
-### Steps to Reproduce
-1. Step one
-2. Step two
-3. See error
+### 复现步骤
+1. 第一步
+2. 第二步
+3. 查看错误
 
-### Expected Behavior
-What should happen
+### 预期行为
+应当发生什么
 
-### Actual Behavior
-What actually happens
+### 实际行为
+实际发生了什么
 
-### Environment
+### 环境
 - OS: Ubuntu 22.04
 - Rust version: 1.75.0
 - Nebula ID version: 0.1.0
 - Database: PostgreSQL 15
 
-### Additional Context
-Any other relevant information
+### 补充信息
+其他任何相关信息
 ```
 
-**Submit:** [Create Issue](../../issues/new)
+**提交：**[创建 Issue](../../issues/new)
 
 </details>
 
 <details>
-<summary><b>❓ Where can I get help?</b></summary>
+<summary><b>❓ 在哪里可以获得帮助？</b></summary>
 
 <br>
 
 <div align="center">
 
-### 💬 Support Channels
+### 💬 支持渠道
 
 </div>
 
@@ -1692,7 +1693,7 @@ Any other relevant information
 
 [GitHub Issues](../../issues)
 
-Bug reports & features
+缺陷报告与特性请求
 
 </td>
 <td width="33%" align="center">
@@ -1701,58 +1702,58 @@ Bug reports & features
 
 [GitHub Discussions](../../discussions)
 
-Q&A and ideas
+问答与想法交流
 
 </td>
 <td width="33%" align="center">
 
-**📖 Documentation**
+**📖 文档**
 
-[User Guide](USER_GUIDE.md)
+[用户指南](USER_GUIDE.md)
 
-API docs & tutorials
+API 文档与教程
 
 </td>
 </tr>
 </table>
 
-**Response Times:**
-- 🐛 Critical bugs: 24 hours
-- 🔧 Feature requests: 1 week
-- 💬 Questions: 2-3 days
+**响应时间：**
+- 🐛 关键缺陷：24 小时
+- 🔧 特性请求：1 周
+- 💬 问题咨询：2-3 天
 
 </details>
 
 ---
 
-## Licensing
+## 📜 许可证
 
 <div align="center">
 
-### 📄 License Information
+### 📄 许可证信息
 
 </div>
 
 <details>
-<summary><b>❓ What license is this under?</b></summary>
+<summary><b>❓ 本项目采用什么许可证？</b></summary>
 
 <br>
 
-**Dual License:**
+**双重许可：**
 
 <table>
 <tr>
 <td width="50%" align="center">
 
-**MIT License**
+**MIT 许可证**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../LICENSE-MIT)
 
-**Permissions:**
-- ✅ Commercial use
-- ✅ Modification
-- ✅ Distribution
-- ✅ Private use
+**权限：**
+- ✅ 商业使用
+- ✅ 修改
+- ✅ 分发
+- ✅ 私有使用
 
 </td>
 <td width="50%" align="center">
@@ -1761,38 +1762,38 @@ API docs & tutorials
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](../LICENSE-APACHE)
 
-**Permissions:**
-- ✅ Commercial use
-- ✅ Modification
-- ✅ Distribution
-- ✅ Patent grant
+**权限：**
+- ✅ 商业使用
+- ✅ 修改
+- ✅ 分发
+- ✅ 专利授权
 
 </td>
 </tr>
 </table>
 
-**You can choose either license for your use.**
+**你可以任选其中一种许可证使用。**
 
 </details>
 
 <details>
-<summary><b>❓ Can I use this in commercial projects?</b></summary>
+<summary><b>❓ 可以在商业项目中使用吗？</b></summary>
 
 <br>
 
-**Yes!** Both MIT and Apache 2.0 licenses allow commercial use.
+**可以！**MIT 与 Apache 2.0 许可证均允许商业使用。
 
-**What you need to do:**
-1. ✅ Include the license text
-2. ✅ Include copyright notice
-3. ✅ State any modifications
+**你需要做的：**
+1. ✅ 附上许可证文本
+2. ✅ 附上版权声明
+3. ✅ 声明所做的修改
 
-**What you DON'T need to do:**
-- ❌ Share your source code
-- ❌ Open source your project
-- ❌ Pay royalties
+**你不需要做的：**
+- ❌ 公开你的源代码
+- ❌ 将项目开源
+- ❌ 支付版税
 
-**Questions?** Contact: legal@nebula-id.io
+**有疑问？**联系：legal@nebula-id.io
 
 </details>
 
@@ -1800,26 +1801,26 @@ API docs & tutorials
 
 <div align="center">
 
-### 🎯 Still Have Questions?
+### 🎯 还有疑问？
 
 <table>
 <tr>
 <td width="33%" align="center">
 <a href="../../issues">
 <img src="https://img.icons8.com/fluency/96/000000/bug.png" width="48"><br>
-<b>Open an Issue</b>
+<b>提交 Issue</b>
 </a>
 </td>
 <td width="33%" align="center">
 <a href="../../discussions">
 <img src="https://img.icons8.com/fluency/96/000000/chat.png" width="48"><br>
-<b>Start a Discussion</b>
+<b>发起讨论</b>
 </a>
 </td>
 <td width="33%" align="center">
 <a href="https://docs.rs/nebula-id">
 <img src="https://img.icons8.com/fluency/96/000000/documentation.png" width="48"><br>
-<b>Read API Docs</b>
+<b>阅读 API 文档</b>
 </a>
 </td>
 </tr>
@@ -1827,8 +1828,8 @@ API docs & tutorials
 
 ---
 
-**[📖 User Guide](USER_GUIDE.md)** • **[🔧 API Reference](API_REFERENCE.md)** • **[🏠 Home](../README.md)**
+**[📖 用户指南](USER_GUIDE.md)** • **[🔧 API 参考](API_REFERENCE.md)** • **[🏠 主页](../README.md)**
 
-Made with ❤️ by the Nebula ID Team
+由 Nebula ID 团队用 ❤️ 打造
 
-[⬆ Back to Top](#-frequently-asked-questions-faq)
+[⬆ 回到顶部](#-nebula-id-faq)

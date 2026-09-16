@@ -182,7 +182,7 @@ export LOCALE=zh-CN
 #   LOCALE=zh-CN
 ```
 
-> **注意**：`LOCALE` 仅影响日志输出语言，**不**影响 `/api/v1/*` 路由的 HTTP 错误响应语言。HTTP 响应语言由每个请求的 `Accept-Language` 头独立协商，详见 [API 参考 - Accept-Language](API_REFERENCE.md#accept-language-header)。
+> **注意**：`LOCALE` 仅影响日志输出语言，**不**影响 `/api/v1/*` 路由的 HTTP 错误响应语言。HTTP 响应语言由每个请求的 `Accept-Language` 头独立协商，详见 [API 参考 - Accept-Language](API_REFERENCE.md#accept-language-请求头)。
 
 ## 5. 健康检查与监控
 

@@ -349,7 +349,7 @@ Nebula ID 自 v0.2.0 起内置 ICU 国际化（`rust-i18n`），覆盖错误消�
 
 协商机制：`locale_middleware` 解析 HTTP `Accept-Language` 头（RFC 7231 §5.3.5），按 q-value 降序匹配首个受支持 locale（精确优先、其次前缀匹配），缺失时回退 `en`；业务 handler 经 `Extension<Locale>` 读取并翻译错误响应。`Locale` 派生自用户输入、可被伪造，**不得**用于认证、授权或任何安全决策。
 
-curl 示例、请求头语义与 i18n 模块在架构中的位置，见 [📘 API 参考 · Accept-Language](docs/API_REFERENCE.md#accept-language-header) 与 [🏗️ 架构文档 · i18n 模块](docs/ARCHITECTURE.md#8-i18n-模块位置)。
+curl 示例、请求头语义与 i18n 模块在架构中的位置，见 [📘 API 参考 · Accept-Language](docs/API_REFERENCE.md#accept-language-请求头) 与 [🏗️ 架构文档 · i18n 模块](docs/ARCHITECTURE.md#8-i18n-模块位置)。
 
 ---
 

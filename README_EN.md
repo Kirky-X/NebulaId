@@ -350,7 +350,7 @@ Since v0.2.0 Nebula ID ships built-in ICU internationalization (`rust-i18n`) cov
 
 Negotiation: `locale_middleware` parses the HTTP `Accept-Language` header (RFC 7231 §5.3.5), matches the first supported locale by descending q-value (exact match wins, then prefix match), and falls back to `en` when the header is missing; business handlers read the result via `Extension<Locale>` and translate error responses. `Locale` derives from user input and is forgeable — do **not** use it for authentication, authorization, or any security decision.
 
-For curl examples, header semantics, and the i18n module's place in the architecture, see the [API Reference · Accept-Language](docs/API_REFERENCE.md#accept-language-header) and the [Architecture doc · i18n module](docs/ARCHITECTURE.md#8-i18n-模块位置).
+For curl examples, header semantics, and the i18n module's place in the architecture, see the [API Reference · Accept-Language](docs/API_REFERENCE.md#accept-language-请求头) and the [Architecture doc · i18n module](docs/ARCHITECTURE.md#8-i18n-模块位置).
 
 ---
 

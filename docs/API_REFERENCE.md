@@ -1,41 +1,68 @@
-# 📘 Nebula ID API Reference
+# 📘 Nebula ID API 参考
 
-> Complete API documentation for Nebula ID: HTTP / gRPC endpoints, request headers, error codes, and type definitions.
+> Nebula ID 完整 API 文档：HTTP / gRPC 端点、请求头、错误码与类型定义。
 
-[🏠 Home](../README.md) • [📖 User Guide](USER_GUIDE.md) • [🏗️ Architecture](ARCHITECTURE.md)
+[🏠 首页](../README.md) • [📖 用户指南](USER_GUIDE.md) • [🏗️ 架构文档](ARCHITECTURE.md)
 
 ---
 
 ## 📋 目录
 
-- [Overview](#overview)
-- [Core API](#core-api)
+- [概述](#-概述)
+  - [🎯 API 设计原则](#-api-设计原则)
+- [核心 API](#-核心-api)
+  - [TLS 配置](#tls-配置)
+  - [智能分段（动态步长）](#智能分段动态步长)
   - [SegmentAlgorithm](#segmentalgorithm)
   - [SnowflakeAlgorithm](#snowflakealgorithm)
-  - [UUID Generation](#uuid-generation)
+  - [UUID 生成](#uuid-生成)
   - [IdAlgorithm Trait](#idalgorithm-trait)
   - [IdGenerator Trait](#idgenerator-trait)
-- [Coordinator API](#coordinator-api)
+- [协调器 API](#-协调器-api)
   - [EtcdClusterHealthMonitor](#etcdclusterhealthmonitor)
   - [DcFailureDetector](#dcfailuredetector)
-- [Type Definitions](#type-definitions)
-- [Error Handling](#error-handling)
-- [HTTP Request Headers](#http-request-headers)
-  - [Accept-Language Header](#accept-language-header)
-- [HTTP Response Headers](#http-response-headers)
-  - [Rate Limit Headers](#rate-limit-headers)
-- [gRPC Status Codes](#grpc-status-codes)
-- [HTTP Endpoints](#http-endpoints)
-  - [/health/sdforge](#healthsdforge)
-- [Examples](#examples)
+  - [DcHealthState](#dchealthstate)
+- [类型定义](#-类型定义)
+  - [`Id`](#id)
+  - [`IdBatch`](#idbatch)
+  - [`AlgorithmType`](#algorithmtype)
+  - [`DcStatus`](#dcstatus)
+  - [`EtcdClusterStatus`](#etcdclusterstatus)
+  - [`HealthStatus`](#healthstatus)
+  - [`GenerateContext`](#generatecontext)
+  - [`AlgorithmMetricsSnapshot`](#algorithmmetricssnapshot)
+  - [`SegmentInfo`](#segmentinfo)
+  - [`ApiKeyWithSecret`](#apikeywithsecret)
+- [错误处理](#-错误处理)
+  - [HTTP API 错误响应格式](#http-api-错误响应格式)
+  - [`CoreError`](#coreerror)
+  - [本地化错误响应（v0.2.0+）](#本地化错误响应v020)
+- [HTTP 请求头](#-http-请求头)
+  - [`Accept-Language` 请求头](#accept-language-请求头)
+- [HTTP 响应头](#-http-响应头)
+  - [限流响应头](#限流响应头)
+- [gRPC 状态码](#-grpc-状态码)
+- [HTTP 端点](#-http-端点)
+  - [`/health/sdforge`](#healthsdforge)
+- [参数校验](#-参数校验)
+  - [校验策略](#校验策略)
+  - [请求参数校验](#请求参数校验)
+  - [安全校验](#安全校验)
+- [使用示例](#-使用示例)
+  - [Segment 算法基础用法](#segment-算法基础用法)
+  - [Snowflake 算法](#snowflake-算法)
+  - [UUID 生成](#uuid-生成-1)
+  - [使用 IdAlgorithm Trait](#使用-idalgorithm-trait)
+  - [结合健康监测](#结合健康监测)
+  - [批量生成](#批量生成)
 
 ---
 
-## Overview
+## 🎯 概述
 
 <div align="center">
 
-### 🎯 API Design Principles
+### 🎯 API 设计原则
 
 </div>
 
@@ -43,38 +70,38 @@
 <tr>
 <td width="25%" align="center">
 <img src="https://img.icons8.com/fluency/96/000000/easy.png" width="64"><br>
-<b>Simple</b><br>
-Intuitive and easy to use
+<b>简单</b><br>
+直观易用
 </td>
 <td width="25%" align="center">
 <img src="https://img.icons8.com/fluency/96/000000/security-checked.png" width="64"><br>
-<b>Type-Safe</b><br>
-Rust's strong type system
+<b>类型安全</b><br>
+得益于 Rust 的强类型系统
 </td>
 <td width="25%" align="center">
 <img src="https://img.icons8.com/fluency/96/000000/module.png" width="64"><br>
-<b>Async-First</b><br>
-Built for high concurrency
+<b>异步优先</b><br>
+为高并发场景而生
 </td>
 <td width="25%" align="center">
 <img src="https://img.icons8.com/fluency/96/000000/documentation.png" width="64"><br>
-<b>Distributed</b><br>
-Enterprise-grade scalability
+<b>分布式</b><br>
+企业级可扩展性
 </td>
 </tr>
 </table>
 
 ---
 
-## Core API
+## 🧱 核心 API
 
-### TLS Configuration
+### TLS 配置
 
-Nebula ID supports TLS 1.2/1.3 encryption for both HTTP and gRPC servers.
+Nebula ID 为 HTTP 与 gRPC 服务器提供 TLS 1.2/1.3 加密支持。
 
 #### `TlsConfig`
 
-TLS configuration structure.
+TLS 配置结构体。
 
 ```rust
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -90,19 +117,19 @@ pub struct TlsConfig {
 }
 ```
 
-**Fields:**
-- `enabled`: Enable TLS globally
-- `cert_path`: Path to TLS certificate file
-- `key_path`: Path to TLS private key file
-- `ca_path`: Optional CA certificate path for client authentication
-- `http_enabled`: Enable HTTPS for HTTP server
-- `grpc_enabled`: Enable TLS for gRPC server
-- `min_tls_version`: Minimum TLS version (TLSv12 or TLSv13)
-- `alpn_protocols`: ALPN protocol list (e.g., ["h2", "http/1.1"])
+**字段：**
+- `enabled`：全局启用 TLS
+- `cert_path`：TLS 证书文件路径
+- `key_path`：TLS 私钥文件路径
+- `ca_path`：可选的 CA 证书路径，用于客户端认证
+- `http_enabled`：为 HTTP 服务器启用 HTTPS
+- `grpc_enabled`：为 gRPC 服务器启用 TLS
+- `min_tls_version`：最低 TLS 版本（TLSv12 或 TLSv13）
+- `alpn_protocols`：ALPN 协议列表（如 ["h2", "http/1.1"]）
 
 #### `TlsVersion`
 
-Supported TLS versions.
+支持的 TLS 版本。
 
 ```rust
 pub enum TlsVersion {
@@ -113,7 +140,7 @@ pub enum TlsVersion {
 
 #### `TlsManager`
 
-TLS certificate and configuration manager. Derives `Clone` (required for use in `axum::State`).
+TLS 证书与配置管理器。实现了 `Clone`（在 `axum::State` 中使用时所必需）。
 
 ```rust
 #[derive(Clone)]
@@ -124,7 +151,7 @@ pub struct TlsManager {
 }
 ```
 
-**Methods:**
+**方法：**
 
 ```rust
 pub fn new(config: TlsConfig) -> Self
@@ -135,17 +162,17 @@ pub fn grpc_tls_config(&self) -> Option<&Arc<ServerTlsConfig>>
 pub async fn initialize(&mut self) -> TlsResult<()>
 ```
 
-**Usage:** Construct via `TlsManager::new(config)`, then call `manager.initialize().await?` to load cert/key files and populate `http_acceptor` / `grpc_tls_config`. `initialize()` is a no-op (returns `Ok(())`) when `config.enabled == false`. The manager must be initialized mutably before `is_http_enabled` / `is_grpc_enabled` return `true`.
+**用法：** 通过 `TlsManager::new(config)` 构造，随后调用 `manager.initialize().await?` 加载证书/私钥文件并填充 `http_acceptor` / `grpc_tls_config`。当 `config.enabled == false` 时，`initialize()` 为空操作（直接返回 `Ok(())`）。在管理器以可变方式完成初始化之前，`is_http_enabled` / `is_grpc_enabled` 不会返回 `true`。
 
 ---
 
-### Smart Segment (Dynamic Step)
+### 智能分段（动态步长）
 
-Nebula ID implements dynamic step adjustment based on QPS and system load.
+Nebula ID 实现了基于 QPS 与系统负载的动态步长调整。
 
 #### `StepCalculator`
 
-Dynamic step calculation based on the formula:
+基于以下公式进行动态步长计算：
 
 ```
 next_step = base_step × (1 + α × velocity) × (1 + β × pressure)
@@ -165,7 +192,7 @@ pub struct StepCalculator {
 }
 ```
 
-**Methods:**
+**方法：**
 
 ```rust
 pub fn new(velocity_factor: f64, pressure_factor: f64) -> Self
@@ -173,14 +200,14 @@ pub fn calculate(&self, qps: u64, current_step: u64, config: &SegmentAlgorithmCo
 pub fn get_adjustment_direction(&self, qps: u64, current_step: u64, config: &SegmentAlgorithmConfig) -> &'static str
 ```
 
-**Adjustment Direction:**
-- `"up"`: High QPS detected, increase step
-- `"down"`: Low QPS detected, decrease step
-- `"stable"`: QPS is stable, keep current step
+**调整方向：**
+- `"up"`：检测到高 QPS，增大步长
+- `"down"`：检测到低 QPS，减小步长
+- `"stable"`：QPS 稳定，保持当前步长
 
 #### `QpsWindow`
 
-Sliding window QPS calculator.
+滑动窗口 QPS 计算器。
 
 ```rust
 #[derive(Debug, Clone)]
@@ -190,7 +217,7 @@ pub struct QpsWindow {
 }
 ```
 
-**Methods:**
+**方法：**
 
 ```rust
 pub fn new(window_secs: u64) -> Self
@@ -203,7 +230,7 @@ pub fn window_size(&self) -> u64
 
 #### `DatabaseSegmentLoader`
 
-Segment loader with dynamic step calculation.
+带动态步长计算的号段加载器。
 
 ```rust
 pub struct DatabaseSegmentLoader {
@@ -216,7 +243,7 @@ pub struct DatabaseSegmentLoader {
 }
 ```
 
-**Methods:**
+**方法：**
 
 ```rust
 pub fn new(
@@ -233,22 +260,22 @@ pub fn get_current_step(&self) -> u64
 
 ### SegmentAlgorithm
 
-`SegmentAlgorithm` is a high-performance distributed ID generator based on the segment algorithm. It pre-allocates ID ranges from the database for efficient batch generation.
+`SegmentAlgorithm` 是基于号段算法的高性能分布式 ID 生成器。它预先从数据库申请 ID 区间，以高效地进行批量生成。
 
 #### `SegmentAlgorithm::new(dc_id: u8)`
 
-Create a new segment algorithm instance with the specified datacenter ID.
+以指定的数据中心 ID 创建新的号段算法实例。
 
 ```rust
 pub fn new(dc_id: u8) -> Self
 ```
 
-**Parameters:**
-- `dc_id`: Datacenter ID (0-255)
+**参数：**
+- `dc_id`：数据中心 ID（0-255）
 
 #### `SegmentAlgorithm::new_with_loader(dc_id: u8, dc_failure_detector: Arc<DcFailureDetector>)`
 
-Create a segment algorithm with a custom DC failure detector.
+创建号段算法并指定自定义的 DC 故障检测器。
 
 ```rust
 pub fn new_with_loader(
@@ -259,7 +286,7 @@ pub fn new_with_loader(
 
 #### `with_etcd_cluster_health_monitor(monitor: Arc<EtcdClusterHealthMonitor>)`
 
-Attach an etcd cluster health monitor for distributed coordination.
+挂载 etcd 集群健康监视器，用于分布式协调。
 
 ```rust
 pub fn with_etcd_cluster_health_monitor(
@@ -270,7 +297,7 @@ pub fn with_etcd_cluster_health_monitor(
 
 #### `with_loader(loader: Arc<dyn SegmentLoader>)`
 
-Attach a custom segment loader for database interactions.
+挂载自定义号段加载器，用于与数据库交互。
 
 ```rust
 pub fn with_loader(mut self, loader: Arc<dyn SegmentLoader>) -> Self
@@ -278,32 +305,32 @@ pub fn with_loader(mut self, loader: Arc<dyn SegmentLoader>) -> Self
 
 #### `generate_id()`
 
-Generate a single ID asynchronously.
+异步生成单个 ID。
 
 ```rust
 pub async fn generate_id(&self) -> Result<Id>
 ```
 
-**Returns:** `Result<Id>` - The generated ID or an error.
+**返回：** `Result<Id>` —— 生成的 ID 或错误。
 
 #### `generate_batch(size: usize)`
 
-Generate a batch of IDs efficiently.
+高效地批量生成 ID。
 
 ```rust
 pub async fn generate_batch(&self, size: usize) -> Result<IdBatch>
 ```
 
-**Parameters:**
-- `size`: Number of IDs to generate (recommended: 10-100, maximum: 100)
+**参数：**
+- `size`：要生成的 ID 数量（建议 10-100，最大 100）
 
-**Returns:** `Result<IdBatch>` - Batch of generated IDs.
+**返回：** `Result<IdBatch>` —— 生成的 ID 批次。
 
-**Note:** Batch size is limited to 100 to prevent DoS attacks and ensure optimal performance.
+**注意：** 批量大小上限为 100，以防范 DoS 攻击并保证最佳性能。
 
 #### `get_dc_failure_detector()`
 
-Get the DC failure detector instance.
+获取 DC 故障检测器实例。
 
 ```rust
 pub fn get_dc_failure_detector(&self) -> &Arc<DcFailureDetector>
@@ -313,37 +340,37 @@ pub fn get_dc_failure_detector(&self) -> &Arc<DcFailureDetector>
 
 ### SnowflakeAlgorithm
 
-`SnowflakeAlgorithm` implements the Twitter Snowflake algorithm with configurable bit allocation for datacenter, worker, and sequence.
+`SnowflakeAlgorithm` 实现 Twitter Snowflake 算法，数据中心、工作者与序列号的位分配均可配置。
 
 #### `SnowflakeAlgorithm::new(datacenter_id: u8, worker_id: u8)`
 
-Create a new Snowflake algorithm instance.
+创建新的 Snowflake 算法实例。
 
 ```rust
 pub fn new(datacenter_id: u8, worker_id: u8) -> Self
 ```
 
-**Parameters:**
-- `datacenter_id`: Datacenter ID (0-31 by default)
-- `worker_id`: Worker ID (0-31 by default)
+**参数：**
+- `datacenter_id`：数据中心 ID（默认 0-31）
+- `worker_id`：工作者 ID（默认 0-31）
 
 #### `generate_id()`
 
-Generate a single ID using the Snowflake algorithm.
+使用 Snowflake 算法生成单个 ID。
 
 ```rust
 pub fn generate_id(&self) -> Result<Id>
 ```
 
-**Returns:** `Result<Id>` - The generated 64-bit ID.
+**返回：** `Result<Id>` —— 生成的 64 位 ID。
 
-**Errors:**
-- `CoreError::ClockMovedBackward` - System clock moved backward
-- `CoreError::SequenceOverflow` - Sequence number overflow within the same millisecond
+**错误：**
+- `CoreError::ClockMovedBackward` —— 系统时钟回拨
+- `CoreError::SequenceOverflow` —— 同一毫秒内序列号溢出
 
 #### `generate_id_with_timestamp(timestamp: u64, sequence_mask: u64)`
 
-Generate an ID with a specific timestamp (internal use).
+以指定时间戳生成 ID（内部使用）。
 
 ```rust
 fn generate_id_with_timestamp(&self, timestamp: u64, sequence_mask: u64) -> Result<Id>
@@ -351,7 +378,7 @@ fn generate_id_with_timestamp(&self, timestamp: u64, sequence_mask: u64) -> Resu
 
 #### `get_datacenter_id()`
 
-Get the configured datacenter ID.
+获取所配置的数据中心 ID。
 
 ```rust
 pub fn get_datacenter_id(&self) -> u8
@@ -359,7 +386,7 @@ pub fn get_datacenter_id(&self) -> u8
 
 #### `get_worker_id()`
 
-Get the configured worker ID.
+获取所配置的工作者 ID。
 
 ```rust
 pub fn get_worker_id(&self) -> u8
@@ -367,7 +394,7 @@ pub fn get_worker_id(&self) -> u8
 
 #### `get_last_timestamp()`
 
-Get the last used timestamp.
+获取最近使用的时间戳。
 
 ```rust
 pub fn get_last_timestamp(&self) -> u64
@@ -375,7 +402,7 @@ pub fn get_last_timestamp(&self) -> u64
 
 #### `get_sequence()`
 
-Get the current sequence number.
+获取当前序列号。
 
 ```rust
 pub fn get_sequence(&self) -> u64
@@ -383,16 +410,15 @@ pub fn get_sequence(&self) -> u64
 
 ---
 
-### UUID Generation
+### UUID 生成
 
 #### `UuidV8Impl`
 
-Time-ordered RFC 9562 **v8** UUID generator (`src/core/algorithm/uuid_v8.rs`). It is the only
-UUID algorithm in the crate — there is no separate random-UUID (v4) implementation.
+按时间排序的 RFC 9562 **v8** UUID 生成器（`src/core/algorithm/uuid_v8.rs`）。它是本 crate 中唯一的
+UUID 算法 —— 没有独立的随机 UUID（v4）实现。
 
-Reachability: the `uuid_v8` module is `pub(crate)` (`src/core/algorithm/mod.rs:21`), so
-`UuidV8Impl` is **not** importable from outside the crate. Build it through the public factory
-instead:
+可达性：`uuid_v8` 模块为 `pub(crate)`（`src/core/algorithm/mod.rs:21`），因此
+`UuidV8Impl` **无法**从 crate 外部导入。请改用公开的工厂构建：
 
 ```rust
 // Inside an `async fn` (the builder's `build` is async):
@@ -406,31 +432,31 @@ let uuid_alg = AlgorithmBuilder::new(AlgorithmType::UuidV8)
     .await?;
 ```
 
-**Constructor (crate-internal):**
+**构造函数（crate 内部）：**
 
 ```rust
 pub fn new(dc_id: u64, worker_id: u64, clock_drift_threshold_ms: u64) -> Self
 ```
 
-`dc_id` / `worker_id` are taken from `Config.app`, `clock_drift_threshold_ms` from
-`Config.algorithm.snowflake` (see `UuidV8Factory::build`). `Default` is `new(0, 0, 1000)`.
+`dc_id` / `worker_id` 取自 `Config.app`，`clock_drift_threshold_ms` 取自
+`Config.algorithm.snowflake`（参见 `UuidV8Factory::build`）。`Default` 等价于 `new(0, 0, 1000)`。
 
-**Methods (via the `IdAlgorithm` trait):**
+**方法（经由 `IdAlgorithm` trait）：**
 
 ```rust
 pub async fn generate(&self, ctx: &GenerateContext) -> Result<Id>
 pub async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result<IdBatch>
 ```
 
-> **Legacy names:** `uuid_v7` / `uuid_v4` are still accepted **as input** by
-> `AlgorithmType::from_str` (`src/core/types/id.rs:197-198`) and map to `AlgorithmType::UuidV8`.
-> They are not type names, constructors, or storage values — `Display` only ever emits `uuid_v8`.
+> **旧名称：** `uuid_v7` / `uuid_v4` 仍会被 `AlgorithmType::from_str`
+> （`src/core/types/id.rs:197-198`）**作为输入**接受，并映射到 `AlgorithmType::UuidV8`。
+> 它们既不是类型名、构造函数，也不是存储值 —— `Display` 只会输出 `uuid_v8`。
 
 ---
 
 ### IdAlgorithm Trait
 
-The core trait that all ID generation algorithms must implement.
+所有 ID 生成算法都必须实现的核心 trait。
 
 ```rust
 pub trait IdAlgorithm: Send + Sync {
@@ -443,11 +469,11 @@ pub trait IdAlgorithm: Send + Sync {
 }
 ```
 
-> **Note:** The `async fn initialize(&mut self, config: &Config)` method was removed from the trait in L13 (see `src/core/algorithm/traits.rs:44-56`). Algorithm initialization is now performed via inherent methods on each algorithm struct (e.g. `SnowflakeAlgorithm::initialize`), invoked by `AlgorithmBuilder::build` before the `Box<dyn IdAlgorithm>` is handed out. This keeps the trait object-safe and avoids requiring `&mut self` on shared `Arc<dyn IdAlgorithm>` references.
+> **注意：** `async fn initialize(&mut self, config: &Config)` 方法已在 L13 中从该 trait 移除（见 `src/core/algorithm/traits.rs:44-56`）。算法初始化现在通过各算法结构体自身的方法（如 `SnowflakeAlgorithm::initialize`）完成，由 `AlgorithmBuilder::build` 在交出 `Box<dyn IdAlgorithm>` 之前调用。这样既保持了 trait 的对象安全性，也避免了在共享的 `Arc<dyn IdAlgorithm>` 引用上要求 `&mut self`。
 
 #### `generate()`
 
-Generate a single ID.
+生成单个 ID。
 
 ```rust
 async fn generate(&self, ctx: &GenerateContext) -> Result<Id>
@@ -455,7 +481,7 @@ async fn generate(&self, ctx: &GenerateContext) -> Result<Id>
 
 #### `batch_generate()`
 
-Generate multiple IDs in a batch.
+批量生成多个 ID。
 
 ```rust
 async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result<IdBatch>
@@ -463,17 +489,17 @@ async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result<IdB
 
 #### `health_check()`
 
-Check the health status of the algorithm.
+检查算法的健康状态。
 
 ```rust
 fn health_check(&self) -> HealthStatus
 ```
 
-**Returns:** `HealthStatus` - One of `Healthy`, `Degraded(reason)`, or `Unhealthy(reason)`
+**返回：** `HealthStatus` —— `Healthy`、`Degraded(reason)` 或 `Unhealthy(reason)` 之一
 
 #### `metrics()`
 
-Get algorithm performance metrics.
+获取算法性能指标。
 
 ```rust
 fn metrics(&self) -> AlgorithmMetricsSnapshot
@@ -481,17 +507,17 @@ fn metrics(&self) -> AlgorithmMetricsSnapshot
 
 #### `algorithm_type()`
 
-Get the algorithm type.
+获取算法类型。
 
 ```rust
 fn algorithm_type(&self) -> AlgorithmType
 ```
 
-**Returns:** `AlgorithmType` - One of `Segment`, `Snowflake`, `UuidV8`
+**返回：** `AlgorithmType` —— `Segment`、`Snowflake`、`UuidV8` 之一
 
 #### `shutdown()`
 
-Gracefully shutdown the algorithm and release resources.
+优雅地关闭算法并释放资源。
 
 ```rust
 async fn shutdown(&self) -> Result<()>
@@ -501,7 +527,7 @@ async fn shutdown(&self) -> Result<()>
 
 ### IdGenerator Trait
 
-High-level ID generator interface supporting workspace/group/tag organization.
+高层 ID 生成器接口，支持工作区/分组/标签的组织方式。
 
 ```rust
 pub trait IdGenerator: Send + Sync {
@@ -540,19 +566,19 @@ pub trait IdGenerator: Send + Sync {
 }
 ```
 
-> **Note:** The `set_algorithm` method was removed (not present in `src/core/algorithm/traits.rs:58-99`). Per-algorithm routing is handled via `generate_with_algorithm` / `batch_generate_with_algorithm`, which accept an `AlgorithmType` parameter at call time.
+> **注意：** `set_algorithm` 方法已被移除（`src/core/algorithm/traits.rs:58-99` 中不存在）。按算法路由改为通过 `generate_with_algorithm` / `batch_generate_with_algorithm` 处理，在调用时传入 `AlgorithmType` 参数。
 
 ---
 
-## Coordinator API
+## 🌐 协调器 API
 
 ### EtcdClusterHealthMonitor
 
-Monitors etcd cluster health and provides fallback to local cache.
+监视 etcd 集群健康状况，并提供本地缓存兜底。
 
 #### `EtcdClusterHealthMonitor::new(config: EtcdConfig, cache_file_path: String)`
 
-Create a new health monitor.
+创建新的健康监视器。
 
 ```rust
 pub fn new(config: EtcdConfig, cache_file_path: String) -> Self
@@ -560,17 +586,17 @@ pub fn new(config: EtcdConfig, cache_file_path: String) -> Self
 
 #### `get_status()`
 
-Get current cluster status.
+获取当前集群状态。
 
 ```rust
 pub fn get_status(&self) -> EtcdClusterStatus
 ```
 
-**Returns:** `EtcdClusterStatus` - One of `Healthy`, `Degraded`, `Failed`
+**返回：** `EtcdClusterStatus` —— `Healthy`、`Degraded`、`Failed` 之一
 
 #### `set_status(status: EtcdClusterStatus)`
 
-Manually set the cluster status.
+手动设置集群状态。
 
 ```rust
 pub fn set_status(&self, status: EtcdClusterStatus)
@@ -578,7 +604,7 @@ pub fn set_status(&self, status: EtcdClusterStatus)
 
 #### `record_success()`
 
-Record a successful operation.
+记录一次成功操作。
 
 ```rust
 pub async fn record_success(&self)
@@ -586,7 +612,7 @@ pub async fn record_success(&self)
 
 #### `record_failure()`
 
-Record a failed operation.
+记录一次失败操作。
 
 ```rust
 pub fn record_failure(&self)
@@ -594,7 +620,7 @@ pub fn record_failure(&self)
 
 #### `is_using_cache()`
 
-Check if currently using local cache fallback.
+检查当前是否正在使用本地缓存兜底。
 
 ```rust
 pub fn is_using_cache(&self) -> bool
@@ -602,7 +628,7 @@ pub fn is_using_cache(&self) -> bool
 
 #### `load_local_cache()`
 
-Load cached data from local file.
+从本地文件加载缓存数据。
 
 ```rust
 pub async fn load_local_cache(&self) -> Result<()>
@@ -610,7 +636,7 @@ pub async fn load_local_cache(&self) -> Result<()>
 
 #### `save_local_cache()`
 
-Save current cache data to local file.
+将当前缓存数据保存到本地文件。
 
 ```rust
 pub async fn save_local_cache(&self) -> Result<()>
@@ -620,23 +646,23 @@ pub async fn save_local_cache(&self) -> Result<()>
 
 ### DcFailureDetector
 
-Detects and manages datacenter health state.
+检测并管理数据中心的健康状态。
 
 #### `DcFailureDetector::new(failure_threshold: u64, recovery_timeout: Duration)`
 
-Create a new failure detector.
+创建新的故障检测器。
 
 ```rust
 pub fn new(failure_threshold: u64, recovery_timeout: Duration) -> Self
 ```
 
-**Parameters:**
-- `failure_threshold`: Number of consecutive failures before marking as failed
-- `recovery_timeout`: Duration before attempting recovery
+**参数：**
+- `failure_threshold`：判定为故障前允许的连续失败次数
+- `recovery_timeout`：尝试恢复前等待的时长
 
 #### `add_dc(dc_id: u8)`
 
-Add a datacenter to monitor.
+添加要监视的数据中心。
 
 ```rust
 pub fn add_dc(&self, dc_id: u8)
@@ -644,7 +670,7 @@ pub fn add_dc(&self, dc_id: u8)
 
 #### `get_dc_state(dc_id: u8)`
 
-Get the health state of a specific datacenter.
+获取指定数据中心的健康状态。
 
 ```rust
 pub fn get_dc_state(&self, dc_id: u8) -> Option<Arc<DcHealthState>>
@@ -652,7 +678,7 @@ pub fn get_dc_state(&self, dc_id: u8) -> Option<Arc<DcHealthState>>
 
 #### `get_healthy_dcs()`
 
-Get list of healthy datacenters.
+获取健康数据中心列表。
 
 ```rust
 pub fn get_healthy_dcs(&self) -> Vec<u8>
@@ -660,7 +686,7 @@ pub fn get_healthy_dcs(&self) -> Vec<u8>
 
 #### `select_best_dc(preferred_dc: u8)`
 
-Select the best datacenter to use.
+选择最佳可用数据中心。
 
 ```rust
 pub fn select_best_dc(&self, preferred_dc: u8) -> u8
@@ -668,7 +694,7 @@ pub fn select_best_dc(&self, preferred_dc: u8) -> u8
 
 #### `start_health_check(check_interval: Duration)`
 
-Start background health check loop.
+启动后台健康检查循环。
 
 ```rust
 pub async fn start_health_check(&self, check_interval: Duration)
@@ -678,7 +704,7 @@ pub async fn start_health_check(&self, check_interval: Duration)
 
 ### DcHealthState
 
-Represents the health state of a datacenter.
+表示一个数据中心的健康状态。
 
 ```rust
 pub struct DcHealthState {
@@ -690,7 +716,7 @@ pub struct DcHealthState {
 }
 ```
 
-**Methods:**
+**方法：**
 
 ```rust
 pub fn new(dc_id: u8) -> Self
@@ -703,11 +729,11 @@ pub fn should_use_dc(&self) -> bool
 
 ---
 
-## Type Definitions
+## 📐 类型定义
 
 ### `Id`
 
-The primary ID type in Nebula ID.
+Nebula ID 中的核心 ID 类型。
 
 ```rust
 pub struct Id {
@@ -715,7 +741,7 @@ pub struct Id {
 }
 ```
 
-**Methods:**
+**方法：**
 
 ```rust
 pub fn from_u128(value: u128) -> Self
@@ -732,12 +758,12 @@ pub fn to_base36(&self) -> String
 // otherwise the plain u128 (`src/core/types/id.rs:55-70`).
 ```
 
-> `Id` has no `from_uuid_v7` / `from_uuid_v4` — `uuid_v7` / `uuid_v4` exist only as input aliases of
-> `AlgorithmType::from_str` (`src/core/types/id.rs:197-198`).
+> `Id` 没有 `from_uuid_v7` / `from_uuid_v4` —— `uuid_v7` / `uuid_v4` 仅作为
+> `AlgorithmType::from_str` 的输入别名存在（`src/core/types/id.rs:197-198`）。
 
 ### `IdBatch`
 
-A batch of generated IDs.
+一批生成的 ID。
 
 ```rust
 pub struct IdBatch {
@@ -748,7 +774,7 @@ pub struct IdBatch {
 }
 ```
 
-**Methods:**
+**方法：**
 
 ```rust
 pub fn new(ids: Vec<Id>, algorithm: AlgorithmType, biz_tag: String) -> Self
@@ -759,7 +785,7 @@ pub fn is_empty(&self) -> bool
 
 ### `AlgorithmType`
 
-Enumeration of supported algorithm types.
+受支持算法类型的枚举。
 
 ```rust
 pub enum AlgorithmType {
@@ -770,13 +796,13 @@ pub enum AlgorithmType {
 }
 ```
 
-`AlgorithmType::from_str` additionally accepts the legacy spellings `uuid_v7` / `uuid_v4`
-(plus `uuidv7` / `uuid7` / `uuidv4` / `uuid4`) as **input aliases** for `UuidV8`
-(`src/core/types/id.rs:195-201`); `Display` only ever emits `segment` / `snowflake` / `uuid_v8`.
+`AlgorithmType::from_str` 还接受旧拼写 `uuid_v7` / `uuid_v4`
+（以及 `uuidv7` / `uuid7` / `uuidv4` / `uuid4`）作为 `UuidV8` 的**输入别名**
+（`src/core/types/id.rs:195-201`）；`Display` 只会输出 `segment` / `snowflake` / `uuid_v8`。
 
 ### `DcStatus`
 
-Datacenter health status.
+数据中心健康状态。
 
 ```rust
 pub enum DcStatus {
@@ -788,7 +814,7 @@ pub enum DcStatus {
 
 ### `EtcdClusterStatus`
 
-Etcd cluster health status.
+etcd 集群健康状态。
 
 ```rust
 pub enum EtcdClusterStatus {
@@ -800,7 +826,7 @@ pub enum EtcdClusterStatus {
 
 ### `HealthStatus`
 
-Algorithm health status.
+算法健康状态。
 
 ```rust
 pub enum HealthStatus {
@@ -812,7 +838,7 @@ pub enum HealthStatus {
 
 ### `GenerateContext`
 
-Context for ID generation requests.
+ID 生成请求的上下文。
 
 ```rust
 #[derive(Debug, Clone)]
@@ -827,7 +853,7 @@ pub struct GenerateContext {
 
 ### `AlgorithmMetricsSnapshot`
 
-Performance metrics snapshot.
+性能指标快照。
 
 ```rust
 #[derive(Debug, Clone, Default)]
@@ -843,16 +869,16 @@ pub struct AlgorithmMetricsSnapshot {
 }
 ```
 
-> `p50/p99/p999_latency_us` and `clock_backwards` are filled by
-> `AlgorithmRouter::metrics()` from the router-level observation ring buffer; the algorithms
-> themselves return `0`, which means "not yet observed by the router", not "latency is 0".
-> `cache_hit_rate = None` means the algorithm has no cache concept (Snowflake / UUID v8) —
-> using `Option` keeps "no cache" from being averaged in as a 0% hit rate
-> (`src/core/algorithm/traits.rs:144-166`).
+> `p50/p99/p999_latency_us` 与 `clock_backwards` 由
+> `AlgorithmRouter::metrics()` 依据路由层观测环形缓冲区填充；算法自身返回的是 `0`，
+> 含义是「尚未被路由器观测到」，而非「延迟为 0」。
+> `cache_hit_rate = None` 表示该算法没有缓存概念（Snowflake / UUID v8）——
+> 使用 `Option` 可避免把「无缓存」当作 0% 命中率计入均值
+> （`src/core/algorithm/traits.rs:144-166`）。
 
 ### `SegmentInfo`
 
-Database segment information.
+数据库号段信息。
 
 ```rust
 pub struct SegmentInfo {
@@ -870,7 +896,7 @@ pub struct SegmentInfo {
 
 ### `ApiKeyWithSecret`
 
-Result of creating or rotating an API key — the plaintext credential is returned exactly once.
+创建或轮换 API 密钥的返回结果 —— 明文凭证仅返回一次。
 
 ```rust
 pub struct ApiKeyWithSecret {
@@ -880,29 +906,29 @@ pub struct ApiKeyWithSecret {
 }
 ```
 
-> `grace_expires_at` (`src/core/database/api_key_entity.rs:189`) is non-`None` only when
-> `auth.key_rotation_grace_period_seconds > 0` at the moment of a rotation: it is the absolute
-> UTC deadline until which the **previous** generation's secret still authenticates
-> (`prev_secret_hash` + `rotate_expires_at`, compared lazily inside `validate_api_key`).
-> `None` means "no grace window in effect" — the default (`0`) and every freshly created key.
-> Adding this field to a `pub` struct is a **breaking change** for external code that builds
-> `ApiKeyWithSecret` with a struct literal.
+> `grace_expires_at`（`src/core/database/api_key_entity.rs:189`）仅在轮换发生时
+> `auth.key_rotation_grace_period_seconds > 0` 才不为 `None`：它是一个绝对的
+> UTC 截止时间，在此之前**上一代**密钥的 secret 仍可用于认证
+> （`prev_secret_hash` + `rotate_expires_at`，在 `validate_api_key` 内部惰性比较）。
+> `None` 表示「无生效的宽限窗口」—— 默认值（`0`）以及所有新建密钥都是这种情况。
+> 在 `pub` 结构体上新增该字段，对使用结构体字面量构造
+> `ApiKeyWithSecret` 的外部代码而言是**破坏性变更**。
 >
-> The wire model is `ApiKeyWithSecretResponse` (`src/server/models.rs:749`), where the same
-> field is an RFC 3339 string or `null`. Note the boundary honestly: `ApiHandlers::rotate_api_key`
-> (`src/server/handlers/api_key_handlers.rs:274`) has **no HTTP route** — the key-related admin
-> routes are `POST /api-keys`, `GET /api-keys`, `DELETE /api-keys/{id}` and
-> `POST /workspaces/{name}/regenerate-user-key`, and the latter two go through the *create* /
-> *delete-and-recreate* paths, so `grace_expires_at` is always `null` there. There is no
-> `POST /api-keys/{id}/rotate` to call.
+> 线上传输模型是 `ApiKeyWithSecretResponse`（`src/server/models.rs:749`），其中同一
+> 字段为 RFC 3339 字符串或 `null`。如实说明这一边界：`ApiHandlers::rotate_api_key`
+> （`src/server/handlers/api_key_handlers.rs:274`）**没有对应的 HTTP 路由** —— 与密钥相关的管理
+> 路由是 `POST /api-keys`、`GET /api-keys`、`DELETE /api-keys/{id}` 与
+> `POST /workspaces/{name}/regenerate-user-key`，而后两者走的是*创建* /
+> *删除后重建*路径，因此 `grace_expires_at` 在那里始终为 `null`。并不存在
+> 可供调用的 `POST /api-keys/{id}/rotate`。
 
 ---
 
-## Error Handling
+## 🚨 错误处理
 
-### HTTP API Error Response Format
+### HTTP API 错误响应格式
 
-All HTTP API endpoints return errors in a consistent format:
+所有 HTTP API 端点都以一致的格式返回错误：
 
 ```json
 {
@@ -912,45 +938,44 @@ All HTTP API endpoints return errors in a consistent format:
 }
 ```
 
-**Fields:**
-- `code`: HTTP status code (e.g., 400, 401, 404, 500)
-- `message`: Human-readable error message
-- `details`: Optional detailed error information
+**字段：**
+- `code`：HTTP 状态码（如 400、401、404、500）
+- `message`：人类可读的错误信息
+- `details`：可选的详细错误信息
 
-**Common HTTP Status Codes:**
+**常见 HTTP 状态码：**
 
-| Code | Description | Example |
-|------|-------------|---------|
-| 400 | Bad Request | Invalid parameters, validation errors |
-| 401 | Unauthorized | Missing or invalid API key |
-| 404 | Not Found | Resource not found |
-| 429 | Too Many Requests | Rate limit exceeded |
-| 500 | Internal Server Error | Server-side error |
+| 状态码 | 说明 | 示例 |
+|--------|------|------|
+| 400 | 错误请求 | 参数无效、校验失败 |
+| 401 | 未授权 | 缺失或无效的 API 密钥 |
+| 404 | 未找到 | 资源不存在 |
+| 429 | 请求过多 | 超出限流阈值 |
+| 500 | 服务器内部错误 | 服务端错误 |
 
 ### `CoreError`
 
-Common error variants encountered during ID generation.
+ID 生成过程中常见的错误变体。
 
-| Variant | Description |
-|---------|-------------|
-| `ClockMovedBackward` | System clock moved backward, may cause duplicate IDs |
-| `SequenceOverflow` | Sequence number overflow within same millisecond |
-| `DatabaseConnectionFailed` | Failed to connect to the database |
-| `SegmentExhausted` | ID segment has been fully consumed |
-| `EtcdConnectionFailed` | Failed to connect to etcd cluster |
-| `CacheUnavailable` | Local cache is unavailable |
-| `InternalError` | Internal error with description |
-| `ConfigError` | Configuration error |
+| 变体 | 说明 |
+|------|------|
+| `ClockMovedBackward` | 系统时钟回拨，可能产生重复 ID |
+| `SequenceOverflow` | 同一毫秒内序列号溢出 |
+| `DatabaseConnectionFailed` | 数据库连接失败 |
+| `SegmentExhausted` | 号段已完全耗尽 |
+| `EtcdConnectionFailed` | etcd 集群连接失败 |
+| `CacheUnavailable` | 本地缓存不可用 |
+| `InternalError` | 附带描述的内部错误 |
+| `ConfigError` | 配置错误 |
 
-### Localized Error Responses (v0.2.0+)
+### 本地化错误响应（v0.2.0+）
 
-Since v0.2.0 the `message` and `details` fields of every HTTP error response
-are translated according to the request's negotiated `Locale` (see
-[Accept-Language Header](#accept-language-header)). The HTTP status code and
-JSON structure are unchanged across locales; only the human-readable text
-differs.
+自 v0.2.0 起，每个 HTTP 错误响应的 `message` 与 `details` 字段
+都会依据请求协商出的 `Locale` 进行翻译（见
+[Accept-Language 请求头](#accept-language-请求头)）。HTTP 状态码与
+JSON 结构在各语言环境下保持不变；只有人类可读的文本不同。
 
-**Example - 400 Bad Request (English, default):**
+**示例 - 400 错误请求（英语，默认）：**
 
 ```http
 HTTP/1.1 400 Bad Request
@@ -963,7 +988,7 @@ Content-Type: application/json
 }
 ```
 
-**Example - 400 Bad Request (Simplified Chinese, `Accept-Language: zh-CN`):**
+**示例 - 400 错误请求（简体中文，`Accept-Language: zh-CN`）：**
 
 ```http
 HTTP/1.1 400 Bad Request
@@ -976,7 +1001,7 @@ Content-Type: application/json
 }
 ```
 
-**Example - 500 Internal Server Error (English):**
+**示例 - 500 服务器内部错误（英语）：**
 
 ```json
 {
@@ -986,7 +1011,7 @@ Content-Type: application/json
 }
 ```
 
-**Example - 500 Internal Server Error (Simplified Chinese):**
+**示例 - 500 服务器内部错误（简体中文）：**
 
 ```json
 {
@@ -996,46 +1021,43 @@ Content-Type: application/json
 }
 ```
 
-The translation keys live in `locales/en.yml` and `locales/zh-CN.yml` under
-the `error.*` namespace. Missing keys fall back to the default locale (`en`),
-then to the key itself (never an empty string).
+翻译键位于 `locales/en.yml` 与 `locales/zh-CN.yml` 中，归属于
+`error.*` 命名空间。缺失的键会先回退到默认语言（`en`），
+再回退到键本身（绝不会是空字符串）。
 
 ---
 
-## HTTP Request Headers
+## 📨 HTTP 请求头
 
-### `Accept-Language` Header
+### `Accept-Language` 请求头
 
-Nebula ID honors the HTTP `Accept-Language` request header (per
-[RFC 7231 §5.3.5](https://www.rfc-editor.org/rfc/rfc7231#section-5.3.5)) to
-negotiate the natural language of error response messages. The header is
-parsed by `locale_middleware` (see `src/server/middleware/locale.rs`) on
-every `/api/v1/*` request and the negotiated `Locale` is injected as
-`Extension<Locale>` for downstream handlers.
+Nebula ID 遵循 HTTP `Accept-Language` 请求头（参见
+[RFC 7231 §5.3.5](https://www.rfc-editor.org/rfc/rfc7231#section-5.3.5)）
+来协商错误响应消息的自然语言。该请求头由 `locale_middleware`
+（见 `src/server/middleware/locale.rs`）在每个 `/api/v1/*` 请求上解析，
+协商出的 `Locale` 会以 `Extension<Locale>` 的形式注入给下游 handler。
 
-**Supported locale matrix:**
+**支持的语言环境矩阵：**
 
-| Locale tag | Language | Locales file | Status |
-|------------|----------|--------------|--------|
-| `en` | English (default) | `locales/en.yml` | ✅ Complete |
-| `zh-CN` | Simplified Chinese | `locales/zh-CN.yml` | ✅ Complete |
+| 语言标签 | 语言 | 语言文件 | 状态 |
+|----------|------|----------|------|
+| `en` | 英语（默认） | `locales/en.yml` | ✅ 完整 |
+| `zh-CN` | 简体中文 | `locales/zh-CN.yml` | ✅ 完整 |
 
-**Negotiation rules:**
+**协商规则：**
 
-1. Each `<language-tag>[;q=<weight>]` entry is parsed. Entries with `q=0`
-   (explicitly not accepted) or malformed q-values are dropped per RFC 7231
-   §5.3.1.
-2. Surviving candidates are sorted by descending q-value, with stable
-   ordering on ties to preserve header order.
-3. For each candidate, an exact match is attempted first (`zh-CN` -> `ZhCn`),
-   then a prefix match (`zh` -> `ZhCn`, `en-US` -> `En`). The wildcard `*`
-   never matches a concrete locale.
-4. If no candidate matches, the default locale `en` is used.
-5. Missing or malformed `Accept-Language` header also falls back to `en`.
-6. The header is capped at 4 KiB to prevent DoS via pathologically long
-   values.
+1. 逐条解析 `<language-tag>[;q=<weight>]`。依据 RFC 7231
+   §5.3.1，`q=0`（明确不接受）或 q 值格式非法的条目会被丢弃。
+2. 幸存的候选按 q 值降序排序，q 值相同时保持稳定排序，
+   以维持请求头中的原始顺序。
+3. 对每个候选先尝试精确匹配（`zh-CN` -> `ZhCn`），
+   再尝试前缀匹配（`zh` -> `ZhCn`、`en-US` -> `En`）。通配符 `*`
+   永远不会匹配到具体语言环境。
+4. 若无候选匹配，则使用默认语言环境 `en`。
+5. `Accept-Language` 请求头缺失或格式非法时，同样回退到 `en`。
+6. 请求头上限为 4 KiB，以防利用超长值发起 DoS。
 
-**curl examples:**
+**curl 示例：**
 
 ```bash
 # Request Chinese responses
@@ -1054,78 +1076,76 @@ curl -H "Accept-Language: en-US,en;q=0.9" http://localhost:8080/api/v1/id/genera
 curl -H "Accept-Language: zh-CN;q=0.9, en;q=0.8" http://localhost:8080/api/v1/invalid
 ```
 
-> **Security note**: `Locale` is derived from user input (`Accept-Language`
-> header) and is forgeable. It MUST NOT be used for any authentication,
-> authorization, or security decision. It is intended solely for content
-> negotiation (translating error messages).
+> **安全提示**：`Locale` 源自用户输入（`Accept-Language`
+> 请求头），可被伪造。它绝不能（MUST NOT）用于任何认证、
+> 授权或安全决策，仅用于内容协商（翻译错误消息）。
 
-The locale middleware applies only to `/api/v1/*` routes. The root
-`/health`, `/ready`, `/metrics`, and `/api-docs/openapi.json` endpoints do
-not consume `Extension<Locale>` and therefore skip the `Accept-Language`
-parse cost.
+locale 中间件仅作用于 `/api/v1/*` 路由。根路径下的
+`/health`、`/ready`、`/metrics` 与 `/api-docs/openapi.json` 端点
+不消费 `Extension<Locale>`，因此省去了 `Accept-Language` 的解析开销。
 
 ---
 
-## HTTP Response Headers
+## 📤 HTTP 响应头
 
-### Rate Limit Headers
+### 限流响应头
 
-Written by `RateLimitMiddleware` on **every** response it handles. The names are the
-canonical lowercase constants in `src/server/rate_limit/middleware.rs:35-36`:
+由 `RateLimitMiddleware` 写入其处理的**每一个**响应。头名称为
+`src/server/rate_limit/middleware.rs:35-36` 中的规范小写常量：
 
-| Header | Written on allow (2xx/4xx/5xx) | Written on reject (429) |
-|--------|--------------------------------|--------------------------|
-| `x-ratelimit-limit` | quota window size (`result.limit`) | quota window size (`result.limit`) |
-| `x-ratelimit-remaining` | remaining quota (`result.remaining`) | literal `0` |
-| `Retry-After` | not written | seconds, `retry_after.unwrap_or(1)` |
+| 响应头 | 放行时写入（2xx/4xx/5xx） | 拒绝时写入（429） |
+|--------|--------------------------|-------------------|
+| `x-ratelimit-limit` | 配额窗口大小（`result.limit`） | 配额窗口大小（`result.limit`） |
+| `x-ratelimit-remaining` | 剩余配额（`result.remaining`） | 字面量 `0` |
+| `Retry-After` | 不写入 | 秒数，`retry_after.unwrap_or(1)` |
 
-The 429 body is JSON: `{"code": 429, "message": "Rate limit exceeded", "retry_after": <n|null>}`.
+429 响应体为 JSON：`{"code": 429, "message": "Rate limit exceeded", "retry_after": <n|null>}`。
 
-**CORS exposure matters.** `EXPOSED_HEADERS` in `src/server/config/cors.rs:36` is
-`["x-request-id", "x-ratelimit-remaining"]`. A browser can therefore read
-`x-ratelimit-remaining` only; `x-ratelimit-limit` and `Retry-After` are present on the
-response but are **not** exposed to scripts — read them server-side.
+**CORS 暴露范围很重要。** `src/server/config/cors.rs:36` 中的
+`EXPOSED_HEADERS` 为 `["x-request-id", "x-ratelimit-remaining"]`。因此浏览器
+只能读取 `x-ratelimit-remaining`；`x-ratelimit-limit` 与 `Retry-After` 虽然存在于
+响应中，但**不会**暴露给脚本 —— 请在服务端读取。
 
-**Rate limit key precedence** (`middleware.rs:78-83`): `workspace_id` from request
-extensions → client IP → `"anonymous"`. The client IP falls back to `X-Forwarded-For`
-only for peers listed in `with_trusted_proxies`; with no trusted proxy configured every
-unauthenticated request shares the single `"anonymous"` bucket.
+**限流键优先级**（`middleware.rs:78-83`）：请求扩展中的
+`workspace_id` → 客户端 IP → `"anonymous"`。只有 `with_trusted_proxies` 中列出的对端
+才会把客户端 IP 回退到 `X-Forwarded-For`；未配置可信代理时，所有
+未认证请求共享同一个 `"anonymous"` 桶。
 
-**Scope**: the limiter is mounted on the HTTP stack only. gRPC traffic is currently
-served without the rate-limit layer (see `src/server/grpc.rs` T023 note), so gRPC clients
-get no equivalent of HTTP 429.
+**作用范围**：限流器仅挂载在 HTTP 栈上。gRPC 流量目前
+不经过限流层（见 `src/server/grpc.rs` 的 T023 注记），因此 gRPC 客户端
+没有对应 HTTP 429 的机制。
 
 ---
 
-## gRPC Status Codes
+## 🔢 gRPC 状态码
 
-Authentication is performed once per RPC by `GrpcServer::authenticate`
-(`src/server/grpc.rs:85`). Mapping per spec R-auth-003:
+认证由 `GrpcServer::authenticate`
+（`src/server/grpc.rs:85`）对每个 RPC 执行一次。依据规范 R-auth-003 的映射如下：
 
-| Situation | Status code | Message |
-|-----------|-------------|---------|
-| No `authorization` metadata | `Unauthenticated` | `missing authorization metadata` |
-| Unsupported authorization format | `Unauthenticated` | `invalid authorization format` |
-| Key exists but `enabled = false` | `PermissionDenied` | `CoreError::ApiKeyDisabled` |
-| Key exists but past its expiry | `PermissionDenied` | `CoreError::ApiKeyExpired` |
-| Secret mismatch, or key not found | `Unauthenticated` | `invalid or unknown api key` |
-| `auth.enabled = false` | (allowed through) | logs `auth_disabled_request` at warn |
+| 情形 | 状态码 | 消息 |
+|------|--------|------|
+| 缺少 `authorization` 元数据 | `Unauthenticated` | `missing authorization metadata` |
+| 不支持的授权格式 | `Unauthenticated` | `invalid authorization format` |
+| 密钥存在但 `enabled = false` | `PermissionDenied` | `CoreError::ApiKeyDisabled` |
+| 密钥存在但已过有效期 | `PermissionDenied` | `CoreError::ApiKeyExpired` |
+| secret 不匹配，或密钥不存在 | `Unauthenticated` | `invalid or unknown api key` |
+| `auth.enabled = false` | （直接放行） | 以 warn 级别记录 `auth_disabled_request` |
 
-Request-level validation and failures:
+请求级校验与失败：
 
-| Situation | Status code |
-|-----------|-------------|
-| `count == 0` on batch generate | `InvalidArgument` |
+| 情形 | 状态码 |
+|------|--------|
+| 批量生成时 `count == 0` | `InvalidArgument` |
 | `count > batch_generate.max_batch_size` | `InvalidArgument` |
-| `parse_id` on an unparseable ID | `InvalidArgument` |
-| Generator/handler error returned by the core | `Internal` |
+| 对无法解析的 ID 执行 `parse_id` | `InvalidArgument` |
+| 核心层返回的生成器/handler 错误 | `Internal` |
 
-The "secret mismatch" and "key not found" cases deliberately share one message so the
-response does not leak which `key_id` values are valid.
+「secret 不匹配」与「密钥不存在」两种情形刻意共用同一条消息，
+以免响应泄露哪些 `key_id` 值是有效的。
 
 ---
 
-## HTTP Endpoints
+## 🌍 HTTP 端点
 
 ### `/health/sdforge`
 
@@ -1133,23 +1153,23 @@ response does not leak which `key_id` values are valid.
 GET /health/sdforge
 ```
 
-**Description:**
+**说明：**
 
-sdforge integration health check. The endpoint is registered via the
-`#[forge]` macro (see `src/server/sdforge_adapter.rs::sdforge_health`) and
-exposed through the `sdforge` 0.5 inventory route merger. It returns the
-Nebula ID crate version so callers can confirm the route is served by the
-running binary.
+sdforge 集成健康检查。该端点通过
+`#[forge]` 宏注册（见 `src/server/sdforge_adapter.rs::sdforge_health`），
+并经 `sdforge` 0.5 的 inventory 路由合并器对外暴露。它返回
+Nebula ID crate 的版本号，调用方可据此确认该路由由
+正在运行的二进制提供服务。
 
-> This endpoint was added in v0.1.x but not documented until v0.2.0. It is
-> distinct from the application-level `/health` route and exists primarily
-> to verify that the `sdforge` plugin linker-stripping prevention works.
+> 该端点在 v0.1.x 中加入，但直到 v0.2.0 才写入文档。它
+> 不同于应用层的 `/health` 路由，主要用于
+> 验证 `sdforge` 插件的防链接器剥离机制生效。
 
-**Authentication:** None (public endpoint, same as `/health`).
+**认证：** 无（公开端点，与 `/health` 相同）。
 
-**Request:** No parameters, no body.
+**请求：** 无参数、无请求体。
 
-**Response - 200 OK:**
+**响应 - 200 OK：**
 
 ```json
 {
@@ -1158,66 +1178,66 @@ running binary.
 }
 ```
 
-**Fields:**
+**字段：**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `status` | string | Always `"ok"` for a 200 response |
-| `sdforge_version` | string | The Nebula ID crate version (from `CARGO_PKG_VERSION` at compile time) |
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `status` | string | 200 响应时恒为 `"ok"` |
+| `sdforge_version` | string | Nebula ID crate 版本（编译期取自 `CARGO_PKG_VERSION`） |
 
-**curl example:**
+**curl 示例：**
 
 ```bash
 curl http://localhost:8080/health/sdforge
 # {"status":"ok","sdforge_version":"0.2.0"}
 ```
 
-**Notes:**
+**注意：**
 
-- The route is registered via the `#[forge]` macro annotation:
-  `#[forge(name = "sdforge_health", version = "v1", description = "sdforge integration health check", path = "/health/sdforge", method = "GET")]`.
-  The `name` parameter uses the underscore-separated form `sdforge_health`
-  (rather than the hyphenated `sdforge-health`) because `sdforge_macros`
-  0.4.2 validates that `name` is a valid Rust identifier. The HTTP route
-  path is unaffected.
-- `init_sdforge()` must be called once at startup (see `src/main.rs`) so
-  inventory-registered routes are not stripped by the linker.
+- 该路由通过 `#[forge]` 宏注解注册：
+  `#[forge(name = "sdforge_health", version = "v1", description = "sdforge integration health check", path = "/health/sdforge", method = "GET")]`。
+  `name` 参数采用下划线分隔形式 `sdforge_health`
+  （而非连字符形式 `sdforge-health`），因为 `sdforge_macros`
+  0.4.2 会校验 `name` 必须是合法的 Rust 标识符。HTTP 路由
+  路径不受影响。
+- 启动时必须调用一次 `init_sdforge()`（见 `src/main.rs`），
+  以防 inventory 注册的路由被链接器剥离。
 
 ---
 
-## Parameter Validation
+## ✅ 参数校验
 
-### Validation Strategy
+### 校验策略
 
-Nebula ID implements strict parameter validation to ensure system stability and security:
+Nebula ID 实施严格的参数校验，以确保系统稳定与安全：
 
-**Validation Principles:**
-1. **Fail Fast**: Reject invalid requests immediately with clear error messages
-2. **Security First**: Prevent DoS attacks through size and rate limiting
-3. **User Friendly**: Provide descriptive error messages for debugging
+**校验原则：**
+1. **快速失败**：以清晰的错误信息立即拒绝无效请求
+2. **安全优先**：通过大小与速率限制防范 DoS 攻击
+3. **对用户友好**：提供描述性的错误信息，便于调试
 
-### Request Parameter Validation
+### 请求参数校验
 
-| Parameter | Type | Validation | Error Response |
-|-----------|------|------------|----------------|
-| `workspace` | String | 1-64 characters | `400: "workspace length must be between 1 and 64"` |
-| `group` | String | 1-64 characters | `400: "group length must be between 1 and 64"` |
-| `biz_tag` | String | 1-64 characters | `400: "biz_tag length must be between 1 and 64"` |
+| 参数 | 类型 | 校验规则 | 错误响应 |
+|------|------|----------|----------|
+| `workspace` | String | 1-64 个字符 | `400: "workspace length must be between 1 and 64"` |
+| `group` | String | 1-64 个字符 | `400: "group length must be between 1 and 64"` |
+| `biz_tag` | String | 1-64 个字符 | `400: "biz_tag length must be between 1 and 64"` |
 | `size` | Integer | 1-100 | `400: "size must be between 1 and 100"` |
-| `id` | String | Valid ID format | `400: "Invalid ID format"` |
+| `id` | String | 合法的 ID 格式 | `400: "Invalid ID format"` |
 
-### Security Validations
+### 安全校验
 
-- **Batch Size Limit**: Maximum 100 IDs per batch to prevent DoS attacks
-- **Rate Limiting**: Configurable rate limits per API key
-- **Input Sanitization**: All string inputs are validated for length and format
-- **Type Safety**: Strong type checking at compile time
+- **批量大小上限**：每批最多 100 个 ID，以防 DoS 攻击
+- **速率限制**：可按 API 密钥配置限流阈值
+- **输入净化**：所有字符串输入都会做长度与格式校验
+- **类型安全**：编译期强类型检查
 
 ---
 
-## Examples
+## 💡 使用示例
 
-### Basic Segment Algorithm
+### Segment 算法基础用法
 
 ```rust
 use nebulaid::core::algorithm::SegmentAlgorithm;
@@ -1236,7 +1256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Snowflake Algorithm
+### Snowflake 算法
 
 ```rust
 use nebulaid::core::algorithm::SnowflakeAlgorithm;
@@ -1254,7 +1274,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### UUID Generation
+### UUID 生成
 
 ```rust
 use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
@@ -1281,7 +1301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Using IdAlgorithm Trait
+### 使用 IdAlgorithm Trait
 
 ```rust
 use nebulaid::core::algorithm::traits::IdAlgorithm;
@@ -1306,7 +1326,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### With Health Monitoring
+### 结合健康监测
 
 ```rust
 use nebulaid::core::algorithm::segment::{SegmentAlgorithm, DcFailureDetector};
@@ -1336,7 +1356,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Batch Generation
+### 批量生成
 
 ```rust
 use nebulaid::core::algorithm::SegmentAlgorithm;
@@ -1361,8 +1381,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 <div align="center">
 
-**[📖 User Guide](../USER_GUIDE.md)** • **[🏠 Home](../README.md)** • **[🐛 Report Issue](../../issues)**
+**[📖 用户指南](../USER_GUIDE.md)** • **[🏠 首页](../README.md)** • **[🐛 报告问题](../../issues)**
 
-Built with ❤️ by Nebula ID Team
+由 Nebula ID 团队用 ❤️ 构建
 
 </div>

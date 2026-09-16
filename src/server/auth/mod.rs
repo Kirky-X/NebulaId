@@ -17,7 +17,7 @@
 //! 仅在启用 `garrison-auth` 特性时编译。`MemoryGarrisonDao` 用
 //! `parking_lot::RwLock<HashMap>` + per-entry TTL 模拟 garrison 的 KV 存储，
 //! 供 `ApiKeyHandler` 进行 token 生成/校验/吊销/轮换。`AuthCache` 在其之上
-//! 缓存认证决策（wiring T008），消除每请求 Argon2id + DB 校验。
+//! 缓存认证决策，消除每请求 Argon2id + DB 校验。
 
 pub mod cache;
 pub mod memory_dao;

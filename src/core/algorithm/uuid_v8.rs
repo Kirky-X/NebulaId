@@ -240,7 +240,7 @@ impl IdAlgorithm for UuidV8Impl {
     fn metrics(&self) -> AlgorithmMetricsSnapshot {
         AlgorithmMetricsSnapshot {
             // 延迟分位数与时钟回拨计数由路由层观测后在
-            // AlgorithmRouter::metrics() 合并填充（T021）。
+            // AlgorithmRouter::metrics() 合并填充。
             ..Default::default()
         }
     }

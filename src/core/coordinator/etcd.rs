@@ -816,7 +816,7 @@ impl DistributedLock for EtcdDistributedLock {
                         key: key.to_string(),
                         lease_id,
                         lock_path: self.lock_path(key),
-                        // L9 修复：初始化为未释放状态，Drop 时检查
+                        // 修复：初始化为未释放状态，Drop 时检查
                         released: Arc::new(AtomicBool::new(false)),
                     };
 
@@ -853,7 +853,7 @@ impl DistributedLock for EtcdDistributedLock {
 
 /// Etcd 锁守卫实现。
 ///
-/// L9 修复：实现 `Drop` trait，在 guard 被 drop 时自动 spawn 一个
+/// 修复：实现 `Drop` trait，在 guard 被 drop 时自动 spawn 一个
 /// 后台 task 撤销 lease 释放锁。若调用方已显式调用 `release()`，
 /// `released` 标志位会阻止 Drop 中的二次释放。若 tokio runtime
 /// 不可用（例如进程关闭阶段），Drop 仅记录 warning 日志，锁会
@@ -863,7 +863,7 @@ pub struct EtcdLockGuard {
     key: String,
     lease_id: i64,
     lock_path: String,
-    /// L9 修复：标记是否已显式 release，防止 Drop 中的 double-release。
+    /// 修复：标记是否已显式 release，防止 Drop 中的 double-release。
     /// AtomicBool 无需 &mut self，可在 Drop 中读取。
     released: Arc<AtomicBool>,
 }
@@ -880,10 +880,10 @@ impl LockGuard for EtcdLockGuard {
                 reason: e.to_string(),
             })?;
 
-        // L9 修复：标记已释放，防止 Drop 中二次释放。
+        // 修复：标记已释放，防止 Drop 中二次释放。
         self.released.store(true, Ordering::SeqCst);
 
-        // R-algorithm-003: 输出 lock_path 用于运维诊断 etcd key 路径，同时消除 dead_code 警告。
+        // 输出 lock_path 用于运维诊断 etcd key 路径，同时消除 dead_code 警告。
         info!(
             lock_path = %self.lock_path,
             key = %self.key,
@@ -898,12 +898,12 @@ impl LockGuard for EtcdLockGuard {
 
 impl Drop for EtcdLockGuard {
     fn drop(&mut self) {
-        // L9 修复：已显式 release 则跳过，避免 double-release。
+        // 修复：已显式 release 则跳过，避免 double-release。
         if self.released.load(Ordering::SeqCst) {
             return;
         }
 
-        // L9 修复：未显式 release 时，尝试 spawn 后台 task 异步释放锁。
+        // 修复：未显式 release 时，尝试 spawn 后台 task 异步释放锁。
         // 这覆盖了调用方忘记显式 release 的场景（如早期 return / panic）。
         let lock = self.lock.clone();
         let key = self.key.clone();

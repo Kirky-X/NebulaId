@@ -188,7 +188,7 @@ impl super::ApiHandlers {
         self.config_service.delete_biz_tag(id).await
     }
 
-    /// L7 修复：缺失 workspace_id 时返回 InvalidInput，避免静默回退到
+    /// 修复：缺失 workspace_id 时返回 InvalidInput，避免静默回退到
     /// nil UUID 触发 `WHERE workspace_id = '00000000-...'` 查询，
     /// 该查询在底层 SeaORM 中可能意外匹配到 workspace_id 字段为 nil
     /// 的脏数据记录，导致越权返回其他 workspace 的 BizTag。
@@ -203,7 +203,7 @@ impl super::ApiHandlers {
     /// 两处 list 路径的共享实现：按 workspace（可选 group/分页）查询并映射为
     /// 响应，同时取真实总数。
     ///
-    /// L8 修复：`total` 取 `count_biz_tags` 而非当前页列表长度 —— 原实现
+    /// 修复：`total` 取 `count_biz_tags` 而非当前页列表长度 —— 原实现
     /// `total = responses.len() as u64` 在分页场景下会让前端分页控件只显示
     /// 当前页条数。
     async fn fetch_biz_tags(
@@ -684,7 +684,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_biz_tags_with_pagination_missing_workspace_errors() {
-        // wiring T007：workspace_id=None 必须显式报错，不得回退 nil 查脏数据。
+        // workspace_id=None 必须显式报错，不得回退 nil 查脏数据。
         let handlers = make_handlers(MockBizTagTestService::new());
 
         let result = handlers

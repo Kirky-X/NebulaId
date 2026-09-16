@@ -244,7 +244,7 @@ fn make_request(peer: Option<SocketAddr>, xff: Option<&str>, xri: Option<&str>) 
     builder
 }
 
-/// E2E-IP-001: 无 trusted_proxies 时用直连 IP（忽略 XFF 头）。
+/// 无 trusted_proxies 时用直连 IP（忽略 XFF 头）。
 #[tokio::test]
 async fn e2e_get_client_ip_direct_when_no_trusted_proxies() {
     let req = make_request(
@@ -256,7 +256,7 @@ async fn e2e_get_client_ip_direct_when_no_trusted_proxies() {
     assert_eq!(ip, "10.0.0.1");
 }
 
-/// E2E-IP-002: trusted_proxies 时用 X-Forwarded-For 首跳。
+/// trusted_proxies 时用 X-Forwarded-For 首跳。
 #[tokio::test]
 async fn e2e_get_client_ip_uses_xff_when_trusted() {
     let trusted: Vec<IpAddr> = vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))];
@@ -269,7 +269,7 @@ async fn e2e_get_client_ip_uses_xff_when_trusted() {
     assert_eq!(ip, "203.0.113.5");
 }
 
-/// E2E-IP-003: trusted_proxies 时（XFF 缺失）回退到 X-Real-IP。
+/// trusted_proxies 时（XFF 缺失）回退到 X-Real-IP。
 #[tokio::test]
 async fn e2e_get_client_ip_uses_x_real_ip_when_trusted() {
     let trusted: Vec<IpAddr> = vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))];
@@ -282,7 +282,7 @@ async fn e2e_get_client_ip_uses_x_real_ip_when_trusted() {
     assert_eq!(ip, "203.0.113.7");
 }
 
-/// E2E-IP-004: peer 不在 trusted_proxies 时忽略 XFF，返回直连 IP。
+/// peer 不在 trusted_proxies 时忽略 XFF，返回直连 IP。
 #[tokio::test]
 async fn e2e_get_client_ip_ignores_xff_when_untrusted() {
     let trusted: Vec<IpAddr> = vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))];
@@ -295,7 +295,7 @@ async fn e2e_get_client_ip_ignores_xff_when_untrusted() {
     assert_eq!(ip, "192.168.0.1");
 }
 
-/// E2E-IP-005: 无 peer SocketAddr 且非信任场景，返回 None。
+/// 无 peer SocketAddr 且非信任场景，返回 None。
 #[tokio::test]
 async fn e2e_get_client_ip_returns_none_when_no_headers() {
     // 无 peer SocketAddr 扩展，且 trusted_proxies 为空 → 无法确定 IP
@@ -327,7 +327,7 @@ async fn e2e_rate_limiter_cleanup_removes_idle_buckets() {
 
     assert_eq!(limiter.bucket_count(), 0, "空闲桶应被后台清理任务移除");
 
-    // R-rl-003「停机后清理任务停止」：abort 必须真正终止后台 task。
+    // 「停机后清理任务停止」：abort 必须真正终止后台 task。
     // tokio 语义：task 在 `.await` 点被取消后，JoinHandle::await 返回
     // Err(Cancelled)。两种假绿场景都会在这里被抓住：
     //   1) task 提前自行退出（loop 意外 return）→ await 返回 Ok；
@@ -361,7 +361,7 @@ async fn e2e_rate_limiter_cleanup_keeps_active_buckets() {
         "活跃桶应仍可查询 usage"
     );
 
-    // R-rl-003「停机后清理任务停止」：与 001 同理，abort 必须使 task 真正终止。
+    // 「停机后清理任务停止」：与 001 同理，abort 必须使 task 真正终止。
     handle.abort();
     let joined = handle.await;
     assert!(
@@ -374,7 +374,7 @@ async fn e2e_rate_limiter_cleanup_keeps_active_buckets() {
 // E2E-DB 组：数据库连接端到端
 // ============================================================================
 
-/// E2E-DB-001: SQLite 内存连接成功。
+/// SQLite 内存连接成功。
 ///
 /// 需要 `--features sqlite` 启用 SQLite 后端；否则该测试不编译。
 #[cfg(feature = "sqlite")]
@@ -398,7 +398,7 @@ async fn e2e_database_sqlite_memory_connection_succeeds() {
     assert!(conn.is_ok(), "SQLite 内存连接应成功: {:?}", conn.err());
 }
 
-/// E2E-DB-002: run_migrations 在所有 execute 成功时返回 Ok（迁移创建表）。
+/// run_migrations 在所有 execute 成功时返回 Ok（迁移创建表）。
 ///
 /// run_migrations 发出 1 个 CREATE SCHEMA + 5 个 CREATE TABLE + 1 个宽限期列的
 /// 幂等 ALTER = 7 个 execute 语句。用 MockDatabase 模拟真实数据库全部成功执行，
@@ -424,7 +424,7 @@ async fn e2e_database_run_migrations_creates_tables() {
     );
 }
 
-/// E2E-DB-003: 密码含 `${}` 环境变量占位符时拒绝连接。
+/// 密码含 `${}` 环境变量占位符时拒绝连接。
 ///
 /// 验证 `src/core/database/connection.rs` L60 的安全检查：未替换的
 /// `${VAR}` 占位符（CWE-1188 / 环境变量未展开）应返回
@@ -488,7 +488,7 @@ fn generate_test_cert_files() -> (NamedTempFile, NamedTempFile) {
     (cert_file, key_file)
 }
 
-/// E2E-TLS-001: 证书文件不存在 → CertificateLoadError。
+/// 证书文件不存在 → CertificateLoadError。
 #[tokio::test]
 async fn e2e_tls_initialize_missing_cert_returns_error() {
     let config = TlsConfig {
@@ -513,7 +513,7 @@ async fn e2e_tls_initialize_missing_cert_returns_error() {
     );
 }
 
-/// E2E-TLS-002: 密钥文件不存在 → PrivateKeyLoadError。
+/// 密钥文件不存在 → PrivateKeyLoadError。
 #[tokio::test]
 async fn e2e_tls_initialize_missing_key_returns_error() {
     // 提供有效证书，但密钥路径不存在
@@ -544,7 +544,7 @@ async fn e2e_tls_initialize_missing_key_returns_error() {
     );
 }
 
-/// E2E-TLS-003: 用 rcgen 生成的自签证书 + 密钥验证 initialize 成功。
+/// 用 rcgen 生成的自签证书 + 密钥验证 initialize 成功。
 #[tokio::test]
 async fn e2e_tls_initialize_with_valid_cert_succeeds() {
     let (cert_file, key_file) = generate_test_cert_files();
@@ -574,7 +574,7 @@ async fn e2e_tls_initialize_with_valid_cert_succeeds() {
 }
 
 // ============================================================================
-// E2E-TLS-010（wiring T005）: DualListener 真实 TLS 握手（HTTP 端口）
+// DualListener 真实 TLS 握手（HTTP 端口）
 //
 // 背景：TlsManager.http_acceptor 曾只构造不消费，HTTP 恒明文。
 // DualListener 实现 axum::serve::Listener，使 HTTPS 真实生效。
@@ -658,7 +658,7 @@ async fn e2e_dual_listener_serves_https_request_end_to_end() {
     server.abort();
 }
 
-/// E2E-TLS-012（converge T019）: 挂起的 TLS 握手不得冻结监听端口。
+/// 挂起的 TLS 握手不得冻结监听端口。
 ///
 /// 旧实现在 accept 循环内串行 `await` 握手：客户端只要 TCP 建连后不发
 /// ClientHello，后续所有连接（含正常 TLS 客户端）都无法被受理 —— 未认证
@@ -732,7 +732,7 @@ async fn e2e_dual_listener_slow_handshake_does_not_block_other_connections() {
     server.abort();
 }
 
-/// E2E-TLS-013（converge T018）: DualListener 必须把真实对端地址交给
+/// DualListener 必须把真实对端地址交给
 /// `get_client_ip`，否则生产 per-IP 限流/认证失败计数/审计退化为共享单桶。
 #[tokio::test]
 async fn e2e_dual_listener_exposes_peer_addr_to_client_ip_extraction() {
@@ -779,7 +779,7 @@ async fn e2e_dual_listener_exposes_peer_addr_to_client_ip_extraction() {
     );
 }
 
-/// E2E-TLS-011（wiring T005）: 未配置 TLS 时 DualListener 行为与纯
+/// 未配置 TLS 时 DualListener 行为与纯
 /// TcpListener 一致（明文 HTTP 回归无差异）。
 #[tokio::test]
 async fn e2e_dual_listener_plain_serves_http_when_tls_absent() {

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Criterion micro-benchmarks for the Phase 8 T041 i18n hot paths.
+//! Criterion micro-benchmarks for the Phase 8 i18n hot paths.
 //!
 //! Run with: `cargo bench --bench i18n`
 //!
@@ -23,7 +23,7 @@
 //!   `i18n_args()` + `translate_with_locale_args_cow`)
 //! - `parse_accept_language` (locale negotiation from raw header)
 //!
-//! Phase 8 T041 (LOW L4 perf fix) — establishes a baseline so future
+//! Phase 8 (perf fix) — establishes a baseline so future
 //! i18n changes can be quantified. The bench intentionally avoids
 //! `set_locale` (global state) and exercises only the per-call
 //! `translate_with_locale*` APIs which are concurrency-safe.

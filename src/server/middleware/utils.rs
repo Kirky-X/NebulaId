@@ -14,7 +14,7 @@
 
 //! Shared middleware utilities.
 //!
-//! Phase 9 T043 (HIGH H3 / LOW L3) — single source of truth for
+//! Phase 9 — single source of truth for
 //! `get_client_ip`. Previously this logic was duplicated in
 //! `api_key_auth.rs`, `audit/middleware.rs`, `rate_limit/middleware.rs`,
 //! and a dead-code copy in this file, with **inconsistent security
@@ -48,7 +48,7 @@ use std::net::{IpAddr, SocketAddr};
 /// disables header-based IP discovery entirely (default).
 pub fn get_client_ip(req: &Request<Body>, trusted_proxies: &[IpAddr]) -> Option<String> {
     // axum serve 经 into_make_service_with_connect_info::<T>() 注入 ConnectInfo<T>
-    // 扩展（converge T018：此前只查裸 SocketAddr，生产恒 None → 限流/认证失败
+    // 扩展（此前只查裸 SocketAddr，生产恒 None → 限流/认证失败
     // 计数/审计 client_ip 全部落入共享单桶）。生产监听器是 DualListener，其 T 为
     // PeerAddr；ConnectInfo<SocketAddr> 与裸 SocketAddr 回退保留给 axum 内置
     // TcpListener 的测试及手工构造的请求。
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn reads_peeraddr_connectinfo_injected_by_dual_listener() {
-        // converge T018：生产监听器 DualListener 注入 ConnectInfo<PeerAddr>，
+        // 生产监听器 DualListener 注入 ConnectInfo<PeerAddr>，
         // 必须被识别，否则 per-IP 限流/认证失败计数全部退化为 anonymous 单桶。
         let mut req = Request::builder().uri("/").body(Body::empty()).unwrap();
         req.extensions_mut()

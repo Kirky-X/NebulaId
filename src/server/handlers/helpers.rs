@@ -14,13 +14,13 @@
 
 //! Internal error-mapping helpers shared across handler sub-modules.
 //!
-//! Phase 8 T041 — the helpers in this file produce locale-translated
+//! Phase 8 — the helpers in this file produce locale-translated
 //! `ErrorResponse` payloads by reading the `Locale` negotiated by
 //! `locale_middleware` (from the `Accept-Language` header). They are the
 //! single entry point for `CoreError → HTTP response` conversion in
 //! `router.rs`, ensuring consistent status codes and i18n coverage.
 //!
-//! # Style guide (LOW-004)
+//! # Style guide
 //!
 //! This file intentionally uses two translation call styles:
 //! - For errors derived from `CoreError`, use
@@ -65,7 +65,7 @@ pub(super) fn map_uuid_error<E: std::fmt::Display>(error: E) -> CoreError {
 
 /// HTTP status code for a `CoreError` variant.
 ///
-/// Phase 8 T041 (LOW L-1 + L6 fix) — this is the single source of
+/// Phase 8 (LOW fix) — this is the single source of
 /// truth for the `CoreError → axum::http::StatusCode` mapping. The
 /// old `CoreError::to_http_response` / `http_status_code` /
 /// `error_code` methods (which consulted the process-wide global
@@ -93,7 +93,7 @@ fn core_error_status_code(e: &CoreError) -> StatusCode {
 
 /// Maximum message length returned to clients for 4xx-class errors.
 ///
-/// Phase 8 T041 (CRITICAL C-1 / HIGH H-1 fix) — guards against
+/// Phase 8 (CRITICAL C-1 / HIGH fix) — guards against
 /// information disclosure and DoS when a 4xx `CoreError` embeds a
 /// long caller-controlled string (e.g. `InvalidInput(user_input)`).
 const MAX_CLIENT_MESSAGE_LEN: usize = 200;
@@ -123,7 +123,7 @@ fn sanitize_for_production(msg: &str) -> String {
 /// Convert `CoreError` to `(StatusCode, Json<ErrorResponse>)` with a
 /// locale-translated message.
 ///
-/// Phase 8 T041 (CRITICAL C-1 / HIGH H-1 fix) — the response message
+/// Phase 8 (CRITICAL C-1 / HIGH fix) — the response message
 /// is chosen per variant:
 ///
 /// - **5xx-class internal errors** (`DatabaseError`, `CacheError`,
@@ -264,7 +264,7 @@ pub fn invalid_uuid_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>
 /// Build a 400 response for `validator::ValidationErrors`, with the
 /// locale-translated message.
 ///
-/// Phase 8 T041 (MEDIUM M-1 fix) — uses `errors.field_errors()` to
+/// Phase 8 (MEDIUM fix) — uses `errors.field_errors()` to
 /// extract structured `(field, rule)` pairs instead of stringifying
 /// the entire `ValidationErrors`. This avoids leaking internal
 /// constraint values (e.g. `length [min = 1, max = 64]`,
@@ -322,7 +322,7 @@ pub(crate) fn admin_cannot_perform_response(locale: Locale) -> (StatusCode, Json
     )
 }
 
-/// LOW-1 修复（CWE-1188）：Anonymous 角色（认证禁用时）访问受保护端点的响应。
+/// （CWE-1188）：Anonymous 角色（认证禁用时）访问受保护端点的响应。
 /// 返回 401 Unauthorized，明确要求启用认证并提供有效 API key。
 pub(crate) fn auth_required_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>) {
     let message = translate_with_locale(locale.as_str(), "api.error.auth_required");
@@ -343,7 +343,7 @@ pub(crate) fn workspace_mismatch_response(locale: Locale) -> (StatusCode, Json<E
 
 /// Build a 404 response for "Workspace '<name>' not found".
 ///
-/// Phase 8 T041 (LOW L-4 fix) — `name` originates from a URL path
+/// Phase 8 (LOW fix) — `name` originates from a URL path
 /// parameter and is caller-controlled. JSON serialization already
 /// escapes special characters (no XSS risk), but a pathologically
 /// long `name` could inflate response size or be logged unescaped
@@ -539,7 +539,7 @@ mod tests {
         assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    /// CRITICAL C-1 / HIGH H-1 — 5xx internal errors MUST NOT leak the
+    /// CRITICAL C-1 / HIGH — 5xx internal errors MUST NOT leak the
     /// raw `CoreError` inner `String` to the client. The full error is
     /// logged server-side via `tracing::error!`; the client only sees a
     /// generic locale-translated message.
@@ -650,7 +650,7 @@ mod tests {
         assert_eq!(json.message, "Internal server error");
     }
 
-    /// HIGH H-1 — 4xx-class errors with caller-supplied `String` must
+    /// HIGH — 4xx-class errors with caller-supplied `String` must
     /// be capped at `MAX_CLIENT_MESSAGE_LEN` (200) bytes via
     /// `sanitize_for_production` to prevent log-style overflow / DoS.
     #[test]
@@ -847,7 +847,7 @@ mod tests {
         assert_eq!(json.message, "工作空间 'my-ws' 未找到");
     }
 
-    /// LOW L-4 — long workspace `name` must be truncated before
+    /// LOW — long workspace `name` must be truncated before
     /// interpolation into the response message. Verifies char-boundary
     /// safety (multi-byte UTF-8) and that the response stays bounded.
     #[test]
@@ -932,7 +932,7 @@ mod tests {
         assert!(json.message.contains("workspace_id"));
     }
 
-    /// MEDIUM M-1 — `validation_error_response` must surface the field
+    /// MEDIUM — `validation_error_response` must surface the field
     /// name and rule code (e.g. "length", "range") without leaking the
     /// constraint values (min/max) that `ValidationErrors::to_string()`
     /// would otherwise expose via `ValidationError::params`.
@@ -1011,7 +1011,7 @@ mod tests {
         assert!(!json.message.contains("64"));
     }
 
-    /// MEDIUM M-1 — explicit regression test: construct a struct with
+    /// MEDIUM — explicit regression test: construct a struct with
     /// a `range(min = 100, max = 1000000)` constraint and trigger a
     /// failure by setting the field below the minimum. The response
     /// must NOT contain "100", "1000000", "min = 100", "max = 1000000".
@@ -1064,7 +1064,7 @@ mod tests {
         );
     }
 
-    /// MEDIUM M-1 — multiple field errors are joined by "; " and
+    /// MEDIUM — multiple field errors are joined by "; " and
     /// capped at `MAX_CLIENT_MESSAGE_LEN` bytes via
     /// `sanitize_for_production`.
     #[test]

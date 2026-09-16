@@ -14,7 +14,7 @@
 
 #![cfg(test)]
 
-//! # 仓库文本守卫（converge T020）
+//! # 仓库文本守卫
 //!
 //! 本 crate 不存在可用的「全特性」构建：dbnexus 禁止 `sqlite` 与 `postgres`
 //! 同时启用（`compile_error!`），而 default 特性集恒含 `dbnexus/postgres`。

@@ -23,11 +23,11 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tracing::info;
 
-// M4 修复：复用 core 层的 AuditEventType 和 AuditResult，
+// 修复：复用 core 层的 AuditEventType 和 AuditResult，
 // 消除 server/core 重复定义。pub use 使其成为本模块公共 API。
 pub use crate::core::algorithm::{AuditEventType, AuditResult};
 
-/// 生成审计事件 ID（M1 修复）。
+/// 生成审计事件 ID。
 ///
 /// 格式：`(unix_millis << 20) | (counter & 0xFFFFF)`
 /// - 高 44 位：Unix 毫秒时间戳，保证进程重启后 ID 单调递增、不冲突
@@ -41,7 +41,7 @@ fn next_audit_event_id() -> u64 {
     (unix_ms << 20) | c
 }
 
-// M4 修复：删除本地 AuditEventType 和 AuditResult 定义，
+// 修复：删除本地 AuditEventType 和 AuditResult 定义，
 // 改用 `crate::core::algorithm::{AuditEventType, AuditResult}`。
 // 这消除了 server/core 重复定义，未来新增事件类型只需修改 core 层一处。
 
@@ -117,7 +117,7 @@ impl AuditEvent {
         self
     }
 
-    /// LOW-3 修复 + SEC-LOW-001 修复：对 IP 地址进行部分遮蔽。
+    /// 对 IP 地址进行部分遮蔽。
     ///
     /// 使用 `std::net::IpAddr` 解析而非字符串操作，避免 IPv4-mapped IPv6
     /// 等 boundary case 的脱敏不一致。原 `rfind('.')` / `rfind(':')` 方案
@@ -206,15 +206,15 @@ impl AuditLogger {
     /// 创建支持文件持久化的审计日志记录器。
     ///
     /// 启动一个独立的后台 task 消费事件并写文件，`log` 方法只通过 channel
-    /// 发送事件（非阻塞），避免在 Mutex 持有期间执行文件 I/O（H7 修复）。
+    /// 发送事件（非阻塞），避免在 Mutex 持有期间执行文件 I/O。
     ///
     /// 必须在 tokio runtime 上下文中调用。
     ///
-    /// LOW-2 修复（CWE-22 路径遍历）：验证 `log_file_path` 不包含 `..`
+    /// （CWE-22 路径遍历）：验证 `log_file_path` 不包含 `..`
     /// 组件，防止攻击者通过配置注入如 `../../etc/passwd` 路径覆盖系统文件。
     /// 空路径也被拒绝。
     pub async fn with_file_logging(max_events: usize, log_file_path: String) -> Self {
-        // LOW-2 修复：路径安全性验证
+        // 路径安全性验证
         if let Err(e) = Self::validate_log_path(&log_file_path) {
             tracing::error!(
                 event = "audit_log_path_invalid",
@@ -272,7 +272,7 @@ impl AuditLogger {
         }
     }
 
-    /// LOW-2 修复（CWE-22）：验证审计日志路径安全性。
+    /// （CWE-22）：验证审计日志路径安全性。
     ///
     /// 拒绝：
     /// - 空路径
@@ -311,7 +311,7 @@ impl AuditLogger {
         // 锁内只做内存操作（push/pop），快速释放锁
         {
             let mut events = self.events.lock().await;
-            // M14 修复：VecDeque 满时丢弃最旧事件。如果未配置文件持久化，
+            // 修复：VecDeque 满时丢弃最旧事件。如果未配置文件持久化，
             // 丢弃意味着审计事件永久丢失（违反 SOC2/GDPR 合规）。
             // 此处记录 warning 提示运维人员配置 `audit_log_path`。
             if events.len() >= self.max_events {
@@ -371,12 +371,12 @@ impl AuditLogger {
 
     /// 将单个审计事件写入文件（由 writer task 调用，不在 Mutex 持有期间执行）。
     ///
-    /// LOW-3 修复（CWE-532）：写入文件前对 PII 字段脱敏。
+    /// （CWE-532）：写入文件前对 PII 字段脱敏。
     /// - `client_ip`：保留前 3 段（IPv4）或前 4 段（IPv6），末段用 `x` 替换
     /// - `user_agent`：替换为固定字符串 `UA(redacted)`，避免记录完整 UA
     /// - `user_id`：保留（API key 标识符，非个人身份信息）
     ///
-    /// PERF-M1 修复：原实现先 `redact_for_persistence()` 创建完整 AuditEvent
+    /// PERF- 修复：原实现先 `redact_for_persistence()` 创建完整 AuditEvent
     /// 深拷贝（6-7 次 String clone + 1 次 Value 深拷贝），再 `to_string`。
     /// 现直接构建 `serde_json::Value`，仅对需要脱敏的 2 个字段做转换，
     /// 其余字段通过 `&` 引用序列化（serde 自动处理），避免深拷贝。
@@ -940,7 +940,7 @@ impl AuditLogger {
 #[async_trait]
 impl CoreAuditLoggerTrait for AuditLogger {
     async fn log(&self, event: CoreAuditEvent) {
-        // M4 修复：AuditEventType/AuditResult 已统一为 core 层定义，
+        // 修复：AuditEventType/AuditResult 已统一为 core 层定义，
         // 无需 match 转换。CoreAuditEvent.result 可能是 Unknown，
         // server 端保留该语义（不再强制映射为 Failure，避免信息丢失）。
         let server_event = AuditEvent {

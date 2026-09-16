@@ -179,7 +179,7 @@ impl IdAlgorithm for MockIdAlgorithm {
 // Snowflake 端到端
 // =============================================================================
 
-/// E2E-SF-001: Snowflake 通过 AlgorithmBuilder 构建后的完整生命周期。
+/// Snowflake 通过 AlgorithmBuilder 构建后的完整生命周期。
 ///
 /// 覆盖场景：AlgorithmBuilder.build → initialize → 单次生成 → 批量生成 →
 /// ID 唯一性 → metrics 反映生成数 → health_check Healthy → shutdown Ok。
@@ -242,7 +242,7 @@ async fn e2e_snowflake_full_lifecycle_via_builder() {
         .expect("E2E: shutdown should succeed");
 }
 
-// E2E-SF-002: Snowflake 时钟回拨 → health_check Unhealthy 路径已由单元测试覆盖。
+// Snowflake 时钟回拨 → health_check Unhealthy 路径已由单元测试覆盖。
 //
 // 原计划通过访问 `SnowflakeAlgorithm` 私有字段 `last_timestamp` / `clock_drift_ms`
 // 模拟时钟回拨并断言 health_check 反映状态，但这些字段对模块外私有。修改源码
@@ -252,7 +252,7 @@ async fn e2e_snowflake_full_lifecycle_via_builder() {
 // - `test_generate_id_clock_backward_exceeds_threshold_returns_error`
 // - `test_health_check_unhealthy_when_drift_exceeds_threshold`
 
-/// E2E-SF-003: Snowflake 批量生成在 size=0 时返回空批次（边界场景）。
+/// Snowflake 批量生成在 size=0 时返回空批次（边界场景）。
 ///
 /// 覆盖功能场景穷举分析第 1 节 Snowflake 批量生成行的"size=0 返回空批次"边界。
 #[tokio::test]
@@ -276,7 +276,7 @@ async fn e2e_snowflake_batch_generate_zero_size_returns_empty_batch() {
 // 跨算法端到端
 // =============================================================================
 
-/// E2E-XALG-001: 全部 3 种算法均通过 AlgorithmBuilder 成功构建并生成唯一 ID。
+/// 全部 3 种算法均通过 AlgorithmBuilder 成功构建并生成唯一 ID。
 ///
 /// 覆盖功能场景穷举分析第 1 节各算法行：验证工厂注册表 (`algorithm_factories()`)
 /// 中每个 Factory 都能正确构建并通过 trait 接口生成有效 ID，且跨算法不撞号。
@@ -336,11 +336,11 @@ async fn e2e_all_algorithm_types_built_via_builder_generate_unique_ids() {
 // AlgorithmRouter 端到端
 // =============================================================================
 
-/// E2E-RT-001: Router.initialize 在默认配置下应注册全部 3 种算法。
+/// Router.initialize 在默认配置下应注册全部 3 种算法。
 ///
 /// 覆盖功能场景穷举分析第 1 节算法路由行的"按 biz_tag 选算法"前置条件：
 /// 主算法 + fallback chain 全部就绪。`AlgorithmType` 现有 Segment / Snowflake /
-/// UuidV8 三个变体（UuidV4 已按 spec R-ar-002 约束移除，不再兜底）。
+/// UuidV8 三个变体（UuidV4 已按 spec 约束移除，不再兜底）。
 #[tokio::test]
 async fn e2e_router_initialize_registers_three_algorithms() {
     let config = Config::default();
@@ -387,7 +387,7 @@ async fn e2e_router_initialize_registers_three_algorithms() {
     }
 }
 
-/// E2E-RT-002: Router 按 biz_tag 覆盖默认算法。
+/// Router 按 biz_tag 覆盖默认算法。
 ///
 /// 覆盖功能场景穷举分析第 1 节算法路由行的"biz_tag 算法覆盖"场景：
 /// set_algorithm 为某 biz_tag 设定 Snowflake 后，该 biz_tag 的生成走 Snowflake。
@@ -421,7 +421,7 @@ async fn e2e_router_set_algorithm_per_biz_tag_routes_correctly() {
     );
 }
 
-/// E2E-RT-003: Router 在主算法成功时直接返回，不触发 fallback。
+/// Router 在主算法成功时直接返回，不触发 fallback。
 ///
 /// 验证功能场景穷举分析中"主算法成功直接返回"的预期行为。
 /// 默认配置下 main=Segment，fallback chain=[Snowflake, UuidV8, UuidV8]。
@@ -452,7 +452,7 @@ async fn e2e_router_primary_succeeds_no_fallback_invoked() {
     assert!(segment_state.consecutive_successes >= 1);
 }
 
-/// E2E-RT-004: Router 接受 AuditLogger trait object 注入且不 panic。
+/// Router 接受 AuditLogger trait object 注入且不 panic。
 ///
 /// 覆盖功能场景穷举分析第 1 节审计 Trait 行的"记录审计事件不阻塞主流程"。
 /// 通过 CapturingAuditLogger 注入 Router，验证 trait object 注入路径正常。
@@ -494,7 +494,7 @@ async fn e2e_router_accepts_audit_logger_without_panic_and_does_not_log() {
 // DegradationManager 端到端
 // =============================================================================
 
-/// E2E-DM-001: DegradationManager 端到端降级-恢复周期。
+/// DegradationManager 端到端降级-恢复周期。
 ///
 /// 覆盖功能场景穷举分析第 1 节降级管理器行：
 /// 主算法失败 → Degraded 切换 fallback → 主算法恢复 → Normal。
@@ -555,7 +555,7 @@ async fn e2e_degradation_manager_full_degrade_recover_cycle() {
     ));
 }
 
-/// E2E-DM-002: DegradationManager 在所有 fallback 失败时进入 Critical 状态。
+/// DegradationManager 在所有 fallback 失败时进入 Critical 状态。
 ///
 /// 覆盖功能场景穷举分析第 1 节降级管理器行的"所有算法降级 → Critical 状态"。
 #[tokio::test]
@@ -607,7 +607,7 @@ async fn e2e_degradation_manager_all_algorithms_fail_enters_critical() {
 // 跨模块协同端到端
 // =============================================================================
 
-/// E2E-XMOD-001: Router + AlgorithmBuilder + 真实 4 种算法完整集成路径。
+/// Router + AlgorithmBuilder + 真实 4 种算法完整集成路径。
 ///
 /// 端到端验证：Config 默认 → AlgorithmRouter::new → initialize → 4 种算法注册 →
 /// 通过 IdGenerator trait 调用 generate / batch_generate / generate_with_algorithm
@@ -671,7 +671,7 @@ async fn e2e_router_full_id_generator_trait_integration() {
     assert!(Arc::strong_count(dm) >= 1);
 }
 
-/// E2E-XMOD-002: Router fallback chain 在所有真实算法都健康时不会触发。
+/// Router fallback chain 在所有真实算法都健康时不会触发。
 ///
 /// 默认配置下 main=Segment，fallback=[Snowflake, UuidV8, UuidV8]。
 /// 主算法 Segment 在初始化后是健康的，所有生成请求都应通过 Segment 完成。

@@ -38,7 +38,7 @@ use v1::{
 
 pub struct GrpcServer {
     handlers: Arc<ApiHandlers>,
-    /// wiring T006：认证器。None = 不启用（既有测试/内网部署语义）。
+    /// 认证器。None = 不启用（既有测试/内网部署语义）。
     auth: Option<Arc<ApiKeyAuth>>,
 }
 
@@ -50,7 +50,7 @@ impl GrpcServer {
         }
     }
 
-    /// wiring T006：启用 API key 认证。启用后每个 RPC 入口先经
+    /// 启用 API key 认证。启用后每个 RPC 入口先经
     /// [`Self::authenticate`] 校验 `authorization` metadata。
     pub fn with_auth(handlers: Arc<ApiHandlers>, auth: Arc<ApiKeyAuth>) -> Self {
         Self {
@@ -61,7 +61,7 @@ impl GrpcServer {
 
     /// 单点认证：校验 `authorization` metadata（Basic/ApiKey 双格式），成功时
     /// 将 workspace_id 与角色注入 request extensions。覆盖全部 RPC（含双向流
-    /// —— request-init 先于流消费被校验）。失败映射（规格 R-auth-003）：
+    /// —— request-init 先于流消费被校验）。失败映射（规格）
     /// - 缺失/格式无效/凭证无效 → `Status::unauthenticated`
     /// - key 存在但被禁用或已过期 → `Status::permission_denied`
     /// - `auth.enabled=false` → 放行并记 `auth_disabled_request` 审计日志
@@ -71,7 +71,7 @@ impl GrpcServer {
     /// 签名而凭证校验必须异步查库（Argon2id + DB），在拦截器内 block_on 有
     /// 运行时风险，故改为各 RPC 入口一行调用本助手 —— 单点实现不变。
     ///
-    /// 偏差（T023）：HTTP 侧的「按 IP 认证失败限流」（5 分钟 10 次）尚未在
+    /// 偏差：HTTP 侧的「按 IP 认证失败限流」（5 分钟 10 次）尚未在
     /// gRPC 接线。对端 IP 本身拿得到 —— tonic 0.14 的 `MakeSvc::call` 用
     /// `ConnectInfoLayer` 把 `TcpConnectInfo`（TLS 下为
     /// `TlsConnectInfo<TcpConnectInfo>`）注入 request extensions，
@@ -222,7 +222,7 @@ impl KeyMiss {
     }
 }
 
-/// 回查 key 行完成判因（规格 R-auth-003）。HTTP 侧无此分类（一律 401），
+/// 回查 key 行完成判因（规格）。HTTP 侧无此分类（一律 401），
 /// 故这里是唯一实现，不构成第二份重复逻辑；禁用/过期文案复用
 /// `CoreError::ApiKeyDisabled/ApiKeyExpired` 的 i18n 条目而非另写字面量。
 ///
@@ -309,7 +309,7 @@ impl NebulaIdService for GrpcServer {
             t!("log.server.grpc.batch_generate_received", count = req.count)
         );
 
-        // Validate batch size（T012：错误消息与 HTTP 同源 i18n）
+        // Validate batch size（错误消息与 HTTP 同源 i18n）
         if req.count == 0 {
             tracing::warn!(
                 "{}",
@@ -319,7 +319,7 @@ impl NebulaIdService for GrpcServer {
                 t!("api.error.handlers.id_handlers.batch_size_zero").to_string(),
             ));
         }
-        // T012：上限唯一来源 = config.batch_generate.max_batch_size
+        // 上限唯一来源 = config.batch_generate.max_batch_size
         let max_batch_size = self.handlers.get_config_service().get_batch_max_size() as usize;
         if req.count > max_batch_size as i32 {
             tracing::warn!(
@@ -381,7 +381,7 @@ impl NebulaIdService for GrpcServer {
         &self,
         request: Request<sdforge::tonic::Streaming<BatchGenerateStreamRequest>>,
     ) -> Result<Response<Self::BatchGenerateStreamStream>, Status> {
-        // wiring T006：request-init 先于流消费被校验，流式入口同样受保护
+        // request-init 先于流消费被校验，流式入口同样受保护
         let request = self.authenticate(request).await?;
         let mut stream = request.into_inner();
         let (tx, rx) = mpsc::channel(128);
@@ -505,9 +505,9 @@ impl NebulaIdService for GrpcServer {
         &self,
         request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckResponse>, Status> {
-        // wiring T006：health_check 同样纳入认证（设计 D6 覆盖全部 5 个 RPC）。
+        // health_check 同样纳入认证（设计 覆盖全部 5 个 RPC）。
         // 编排探针请改用 HTTP 端口 /health（公开端点）。
-        // T023：健康状态不依赖租户身份，认证结果只需通过即可，故丢弃 request。
+        // 健康状态不依赖租户身份，认证结果只需通过即可，故丢弃 request。
         self.authenticate(request).await?;
         let health = self.handlers.health().await;
         let status = if health.status == crate::server::models::HealthStatus::Healthy {
@@ -781,7 +781,7 @@ mod tests {
         );
     }
 
-    // ===== peer_ip（T023：认证失败按直连 IP 归因的前置能力）=====
+    // ===== peer_ip（认证失败按直连 IP 归因的前置能力）=====
 
     #[test]
     fn test_peer_ip_reads_connect_info_injected_by_tonic_transport() {

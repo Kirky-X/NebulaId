@@ -23,11 +23,11 @@
 //! - [`sdforge_health`] — sample `#[forge]`-annotated handler exposing
 //!   `GET /health/sdforge` for live sdforge integration verification.
 //!
-//! ## Naming deviation from spec T035 (T046 convergence annotation)
+//! ## Naming deviation from spec (convergence annotation)
 //!
 //! The `#[forge]` macro's `name` parameter uses the underscore-separated form
 //! `sdforge_health` rather than the hyphenated form `sdforge-health` cited in
-//! spec T035. Root cause: `sdforge_macros` 0.5 validates that `name` is a
+//! spec. Root cause: `sdforge_macros` 0.5 validates that `name` is a
 //! valid Rust identifier (hyphens are not allowed in identifiers). The HTTP
 //! route path is unaffected — `path = "/health/sdforge"` is independent of
 //! `name` and is what clients hit. This annotation makes the spec-vs-code

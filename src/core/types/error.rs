@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Phase 8 T038 ICU i18n — Display strings extracted to `locales/{en,zh-CN}.yml`
+// Phase 8 ICU i18n — Display strings extracted to `locales/{en,zh-CN}.yml`
 // under `error.<variant_snake>` keys. thiserror's `#[error("{}", t!(...))]`
 // attribute generates `impl Display` that calls `t!()` for translation lookup
 // at runtime. Default locale is "en" (set in main.rs via `init_i18n("en")`).
@@ -168,7 +168,7 @@ pub const ERROR_CODE_SERVICE_UNAVAILABLE: i32 = 503;
 impl CoreError {
     /// Return the i18n key for this error variant.
     ///
-    /// Phase 8 T041 (MED-002 + LOW-001 fix) — single source of truth
+    /// Phase 8 (fix) — single source of truth
     /// for the i18n key. The `Display` impl (thiserror `#[error(...)]`)
     /// still embeds the key as a string literal because thiserror
     /// requires `&str` literals in the attribute; new variants must
@@ -207,7 +207,7 @@ impl CoreError {
     /// Return the i18n args for this error variant, borrowing from
     /// `self` instead of cloning the inner `String`.
     ///
-    /// Phase 8 T041 (M3 perf + LOW-001 fix) — returns
+    /// Phase 8 — returns
     /// `SmallVec<[(&'static str, Cow<'_, str>); 4]>` so the typical
     /// 1-arg case lives entirely on the stack. Variants whose payload
     /// is a `String` return `Cow::Borrowed` (zero-clone); variants
@@ -262,10 +262,10 @@ impl CoreError {
     /// this method performs per-call translation and is safe for concurrent
     /// use across requests with different `Accept-Language` headers.
     ///
-    /// Phase 8 T041 — used by HTTP handlers to translate error responses
+    /// Phase 8 — used by HTTP handlers to translate error responses
     /// based on the negotiated `Locale` from `locale_middleware`.
     ///
-    /// Phase 8 T041 (MED-002 + M3 perf fix) — delegates to
+    /// Phase 8 (perf fix) — delegates to
     /// `i18n_key()` + `i18n_args()` so the key/args mapping has a
     /// single source of truth, and routes through
     /// `translate_with_locale_args_cow` (SmallVec + `Cow<str>`) to
@@ -422,7 +422,7 @@ mod tests {
     }
 
     /// Verify `to_localized_string` returns per-locale translations
-    /// without mutating global locale state (Phase 8 T041).
+    /// without mutating global locale state (Phase 8 ).
     #[test]
     fn test_to_localized_string_per_locale() {
         let _locale_lock = LOCALE_LOCK.lock().unwrap();
@@ -544,7 +544,7 @@ mod tests {
         );
     }
 
-    /// LOW L-7 — `to_localized_string` for an unsupported locale must
+    /// LOW — `to_localized_string` for an unsupported locale must
     /// not panic and must fall back to the crate's fallback locale
     /// (`en`, configured via `i18n!("locales", fallback = "en")` in
     /// `lib.rs`). Verifies the fallback is consistent across multiple
@@ -595,7 +595,7 @@ mod tests {
         assert_eq!(empty_msg, en_msg, "empty locale must fall back to en");
     }
 
-    /// LOW L-7 — fallback consistency for a variant with no args
+    /// LOW — fallback consistency for a variant with no args
     /// (`RateLimitExceeded`) and a variant with named args
     /// (`ClockMovedBackward`). Ensures the fallback path handles
     /// both arg shapes.

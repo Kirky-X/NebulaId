@@ -107,7 +107,7 @@ impl super::ApiHandlers {
         for key in existing_keys {
             if key.role == crate::core::database::ApiKeyRole::User {
                 repo.delete_api_key(key.id).await.map_err(map_db_error)?;
-                // wiring T008：旧 user key 已删除，缓存条目必须同步失效。
+                // 旧 user key 已删除，缓存条目必须同步失效。
                 self.invalidate_auth_cache(&key.key_id).await;
             }
         }
@@ -128,14 +128,14 @@ impl super::ApiHandlers {
             .await
             .map_err(map_db_error)?;
 
-        // LOW-1 的 Anonymous 防御已内移到 `impl TryFrom<...> for ApiKeyWithSecretResponse`
+        // Anonymous 防御已内移到 `impl TryFrom<...> for ApiKeyWithSecretResponse`
         // （`src/server/models.rs`），错误文案不变。
         user_key.try_into()
     }
 
     /// List all Workspaces.
     pub async fn list_workspaces(&self) -> Result<WorkspaceListResponse> {
-        // M5 修复：直接传播 CoreError，避免 `e.to_string()` 丢失类型信息
+        // 修复：直接传播 CoreError，避免 `e.to_string()` 丢失类型信息
         // 导致 HTTP 响应全部变成 500。helpers.rs 的错误转换层会根据
         // CoreError 变体映射到正确的 HTTP 状态码。
         self.config_service.list_workspaces().await

@@ -25,7 +25,7 @@ impl super::ApiHandlers {
     pub async fn generate(&self, req: GenerateRequest) -> Result<GenerateResponse> {
         let start = std::time::Instant::now();
 
-        // Phase 8 T041 (LOW L-5 fix) — server-side log uses structured
+        // Phase 8 (LOW fix) — server-side log uses structured
         // fields only; no `t!()` translation. The previous `t!()` call
         // consulted the process-wide global locale, which races with
         // concurrent requests under different `Accept-Language` headers
@@ -38,7 +38,7 @@ impl super::ApiHandlers {
             biz_tag = %req.biz_tag,
         );
 
-        // L6 修复：提前 parse algorithm，复用结果避免重复 parse。
+        // 修复：提前 parse algorithm，复用结果避免重复 parse。
         let parsed_algorithm: Option<crate::core::types::AlgorithmType> =
             if let Some(ref alg_str) = req.algorithm {
                 Some(alg_str.parse()?)
@@ -76,7 +76,7 @@ impl super::ApiHandlers {
             .fetch_add(1, Ordering::SeqCst);
 
         let latency_ms = elapsed.as_millis() as u64;
-        // L5 修复：使用累积计数 + 总和的方式计算真实平均值，
+        // 修复：使用累积计数 + 总和的方式计算真实平均值，
         // 而非 `(current_avg + latency) / 2`（后者对早期偏差敏感且非滑动平均）。
         // avg = total_latency / total_requests
         self.metrics
@@ -87,7 +87,7 @@ impl super::ApiHandlers {
         let new_avg = total_latency.checked_div(total_reqs).unwrap_or(latency_ms);
         self.metrics.avg_latency_ms.store(new_avg, Ordering::SeqCst);
 
-        // L6 修复：复用 line 42 的 parse 结果，避免重复 parse。
+        // 修复：复用 line 42 的 parse 结果，避免重复 parse。
         // algorithm_name 优先使用请求指定的算法，否则查询路由表。
         let algorithm_name = if let Some(parsed) = parsed_algorithm {
             parsed.to_string()
@@ -164,7 +164,7 @@ impl super::ApiHandlers {
             .fetch_add(ids.len() as u64, Ordering::SeqCst);
 
         let latency_ms = elapsed.as_millis() as u64;
-        // L5 修复：同 generate，使用累积平均值
+        // 修复：同 generate，使用累积平均值
         self.metrics
             .total_latency_ms
             .fetch_add(latency_ms, Ordering::SeqCst);
@@ -225,7 +225,7 @@ impl super::ApiHandlers {
     }
 
     fn extract_snowflake_metadata(&self, id: Id) -> IdMetadataResponse {
-        // T010：位布局解析知识下沉 core；运行时取当前配置，取不到时
+        // 位布局解析知识下沉 core；运行时取当前配置，取不到时
         // 回退 standard()（与历史硬编码 3/8/10 行为一致）。
         let layout = self
             .id_generator
@@ -346,7 +346,7 @@ mod tests {
         assert_eq!(gen_response.ids.len(), 5);
     }
 
-    /// T012 边界：size == 配置上限（默认 max_batch_size）应成功
+    /// 边界：size == 配置上限（默认 max_batch_size）应成功
     #[tokio::test]
     async fn test_handle_batch_generate_at_configured_limit_succeeds() {
         let (handlers, _router) = create_test_api_handlers();
@@ -362,7 +362,7 @@ mod tests {
         assert!(response.is_ok(), "limit={limit} 应通过");
     }
 
-    /// T012 边界：size == 上限 + 1 应被拒绝，错误消息含实际值与上限
+    /// 边界：size == 上限 + 1 应被拒绝，错误消息含实际值与上限
     #[tokio::test]
     async fn test_handle_batch_generate_over_limit_rejected() {
         let (handlers, _router) = create_test_api_handlers();

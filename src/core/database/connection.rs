@@ -26,7 +26,7 @@ pub const NEBULA_SCHEMA: &str = "nebula_id";
 /// Redact the password component of a database connection URL before
 /// the URL is written to logs or other observability surfaces.
 ///
-/// Phase 9 T043 (CRITICAL C1 / tiangang HIGH-2) — `final_url` carries
+/// Phase 9 (CRITICAL C1 / ) — `final_url` carries
 /// the plaintext database password (e.g. `postgresql://user:pass@host/db`)
 /// and must never be recorded verbatim. Only `scheme://user@host:port/db`
 /// is emitted; the password is replaced by `***`. If the URL cannot be
@@ -46,6 +46,32 @@ impl From<DbErr> for CoreError {
     fn from(e: DbErr) -> Self {
         CoreError::DatabaseError(e.to_string())
     }
+}
+
+/// 为 PostgreSQL 连接 URL 注入 `search_path = nebula_id, public`。
+///
+/// 实体枚举（`AlgorithmTypeDb` / `IdFormatDb`，`db_type = "Enum"`）由 sea-orm
+/// 生成**不带 schema 限定**的 `CAST(... AS algorithm_type)`，默认
+/// search_path（public）解析不到 nebula_id 下的类型，导致 create_biz_tag
+/// 等写入在真实 PostgreSQL 上必然失败（MockDatabase 不做类型检查，测试
+/// 发现不了）。已在 URL 显式配置 `options` 的不覆盖，尊重运维自定值。
+pub(crate) fn ensure_pg_search_path(url: &str) -> String {
+    let parsed = match url::Url::parse(url) {
+        Ok(parsed) => parsed,
+        Err(_) => return url.to_string(),
+    };
+    let is_postgres = matches!(parsed.scheme(), "postgres" | "postgresql");
+    if !is_postgres {
+        return url.to_string();
+    }
+    if parsed.query_pairs().any(|(key, _)| key == "options") {
+        return url.to_string();
+    }
+    let mut rebuilt = parsed;
+    rebuilt
+        .query_pairs_mut()
+        .append_pair("options", "-c search_path=nebula_id,public");
+    rebuilt.to_string()
 }
 
 pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnection, CoreError> {
@@ -90,6 +116,8 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
             crate::core::config::DatabaseEngine::Sqlite => config.database.clone(),
         }
     };
+
+    let final_url = ensure_pg_search_path(&final_url);
 
     let mut connect_options = ConnectOptions::new(final_url.clone());
 
@@ -161,6 +189,39 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
                     error = e
                 )
             );
+        }
+    }
+
+    // Entity 枚举类型（biz_tag_entity 的 AlgorithmTypeDb / IdFormatDb 以
+    // `db_type = "Enum"` 映射，sea-orm 生成 CAST 列必须真实存在；此前迁移
+    // 只建 VARCHAR 列，真实 PostgreSQL 上 create_biz_tag 必失败）。
+    let enum_types = vec![
+        (
+            NEBULA_SCHEMA,
+            r#"
+        DO $$ BEGIN
+            CREATE TYPE {}.algorithm_type AS ENUM ('segment', 'snowflake', 'uuid_v8');
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$"#,
+        ),
+        (
+            NEBULA_SCHEMA,
+            r#"
+        DO $$ BEGIN
+            CREATE TYPE {}.id_format AS ENUM ('numeric', 'prefixed', 'uuid');
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$"#,
+        ),
+    ];
+    for (schema, sql) in &enum_types {
+        let sql = sql.replace("{}", schema);
+        if let Err(e) = db.execute_unprepared(&sql).await {
+            tracing::error!(event = "db_create_enum_type_failed", error = %e, "enum type creation failed");
+            return Err(CoreError::DatabaseError(
+                "Failed to create enum type (see server logs for details)".to_string(),
+            ));
         }
     }
 
@@ -236,18 +297,18 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
             group_id UUID NOT NULL REFERENCES {}.groups(id) ON DELETE CASCADE,
             name VARCHAR(255) NOT NULL,
             description TEXT,
-            algorithm VARCHAR(20) DEFAULT 'segment',
-            format VARCHAR(20) DEFAULT 'numeric',
+            algorithm {}.algorithm_type NOT NULL DEFAULT 'segment',
+            format {}.id_format DEFAULT 'numeric',
             prefix VARCHAR(50) DEFAULT '',
             base_step INT DEFAULT 1000,
             max_step INT DEFAULT 100000,
-            datacenter_ids TEXT DEFAULT '[]',
+            datacenter_ids JSONB DEFAULT '[]',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(workspace_id, group_id, name)
         )
         "#,
-            NEBULA_SCHEMA, NEBULA_SCHEMA, NEBULA_SCHEMA
+            NEBULA_SCHEMA, NEBULA_SCHEMA, NEBULA_SCHEMA, NEBULA_SCHEMA, NEBULA_SCHEMA
         ),
         // Nebula segments table
         format!(
@@ -290,7 +351,7 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
                         t!("log.core.database.connection.table_already_exists")
                     );
                 } else {
-                    // MEDIUM-2 修复（CWE-209）：不将 SeaORM 原始错误消息嵌入
+                    // （CWE-209）：不将 SeaORM 原始错误消息嵌入
                     // CoreError::DatabaseError（可能含 schema/表名/字段名/SQL 片段）。
                     // 完整错误通过 tracing::error! 记录到服务端日志，
                     // 返回给上层的是通用消息（helpers.rs 仍会进一步净化）。
@@ -716,7 +777,7 @@ mod tests {
         );
     }
 
-    /// T006：宽限期两列的存量库迁移必须是幂等的 `ADD COLUMN IF NOT EXISTS`，
+    /// 宽限期两列的存量库迁移必须是幂等的 `ADD COLUMN IF NOT EXISTS`，
     /// 且两列可空（存量行无需回填）。
     #[test]
     fn test_run_migrations_emits_alter_table_for_grace_columns() {
@@ -740,7 +801,7 @@ mod tests {
         );
     }
 
-    /// T006：ALTER 硬失败必须终止迁移 —— 缺列会让 `validate_api_key` 读不到宽限期，
+    /// ALTER 硬失败必须终止迁移 —— 缺列会让 `validate_api_key` 读不到宽限期，
     /// 从而静默按"无旧凭证"处理，属于必须响而不能兜底的故障。
     #[tokio::test]
     async fn test_run_migrations_returns_error_when_grace_column_alter_fails() {

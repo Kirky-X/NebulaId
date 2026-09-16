@@ -14,7 +14,7 @@
 
 //! 降级管理器模块（Degradation Manager）
 //!
-//! # 当前状态：v0.3.0 完整接入告警管道前的预留 API
+//! # 当前状态：完整接入告警管道前的预留 API
 //!
 //! 本模块包含若干暂时未被生产路径直接调用的 API：
 //! - `AlgorithmHealthState::{record_request, can_make_request, get_metrics}`
@@ -23,7 +23,7 @@
 //!
 //! 保留原因：
 //!
-//! 1. **告警管道集成预留**：v0.3.0 启用告警管道后，`record_request` 和 `get_metrics`
+//! 1. **告警管道集成预留** 启用告警管道后，`record_request` 和 `get_metrics`
 //!    将作为 Prometheus 指标采集入口；`AlgorithmMetrics` 是指标导出的数据结构。
 //! 2. **熔断器与降级联动**：`can_make_request` 是熔断器在 HalfOpen 状态下的探针请求
 //!    判定入口，待 circuit_breaker 接入告警管道后启用。
@@ -126,7 +126,7 @@ const CIRCUIT_BREAKER_CLOSED: u8 = 0;
 const CIRCUIT_BREAKER_OPEN: u8 = 1;
 const CIRCUIT_BREAKER_HALF_OPEN: u8 = 2;
 
-// M13 修复：删除手动 `impl Clone for AlgorithmHealthState`。
+// 修复：删除手动 `impl Clone for AlgorithmHealthState`。
 // 该 Clone 实现逐个 load/store 原子字段，冗长且易错；且全代码库无任何调用方
 // （所有共享都通过 `Arc<AlgorithmHealthState>`，Arc clone 不需要 T: Clone）。
 // 如果未来需要 Clone，应改用 `Arc<AtomicXxx>` 字段 + `#[derive(Clone)]`（共享语义）。

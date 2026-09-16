@@ -137,11 +137,11 @@ impl super::ApiHandlers {
 
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
-        // L16 修复：从 `ApiHandlers::key_rotation_grace_period_seconds` 读取，
+        // 修复：从 `ApiHandlers::key_rotation_grace_period_seconds` 读取，
         // 原为闭包内硬编码 `const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60`。
         let grace_period_seconds = self.key_rotation_grace_period_seconds;
 
-        // wiring T008：spawn 内的轮换需要失效缓存条目，`&self` 无法跨越 'static
+        // spawn 内的轮换需要失效缓存条目，`&self` 无法跨越 'static
         // 边界，故先克隆缓存句柄（未启用 garrison-auth 时不存在该变量）。
         #[cfg(feature = "garrison-auth")]
         let auth_cache = self.auth_cache.clone();
@@ -170,7 +170,7 @@ impl super::ApiHandlers {
                                         .await
                                     {
                                         Ok(_) => {
-                                            // wiring T008：轮换出的新 secret 必须回源校验。
+                                            // 轮换出的新 secret 必须回源校验。
                                             #[cfg(feature = "garrison-auth")]
                                             if let Some(cache) = auth_cache.as_ref() {
                                                 cache.invalidate(&key.key_id).await;
@@ -665,7 +665,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_metrics_exposes_percentiles_and_clock_backwards() {
-        // T021：路由层观测值必须出现在 /metrics 的逐算法条目里
+        // 路由层观测值必须出现在 /metrics 的逐算法条目里
         let mut mock_config = MockSysMockConfigService::new();
         mock_config
             .expect_get_database_metrics()

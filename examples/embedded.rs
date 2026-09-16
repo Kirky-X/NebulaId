@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! SDK 纯算法嵌入示例（Kit 范式，wiring T013）。
+//! SDK 纯算法嵌入示例（Kit 范式，）。
 //!
 //! 零数据库、零网络：仅使用 Snowflake / UuidV8 纯算法。默认算法改为
 //! `snowflake`（`Config::default()` 的 `segment` 需要数据库，未注入仓储时

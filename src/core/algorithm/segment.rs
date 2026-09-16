@@ -364,7 +364,7 @@ pub struct SegmentAlgorithm {
     metrics: Arc<AlgorithmMetricsInner>,
     segment_loader: Arc<dyn SegmentLoader + Send + Sync>,
     dc_failure_detector: Arc<DcFailureDetector>,
-    // L12 对齐修复：非 etcd 版本不再持有 `etcd_cluster_health_monitor: Option<()>`
+    // 对齐修复：非 etcd 版本不再持有 `etcd_cluster_health_monitor: Option<()>`
     // 占位字段（与 AlgorithmBuilder / AlgorithmRouter 一致）。`with_etcd_cluster_health_monitor`
     // builder 方法仅在 etcd feature 下存在；非 etcd 版本根本不会调用它。
     #[cfg(feature = "etcd")]
@@ -441,7 +441,7 @@ impl SegmentAlgorithm {
         self
     }
 
-    // L13 修复：`initialize` 从 `impl IdAlgorithm for SegmentAlgorithm`
+    // 修复：`initialize` 从 `impl IdAlgorithm for SegmentAlgorithm`
     // 移到 inherent impl。原 trait method `initialize(&mut self, ...)` 让
     // trait 不那么对象安全（`Arc<dyn IdAlgorithm>` 共享后无法调用 `&mut self`）。
     // 现仅在 `AlgorithmBuilder::build` 中通过具体类型调用，初始化完成后
@@ -480,11 +480,11 @@ impl SegmentAlgorithm {
         self.etcd_cluster_health_monitor = Some(monitor);
         self
     }
-    // L12 对齐修复：删除非 etcd 版本的 `with_etcd_cluster_health_monitor(Arc<()>)`。
+    // 对齐修复：删除非 etcd 版本的 `with_etcd_cluster_health_monitor(Arc<()>)`。
     // 原签名接受 `Arc<()>` 但完全忽略参数，类型误导且调用方可能误以为
     // monitor 被实际使用。非 etcd 版本根本不需要这个 builder 方法。
 
-    // L12 对齐修复：删除非 etcd 版本的 `get_etcd_cluster_health_monitor() -> Option<&()>`。
+    // 对齐修复：删除非 etcd 版本的 `get_etcd_cluster_health_monitor() -> Option<&()>`。
     // 非 etcd 版本字段不存在，getter 也无意义。
 
     fn get_or_create_buffer(&self, key: &str) -> Arc<DoubleBuffer> {
@@ -630,10 +630,10 @@ impl IdAlgorithm for SegmentAlgorithm {
         AlgorithmMetricsSnapshot {
             total_generated: self.metrics.total_generated.load(Ordering::Relaxed),
             total_failed: self.metrics.total_failed.load(Ordering::Relaxed),
-            // L15 修复：Segment 算法有段缓存，返回真实命中率。
+            // 修复：Segment 算法有段缓存，返回真实命中率。
             cache_hit_rate: Some(hit_rate),
             // 延迟分位数与时钟回拨计数由路由层观测后在
-            // AlgorithmRouter::metrics() 合并填充（T021）。
+            // AlgorithmRouter::metrics() 合并填充。
             ..Default::default()
         }
     }
@@ -642,7 +642,7 @@ impl IdAlgorithm for SegmentAlgorithm {
         AlgorithmType::Segment
     }
 
-    // L13 修复：`initialize` 已移到 inherent impl（`impl SegmentAlgorithm`）。
+    // 修复：`initialize` 已移到 inherent impl（`impl SegmentAlgorithm`）。
 
     async fn shutdown(&self) -> Result<()> {
         // Signal shutdown and wait for health check task to complete
@@ -677,7 +677,7 @@ impl SegmentLoader for DefaultSegmentLoader {
 }
 
 // ============================================================================
-// ARCH-HIGH-001 修复：SegmentFactory impl 拆分到本文件。
+// SegmentFactory impl 拆分到本文件。
 // 原 impl 位于 traits.rs（违反规则 25），现移到具体类型所属文件。
 // 通过 AlgorithmBuilder 的 pub(crate) 访问器获取依赖。
 // ============================================================================

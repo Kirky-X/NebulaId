@@ -36,7 +36,7 @@ pub mod core;
 // Server namespace - HTTP/gRPC 服务
 pub mod server;
 
-// SDK namespace - 嵌入式一等公民入口（wiring T012，feature `sdk` 门控）
+// SDK namespace - 嵌入式一等公民入口（feature `sdk` 门控）
 #[cfg(feature = "sdk")]
 pub mod sdk;
 

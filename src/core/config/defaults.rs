@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! 跨模块共享的默认值常量统一注册表（code-hygiene-cleanup T009）。
+//! 跨模块共享的默认值常量统一注册表。
 //!
 //! 收录规则：仅迁移被 **≥2 个文件**引用的 `DEFAULT_*` 常量；单文件使用的
 //! 常量保留在原定义处，不为搬而搬。历史教训见
 //! [`crate::core::config::auth`] 中 grace period 曾三处重复的自述。
 
-/// API key 轮换宽限期默认值：`0` = 关闭（T011）。
+/// API key 轮换宽限期默认值：`0` = 关闭。
 ///
 /// `0` 表示轮换后上一代凭证立即失效：`rotate_api_key` 不写 `prev_secret_hash`
 /// / `rotate_expires_at`，`validate_api_key` 只校验当代凭证。需要"轮换不掉请求"
@@ -34,6 +34,6 @@ pub const DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS: u64 = 0;
 /// 宽限期上限：30 天（秒）。超限值在配置校验阶段即被拒绝（fail-fast），
 /// 避免静默传递到 handler 层才被 clamp。
 ///
-/// ARCH-MED-002 修复：提取为 `pub const`，与 `DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`
+/// 提取为 `pub const`，与 `DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`
 /// 同属注册表，`Config::validate()` 直接引用。
 pub const MAX_KEY_ROTATION_GRACE_PERIOD_SECONDS: u64 = 30 * 24 * 60 * 60;

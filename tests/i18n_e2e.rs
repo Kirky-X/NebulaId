@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Phase 8 T042 — End-to-end i18n integration test.
+//! Phase 8 — End-to-end i18n integration test.
 //!
 //! Verifies the full chain: `Accept-Language` header → `locale_middleware`
 //! negotiates `Locale` → handler reads `Extension<Locale>` → produces a
@@ -200,7 +200,7 @@ async fn t042_en_invalid_uuid_response_returns_english() {
 }
 
 /// Verifies that 5xx-class CoreError variants do NOT leak internal strings.
-/// This is the CWE-209 fix from the T041 security review.
+/// This is the CWE-209 fix from the security review.
 #[tokio::test]
 async fn t042_5xx_database_error_does_not_leak_internal_string() {
     let app = Router::new()

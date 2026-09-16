@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Phase 9 T043 (HIGH H5) — file-level `#![allow(dead_code)]` retained
+//! Phase 9 — file-level `#![allow(dead_code)]` retained
 //! with explicit justification. The `MonitoringCore` surface exposes
 //! the full alerting/metrics API (alert state machine, notification
 //! channels, webhook dispatch, etc.) but only a subset is currently
@@ -589,7 +589,7 @@ impl AlertNotificationSender {
     }
 
     async fn send_webhook(url: &str, payload: &serde_json::Value) {
-        // MEDIUM-3 修复（CWE-918 SSRF）：验证 webhook URL 防止服务端请求伪造。
+        // （CWE-918 SSRF）：验证 webhook URL 防止服务端请求伪造。
         // 1. 仅允许 http/https scheme
         // 2. 禁止解析到私有/保留 IP（127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12,
         //    192.168.0.0/16, 169.254.0.0/16, ::1, fc00::/7）

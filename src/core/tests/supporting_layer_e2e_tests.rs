@@ -38,7 +38,7 @@ use uuid::Uuid;
 // Config 端到端
 // =============================================================================
 
-/// E2E-CFG-001: Config::load_from_file 完整路径——TOML 解析 + 环境变量展开 + validate。
+/// Config::load_from_file 完整路径 ——TOML 解析 + 环境变量展开 + validate。
 ///
 /// 覆盖功能场景穷举分析第 2.2 节配置文件加载行：
 /// - 读取 TOML 文件
@@ -108,10 +108,10 @@ async fn e2e_config_load_from_file_with_env_expansion_and_validation() {
     std::env::remove_var("E2E_TEST_DB_PASSWORD");
 }
 
-/// E2E-CFG-002: Config::load_from_file 在文件不存在时返回 FileNotFound（T013）。
+/// Config::load_from_file 在文件不存在时返回 FileNotFound。
 ///
 /// 覆盖功能场景穷举分析第 2.2 节"文件不存在 → FileNotFound"。
-/// T013 之前该场景与权限/IO 失败共用 FileError，启动期无法安全区分"可降级为默认
+/// 之前该场景与权限/IO 失败共用 FileError，启动期无法安全区分"可降级为默认
 /// 值的缺失"与"必须显性失败的读取错误"。
 #[tokio::test]
 async fn e2e_config_load_from_file_missing_returns_file_not_found() {
@@ -128,7 +128,7 @@ async fn e2e_config_load_from_file_missing_returns_file_not_found() {
     }
 }
 
-/// E2E-CFG-003: Config::load_from_file 在 TOML 格式错误时返回 InvalidValue。
+/// Config::load_from_file 在 TOML 格式错误时返回 InvalidValue。
 #[tokio::test]
 async fn e2e_config_load_from_file_invalid_toml_returns_invalid_value() {
     let dir = tempdir().expect("E2E: tempdir");
@@ -143,7 +143,7 @@ async fn e2e_config_load_from_file_invalid_toml_returns_invalid_value() {
     );
 }
 
-/// E2E-CFG-004: Config::validate 在 http_port=0 时返回 InvalidValue。
+/// Config::validate 在 http_port=0 时返回 InvalidValue。
 ///
 /// 覆盖功能场景穷举分析第 2.2 节配置校验行的"端口 1-65535"边界。
 #[test]
@@ -156,7 +156,7 @@ fn e2e_config_validate_http_port_zero_fails() {
     ));
 }
 
-/// E2E-CFG-005: Config::validate 在 dc_id > 31 时返回 InvalidValue。
+/// Config::validate 在 dc_id > 31 时返回 InvalidValue。
 #[test]
 fn e2e_config_validate_dc_id_over_31_fails() {
     let mut config = Config::default();
@@ -167,7 +167,7 @@ fn e2e_config_validate_dc_id_over_31_fails() {
     ));
 }
 
-/// E2E-CFG-006: Config::validate 在 dc_id == 31 时通过（边界）。
+/// Config::validate 在 dc_id == 31 时通过（边界）。
 #[test]
 fn e2e_config_validate_dc_id_31_passes() {
     let mut config = Config::default();
@@ -175,7 +175,7 @@ fn e2e_config_validate_dc_id_31_passes() {
     assert!(config.validate().is_ok());
 }
 
-/// E2E-CFG-007: Config::validate 在 min_connections > max_connections 时失败。
+/// Config::validate 在 min_connections > max_connections 时失败。
 #[test]
 fn e2e_config_validate_min_gt_max_connections_fails() {
     let mut config = Config::default();
@@ -187,7 +187,7 @@ fn e2e_config_validate_min_gt_max_connections_fails() {
     ));
 }
 
-/// E2E-CFG-008: Config::validate 在 rate_limit 启用但 burst_size > 10×rps 时失败。
+/// Config::validate 在 rate_limit 启用但 burst_size > 10×rps 时失败。
 #[test]
 fn e2e_config_validate_burst_exceeds_10x_rps_fails() {
     let mut config = Config::default();
@@ -200,7 +200,7 @@ fn e2e_config_validate_burst_exceeds_10x_rps_fails() {
     ));
 }
 
-/// E2E-CFG-009: Config::validate 在 snowflake 总位数 ≥ 64 时失败。
+/// Config::validate 在 snowflake 总位数 ≥ 64 时失败。
 #[test]
 fn e2e_config_validate_snowflake_total_bits_over_64_fails() {
     let mut config = Config::default();
@@ -213,7 +213,7 @@ fn e2e_config_validate_snowflake_total_bits_over_64_fails() {
     ));
 }
 
-/// E2E-CFG-010: Config::validate 在 batch_generate.max_batch_size > 10000 时失败。
+/// Config::validate 在 batch_generate.max_batch_size > 10000 时失败。
 #[test]
 fn e2e_config_validate_batch_size_over_10000_fails() {
     let mut config = Config::default();
@@ -224,7 +224,7 @@ fn e2e_config_validate_batch_size_over_10000_fails() {
     ));
 }
 
-/// E2E-CFG-011: Config::validate 在 batch_generate.max_batch_size == 10000 时通过（边界）。
+/// Config::validate 在 batch_generate.max_batch_size == 10000 时通过（边界）。
 #[test]
 fn e2e_config_validate_batch_size_10000_passes() {
     let mut config = Config::default();
@@ -232,7 +232,7 @@ fn e2e_config_validate_batch_size_10000_passes() {
     assert!(config.validate().is_ok());
 }
 
-/// E2E-CFG-012: Config::validate 在 algorithm.default 不是合法值时失败。
+/// Config::validate 在 algorithm.default 不是合法值时失败。
 #[test]
 fn e2e_config_validate_invalid_default_algorithm_fails() {
     let mut config = Config::default();
@@ -243,7 +243,7 @@ fn e2e_config_validate_invalid_default_algorithm_fails() {
     ));
 }
 
-/// E2E-CFG-013: Config::validate 在 switch_threshold 越界时失败。
+/// Config::validate 在 switch_threshold 越界时失败。
 #[test]
 fn e2e_config_validate_switch_threshold_out_of_range_fails() {
     let mut config = Config::default();
@@ -254,7 +254,7 @@ fn e2e_config_validate_switch_threshold_out_of_range_fails() {
     ));
 }
 
-/// E2E-CFG-014: Config::merge 优先级——非默认值字段覆盖。
+/// Config::merge 优先级 ——非默认值字段覆盖。
 ///
 /// 覆盖功能场景穷举分析第 2.2 节配置合并行的"非默认值字段覆盖"。
 /// Config::merge 用默认值作为哨兵判断"用户是否显式设置"，所以显式设为
@@ -277,7 +277,7 @@ fn e2e_config_merge_overrides_non_default_fields() {
     assert_eq!(base.app.dc_id, 7, "E2E: non-default dc_id should override");
 }
 
-/// E2E-CFG-015: Config::merge 在 other 字段等于默认值时不覆盖。
+/// Config::merge 在 other 字段等于默认值时不覆盖。
 ///
 /// 钉住 merge 的"默认值哨兵"语义：other 中显式设为默认值的字段不会覆盖 base。
 #[test]
@@ -299,7 +299,7 @@ fn e2e_config_merge_default_value_does_not_override() {
 // Id 类型跨格式端到端
 // =============================================================================
 
-/// E2E-ID-001: 从真实 Snowflake 算法生成的 ID 转换为多种格式并反向解析。
+/// 从真实 Snowflake 算法生成的 ID 转换为多种格式并反向解析。
 ///
 /// 覆盖功能场景穷举分析第 2.7 节 ID 类型行的"多格式解析与展示"。
 /// 这条路径验证：算法生成 → Id 包装 → to_string / to_hex / to_base36 / to_prefixed
@@ -351,7 +351,7 @@ async fn e2e_id_format_conversion_roundtrip_from_real_algorithm() {
     assert_eq!(prefixed_value, value);
 }
 
-/// E2E-ID-002: UUID v7 字符串 roundtrip 通过 Id::from_string 解析。
+/// UUID v7 字符串 roundtrip 通过 Id::from_string 解析。
 ///
 /// 覆盖功能场景穷举分析第 2.7 节 ID 类型行的"36 位含 - 按 UUID 解析"。
 #[test]
@@ -368,7 +368,7 @@ fn e2e_id_from_string_uuid_v7_roundtrip() {
     assert_eq!(back, uuid_str);
 }
 
-/// E2E-ID-003: UUID v4 字符串通过 Id::from_string 解析后保持 v4 版本位。
+/// UUID v4 字符串通过 Id::from_string 解析后保持 v4 版本位。
 #[test]
 fn e2e_id_from_string_uuid_v4_preserves_version() {
     let uuid = Uuid::new_v4();
@@ -377,7 +377,7 @@ fn e2e_id_from_string_uuid_v4_preserves_version() {
     assert_eq!(back.get_version(), Some(uuid::Version::Random));
 }
 
-/// E2E-ID-004: Id::from_string 在空字符串 / 非数字 / 非UUID 时返回 InvalidIdString。
+/// Id::from_string 在空字符串 / 非数字 / 非UUID 时返回 InvalidIdString。
 ///
 /// 覆盖功能场景穷举分析第 2.7 节 ID 类型行的"from_string 解析失败 → InvalidIdString"。
 #[test]
@@ -392,7 +392,7 @@ fn e2e_id_from_string_invalid_returns_error() {
     ));
 }
 
-/// E2E-ID-005: IdBatch::from_u64s 与 IdBatch::new 互转。
+/// IdBatch::from_u64s 与 IdBatch::new 互转。
 #[test]
 fn e2e_id_batch_from_u64s_and_new_consistent() {
     let values: Vec<u64> = vec![1, 100, 1000, u64::MAX];
@@ -408,7 +408,7 @@ fn e2e_id_batch_from_u64s_and_new_consistent() {
 // AlgorithmType 别名解析端到端
 // =============================================================================
 
-/// E2E-ALG-001: AlgorithmType::from_str 接受所有别名与大小写变体。
+/// AlgorithmType::from_str 接受所有别名与大小写变体。
 ///
 /// 覆盖功能场景穷举分析第 2.7 节"算法类型解析"行：
 /// - 大小写不敏感
@@ -483,14 +483,14 @@ fn e2e_algorithm_type_from_str_all_aliases_and_case_variants() {
     );
 }
 
-/// E2E-ALG-002: AlgorithmType::from_str 在未知算法时返回 InvalidAlgorithmType。
+/// AlgorithmType::from_str 在未知算法时返回 InvalidAlgorithmType。
 #[test]
 fn e2e_algorithm_type_from_str_unknown_returns_error() {
     let result = AlgorithmType::from_str("redis");
     assert!(matches!(result, Err(CoreError::InvalidAlgorithmType(s)) if s == "redis"));
 }
 
-/// E2E-ALG-003: AlgorithmConfig::get_default_algorithm 解析配置字符串为枚举。
+/// AlgorithmConfig::get_default_algorithm 解析配置字符串为枚举。
 #[test]
 fn e2e_algorithm_config_get_default_algorithm_parses_string() {
     let mut cfg = AlgorithmConfig {
@@ -509,7 +509,7 @@ fn e2e_algorithm_config_get_default_algorithm_parses_string() {
     assert_eq!(cfg.get_default_algorithm(), AlgorithmType::Segment);
 }
 
-/// E2E-ALG-004: AlgorithmConfig::get_default_algorithm 在无效字符串时回退到 Segment。
+/// AlgorithmConfig::get_default_algorithm 在无效字符串时回退到 Segment。
 #[test]
 fn e2e_algorithm_config_get_default_algorithm_invalid_falls_back_to_segment() {
     let cfg = AlgorithmConfig {

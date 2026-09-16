@@ -27,9 +27,9 @@ pub mod api_key_handlers;
 pub mod biz_tag_handlers;
 pub mod helpers;
 pub mod id_handlers;
-// pre-existing test helper module (MockIdGenerator); not part of T027-T033 split,
-// retained from pre-refactor codebase (T047 convergence annotation).
-// #[cfg(test)] 门控（code-hygiene-cleanup T003）：仅参与测试编译单元，
+// pre-existing test helper module (MockIdGenerator); not part of split,
+// retained from pre-refactor codebase (convergence annotation).
+// #[cfg(test)] 门控：仅参与测试编译单元，
 // 不再进入生产二进制。所有调用点均位于 cfg(test) 模块内。
 #[cfg(test)]
 pub mod mock_generator;
@@ -46,12 +46,12 @@ pub struct ApiHandlers {
     pub(super) start_time: std::time::Instant,
     pub(super) config_service: Arc<dyn ConfigManagementService>,
     pub(super) api_key_repo: Option<Arc<dyn ApiKeyRepository>>,
-    /// L16 修复：密钥轮换宽限期（秒）。原为 `api_key_handlers.rs` /
+    /// 修复：密钥轮换宽限期（秒）。原为 `api_key_handlers.rs` /
     /// `system_handlers.rs` 中硬编码 `const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60`，
     /// 现移到 `AuthConfig::key_rotation_grace_period_seconds`，由
     /// `with_key_rotation_grace_period` builder 方法注入。
     pub(super) key_rotation_grace_period_seconds: u64,
-    /// wiring T008：认证缓存句柄。密钥吊销 / 轮换 / 重置时据此失效缓存条目，
+    /// 认证缓存句柄。密钥吊销 / 轮换 / 重置时据此失效缓存条目，
     /// 避免 TTL 内旧凭证仍可通过认证。`None` = 未启用缓存（garrison-auth 关闭
     /// 或未装配）。
     #[cfg(feature = "garrison-auth")]
@@ -65,13 +65,13 @@ pub struct ApiMetrics {
     pub failed_generations: std::sync::atomic::AtomicU64,
     pub total_ids_generated: std::sync::atomic::AtomicU64,
     pub avg_latency_ms: std::sync::atomic::AtomicU64,
-    // L5 修复：累积总延迟，用于计算真实平均值 avg = total_latency / total_requests
+    // 修复：累积总延迟，用于计算真实平均值 avg = total_latency / total_requests
     pub total_latency_ms: std::sync::atomic::AtomicU64,
 }
 
-/// L16 修复：默认密钥轮换宽限期取自配置默认值注册表（T011 起为 `0` = 关闭）。
+/// 修复：默认密钥轮换宽限期取自配置默认值注册表（为 `0` = 关闭）。
 ///
-/// ARCH-MED-002 修复：删除重复 `const`，统一引用
+/// 删除重复 `const`，统一引用
 /// `crate::core::config::defaults::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`。
 use crate::core::config::defaults::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS;
 
@@ -109,22 +109,22 @@ impl ApiHandlers {
         }
     }
 
-    /// 注入认证缓存句柄（wiring T008），与 `ApiKeyAuth::with_cache` 共享同一实例。
+    /// 注入认证缓存句柄，与 `ApiKeyAuth::with_cache` 共享同一实例。
     #[cfg(feature = "garrison-auth")]
     pub fn with_auth_cache(mut self, cache: Arc<crate::server::auth::AuthCache>) -> Self {
         self.auth_cache = Some(cache);
         self
     }
 
-    /// L16 修复：注入 `AuthConfig::key_rotation_grace_period_seconds`。
-    /// 未调用时使用注册表默认值（T011 起为 `0` = 关闭宽限期）。
+    /// 修复：注入 `AuthConfig::key_rotation_grace_period_seconds`。
+    /// 未调用时使用注册表默认值（为 `0` = 关闭宽限期）。
     ///
-    /// SEC-LOW-003 修复（CWE-358 信任边界）：过大（> 30 天）时旧密钥几乎永久
+    /// （CWE-358 信任边界）：过大（> 30 天）时旧密钥几乎永久
     /// 有效，密钥泄露窗口无限大；超上限记录警告并 clamp 到 30 天，既不破坏启动
     /// 流程（fail-open），也让运维在日志中看到问题（规则 12）。
     ///
-    /// T011：原下限 `MIN = 1`（把 0 抬成 1 秒，理由是"轮换瞬间会拒掉进行中的请求"）
-    /// 已删除。自 T007 宽限期真正生效后，1 秒窗口同样会写入 `prev_secret_hash`
+    /// 原下限 `MIN = 1`（把 0 抬成 1 秒，理由是"轮换瞬间会拒掉进行中的请求"）
+    /// 已删除。自 宽限期真正生效后，1 秒窗口同样会写入 `prev_secret_hash`
     /// 并放行上一代凭证，与"默认关闭"的决策直接冲突；`0` 是合法值而非待纠正的输入。
     pub fn with_key_rotation_grace_period(mut self, seconds: u64) -> Self {
         const MAX_GRACE_PERIOD_SECONDS: u64 = 30 * 24 * 60 * 60; // 30 天
@@ -148,9 +148,9 @@ impl ApiHandlers {
 
     /// Shut down a previously started key rotation background task.
     ///
-    /// Delegate entry point on `ApiHandlers` (aligns with spec T033 wording);
+    /// Delegate entry point on `ApiHandlers` (aligns with spec wording);
     /// the actual shutdown signalling stays on `KeyRotationHandle::shutdown`
-    /// (T045 convergence: closes the partial gap where spec listed
+    /// (convergence: closes the partial gap where spec listed
     /// `shutdown` under `ApiHandlers` but impl placed it on the handle).
     pub fn shutdown(&self, handle: KeyRotationHandle) {
         handle.shutdown();
@@ -916,7 +916,7 @@ pub(crate) mod mock_tests {
         mock_config
             .expect_list_biz_tags()
             .return_once(move |_, _, _, _| Ok(vec![biz_tag]));
-        // L8 修复后 list_biz_tags 会调用 count_biz_tags 获取真实 total
+        // 修复后 list_biz_tags 会调用 count_biz_tags 获取真实 total
         mock_config
             .expect_count_biz_tags()
             .return_once(|_, _| Ok(1));
@@ -939,7 +939,7 @@ pub(crate) mod mock_tests {
             .expect_count_biz_tags()
             .return_once(|_, _| Ok(0));
         let handlers = create_mock_handlers(mock_config);
-        // L7 修复：缺失 workspace_id 时返回 InvalidInput，需传 Some(Uuid)
+        // 修复：缺失 workspace_id 时返回 InvalidInput，需传 Some(Uuid)
         let result = handlers.list_biz_tags(Some(Uuid::new_v4()), None).await;
         assert!(result.is_ok());
         let response = result.unwrap();
@@ -954,7 +954,7 @@ pub(crate) mod mock_tests {
             .expect_list_biz_tags()
             .return_once(|_, _, _, _| Err(CoreError::InternalError("DB error".to_string())));
         let handlers = create_mock_handlers(mock_config);
-        // L7 修复：缺失 workspace_id 时返回 InvalidInput，需传 Some(Uuid)
+        // 修复：缺失 workspace_id 时返回 InvalidInput，需传 Some(Uuid)
         let result = handlers.list_biz_tags(Some(Uuid::new_v4()), None).await;
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -965,7 +965,7 @@ pub(crate) mod mock_tests {
 
     #[tokio::test]
     async fn mock_test_list_biz_tags_missing_workspace() {
-        // L7 修复：缺失 workspace_id 时应返回 InvalidInput，
+        // 修复：缺失 workspace_id 时应返回 InvalidInput，
         // 避免静默回退到 nil UUID 越权返回其他 workspace 的 BizTag。
         let mock_config = MockConfigManagementService::new();
         let handlers = create_mock_handlers(mock_config);
@@ -1127,7 +1127,7 @@ pub(crate) mod mock_tests {
 
     #[tokio::test]
     async fn mock_test_list_workspaces_service_error() {
-        // M5 修复后：handler 直接传播 CoreError，不再包装为 DatabaseError。
+        // 修复后：handler 直接传播 CoreError，不再包装为 DatabaseError。
         // 测试用 InternalError 模拟服务层错误，期望原样传播。
         let mut mock_config = MockConfigManagementService::new();
         mock_config
@@ -1170,7 +1170,7 @@ pub(crate) mod mock_tests {
 
     #[tokio::test]
     async fn mock_test_get_workspace_service_error() {
-        // M5 修复后：handler 直接传播 CoreError，不再包装为 DatabaseError。
+        // 修复后：handler 直接传播 CoreError，不再包装为 DatabaseError。
         let mut mock_config = MockConfigManagementService::new();
         mock_config
             .expect_get_workspace()
@@ -1207,7 +1207,7 @@ pub(crate) mod mock_tests {
 
     #[tokio::test]
     async fn mock_test_create_group_service_error() {
-        // M5 修复后：handler 直接传播 CoreError，不再包装为 DatabaseError。
+        // 修复后：handler 直接传播 CoreError，不再包装为 DatabaseError。
         let mut mock_config = MockConfigManagementService::new();
         mock_config
             .expect_create_group()
@@ -1459,7 +1459,7 @@ pub(crate) mod mock_tests {
         );
     }
 
-    /// T012：调用方需要知道上一代凭证何时彻底失效，否则只能靠猜 TTL。
+    /// 调用方需要知道上一代凭证何时彻底失效，否则只能靠猜 TTL。
     #[tokio::test]
     async fn test_rotate_response_exposes_grace_expiry() {
         let mut with_grace = test_api_key_with_secret();

@@ -64,8 +64,8 @@ pub struct AuthConfig {
     /// Salt for API key hashing
     #[serde(default = "default_api_key_salt")]
     pub api_key_salt: String,
-    /// L16 修复：密钥轮换宽限期（秒）。`> 0` 时旧密钥在宽限期内仍然有效，
-    /// 避免轮换瞬间造成请求失败；`0`（默认，T011）表示不设宽限期，轮换后上一代
+    /// 修复：密钥轮换宽限期（秒）。`> 0` 时旧密钥在宽限期内仍然有效，
+    /// 避免轮换瞬间造成请求失败；`0`（默认，）表示不设宽限期，轮换后上一代
     /// 凭证立即失效。上限 30 天，超限值由 `ApiHandlers::with_key_rotation_grace_period`
     /// clamp。
     #[serde(default = "default_key_rotation_grace_period_seconds")]
@@ -91,7 +91,7 @@ impl std::fmt::Debug for AuthConfig {
 }
 
 fn default_api_key_salt() -> String {
-    // Phase 9 T043 (HIGH H1 / tiangang HIGH-1) — never fall back to a
+    // Phase 9 — never fall back to a
     // hard-coded salt. The garrison-based auth path
     // already panics in production when `NEBULA_API_KEY_SALT` is unset;
     // this function returns an empty string so the empty-ness check in
@@ -101,16 +101,16 @@ fn default_api_key_salt() -> String {
     std::env::var("NEBULA_API_KEY_SALT").unwrap_or_default()
 }
 
-/// T011（D-A）：默认宽限期 = `0`（关闭）。历史上该值是 7 天，与 L16 之前的
+/// 默认宽限期 = `0`（关闭）。历史上该值是 7 天，与 之前的
 /// 硬编码 `const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60` 一致。
 ///
-/// ARCH-MED-002 修复：把该常量提取为 `pub const`，所有调用方统一引用，
+/// 把该常量提取为 `pub const`，所有调用方统一引用，
 /// 避免未来调整默认值时霰弹手术。原三处重复：
 /// - `auth.rs::default_key_rotation_grace_period_seconds()` (本文件)
 /// - `handlers/mod.rs::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`
 /// - `config_adapter.rs::unwrap_or(7 * 24 * 60 * 60)`
 ///
-/// T009（code-hygiene-cleanup）：常量本体已迁入
+/// （code-hygiene-cleanup）：常量本体已迁入
 /// [`crate::core::config::defaults`] 统一注册表，旧路径别名按"直接废弃"
 /// 原则移除（无任何消费方后不再保留）。本函数只是注册表常量的 serde 适配器，
 /// 改默认值只需动注册表那一行。
@@ -134,7 +134,7 @@ impl Default for AuthConfig {
 mod tests {
     use super::*;
 
-    /// T011（D-A）：宽限期默认关闭。旧默认 7 天让"轮换"在整整一周内同时接受两代
+    /// 宽限期默认关闭。旧默认 7 天让"轮换"在整整一周内同时接受两代
     /// 凭证，等于把泄露过的 secret 保持有效一周。
     #[test]
     fn test_auth_config_default_grace_period_is_zero() {

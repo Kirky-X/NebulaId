@@ -59,7 +59,7 @@ impl super::ApiHandlers {
         };
 
         if role == ApiKeyRole::Admin {
-            // Phase 9 T043 (HIGH H8) — reject additional admin keys
+            // Phase 9 — reject additional admin keys
             // instead of merely warning. Combined with the C3 SQL CHECK
             // fix (admin key must have NULL workspace_id), this enforces
             // a single global admin key invariant. Previously an
@@ -174,7 +174,7 @@ impl super::ApiHandlers {
         })
     }
 
-    /// 按 `key_id` 失效认证缓存条目（wiring T008）。未启用缓存时为 no-op。
+    /// 按 `key_id` 失效认证缓存条目。未启用缓存时为 no-op。
     #[cfg(feature = "garrison-auth")]
     pub(super) async fn invalidate_auth_cache(&self, key_id: &str) {
         if let Some(cache) = self.auth_cache.as_ref() {
@@ -242,7 +242,7 @@ impl super::ApiHandlers {
         }
 
         repo.delete_api_key(id).await.map_err(map_db_error)?;
-        // wiring T008：吊销后本进程的缓存必须立即失效，不能等 TTL 自然过期。
+        // 吊销后本进程的缓存必须立即失效，不能等 TTL 自然过期。
         // 多节点部署时其他节点最长滞后一个 cache_ttl（口径见 docs/DEPLOYMENT.md 7.1）。
         self.clear_auth_cache().await;
 
@@ -266,9 +266,9 @@ impl super::ApiHandlers {
             )
         })?;
 
-        // L16 修复：从 `ApiHandlers::key_rotation_grace_period_seconds`
+        // 修复：从 `ApiHandlers::key_rotation_grace_period_seconds`
         // 读取，原为硬编码 `const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60`。
-        // 默认 0 = 关闭宽限期（T011，见
+        // 默认 0 = 关闭宽限期（见
         // `core::config::defaults::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`），
         // 需要"轮换不掉请求"时用 `AuthConfig::key_rotation_grace_period_seconds`
         // + `ApiHandlers::with_key_rotation_grace_period` 显式开启。
@@ -280,7 +280,7 @@ impl super::ApiHandlers {
             .map_err(map_db_error)?;
 
         tracing::info!(event = "api_key_rotated", key_id = key_id);
-        // wiring T008：清掉该 key_id 名下全部条目（含宽限期内的旧 secret 变体）。
+        // 清掉该 key_id 名下全部条目（含宽限期内的旧 secret 变体）。
         self.invalidate_auth_cache(key_id).await;
 
         key_with_secret.try_into()
@@ -330,7 +330,7 @@ mod tests {
         }
     }
 
-    /// T003：唯一一个启用中的 admin key 不得被吊销 —— 否则管理员把自己锁在系统外。
+    /// 唯一一个启用中的 admin key 不得被吊销 —— 否则管理员把自己锁在系统外。
     ///
     /// 缺陷根因：旧实现用 `get_api_key_by_id(&id.to_string())` 查行 UUID（该方法按
     /// `key_id` 字符串过滤），永远查不到 → 整块守卫被跳过 → 吊销成功。
@@ -358,7 +358,7 @@ mod tests {
         }
     }
 
-    /// T004：已存在 admin key 时，第二个 admin key 必须被拒 —— 即便同库有 1000 条 user key。
+    /// 已存在 admin key 时，第二个 admin key 必须被拒 —— 即便同库有 1000 条 user key。
     ///
     /// 缺陷根因：旧实现用 `list_api_keys(Uuid::nil(), Some(1000), Some(0))` + 内存扫描，
     /// 而全局 admin key 的 `workspace_id` 是 NULL（`NULL = nil_uuid` 在 SQL 中不成立）
@@ -402,7 +402,7 @@ mod tests {
         }
     }
 
-    /// T003：目标行已禁用（不占"最后一个"名额）、另有启用中的 admin 时，吊销必须放行。
+    /// 目标行已禁用（不占"最后一个"名额）、另有启用中的 admin 时，吊销必须放行。
     ///
     /// 这条用例把 `count_admin_keys` 只数 enabled 的语义钉住：若守卫退化成按行计数
     /// （把 disabled 行也算进去），这里会误拒。

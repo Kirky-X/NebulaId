@@ -239,7 +239,11 @@ impl Default for DatabaseConfig {
 
         Self {
             engine: DatabaseEngine::Postgresql,
-            url: format!("postgresql://idgen:{}@localhost:5432/idgen", password),
+            // url 必须留空：merge() 把"非默认字段"当作环境覆盖回写，预填的
+            // localhost:5432 URL 会静默覆盖配置文件里 host/port 分离写法的
+            // 端口。留空时 create_connection 按 host/port/username/password
+            // 拼接 URL（显式 DATABASE_URL 仍走上方分支并被 merge 采纳）。
+            url: String::new(),
             host: "localhost".to_string(),
             port: 5432,
             username: "idgen".to_string(),

@@ -537,7 +537,7 @@ async fn e2e_hot_reload_config_reload_failure_handled() {
 }
 
 // =============================================================================
-// wiring T006: gRPC 认证 —— 全 RPC（含双向流）凭证校验
+// gRPC 认证 —— 全 RPC（含双向流）凭证校验
 // =============================================================================
 
 mod grpc_auth {
@@ -733,7 +733,7 @@ mod grpc_auth {
         assert_eq!(err.code(), Code::Unauthenticated);
     }
 
-    // ===== T023：R-auth-003 失败判因（禁用/过期 vs 凭证无效）=====
+    // ===== 失败判因（禁用/过期 vs 凭证无效）=====
 
     /// 按 key 状态建模的仓储。
     ///
@@ -976,7 +976,7 @@ mod grpc_auth {
 
     #[tokio::test]
     async fn health_check_enforces_auth_and_passes_valid_key() {
-        // T023 清理 health_check 死绑定的回归：认证副作用与错误传播都不能丢，
+        // 清理 health_check 死绑定的回归：认证副作用与错误传播都不能丢，
         // 且判因映射在 health_check 入口同样生效
         let server = stateful_server();
         let no_creds = Request::new(HealthCheckRequest {
@@ -1158,7 +1158,7 @@ mod grpc_auth {
         assert!(!resp.into_inner().id.is_empty());
     }
 
-    /// R-auth-003 覆盖度：启用认证后 **全部 5 个 RPC 方法**（含双向流）缺
+    /// 覆盖度：启用认证后 **全部 5 个 RPC 方法**（含双向流）缺
     /// `authorization` metadata 时一律 `Code::Unauthenticated`。走真实传输而非
     /// 直接调 trait —— 流式入口的 `Streaming<T>` 只能由传输层构造，只有这样才能
     /// 把五个方法放进同一张参数化断言表，不给「某个入口漏调 authenticate」留死角。

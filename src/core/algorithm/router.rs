@@ -132,7 +132,7 @@ impl IdGenerator for AlgorithmRouter {
     }
 }
 
-/// fallback 链遍历要执行的操作（T004：合并单条/批量两套同构降级循环）。
+/// fallback 链遍历要执行的操作（合并单条/批量两套同构降级循环）。
 /// 以类型级分发统一两套循环体，`Out` 关联类型承载 Id / IdBatch 差异。
 trait FallbackRunner {
     type Out;
@@ -166,17 +166,17 @@ pub struct AlgorithmRouter {
     current_algorithm: Arc<ArcSwap<HashMap<String, AlgorithmType>>>,
     degradation_manager: Arc<DegradationManager>,
     /// 路由层观测面：逐算法延迟环形样本、请求/错误计数与时钟回拨计数。
-    /// 单一观测点覆盖 HTTP / gRPC / SDK 三条入口（T021）。
+    /// 单一观测点覆盖 HTTP / gRPC / SDK 三条入口。
     global_metrics: Arc<GlobalMetrics>,
     cpu_monitor: Option<Arc<crate::core::algorithm::segment::CpuMonitor>>,
     #[cfg(feature = "etcd")]
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
-    // L12 修复：非 etcd 版本不再持有 `etcd_health_monitor: Option<()>`
+    // 修复：非 etcd 版本不再持有 `etcd_health_monitor: Option<()>`
     // 占位字段（类型误导）。`with_etcd_health_monitor` builder 方法也仅在
     // etcd feature 下存在；非 etcd 版本调用方（main.rs）根本不会调用它。
 }
 
-// L11 修复：删除手动 `unsafe impl Send/Sync`。所有字段（Config /
+// 修复：删除手动 `unsafe impl Send/Sync`。所有字段（Config /
 // Arc<ArcSwap<T>> / SmallVec / Arc<DegradationManager> /
 // Option<Arc<CpuMonitor>> / Option<Arc<EtcdClusterHealthMonitor>>）
 // 均为 Send + Sync，编译器会自动推导。原 `unsafe impl` 是历史遗留，
@@ -229,7 +229,7 @@ impl AlgorithmRouter {
         self.etcd_health_monitor = Some(monitor);
         self
     }
-    // L12 修复：删除非 etcd 版本的 `with_etcd_health_monitor(Arc<()>)`。
+    // 修复：删除非 etcd 版本的 `with_etcd_health_monitor(Arc<()>)`。
     // 原签名接受 `Arc<()>` 但完全忽略参数，类型误导且调用方可能误以为
     // monitor 被实际使用。非 etcd 版本根本不需要这个 builder 方法。
 
@@ -253,7 +253,7 @@ impl AlgorithmRouter {
 
             match builder.build(&self.config).await {
                 Ok(algo) => {
-                    // L13 修复：删除 `algo.initialize(&self.config).await` 重复调用。
+                    // 修复：删除 `algo.initialize(&self.config).await` 重复调用。
                     // `AlgorithmBuilder::build` 内部已经调用各算法的 inherent
                     // `initialize(&mut self, ...)` 完成初始化，返回的
                     // `Box<dyn IdAlgorithm>` 已就绪。原代码重复初始化且在
@@ -411,7 +411,7 @@ impl AlgorithmRouter {
         None
     }
 
-    /// 路由层唯一观测点：记录一次算法执行的延迟、成败与时钟回拨信号（T021）。
+    /// 路由层唯一观测点：记录一次算法执行的延迟、成败与时钟回拨信号。
     ///
     /// 放在路由层而非 HTTP handler，使 HTTP / gRPC / SDK 三条入口共用同一份
     /// 数据；`algorithm` 传入的是**实际服务**该请求的算法（fallback 命中时
@@ -777,9 +777,9 @@ mod tests {
         fail_generate: bool,
         fail_batch: bool,
         fail_shutdown: bool,
-        /// generate 返回 `ClockMovedBackward`（T021 观测路径测试）
+        /// generate 返回 `ClockMovedBackward`（观测路径测试）
         clock_backward: bool,
-        /// generate 前睡眠毫秒数，使延迟分位数可被观测（T021）
+        /// generate 前睡眠毫秒数，使延迟分位数可被观测
         delay_ms: u64,
         health_kind: MockHealthKind,
     }
@@ -884,7 +884,7 @@ mod tests {
 
     /// 可在运行时切换 `health_check` 返回值的 Mock。
     ///
-    /// R-ar-002 全流程用例需要「失败达阈值 → Open → 探测窗口 → HalfOpen →
+    /// 全流程用例需要「失败达阈值 → Open → 探测窗口 → HalfOpen →
     /// 连续成功 → Closed」在同一趟里走完，而既有 mock 的健康状态在构造期固定；
     /// 中途改健康只能重新 `register_algorithm`，但那会重建 `AlgorithmHealthState`
     /// 并清空熔断状态。故用原子开关做内部可变。
@@ -960,7 +960,7 @@ mod tests {
         }
     }
 
-    // ============== 路由层观测（T021） ==============
+    // ============== 路由层观测 ==============
 
     #[tokio::test]
     async fn test_router_observes_latency_and_merges_percentiles() {
@@ -1254,7 +1254,7 @@ mod tests {
     #[tokio::test]
     async fn test_new_with_segment_default_builds_full_fallback_chain() {
         // 默认 Config: default = "segment"
-        // 链去重（收敛 T013）：同一算法不得重复占位，降级候选 [Snowflake, UuidV8]
+        // 链去重（收敛）：同一算法不得重复占位，降级候选 [Snowflake, UuidV8]
         let router = AlgorithmRouter::new(Config::default(), None);
         assert_eq!(
             router.fallback_chain.to_vec(),
@@ -1718,7 +1718,7 @@ mod tests {
         router.check_health_and_update_degradation().await;
     }
 
-    /// R-ar-002 第一条：熔断全流程回归（单一用例走完 Closed→Open→HalfOpen→Closed）。
+    /// 第一条：熔断全流程回归（单一用例走完 Closed→Open→HalfOpen→Closed）。
     ///
     /// 全部状态迁移仅经路由层既有公开入口 `AlgorithmRouter::check_health_and_update_degradation`
     /// 驱动（生产里由后台健康检查 task 调用同一入口），阈值经既有

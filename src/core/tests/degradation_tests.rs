@@ -101,7 +101,7 @@ impl IdAlgorithm for MockIdAlgorithm {
     fn metrics(&self) -> crate::core::algorithm::traits::AlgorithmMetricsSnapshot {
         crate::core::algorithm::traits::AlgorithmMetricsSnapshot {
             total_generated: self.call_count.load(Ordering::Relaxed),
-            // L15 修复：Mock 算法无缓存概念，返回 None。
+            // 修复：Mock 算法无缓存概念，返回 None。
             cache_hit_rate: None,
             ..Default::default()
         }

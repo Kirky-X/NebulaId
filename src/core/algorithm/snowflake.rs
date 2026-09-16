@@ -42,7 +42,7 @@ fn epoch_start() -> SystemTime {
     })
 }
 
-/// Snowflake 位布局元数据（T010：解析知识的唯一权威来源）。
+/// Snowflake 位布局元数据（解析知识的唯一权威来源）。
 ///
 /// 此前 server 层 `id_handlers::extract_snowflake_metadata` 手工硬编码
 /// 10/8/3 位宽做解码，与配置驱动的生成侧（[`SnowflakeAlgorithmConfig`]）
@@ -159,7 +159,7 @@ impl SnowflakeAlgorithm {
         }
     }
 
-    // L13 修复：`initialize` 从 `impl IdAlgorithm for SnowflakeAlgorithm`
+    // 修复：`initialize` 从 `impl IdAlgorithm for SnowflakeAlgorithm`
     // 移到 inherent impl。原 trait method `initialize(&mut self, ...)` 让
     // trait 不那么对象安全（`Arc<dyn IdAlgorithm>` 共享后无法调用 `&mut self`）。
     // 现仅在 `AlgorithmBuilder::build` 中通过具体类型调用，初始化完成后
@@ -190,7 +190,7 @@ impl SnowflakeAlgorithm {
 
     /// Wait for the next millisecond timestamp.
     ///
-    /// L2 修复：原注释声称使用 `std::thread::sleep`，但实际代码用的是
+    /// 修复：原注释声称使用 `std::thread::sleep`，但实际代码用的是
     /// `tokio::time::sleep`（async-friendly）。注释已更新以匹配代码。
     ///
     /// 此函数仅在时钟回拨罕见场景调用，sleep duration 极短（1ms）。
@@ -370,10 +370,10 @@ impl IdAlgorithm for SnowflakeAlgorithm {
         AlgorithmMetricsSnapshot {
             total_generated: self.metrics.total_generated.load(Ordering::Relaxed),
             total_failed: self.metrics.total_failed.load(Ordering::Relaxed),
-            // L15 修复：Snowflake/UUID 算法无缓存概念，返回 None。
+            // 修复：Snowflake/UUID 算法无缓存概念，返回 None。
             cache_hit_rate: None,
             // 延迟分位数与时钟回拨计数由路由层观测后在
-            // AlgorithmRouter::metrics() 合并填充（T021）。
+            // AlgorithmRouter::metrics() 合并填充。
             ..Default::default()
         }
     }
@@ -382,7 +382,7 @@ impl IdAlgorithm for SnowflakeAlgorithm {
         AlgorithmType::Snowflake
     }
 
-    // L13 修复：`initialize` 已移到 inherent impl（`impl SnowflakeAlgorithm`）。
+    // 修复：`initialize` 已移到 inherent impl（`impl SnowflakeAlgorithm`）。
 
     async fn shutdown(&self) -> Result<()> {
         Ok(())
@@ -390,7 +390,7 @@ impl IdAlgorithm for SnowflakeAlgorithm {
 }
 
 // ============================================================================
-// ARCH-HIGH-001 修复：SnowflakeFactory impl 拆分到本文件。
+// SnowflakeFactory impl 拆分到本文件。
 // 原 impl 位于 traits.rs（违反规则 25），现移到具体类型所属文件。
 // ============================================================================
 #[async_trait]
@@ -457,7 +457,7 @@ mod tests {
         }
     }
 
-    /// R-algorithm-001: generate_id_with_timestamp 在 seq=0（首次调用）时必须成功，
+    /// generate_id_with_timestamp 在 seq=0（首次调用）时必须成功，
     /// 不得误判为 SequenceOverflow。
     #[test]
     fn test_generate_id_with_timestamp_first_seq_succeeds() {
@@ -473,7 +473,7 @@ mod tests {
         assert!(id.as_u128() > 0, "generated ID must be non-zero");
     }
 
-    /// R-algorithm-001: 同一毫秒内连续两次 generate_id 调用都应成功（验证 line 140 bug 修复）。
+    /// 同一毫秒内连续两次 generate_id 调用都应成功（验证 line 140 bug 修复）。
     #[tokio::test]
     async fn test_generate_id_same_ms_twice_succeeds() {
         let algo = SnowflakeAlgorithm::new(0, 0);
@@ -490,7 +490,7 @@ mod tests {
     // 时钟回拨路径
     // ========================================================================
 
-    /// R-algorithm-002: 时钟回拨超过阈值时，generate_id 应返回 ClockMovedBackward 错误，
+    /// 时钟回拨超过阈值时，generate_id 应返回 ClockMovedBackward 错误，
     /// 且 clock_drift_ms 应被记录、health_check 应反映 Unhealthy 状态。
     #[tokio::test]
     async fn test_generate_id_clock_backward_exceeds_threshold_returns_error() {
@@ -513,7 +513,7 @@ mod tests {
         assert!(matches!(algo.health_check(), HealthStatus::Unhealthy(_)));
     }
 
-    /// R-algorithm-003: 时钟回拨未超过阈值时，generate_id 应等待下一毫秒并成功生成 ID，
+    /// 时钟回拨未超过阈值时，generate_id 应等待下一毫秒并成功生成 ID，
     /// 且 last_timestamp 应推进到 wait_ts。
     #[tokio::test]
     async fn test_generate_id_clock_backward_within_threshold_waits_and_succeeds() {
@@ -540,7 +540,7 @@ mod tests {
         );
     }
 
-    /// R-algorithm-001: 同毫秒内序列号耗尽（seq & mask == 0 且 seq > 0）时，
+    /// 同毫秒内序列号耗尽（seq & mask == 0 且 seq > 0）时，
     /// 应触发 rotation_count 自增并等待下一毫秒后生成新 ID。
     #[tokio::test]
     async fn test_generate_id_sequence_wraparound_triggers_rotation() {
@@ -702,7 +702,7 @@ mod tests {
         assert_eq!(snap.current_qps, 0);
         assert_eq!(snap.p50_latency_us, 0);
         assert_eq!(snap.p99_latency_us, 0);
-        // L15 修复：Snowflake 无缓存，cache_hit_rate 为 None。
+        // 修复：Snowflake 无缓存，cache_hit_rate 为 None。
         assert_eq!(snap.cache_hit_rate, None);
     }
 

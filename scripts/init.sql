@@ -1,155 +1,131 @@
 -- Nebula ID Generator Database Schema
 -- PostgreSQL initialization script
+--
+-- 本脚本是 `src/core/database/connection.rs::run_migrations`（`nebula-id
+-- migrate` 命令，schema 事实源）的运维镜像，用于 DBA 预置数据库。两者必须
+-- 保持一致：实体枚举（biz_tag_entity 的 AlgorithmTypeDb / IdFormatDb 以
+-- `db_type = "Enum"` 映射）依赖本 schema 内的 ENUM 类型；workspaces.status
+-- 为 VARCHAR(20)（workspace_entity 声明 String(20)），不是枚举。
+-- 存量表结构修复：应用启动时的 run_migrations 只对缺失表执行 CREATE
+-- TABLE IF NOT EXISTS，不会改写旧 init.sql 建出的旧形态表（如 segments、
+-- VARCHAR(36) 的 api_keys.key_id）——旧库需按迁移 DDL 手工对齐。
 
 -- Create schema
 CREATE SCHEMA IF NOT EXISTS nebula_id;
-SET search_path TO nebula_id, public;
 
--- Create extensions
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp" SCHEMA public;
-
--- Create enums
--- Values must match AlgorithmTypeDb (src/core/database/biz_tag_entity.rs):
--- 'segment' | 'snowflake' | 'uuid_v8'.
--- NOTE: the DO block below is a no-op when the type already exists, so databases
--- initialized by an older init.sql still hold the legacy 'uuid_v7' / 'uuid_v4'
--- values. Migrate them with docs/CONFIG_MIGRATION_GUIDE.md
--- ("algorithm_type ENUM 迁移（uuid_v7 / uuid_v4 -> uuid_v8）").
+-- 枚举类型必须先于 biz_tags 表创建（entity 生成的 CAST 不带 schema 限定，
+-- 连接的 search_path 需包含 nebula_id；应用连接串由 create_connection
+-- 自动注入 search_path=nebula_id,public）
 DO $$ BEGIN
-    CREATE TYPE algorithm_type AS ENUM ('segment', 'snowflake', 'uuid_v8');
+    CREATE TYPE nebula_id.algorithm_type AS ENUM ('segment', 'snowflake', 'uuid_v8');
 EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
 
 DO $$ BEGIN
-    CREATE TYPE id_format AS ENUM ('numeric', 'prefixed', 'uuid');
-EXCEPTION
-    WHEN duplicate_object THEN null;
-END $$;
-
-DO $$ BEGIN
-    CREATE TYPE workspace_status AS ENUM ('active', 'inactive', 'suspended');
+    CREATE TYPE nebula_id.id_format AS ENUM ('numeric', 'prefixed', 'uuid');
 EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
 
 -- Workspaces table
-CREATE TABLE IF NOT EXISTS workspaces (
+CREATE TABLE IF NOT EXISTS nebula_id.workspaces (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(255) NOT NULL UNIQUE,
     description TEXT,
-    status workspace_status DEFAULT 'active',
+    status VARCHAR(20) DEFAULT 'active',
     max_groups INT DEFAULT 100,
     max_biz_tags INT DEFAULT 1000,
-    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Groups table
-CREATE TABLE IF NOT EXISTS groups (
+CREATE TABLE IF NOT EXISTS nebula_id.groups (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    workspace_id UUID NOT NULL REFERENCES nebula_id.workspaces(id) ON DELETE CASCADE,
     name VARCHAR(255) NOT NULL,
     description TEXT,
     max_biz_tags INT DEFAULT 100,
-    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(workspace_id, name)
 );
 
 -- Business tags table
-CREATE TABLE IF NOT EXISTS biz_tags (
+CREATE TABLE IF NOT EXISTS nebula_id.biz_tags (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    workspace_id UUID NOT NULL REFERENCES nebula_id.workspaces(id) ON DELETE CASCADE,
+    group_id UUID NOT NULL REFERENCES nebula_id.groups(id) ON DELETE CASCADE,
     name VARCHAR(255) NOT NULL,
     description TEXT,
-    algorithm algorithm_type NOT NULL DEFAULT 'segment',
-    format id_format DEFAULT 'numeric',
+    algorithm nebula_id.algorithm_type NOT NULL DEFAULT 'segment',
+    format nebula_id.id_format DEFAULT 'numeric',
     prefix VARCHAR(50) DEFAULT '',
     base_step INT DEFAULT 1000,
     max_step INT DEFAULT 100000,
-    datacenter_ids INT[] DEFAULT ARRAY[0],
-    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    datacenter_ids JSONB DEFAULT '[]',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(workspace_id, group_id, name)
 );
 
-DO $$ BEGIN
-    CREATE TYPE api_key_role AS ENUM ('admin', 'user');
-EXCEPTION
-    WHEN duplicate_object THEN null;
-END $$;
-
--- Drop the enum type and use TEXT instead for better SeaORM compatibility
-DROP TYPE IF EXISTS nebula_id.api_key_role CASCADE;
-
 -- API Keys table
-CREATE TABLE IF NOT EXISTS api_keys (
+CREATE TABLE IF NOT EXISTS nebula_id.api_keys (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,  -- Optional: NULL for global admin keys
-    key_id VARCHAR(36) NOT NULL UNIQUE,  -- Public key identifier (UUID format)
-    key_secret_hash VARCHAR(255) NOT NULL,  -- Argon2id PHC-format hash of key_secret (CWE-916 fix)
-    prev_secret_hash VARCHAR(128),  -- Previous-generation credential hash; non-NULL only after a rotation while auth.key_rotation_grace_period_seconds > 0
-    rotate_expires_at TIMESTAMP WITHOUT TIME ZONE,  -- Absolute end of the grace window; NULL means no grace period in effect
-    key_prefix VARCHAR(8) NOT NULL,  -- niad_ for admin, nino_ for user
+    key_id VARCHAR(64) NOT NULL UNIQUE,
+    key_secret_hash VARCHAR(128) NOT NULL,
+    prev_secret_hash VARCHAR(128),
+    rotate_expires_at TIMESTAMP,
+    key_prefix VARCHAR(16) NOT NULL,
     role VARCHAR(20) NOT NULL DEFAULT 'user',
+    workspace_id UUID,  -- 允许 NULL，用于全局 admin key
     name VARCHAR(255) NOT NULL,
     description TEXT,
-    rate_limit INT DEFAULT 10000,
+    rate_limit INT DEFAULT 1000,
     enabled BOOLEAN DEFAULT true,
-    expires_at TIMESTAMP WITHOUT TIME ZONE DEFAULT (CURRENT_TIMESTAMP + INTERVAL '30 days'),
-    last_used_at TIMESTAMP WITHOUT TIME ZONE,
-    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    expires_at TIMESTAMP,
+    last_used_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT check_admin_key CHECK (
+        (workspace_id IS NULL AND role = 'admin')
+        OR (workspace_id IS NOT NULL AND role != 'admin')
+    )
 );
 
-CREATE INDEX IF NOT EXISTS idx_api_keys_workspace ON api_keys(workspace_id);
-CREATE INDEX IF NOT EXISTS idx_api_keys_key_id ON api_keys(key_id);
-CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(key_prefix);
-CREATE INDEX IF NOT EXISTS idx_api_keys_role ON api_keys(role);
-
--- Segments table (号段分配表)
-CREATE TABLE IF NOT EXISTS segments (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    biz_tag_id UUID NOT NULL REFERENCES biz_tags(id) ON DELETE CASCADE,
-    datacenter_id INT NOT NULL DEFAULT 0,
-    worker_id INT NOT NULL DEFAULT 0,
-    start_id BIGINT NOT NULL,
-    max_id BIGINT NOT NULL,
+-- 号段分配表（segment_entity: table_name = "nebula_segments"）
+CREATE TABLE IF NOT EXISTS nebula_id.nebula_segments (
+    id BIGSERIAL PRIMARY KEY,
+    workspace_id VARCHAR(255) NOT NULL,
+    biz_tag VARCHAR(255) NOT NULL,
     current_id BIGINT NOT NULL,
+    max_id BIGINT NOT NULL,
     step INT NOT NULL DEFAULT 1000,
-    version INT NOT NULL DEFAULT 0,
-    status VARCHAR(20) DEFAULT 'active',
-    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(biz_tag_id, datacenter_id, worker_id)
+    delta INT NOT NULL DEFAULT 1,
+    dc_id INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_segments_biz_tag ON segments(biz_tag_id);
-CREATE INDEX IF NOT EXISTS idx_segments_datacenter ON segments(datacenter_id);
-CREATE INDEX IF NOT EXISTS idx_segments_status ON segments(status);
-
--- Worker nodes table
-CREATE TABLE IF NOT EXISTS worker_nodes (
+-- Worker nodes table（运维预留：实体暂未使用）
+CREATE TABLE IF NOT EXISTS nebula_id.worker_nodes (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     node_id VARCHAR(255) NOT NULL UNIQUE,
     datacenter_id INT NOT NULL DEFAULT 0,
     worker_id INT NOT NULL,
     status VARCHAR(20) DEFAULT 'active',
     hostname VARCHAR(255),
-    last_heartbeat TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    last_heartbeat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(datacenter_id, worker_id)
 );
 
--- Audit logs table
-CREATE TABLE IF NOT EXISTS audit_logs (
+-- Audit logs table（运维预留：实体暂未使用）
+CREATE TABLE IF NOT EXISTS nebula_id.audit_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    workspace_id UUID REFERENCES workspaces(id) ON DELETE SET NULL,
+    workspace_id UUID REFERENCES nebula_id.workspaces(id) ON DELETE SET NULL,
     user_id VARCHAR(255),
     action VARCHAR(100) NOT NULL,
     resource_type VARCHAR(100),
@@ -157,14 +133,14 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     details JSONB,
     ip_address INET,
     user_agent TEXT,
-    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_audit_logs_workspace ON audit_logs(workspace_id);
-CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_workspace ON nebula_id.audit_logs(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON nebula_id.audit_logs(created_at);
 
--- ID generation logs (sampled)
-CREATE TABLE IF NOT EXISTS id_generation_logs (
+-- ID generation logs (sampled，运维预留：实体暂未使用)
+CREATE TABLE IF NOT EXISTS nebula_id.id_generation_logs (
     id UUID DEFAULT gen_random_uuid(),
     workspace_id UUID NOT NULL,
     group_id UUID NOT NULL,
@@ -172,11 +148,11 @@ CREATE TABLE IF NOT EXISTS id_generation_logs (
     algorithm VARCHAR(50) NOT NULL,
     id_value VARCHAR(255) NOT NULL,
     latency_ms DECIMAL(10, 3),
-    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
 
 -- Create default partition
-CREATE TABLE IF NOT EXISTS id_generation_logs_default PARTITION OF id_generation_logs DEFAULT;
+CREATE TABLE IF NOT EXISTS nebula_id.id_generation_logs_default PARTITION OF nebula_id.id_generation_logs DEFAULT;
 
-CREATE INDEX IF NOT EXISTS idx_id_gen_logs_lookup ON id_generation_logs(workspace_id, group_id, biz_tag_id);
+CREATE INDEX IF NOT EXISTS idx_id_gen_logs_lookup ON nebula_id.id_generation_logs(workspace_id, group_id, biz_tag_id);

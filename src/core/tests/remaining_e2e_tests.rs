@@ -70,7 +70,7 @@ use crate::server::models::ParseRequest;
 // 1. ParseRequest 验证
 // =============================================================================
 
-/// E2E-PARSE-001: ParseRequest.workspace 长度边界 1-64。
+/// ParseRequest.workspace 长度边界 1-64。
 ///
 /// 验证 min=1 / max=64 边界语义：
 /// - 0 字符 → Err
@@ -111,7 +111,7 @@ fn e2e_parse_request_validates_workspace_length() {
     );
 }
 
-/// E2E-PARSE-002: ParseRequest.algorithm 长度边界 0-32。
+/// ParseRequest.algorithm 长度边界 0-32。
 ///
 /// 验证 min=0 / max=32 边界语义：
 /// - 0 字符 → Ok（serde_default + min=0）
@@ -143,7 +143,7 @@ fn e2e_parse_request_validates_algorithm_length() {
     );
 }
 
-/// E2E-PARSE-003: ParseRequest.id 无长度限制。
+/// ParseRequest.id 无长度限制。
 ///
 /// 验证 id 字段无 `#[validate(...)]` 约束：空字符串、超长字符串均通过校验。
 /// 这是 ParseRequest 与 GenerateRequest 的关键区别 —— id 是被解析的输入，
@@ -208,10 +208,10 @@ fn make_parse_request_with_id(id: &str) -> ParseRequest {
 // 触发 `repo.rotate_api_key(key_id, grace_period_seconds)` 调用，用 mock repo
 // 捕获传入的 `grace_period_seconds` 参数，间接验证 clamp 行为。
 //
-// MIN：0 = 宽限期关闭（T011 起为默认值，合法配置，不再 clamp 到 1 秒）
+// MIN：0 = 宽限期关闭（为默认值，合法配置，不再 clamp 到 1 秒）
 // MAX_GRACE_PERIOD_SECONDS = 30 * 24 * 60 * 60 = 2_592_000
 
-/// E2E-KEYROT-001: grace_period 在 [0, 30天] 范围内时，原值传入 repo。
+/// grace_period 在 [0, 30天] 范围内时，原值传入 repo。
 ///
 /// 验证 builder 不修改合法范围内的值。
 #[tokio::test]
@@ -232,10 +232,10 @@ async fn e2e_key_rotation_grace_period_valid_range() {
     );
 }
 
-/// E2E-KEYROT-002: grace_period = 0 表示"关闭宽限期"，必须原值透传。
+/// grace_period = 0 表示"关闭宽限期"，必须原值透传。
 ///
-/// 曾经的实现把 0 clamp 到 1 秒（SEC-LOW-003），理由是"轮换瞬间拒掉进行中的
-/// 请求"；但 T007 之后宽限期才真正生效，1 秒窗口意味着轮换后仍写入
+/// 曾经的实现把 0 clamp 到 1 秒，理由是"轮换瞬间拒掉进行中的
+/// 请求"；但 之后宽限期才真正生效，1 秒窗口意味着轮换后仍写入
 /// `prev_secret_hash` 并放行旧凭证 —— 与"默认关闭"的决策相矛盾，故下限取消。
 #[tokio::test]
 async fn e2e_key_rotation_grace_period_zero_disables_grace() {
@@ -252,7 +252,7 @@ async fn e2e_key_rotation_grace_period_zero_disables_grace() {
     );
 }
 
-/// E2E-KEYROT-003: grace_period > 30 天 时 clamp 到 30 天。
+/// grace_period > 30 天 时 clamp 到 30 天。
 #[tokio::test]
 async fn e2e_key_rotation_grace_period_above_maximum_clamped() {
     const MAX_SECONDS: u64 = 30 * 24 * 60 * 60; // 2_592_000
@@ -334,7 +334,7 @@ fn build_handlers_with_repo_and_grace(
 // 4. 仓储 CRUD（ApiKeyRepository trait 内存 mock）
 // =============================================================================
 
-/// E2E-REPO-001: create_api_key 后可通过 get_api_key_by_id 查询到。
+/// create_api_key 后可通过 get_api_key_by_id 查询到。
 ///
 /// 验证 trait 契约：create 返回的 `ApiKeyWithSecret.key_id` 可作为
 /// `get_api_key_by_id` 的入参，且返回的 `ApiKeyInfo` 与 create 时写入的字段一致。
@@ -375,7 +375,7 @@ async fn e2e_repository_crud_create_and_get_api_key() {
     assert_eq!(fetched.role, ApiKeyRole::User);
 }
 
-/// E2E-REPO-002: list_api_keys 返回指定 workspace 下的所有 key。
+/// list_api_keys 返回指定 workspace 下的所有 key。
 ///
 /// 验证 trait 契约：create 多个 key 后，list 按 workspace_id 过滤返回；
 /// limit/offset 行为符合预期。
@@ -450,7 +450,7 @@ async fn e2e_repository_crud_list_api_keys() {
     assert_eq!(other.len(), 1, "other_ws 下应有 1 个 key");
 }
 
-/// E2E-REPO-003: revoke_api_key 后不可通过 get_api_key_by_id 查询到。
+/// revoke_api_key 后不可通过 get_api_key_by_id 查询到。
 ///
 /// 验证 trait 契约：revoke 后再 get 返回 None；revoke 不存在的 id 返回 NotFound。
 #[tokio::test]
@@ -1116,7 +1116,7 @@ impl crate::server::config::management::ConfigManagementService for MinimalConfi
 // 5. 告警通知（AlertManager）
 // =============================================================================
 
-/// E2E-ALERT-001: AlertManager::add_rule / remove_rule 完整生命周期。
+/// AlertManager::add_rule / remove_rule 完整生命周期。
 ///
 /// 验证：
 /// - add_rule 后，rule 出现在 config.rules 中（通过 get_state 能查到对应状态）
@@ -1149,7 +1149,7 @@ async fn e2e_alert_manager_add_and_remove_rule() {
     );
 }
 
-/// E2E-ALERT-002: AlertManager::update_config 替换整个配置。
+/// AlertManager::update_config 替换整个配置。
 ///
 /// 验证：
 /// - update_config 后，eval_interval 来自新 config
@@ -1209,7 +1209,7 @@ async fn e2e_alert_manager_update_config() {
     );
 }
 
-/// E2E-ALERT-003: AlertManager::get_alerts / get_alert_count 查询告警历史。
+/// AlertManager::get_alerts / get_alert_count 查询告警历史。
 ///
 /// 验证：
 /// - 初始状态无告警历史（get_alerts 返回空，get_alert_count 返回 0）

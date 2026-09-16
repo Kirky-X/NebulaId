@@ -51,7 +51,7 @@ const PROTOCOL_VERSIONS_TLS12_PLUS: &[&SupportedProtocolVersion] =
     &[&rustls::version::TLS13, &rustls::version::TLS12];
 
 /// 把 `tls.min_tls_version` 映射为 rustls 服务端允许协商的协议版本集合
-/// （T027⑤ 真实强制：此前 `min_tls_version` 只写日志，不进 `ServerConfig`，
+/// （真实强制：此前 `min_tls_version` 只写日志，不进 `ServerConfig`，
 /// 实际恒为 rustls 默认的 TLS 1.2 + 1.3）。
 ///
 /// 「无法识别的取值显性失败、绝不静默降级」由以下两道防线保证：
@@ -104,7 +104,7 @@ impl TlsManager {
 
     pub async fn initialize(&mut self) -> TlsResult<()> {
         if !self.config.enabled {
-            // T027④：矛盾配置显性上报。`enabled = false` 会整体关闭 TLS，
+            // 矛盾配置显性上报。`enabled = false` 会整体关闭 TLS，
             // 此时 `http_enabled` / `grpc_enabled` 被忽略，端口按明文启动。
             // 旧实现静默返回，运维读到 `tls.http_enabled = true` 会误以为链路已加密。
             if self.config.http_enabled || self.config.grpc_enabled {
@@ -216,7 +216,7 @@ impl TlsManager {
 
         // 为 HTTP 配置 TLS with version enforcement
         if self.config.http_enabled {
-            // T027⑤：min_tls_version 进 ServerConfig —— 用
+            // min_tls_version 进 ServerConfig —— 用
             // builder_with_protocol_versions 声明服务端可协商的版本集合，
             // 低于该集合的 ClientHello 会被 rustls 直接拒绝（不再依赖
             // rustls 默认的 TLS 1.2 + 1.3，也不再"只记日志不生效"）。
@@ -273,7 +273,7 @@ impl TlsManager {
 
             self.grpc_tls_config = Some(Arc::new(grpc_config));
 
-            // T027⑤ 边界如实上报：min_tls_version 只强制到上面的 HTTP acceptor，
+            // 边界如实上报：min_tls_version 只强制到上面的 HTTP acceptor，
             // gRPC 侧 TLS 由 tonic 自行装配 ServerConfig（不接受本 crate 注入
             // 版本集合），其可协商范围恒为 tonic/rustls 默认的 TLS 1.2 + 1.3。
             // 配置 1.3 时两者不一致，必须显式说明，否则 tls_initialized 日志
@@ -302,7 +302,7 @@ impl TlsManager {
 }
 
 // ============================================================================
-// DualListener（wiring T005）: HTTP 端口真实 TLS
+// DualListener: HTTP 端口真实 TLS
 // ============================================================================
 
 /// 双模监听器：按配置选择明文 TCP 或 TLS（经 `TlsAcceptor` 包装）。
@@ -311,7 +311,7 @@ impl TlsManager {
 /// 使 `axum::serve` 无需 `axum-server` 等额外依赖即可在单一端口上启用 HTTPS。
 /// 未启用 TLS 时行为与裸 `TcpListener` 完全一致（明文回退）。
 ///
-/// TLS 模式下握手在 per-connection 任务中并发完成（converge T019）：
+/// TLS 模式下握手在 per-connection 任务中并发完成
 /// 旧实现把 `acceptor.accept(tcp).await` 内联在 accept 循环里，客户端
 /// 只建连不发 ClientHello 即可永久冻结整个 HTTP 端口（未认证 DoS）。
 pub enum DualListener {
@@ -377,7 +377,7 @@ impl axum::serve::Listener for DualListener {
         match self {
             DualListener::Plain(listener) => {
                 // 与 axum 内置 TcpListener 实现一致：accept 错误记日志后重试
-                // （T019 补充 50ms 退避：EMFILE 等持续性错误不再热自旋）。
+                // （补充 50ms 退避：EMFILE 等持续性错误不再热自旋）。
                 // 注意用固有方法全限定调用，避免解析到本 trait 的 accept。
                 loop {
                     match tokio::net::TcpListener::accept(listener).await {
@@ -445,7 +445,7 @@ impl axum::serve::Listener for DualListener {
     }
 }
 
-/// 由 axum 注入的连接对端地址（converge T018）。
+/// 由 axum 注入的连接对端地址。
 ///
 /// 孤儿规则禁止为外来的 `SocketAddr` 实现 axum 的 `Connected`，
 /// 故用本 crate 新类型承载；读取端见 `middleware::utils::get_client_ip`。
@@ -828,7 +828,7 @@ mod tests {
         assert!(manager.is_http_enabled());
     }
 
-    // ===== T027⑤: min_tls_version 真实强制（公开可观测面 = 实际协商结果）=====
+    // ===== min_tls_version 真实强制（公开可观测面 = 实际协商结果）=====
     //
     // `rustls::ServerConfig` 的 `versions` 字段是 `pub(super)`（本 crate 读不到），
     // 因此不引入任何测试专用 pub API，改用真实回环 TCP + TLS 握手的协商结果证明：
@@ -1000,7 +1000,7 @@ mod tests {
 
     /// `enabled = false` 且任一 per-port 开关为 true 属矛盾配置：
     /// 不报错但必须保持"不产出 acceptor"（明文启动），由 initialize 内的
-    /// warn 显式上报（T027④）。
+    /// warn 显式上报。
     #[tokio::test]
     async fn test_disabled_with_per_port_flags_stays_plaintext() {
         let mut manager = TlsManager::new(TlsConfig {

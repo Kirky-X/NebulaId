@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Locale negotiation middleware (Phase 8 T040).
+//! Locale negotiation middleware (Phase 8 ).
 //!
 //! Parses the `Accept-Language` HTTP header per RFC 7231 §5.3.5,
 //! picks the best supported locale (`en` or `zh-CN`), and injects
@@ -154,7 +154,7 @@ pub fn negotiate_locale_str(accept_language: &str) -> Locale {
 
 /// A single entry in the `Accept-Language` header.
 ///
-/// Phase 8 T041 (HIGH H-1 perf fix) — `tag` borrows from the underlying
+/// Phase 8 (HIGH perf fix) — `tag` borrows from the underlying
 /// `Accept-Language` header string instead of cloning, eliminating
 /// per-candidate `String` allocation. At 10K QPS with ~5 candidates per
 /// header this removes ~50K allocations/sec.
@@ -182,7 +182,7 @@ const MAX_ACCEPT_LANGUAGE_LEN: usize = 4096;
 /// Returns an empty `Vec` if the header is empty, too long, or contains
 /// no valid entries.
 ///
-/// Phase 8 T041 (HIGH H-1 perf fix) — returns `Vec<Candidate<'a>>`
+/// Phase 8 (HIGH perf fix) — returns `Vec<Candidate<'a>>`
 /// borrowing from `header`, so no `String` allocation is performed per
 /// candidate. The lifetime ties the result to the input header.
 fn parse_accept_language<'a>(header: &'a str) -> Vec<Candidate<'a>> {
@@ -192,7 +192,7 @@ fn parse_accept_language<'a>(header: &'a str) -> Vec<Candidate<'a>> {
     if header.len() > MAX_ACCEPT_LANGUAGE_LEN {
         return Vec::new();
     }
-    // Phase 8 T041 (LOW L1 perf fix) — typical `Accept-Language` headers
+    // Phase 8 (perf fix) — typical `Accept-Language` headers
     // carry 2–3 candidates (e.g. `en,zh-CN;q=0.8`). The previous
     // `header.matches(',').count() + 1` pre-scan was a second O(n) pass
     // over the (potentially 4 KiB) header just to size the Vec. For the
@@ -222,7 +222,7 @@ fn parse_accept_language<'a>(header: &'a str) -> Vec<Candidate<'a>> {
 /// Returns `None` for empty entries or entries with malformed q-values
 /// (per RFC 7231 §5.3.1).
 ///
-/// Phase 8 T041 (HIGH H-1 perf fix) — borrows from `entry` instead of
+/// Phase 8 (HIGH perf fix) — borrows from `entry` instead of
 /// allocating a `String` for the tag, and uses `eq_ignore_ascii_case`
 /// instead of `to_ascii_lowercase` to detect the `q=` parameter
 /// case-insensitively without allocating.
@@ -478,7 +478,7 @@ mod tests {
 
     // ========== parse_accept_language / parse_entry unit tests ==========
 
-    /// Phase 8 T041 (HIGH H-1 perf fix) — verify `parse_accept_language`
+    /// Phase 8 (HIGH perf fix) — verify `parse_accept_language`
     /// returns `Candidate<'a>` borrowing from the input header (no
     /// `String` allocation per candidate). The static lifetime check
     /// below would not compile if `Candidate` owned its tag.
@@ -500,7 +500,7 @@ mod tests {
         // compile if `Candidate` owned its tag as a `String` (the
         // lifetime parameter would be unused / the bound would not
         // match). This guards against accidental regression to the
-        // pre-T041 allocation-per-candidate implementation.
+        // pre- allocation-per-candidate implementation.
         fn _accept_borrowed<'a>(_c: Vec<Candidate<'a>>) {}
         _accept_borrowed(candidates);
     }

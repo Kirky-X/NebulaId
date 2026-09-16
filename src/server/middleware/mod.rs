@@ -28,5 +28,5 @@ pub use crate::core::database::ApiKeyRole;
 // Re-export API key auth components (backward compatibility)
 pub use api_key_auth::{admin_required_middleware, auth_middleware_fn, ApiKeyAuth};
 
-// Re-export locale middleware components (Phase 8 T040)
+// Re-export locale middleware components (Phase 8 )
 pub use locale::{locale_middleware, Locale};

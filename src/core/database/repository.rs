@@ -1047,7 +1047,7 @@ impl ApiKeyRepository for SeaOrmRepository {
         let prefix = match request.role {
             ApiKeyRole::Admin => "niad_",
             ApiKeyRole::User => "nino_",
-            // ARCH-LOW-001 修复 + SEC-MEDIUM-001 修复：fail-fast 拒绝
+            // fail-fast 拒绝
             // Anonymous 持久化。原代码返回 "nianon_" 前缀让后续逻辑
             // "隐式失败"，但实际会成功持久化 Anonymous 密钥。
             // Anonymous 只在禁用认证时注入 extensions，不应通过 API 创建。
@@ -1412,7 +1412,7 @@ impl SegmentRepository for SeaOrmRepository {
     ) -> Result<SegmentInfo> {
         // 获取分布式锁以防止并发分配冲突
         let lock_key = self.segment_lock_key(workspace_id, biz_tag, None);
-        // M8 修复：未配置分布式锁时禁止静默降级（生产环境会导致重复 ID 分配）。
+        // 修复：未配置分布式锁时禁止静默降级（生产环境会导致重复 ID 分配）。
         // 测试环境（SQLite 单连接）允许 NoopLockGuard，因为数据库事务本身提供原子性。
         let lock_guard = if let Some(ref lock) = self.distributed_lock {
             lock.acquire(&lock_key, 30).await.map_err(|e| {
@@ -1451,7 +1451,7 @@ impl SegmentRepository for SeaOrmRepository {
             Some(model) => {
                 let current_id = model.current_id;
                 let max_id = model.max_id;
-                // M9 修复：使用 saturating_add 防止极端情况下溢出 panic
+                // 修复：使用 saturating_add 防止极端情况下溢出 panic
                 let new_max_id = current_id.saturating_add(step as i64);
 
                 let updated = SegmentActiveModel {
@@ -1491,7 +1491,7 @@ impl SegmentRepository for SeaOrmRepository {
             }
             None => {
                 let start_id = 1i64;
-                // M9 修复：saturating_add 防止溢出
+                // 修复：saturating_add 防止溢出
                 let max_id = start_id.saturating_add(step as i64);
                 let delta = 1;
 
@@ -1556,7 +1556,7 @@ impl SegmentRepository for SeaOrmRepository {
     ) -> Result<SegmentInfo> {
         // 获取分布式锁以防止并发分配冲突
         let lock_key = self.segment_lock_key(workspace_id, biz_tag, Some(dc_id));
-        // M8 修复：同 allocate_segment，未配置分布式锁时禁止静默降级。
+        // 修复：同 allocate_segment，未配置分布式锁时禁止静默降级。
         let lock_guard = if let Some(ref lock) = self.distributed_lock {
             lock.acquire(&lock_key, 30).await.map_err(|e| {
                 crate::core::CoreError::InternalError(format!(
@@ -1595,7 +1595,7 @@ impl SegmentRepository for SeaOrmRepository {
             Some(model) => {
                 let current_id = model.current_id;
                 let max_id = model.max_id;
-                // M9 修复：使用 saturating_add 防止极端情况下溢出 panic
+                // 修复：使用 saturating_add 防止极端情况下溢出 panic
                 let new_max_id = current_id.saturating_add(step as i64);
 
                 let updated = SegmentActiveModel {
@@ -1636,7 +1636,7 @@ impl SegmentRepository for SeaOrmRepository {
             }
             None => {
                 let start_id = (dc_id as i64) * 1000000000000i64 + 1i64;
-                // M9 修复：saturating_add 防止溢出
+                // 修复：saturating_add 防止溢出
                 let max_id = start_id.saturating_add(step as i64);
                 let delta = 1;
 
@@ -1853,7 +1853,7 @@ mod prefix_tests {
         let prefix = match role {
             ApiKeyRole::Admin => "niad_",
             ApiKeyRole::User => "nino_",
-            // ARCH-LOW-001 修复后，Anonymous 不再返回前缀而是 fail-fast
+            // 后，Anonymous 不再返回前缀而是 fail-fast
             // （生产代码返回 Err）。本测试用 _ 兜底覆盖 Anonymous 分支。
             _ => "nianon_",
         };
@@ -3475,8 +3475,8 @@ mod mock_tests {
         chrono::Utc::now().naive_utc() + chrono::Duration::seconds(seconds)
     }
 
-    /// T008：宽限期内旧凭证必须仍然可用，并且要标记为"命中的是上一代凭证"
-    /// （T010 据此跳过认证决策缓存，否则窗口关闭后缓存还会放行旧凭证）。
+    /// 宽限期内旧凭证必须仍然可用，并且要标记为"命中的是上一代凭证"
+    /// （据此跳过认证决策缓存，否则窗口关闭后缓存还会放行旧凭证）。
     #[tokio::test]
     async fn test_validate_within_grace_window_accepts_previous_credential() {
         let id = fixed_uuid(140);
@@ -3509,7 +3509,7 @@ mod mock_tests {
         assert_eq!(auth.workspace_id, None);
     }
 
-    /// T008：当前凭证命中时不得被标记为宽限期命中。
+    /// 当前凭证命中时不得被标记为宽限期命中。
     #[tokio::test]
     async fn test_validate_current_credential_is_not_marked_as_grace() {
         let id = fixed_uuid(141);
@@ -3540,7 +3540,7 @@ mod mock_tests {
         );
     }
 
-    /// T008：`rotate_expires_at` 到期后旧凭证立即失效，但新凭证不受影响。
+    /// `rotate_expires_at` 到期后旧凭证立即失效，但新凭证不受影响。
     ///
     /// "到期即断"是本变更的核心承诺 —— 只断旧凭证，不能把整把 key 一起判死。
     #[tokio::test]
@@ -3576,7 +3576,7 @@ mod mock_tests {
         assert!(!auth.used_previous_credential);
     }
 
-    /// T008：没有上一代凭证时只允许一次哈希校验（不得凭空开窗口）。
+    /// 没有上一代凭证时只允许一次哈希校验（不得凭空开窗口）。
     ///
     /// 校验次数无法从 `MockDatabase` 观测，所以钉住候选列表本身：
     /// 窗口时刻有效但 `prev_secret_hash` 为 NULL 时，候选必须只有当前哈希一项。
@@ -3774,7 +3774,7 @@ mod mock_tests {
             .unwrap_or_else(|| panic!("statement has no WHERE clause: {sql}"))
     }
 
-    /// T001：`find_api_key_by_row_id` 必须按主键 `id` 过滤，而不是按 `key_id` 字符串
+    /// `find_api_key_by_row_id` 必须按主键 `id` 过滤，而不是按 `key_id` 字符串
     /// （后者是 `get_api_key_by_id` 的语义，也是原 admin 守卫恒不生效的根因）。
     ///
     /// `MockDatabase` 不执行 SQL —— 桩数据无法区分两种过滤方式，所以谓词正确性只能
@@ -3801,7 +3801,7 @@ mod mock_tests {
         );
     }
 
-    /// T001：admin 计数谓词只允许 `role` + `enabled` 两项，且值正确。
+    /// admin 计数谓词只允许 `role` + `enabled` 两项，且值正确。
     ///
     /// `workspace_id` 一旦出现在谓词里就会重蹈根因：全局 admin key 的该列是 NULL，
     /// `WorkspaceId.eq(..)` 永远匹配不到它。
@@ -3939,7 +3939,7 @@ mod mock_tests {
         assert_ne!(rotated.key_secret, "", "rotated secret must not be empty");
     }
 
-    /// T007：`grace == 0`（新默认值）时轮换必须把两列**显式写 NULL**。
+    /// `grace == 0`（新默认值）时轮换必须把两列**显式写 NULL**。
     ///
     /// 关键是 `Set(None)` 而不是 `NotSet` —— `NotSet` 不会出现在 UPDATE 语句里，
     /// 该行历史遗留的宽限期就会被无限延续，等于关不掉宽限期。
@@ -3981,7 +3981,7 @@ mod mock_tests {
         );
     }
 
-    /// T007：`grace > 0` 时轮换必须把**轮换前的当前哈希**移入 `prev_secret_hash`，
+    /// `grace > 0` 时轮换必须把**轮换前的当前哈希**移入 `prev_secret_hash`，
     /// 并把 `rotate_expires_at` 设为 `now + grace`（旧凭证只在窗口内可被采信）。
     #[test]
     fn test_rotate_with_grace_keeps_previous_hash_and_expiry() {
@@ -4030,7 +4030,7 @@ mod mock_tests {
         );
     }
 
-    /// T007：宽限期秒数超出可表示范围必须返回 `InvalidInput`，而不是 panic 或溢出回绕。
+    /// 宽限期秒数超出可表示范围必须返回 `InvalidInput`，而不是 panic 或溢出回绕。
     ///
     /// 走完整的 `rotate_api_key` 才有意义 —— 桩只给 1 个 SELECT 结果，实现若忽略该
     /// 参数继续写库，就会消费到空桩并返回 `DatabaseError` 而非 `InvalidInput`，本用例即失败。
@@ -4049,7 +4049,7 @@ mod mock_tests {
         );
     }
 
-    /// T012：`grace > 0` 时轮换必须把**实际写入的**窗口截止时刻回传给调用方，
+    /// `grace > 0` 时轮换必须把**实际写入的**窗口截止时刻回传给调用方，
     /// 响应体据此回显，调用方才知道上一代凭证何时彻底失效。
     #[tokio::test]
     async fn test_rotate_returns_grace_expiry_to_caller() {
@@ -4082,7 +4082,7 @@ mod mock_tests {
         );
     }
 
-    /// T012：关闭宽限期（默认）时不得回传一个并不存在的窗口。
+    /// 关闭宽限期（默认）时不得回传一个并不存在的窗口。
     #[tokio::test]
     async fn test_rotate_without_grace_returns_no_expiry() {
         let id = fixed_uuid(145);
@@ -6048,172 +6048,27 @@ mod tests {
     use dbnexus::sea_orm::{ConnectOptions, ConnectionTrait, Database, Statement};
 
     async fn setup_test_db(db: &dbnexus::sea_orm::DatabaseConnection) {
-        let backend = db.get_database_backend();
+        // 直接复用生产迁移建表（`nebula-id migrate` 的同一代码路径）。
+        // 此前手写 DDL 与实体定义漂移（表名 segments vs nebula_segments、
+        // key_id VARCHAR(36) vs VARCHAR(64)、status 枚举列 vs VARCHAR(20)），
+        // 在真实 PostgreSQL 上导致全部集成测试失败；以生产迁移为唯一
+        // schema 事实源后不再漂移。
+        crate::core::database::connection::run_migrations(db)
+            .await
+            .unwrap();
+    }
 
-        // Set search_path to include nebula_id schema
-        db.execute_raw(Statement::from_string(
-            backend,
-            r#"SET search_path TO public, nebula_id"#,
-        ))
-        .await
-        .unwrap();
-
-        // Create schema if it doesn't exist
-        db.execute_raw(Statement::from_string(
-            backend,
-            r#"CREATE SCHEMA IF NOT EXISTS nebula_id"#,
-        ))
-        .await
-        .unwrap();
-
-        // Create enums in the nebula_id schema, matching scripts/init.sql
-        // (init.sql does `SET search_path TO nebula_id, public` before creating
-        // the types, so they live in nebula_id). The tables below reference them
-        // as "nebula_id".<type>, so creating them in public would fail with
-        // `type nebula_id.algorithm_type does not exist`.
-        db.execute_raw(Statement::from_string(
-            backend,
-            r#"DO $$ BEGIN
-                CREATE TYPE nebula_id.algorithm_type AS ENUM ('segment', 'snowflake', 'uuid_v8');
-            EXCEPTION
-                WHEN duplicate_object THEN null;
-            END $$"#,
-        ))
-        .await
-        .unwrap();
-
-        db.execute_raw(Statement::from_string(
-            backend,
-            r#"DO $$ BEGIN
-                CREATE TYPE nebula_id.id_format AS ENUM ('numeric', 'prefixed', 'uuid');
-            EXCEPTION
-                WHEN duplicate_object THEN null;
-            END $$"#,
-        ))
-        .await
-        .unwrap();
-
-        db.execute_raw(Statement::from_string(
-            backend,
-            r#"DO $$ BEGIN
-                CREATE TYPE nebula_id.workspace_status AS ENUM ('active', 'inactive', 'suspended');
-            EXCEPTION
-                WHEN duplicate_object THEN null;
-            END $$"#,
-        ))
-        .await
-        .unwrap();
-
-        db.execute_raw(Statement::from_string(
-            backend,
-            r#"
-            CREATE TABLE IF NOT EXISTS "nebula_id"."workspaces" (
-                id UUID PRIMARY KEY,
-                name VARCHAR(255) NOT NULL UNIQUE,
-                description TEXT,
-                status "nebula_id"."workspace_status" NOT NULL DEFAULT 'active',
-                max_groups INTEGER NOT NULL DEFAULT 100,
-                max_biz_tags INTEGER NOT NULL DEFAULT 1000,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-        ))
-        .await
-        .unwrap();
-
-        db.execute_raw(Statement::from_string(
-            backend,
-            r#"
-            CREATE TABLE IF NOT EXISTS "nebula_id"."groups" (
-                id UUID PRIMARY KEY,
-                workspace_id UUID NOT NULL REFERENCES "nebula_id"."workspaces"(id) ON DELETE CASCADE,
-                name VARCHAR(255) NOT NULL,
-                description TEXT,
-                max_biz_tags INTEGER NOT NULL DEFAULT 100,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(workspace_id, name)
-            )
-            "#,
-        ))
-        .await
-        .unwrap();
-
-        db.execute_raw(Statement::from_string(
-            backend,
-            r#"
-            CREATE TABLE IF NOT EXISTS "nebula_id"."biz_tags" (
-                id UUID PRIMARY KEY,
-                workspace_id UUID NOT NULL REFERENCES "nebula_id"."workspaces"(id) ON DELETE CASCADE,
-                group_id UUID NOT NULL REFERENCES "nebula_id"."groups"(id) ON DELETE CASCADE,
-                name VARCHAR(255) NOT NULL,
-                description TEXT,
-                algorithm "nebula_id"."algorithm_type" NOT NULL DEFAULT 'segment',
-                format "nebula_id"."id_format" NOT NULL DEFAULT 'numeric',
-                prefix VARCHAR(50) DEFAULT '',
-                base_step INTEGER NOT NULL DEFAULT 1000,
-                max_step INTEGER NOT NULL DEFAULT 100000,
-                datacenter_ids INTEGER[] DEFAULT ARRAY[0],
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(workspace_id, group_id, name)
-            )
-            "#,
-        ))
-        .await
-        .unwrap();
-
-        db.execute_raw(Statement::from_string(
-            backend,
-            r#"
-            CREATE TABLE IF NOT EXISTS "nebula_id"."segments" (
-                id BIGINT PRIMARY KEY,
-                workspace_id VARCHAR(255) NOT NULL,
-                biz_tag VARCHAR(255) NOT NULL,
-                current_id BIGINT NOT NULL DEFAULT 1,
-                max_id BIGINT NOT NULL,
-                step INTEGER NOT NULL DEFAULT 100,
-                delta INTEGER NOT NULL DEFAULT 1,
-                dc_id INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-        ))
-        .await
-        .unwrap();
-
-        db.execute_raw(Statement::from_string(
-            backend,
-            r#"
-            CREATE TABLE IF NOT EXISTS "nebula_id"."api_keys" (
-                id UUID PRIMARY KEY,
-                key_id VARCHAR(36) NOT NULL UNIQUE,
-                key_secret_hash VARCHAR(64) NOT NULL,
-                key_prefix VARCHAR(8) NOT NULL,
-                role VARCHAR(20) NOT NULL DEFAULT 'user',
-                workspace_id UUID REFERENCES "nebula_id"."workspaces"(id) ON DELETE CASCADE,
-                name VARCHAR(255) NOT NULL,
-                description TEXT,
-                rate_limit INTEGER NOT NULL DEFAULT 10000,
-                enabled BOOLEAN NOT NULL DEFAULT true,
-                expires_at TIMESTAMP WITH TIME ZONE DEFAULT (CURRENT_TIMESTAMP + INTERVAL '30 days'),
-                last_used_at TIMESTAMP WITH TIME ZONE,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-        ))
-        .await
-        .unwrap();
+    /// 测试连接 URL：注入 search_path（与生产 `create_connection` 同一
+    /// 规则），否则 sea-orm 枚举 CAST 解析不到 nebula_id 下的类型。
+    fn test_db_url() -> String {
+        let raw = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        crate::core::database::connection::ensure_pg_search_path(&raw)
     }
 
     #[tokio::test]
     #[ignore]
     async fn test_repository_operations() {
-        let db_url =
-            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db_url = test_db_url();
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
@@ -6259,8 +6114,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_cascading_operations() {
-        let db_url =
-            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db_url = test_db_url();
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
@@ -6431,8 +6285,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_admin_api_key_prefix() {
-        let db_url =
-            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db_url = test_db_url();
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
@@ -6485,8 +6338,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_user_api_key_prefix() {
-        let db_url =
-            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db_url = test_db_url();
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
@@ -6554,8 +6406,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_api_key_with_custom_secret() {
-        let db_url =
-            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db_url = test_db_url();
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
@@ -6592,8 +6443,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_api_key_prefix_consistency() {
-        let db_url =
-            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db_url = test_db_url();
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
@@ -6631,8 +6481,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_api_key_secret_length_validation() {
-        let db_url =
-            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db_url = test_db_url();
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
@@ -6654,12 +6503,12 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "Should reject key_secret shorter than 16 characters"
+            "Should reject key_secret shorter than 8 characters"
         );
         if let Err(e) = result {
             assert!(
                 e.to_string()
-                    .contains("must be between 16 and 128 characters"),
+                    .contains("must be between 8 and 128 characters"),
                 "Error should mention length requirement"
             );
         }
@@ -6689,8 +6538,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_get_api_key_by_id_with_prefix() {
-        let db_url =
-            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+        let db_url = test_db_url();
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 

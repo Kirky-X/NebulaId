@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! sdforge `#[forge]` 多协议封装示例（Kit 范式，wiring T014）。
+//! sdforge `#[forge]` 多协议封装示例（Kit 范式，）。
 //!
 //! 用 sdforge 的 `#[forge]` 属性宏把嵌入式 SDK 的 `IdGenerator` handle 的
 //! `generate` / `batch_generate` 声明为 HTTP 端点（`POST /generate`、
 //! `POST /generate/batch`），并由 sdforge 自动产出 OpenAPI 文档
 //! （`GET /api-docs/openapi.json`）。纯算法（snowflake），零 DB 零网络。
 //!
-//! 本示例只依赖 `nebulaid::sdk` 公开面（R-sdk-003）：sdforge 插件初始化与
+//! 本示例只依赖 `nebulaid::sdk` 公开面：sdforge 插件初始化与
 //! 路由合并直接内联如下，不复用 `server` 模块的内部装配知识。
 //!
 //! 运行：
@@ -52,7 +52,7 @@ use uuid::Uuid;
 /// 必须在构建 axum 路由前调用一次，否则 `#[forge]` 经 inventory 注册的路由
 /// 会被链接器裁剪。
 ///
-/// 内联而非复用 `nebulaid::server::sdforge_adapter`：R-sdk-003 要求示例只用
+/// 内联而非复用 `nebulaid::server::sdforge_adapter`：要求示例只用
 /// sdk 公开面，嵌入方读这段代码即可照抄，不需要了解服务端模块的内部装配。
 fn init_sdforge() -> sdforge::PluginCounts {
     sdforge::init_all_plugins()

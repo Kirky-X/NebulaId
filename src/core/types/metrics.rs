@@ -34,7 +34,7 @@ pub struct AlgorithmMetrics {
     pub cache_hit_rate: AtomicU64,
     /// 累计记录的延迟样本数（单调递增，不随环形缓冲回绕）。
     latency_samples: AtomicU64,
-    /// 累计观测到的时钟回拨次数（T021：由 `AlgorithmRouter::observe` 在
+    /// 累计观测到的时钟回拨次数（由 `AlgorithmRouter::observe` 在
     /// 算法返回 `ClockMovedBackward` 时递增，告警规则据此判定）。
     clock_backwards: AtomicU64,
     /// 最近 [`LATENCY_RING_SIZE`] 个延迟样本（纳秒），`record_latency` 环写。
@@ -406,7 +406,7 @@ impl GlobalMetrics {
     pub fn get_or_create_metrics(&self, algorithm: AlgorithmType) -> Arc<AlgorithmMetrics> {
         // 快路径：算法集合在 initialize() 后即固定，而路由层每请求都要取一次
         // 观测对象（AlgorithmRouter::observe）。原先无条件写锁会把并发的原子
-        // 写入串行化成一队，与 R-obs-002「记录路径无锁」的意图相反。
+        // 写入串行化成一队，与 「记录路径无锁」的意图相反。
         if let Some(metrics) = self.algorithms.read().get(&algorithm) {
             return metrics.clone();
         }
@@ -535,7 +535,7 @@ mod tests {
 
     #[test]
     fn test_record_latency_percentiles_follow_distribution_not_max() {
-        // T009：p50 是中位而非历史最大值。[2ms, 10ms] 排序后：
+        // p50 是中位而非历史最大值。[2ms, 10ms] 排序后
         // p50 = nearest-rank ceil(0.5*2)=1 → 2ms；p99/p999 = 第 2 个 → 10ms。
         let m = AlgorithmMetrics::new(AlgorithmType::Segment);
         m.record_latency(2_000_000);
@@ -606,11 +606,11 @@ mod tests {
         assert_eq!(m.get_p999_latency_ms(), 7.5);
     }
 
-    // ---- T009：环形缓冲真实分位数 ----
+    // ---- 环形缓冲真实分位数 ----
 
     #[test]
     fn test_percentiles_reflect_distribution_with_long_tail() {
-        // T009 验收：100 次 1ms + 1 次 1000ms。
+        // 验收：100 次 1ms + 1 次 1000ms。
         // 排序后索引 0..=99 为 1ms，索引 100 为 1000ms：
         //   p50  = nearest-rank ceil(0.5*101)=51 → 1ms（而非旧实现的历史最大值）
         //   p99  = ceil(0.99*101)=100 → 1ms（99% 请求确实 ≤1ms）

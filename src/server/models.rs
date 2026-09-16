@@ -88,7 +88,7 @@ pub struct BatchGenerateRequest {
     #[validate(length(min = 1, max = 64))]
     pub biz_tag: String,
 
-    // T012：上限由 config.batch_generate.max_batch_size 运行时校验，
+    // 上限由 config.batch_generate.max_batch_size 运行时校验，
     // 静态 validator 仅保留下界。
     #[validate(range(min = 1))]
     pub size: Option<usize>,
@@ -358,11 +358,11 @@ pub struct ConnectionPoolMetrics {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CacheMetrics {
     pub status: HealthStatus,
-    /// L15 修复：缓存命中率。`hit_rate = 0.0` 在 `has_cache = false` 时
+    /// 修复：缓存命中率。`hit_rate = 0.0` 在 `has_cache = false` 时
     /// 表示「无缓存概念」，不是「命中率 0%」。客户端必须先检查 `has_cache`
     /// 再决定是否展示 `hit_rate`。
     pub hit_rate: f64,
-    /// ARCH-MED-004 修复：明确表达「当前部署是否有缓存算法」。
+    /// 明确表达「当前部署是否有缓存算法」。
     /// `false` 时 `hit_rate` 字段无意义（恒为 0.0），客户端不应展示。
     /// `true` 时 `hit_rate` 是所有缓存算法的平均命中率。
     pub has_cache: bool,
@@ -383,7 +383,7 @@ pub struct AlgorithmMetrics {
     pub p999_latency_ms: f64,
     /// 累计观测到的时钟回拨次数（雪花算法时钟回拨告警的真实信号）。
     pub clock_backwards: u64,
-    /// L15 修复：`None` 表示该算法无缓存概念，`Some(rate)` 表示真实命中率。
+    /// 修复：`None` 表示该算法无缓存概念，`Some(rate)` 表示真实命中率。
     pub cache_hit_rate: Option<f64>,
 }
 
@@ -755,7 +755,7 @@ pub struct ApiKeyWithSecretResponse {
 
 /// 内部模型 → HTTP wire 的单一映射。
 ///
-/// T019 架构审查 MEDIUM：此前同一份 9 字段映射在 4 个 handler 里各写一遍，`ApiKeyWithSecret`
+/// 架构审查 MEDIUM：此前同一份 9 字段映射在 4 个 handler 里各写一遍，`ApiKeyWithSecret`
 /// 新增 `grace_expires_at` 时必须同步改多处，漏改就是静默丢字段。
 ///
 /// `Anonymous` 角色不落库（与 `workspace_handlers.rs::regenerate_user_key` 的同名防御一致）：
@@ -1405,7 +1405,7 @@ mod tests {
         };
         assert!(req.validate().is_err());
 
-        // T012：静态 validator 仅保留 min=1 下界；上限改由
+        // 静态 validator 仅保留 min=1 下界；上限改由
         // config.batch_generate.max_batch_size 在 handler 层动态校验
         let req2 = BatchGenerateRequest {
             workspace: "ws".to_string(),

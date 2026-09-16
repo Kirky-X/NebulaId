@@ -106,7 +106,7 @@ pub trait ConfigManagementService: Send + Sync {
 pub struct ConfigManager {
     hot_config: Arc<HotReloadConfig>,
     rate_limiter: Arc<RwLock<Option<(u32, u32)>>>,
-    /// wiring T003：运行中限流器的共享引用；`update_rate_limit` 同时
+    /// 运行中限流器的共享引用；`update_rate_limit` 同时
     /// 更新其参数，使热更新作用于实际流量（None = 未接线，仅记录 override）。
     live_rate_limiter: Option<Arc<crate::server::rate_limit::limiter::RateLimiter>>,
     algorithm_router: Arc<crate::core::algorithm::AlgorithmRouter>,
@@ -131,7 +131,7 @@ impl ConfigManager {
         }
     }
 
-    /// wiring T003：注入与 `create_router` 共享的限流器实例，
+    /// 注入与 `create_router` 共享的限流器实例，
     /// 使 `POST /config/rate-limit` 热更新作用于实际流量。
     pub fn with_rate_limiter(
         mut self,
@@ -296,7 +296,7 @@ impl ConfigManagementService for ConfigManager {
             config.rate_limit.burst_size = burst;
         }
 
-        // converge T022④：跨字段约束复用启动期同一校验入口（Config::validate
+        // 跨字段约束复用启动期同一校验入口（Config::validate
         // 校验 enabled 下 rps/burst 非 0 且 burst ≤ 10×rps）。单字段 range
         // 校验挡不住"burst=1000 + rps=1"这类运行期不一致配置经热更新写入。
         if let Err(e) = config.validate() {
@@ -313,7 +313,7 @@ impl ConfigManagementService for ConfigManager {
                 Some((config.rate_limit.default_rps, config.rate_limit.burst_size));
         }
 
-        // wiring T003：同步更新运行中的限流器（清桶惰性重建），
+        // 同步更新运行中的限流器（清桶惰性重建），
         // 使热更新立即作用于实际流量，而非仅记录 override。
         if let Some(ref live) = self.live_rate_limiter {
             live.update_config(config.rate_limit.default_rps, config.rate_limit.burst_size);
@@ -691,7 +691,7 @@ impl ConfigManagementService for ConfigManager {
                     }
                 }
                 Err(e) => {
-                    // SEC-MEDIUM-001 修复（CWE-209 / strix vuln-0003）：/metrics
+                    // （CWE-209 / strix vuln-0003）：/metrics
                     // 端点公开且无认证，原始 DB 错误字符串可能暴露主机名、端口、
                     // 驱动诊断信息。此处返回通用消息，详细错误通过 tracing::error!
                     // 记录到服务端日志保留运维可见性。
@@ -730,11 +730,11 @@ impl ConfigManagementService for ConfigManager {
     async fn get_cache_metrics(&self) -> CacheMetrics {
         // Get algorithm metrics for cache hit rate
         let algorithm_metrics = self.algorithm_router.metrics().await;
-        // L15 修复：只统计 `cache_hit_rate = Some(_)` 的算法（即有缓存的算法，
+        // 修复：只统计 `cache_hit_rate = Some(_)` 的算法（即有缓存的算法，
         // 如 Segment）。原代码把 UUID/Snowflake 的 `0.0` 也纳入平均，导致
         // 整体缓存命中率被低估（误把"无缓存"当成"命中率 0%"）。
         //
-        // ARCH-MED-004 修复：用 `has_cache` 显式表达「是否有缓存算法」，
+        // 用 `has_cache` 显式表达「是否有缓存算法」，
         // 避免监控面板把 `hit_rate = 0.0` 误读为「缓存性能极差」。
         let hit_rates: Vec<f64> = algorithm_metrics
             .iter()
@@ -978,7 +978,7 @@ mod tests {
         assert_eq!(hot_config_reflect.rate_limit.default_rps, 5000);
     }
 
-    /// converge T022④：热更新不得绕过启动期跨字段约束（burst ≤ 10×rps）。
+    /// 热更新不得绕过启动期跨字段约束（burst ≤ 10×rps）。
     #[tokio::test]
     async fn test_update_rate_limit_rejects_burst_over_10x_rps() {
         let hot_config = Arc::new(HotReloadConfig::new(

@@ -21,7 +21,7 @@ use std::sync::{Arc, OnceLock};
 // Forward declaration - actual import is in parent module
 pub use crate::core::algorithm::DegradationManager;
 
-// L14 修复后，CpuMonitor / EtcdClusterHealthMonitor 由 AlgorithmBuilder
+// 修复后，CpuMonitor / EtcdClusterHealthMonitor 由 AlgorithmBuilder
 // 持有并通过 `pub(crate)` 访问器暴露给工厂 impl。工厂 impl 拆分到
 // 各算法文件（snowflake.rs / uuid_v7.rs / segment.rs），按规则 25
 // 「mod.rs/traits.rs 只放接口定义」要求。
@@ -42,7 +42,7 @@ pub trait IdAlgorithm: Send + Sync {
     fn algorithm_type(&self) -> AlgorithmType;
 
     async fn shutdown(&self) -> Result<()>;
-    // L13 修复：从 trait 中移除 `async fn initialize(&mut self, config: &Config)`。
+    // 修复：从 trait 中移除 `async fn initialize(&mut self, config: &Config)`。
     // 原因：
     // 1. `&mut self` 在 `dyn IdAlgorithm` trait object 上调用受限——
     //    `Arc<dyn IdAlgorithm>` 共享后无法调用 `&mut self` 方法，必须
@@ -97,7 +97,7 @@ pub trait IdGenerator: Send + Sync {
 
     fn get_degradation_manager(&self) -> &Arc<DegradationManager>;
 
-    /// 当前生效的 Snowflake 位布局（T010：解析知识唯一来源）。
+    /// 当前生效的 Snowflake 位布局（解析知识唯一来源）。
     ///
     /// 返回 `None` 表示实现不基于 Snowflake 或无法获知布局；调用方应回退
     /// [`crate::core::algorithm::SnowflakeLayoutInfo::standard`]。
@@ -157,7 +157,7 @@ pub struct AlgorithmMetricsSnapshot {
     /// 累计观测到的时钟回拨次数。由路由层观测（算法返回
     /// `CoreError::ClockMovedBackward`）合并填充，供 `/metrics` 与告警使用。
     pub clock_backwards: u64,
-    /// L15 修复：`None` 表示该算法无缓存概念（如 Snowflake/UUID），
+    /// 修复：`None` 表示该算法无缓存概念（如 Snowflake/UUID），
     /// `Some(rate)` 表示真实缓存命中率（如 Segment）。
     /// 原为 `f64`，UUID/Snowflake 返回 `0.0` 会被
     /// `ConfigManager::get_cache_metrics` 纳入平均值计算，导致整体
@@ -176,7 +176,7 @@ pub struct AlgorithmBuilder {
     cpu_monitor: Option<Arc<CpuMonitor>>,
     #[cfg(feature = "etcd")]
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
-    // L12 修复：非 etcd 版本不再持有 `etcd_health_monitor: Option<()>` 占位字段。
+    // 修复：非 etcd 版本不再持有 `etcd_health_monitor: Option<()>` 占位字段。
     // 原 `Option<()>` 既无意义也误导调用方。`with_etcd_health_monitor` builder
     // 方法仅在 etcd feature 下存在；非 etcd 版本调用方不会触碰该字段。
 }
@@ -201,25 +201,25 @@ impl AlgorithmBuilder {
         self.etcd_health_monitor = Some(monitor);
         self
     }
-    // L12 修复：删除非 etcd 版本的 `with_etcd_health_monitor(Arc<()>)`。
+    // 修复：删除非 etcd 版本的 `with_etcd_health_monitor(Arc<()>)`。
     // 原签名接受 `Arc<()>` 但完全忽略参数，类型误导且调用方可能误以为
     // monitor 被实际使用。非 etcd 版本根本不需要这个 builder 方法。
 
-    /// ARCH-HIGH-001 修复：暴露 `cpu_monitor` 给工厂 impl（pub(crate)）。
+    /// 暴露 `cpu_monitor` 给工厂 impl（pub(crate)）。
     /// 工厂 impl 拆分到各算法文件后，无法直接访问 AlgorithmBuilder
     /// 私有字段，必须通过访问器。
     pub(crate) fn cpu_monitor(&self) -> &Option<Arc<CpuMonitor>> {
         &self.cpu_monitor
     }
 
-    /// ARCH-HIGH-001 修复：暴露 `etcd_health_monitor` 给工厂 impl。
+    /// 暴露 `etcd_health_monitor` 给工厂 impl。
     #[cfg(feature = "etcd")]
     pub(crate) fn etcd_health_monitor(&self) -> &Option<Arc<EtcdClusterHealthMonitor>> {
         &self.etcd_health_monitor
     }
 
     pub async fn build(&self, config: &Config) -> Result<Box<dyn IdAlgorithm>> {
-        // L14 修复：通过工厂注册表分发，不再按算法类型 match。
+        // 修复：通过工厂注册表分发，不再按算法类型 match。
         // 新增算法只需实现 `AlgorithmFactory` 并在 `algorithm_factories()`
         // 中注册，无需修改 `build` 方法（开闭原则）。
         let factories = algorithm_factories();
@@ -234,7 +234,7 @@ impl AlgorithmBuilder {
 }
 
 // ============================================================================
-// L14 修复：AlgorithmFactory + 注册表
+// 修复：AlgorithmFactory + 注册表
 // ============================================================================
 //
 // 原实现：`AlgorithmBuilder::build` 用 `match self.algorithm_type { ... }`
@@ -244,11 +244,11 @@ impl AlgorithmBuilder {
 // `algorithm_factories()` 表中。`build` 方法查表分发，新增算法只需
 // 添加新工厂 + 注册，不修改 `build`。
 //
-// ARCH-HIGH-001 修复：工厂 impl 已拆到各算法文件（snowflake.rs /
+// 工厂 impl 已拆到各算法文件（snowflake.rs /
 // uuid_v7.rs / uuid_v4.rs / segment.rs）。本文件只保留 trait 定义、
 // 工厂 struct 声明、注册表函数，符合规则 25「traits.rs 只放接口」。
 //
-// ARCH-MED-001 修复：trait 和工厂 struct 改 `pub`，外部 crate / 测试
+// trait 和工厂 struct 改 `pub`，外部 crate / 测试
 // 可注入 mock 工厂替换真实算法，实现完全的开闭原则。
 
 /// 算法工厂 trait：每种算法类型对应一个实现。
@@ -274,7 +274,7 @@ pub struct SegmentFactory;
 
 /// 算法工厂注册表（懒加载，进程级单例）。
 ///
-/// ARCH-MED-001 修复：函数 `pub`，外部测试可读取注册表验证完整性。
+/// 函数 `pub`，外部测试可读取注册表验证完整性。
 pub fn algorithm_factories() -> &'static HashMap<AlgorithmType, Arc<dyn AlgorithmFactory>> {
     static FACTORIES: OnceLock<HashMap<AlgorithmType, Arc<dyn AlgorithmFactory>>> = OnceLock::new();
     FACTORIES.get_or_init(|| {

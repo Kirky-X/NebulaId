@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use nebulaid::core::algorithm::AlgorithmRouter;
-use nebulaid::core::config::{resolve_startup_config, Config, StartupConfig};
+use nebulaid::core::config::{resolve_startup_config, Config, Environment, StartupConfig};
 #[cfg(feature = "etcd")]
 use nebulaid::core::coordinator::{EtcdClientWrapper, EtcdClusterHealthMonitor};
 use nebulaid::core::database::{self, ApiKeyRepository};
@@ -491,6 +491,34 @@ fn build_api_handlers(
         .with_key_rotation_grace_period(grace_period_seconds)
 }
 
+/// T008 —— 生产环境强制 TLS 的判定核心（纯判定 + 一处逃生门 warn，便于单测）。
+///
+/// 规则（fail-fast）：
+/// - 非 production，或 `tls.enabled == true` → 放行；
+/// - production 且 TLS 关闭时：
+///   - `allow_insecure_tls == Some("1")`（即 `NEBULA_ALLOW_INSECURE_TLS=1`）→
+///     放行并 warn（仅限内网评估的显式豁免）；
+///   - 其余情形 → `Err`，调用方打印本地化 error 并以非零码退出。
+///
+/// production 判定含 T007 反向默认：`NEBULA_ENV` 缺失/未知值按生产执行，
+/// 因此缺省部署同样被本校验覆盖。
+fn validate_tls_required_in_production(
+    environment: Environment,
+    tls_enabled: bool,
+    allow_insecure_tls: Option<&str>,
+) -> Result<()> {
+    if !environment.is_production() || tls_enabled {
+        return Ok(());
+    }
+    if allow_insecure_tls == Some("1") {
+        warn!("{}", t!("log.main.tls_insecure_escape_hatch_active"));
+        return Ok(());
+    }
+    Err(nebulaid::core::types::CoreError::ConfigurationError(
+        "TLS is required in production but tls.enabled = false".to_string(),
+    ))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // 日志初始化由 inklog 接管（替换原手写的 tracing_subscriber::fmt() 链）。
@@ -569,6 +597,22 @@ async fn main() -> Result<()> {
         ))
     })?);
     info!("{}", t!("log.main.config_loaded"));
+
+    // T008 —— 生产环境强制 TLS（fail-fast）。环境判定经 Environment::from_env()
+    //（含 T007 反向默认：NEBULA_ENV 缺失/未知值按生产执行，缺失时此处顺带
+    // 触发唯一一次 warn）。校验失败打印本地化 error 并以非零码退出；
+    // NEBULA_ALLOW_INSECURE_TLS=1 显式放行（函数内 warn）。
+    if validate_tls_required_in_production(
+        Environment::from_env(),
+        config.tls.enabled,
+        env::var("NEBULA_ALLOW_INSECURE_TLS").ok().as_deref(),
+    )
+    .is_err()
+    {
+        error!("{}", t!("error.main.tls_required_in_production"));
+        error!("{}", t!("log.main.shutting_down"));
+        std::process::exit(1);
+    }
 
     let server_config = ServerConfig {
         http_port: config.app.http_port,
@@ -1440,5 +1484,45 @@ mod tests {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), shutdown_signal()).await;
 
         server.abort();
+    }
+
+    // ==================== T008: 生产环境 TLS 强制校验 ====================
+
+    #[test]
+    fn test_validate_tls_production_tls_disabled_no_escape_hatch_errors() {
+        // production + tls.enabled=false + 无逃生门 → 拒绝启动（Err → exit 非零）
+        let result = validate_tls_required_in_production(Environment::Production, false, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_tls_production_tls_disabled_escape_hatch_allows() {
+        // NEBULA_ALLOW_INSECURE_TLS=1 → 显式放行（调用方负责 warn）
+        let result = validate_tls_required_in_production(Environment::Production, false, Some("1"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_tls_production_tls_enabled_ok() {
+        // TLS 已启用 → 直接通过，与逃生门无关
+        let result = validate_tls_required_in_production(Environment::Production, true, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_tls_development_unaffected() {
+        // 开发模式不强制 TLS
+        let result = validate_tls_required_in_production(Environment::Development, false, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_tls_escape_hatch_value_other_than_1_rejected() {
+        // 逃生门仅认字面量 "1"，其余取值视为未启用
+        let result =
+            validate_tls_required_in_production(Environment::Production, false, Some("true"));
+        assert!(result.is_err());
+        let result = validate_tls_required_in_production(Environment::Production, false, Some(""));
+        assert!(result.is_err());
     }
 }

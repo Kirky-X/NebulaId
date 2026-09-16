@@ -72,7 +72,10 @@ max_batch_size = 100
 [auth]
 enabled = true
 cache_ttl_seconds = 300
-api_key_salt = "test"
+# API Key 盐值：生产环境必填，请通过环境变量注入高熵盐（如 openssl rand -hex 32）。
+# 占位写法与上方 database.password 的 ${VAR} 模式一致；未设置该变量时展开为空串，
+# 仅适合开发/测试 —— 生产启动会因空盐/弱盐被强制校验拒绝（见 main.rs 生产盐值检查）。
+api_key_salt = "${NEBULA_API_KEY_SALT:}"
 api_keys = []
 # 密钥轮换宽限期（秒）。0 = 关闭：轮换后上一代凭证立即失效。
 # 需要"轮换不掉请求"时改为正整数（如 3600），上限 30 天，超限会被 clamp 到上限并告警。

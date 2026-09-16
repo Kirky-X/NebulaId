@@ -272,6 +272,8 @@ Nebula ID 采用「server → core → 自研生态」三层设计：`src/server
 
 能被完整解析的最小配置见 [`config/config.toml`](config/config.toml)，形如：
 
+> 注意：以下 TOML 片段仅为摘要示例，实际配置以 [`config/config.toml`](config/config.toml) 为准。
+
 ```toml
 [app]
 name = "nebula-id"

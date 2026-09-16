@@ -507,16 +507,17 @@ fn e2e_cors_development_with_explicit_origins_uses_them() {
 }
 
 // ============================================================================
-// 默认 NEBULA_ENV 缺失时按 development 处理
+// NEBULA_ENV 缺失时反向默认按 production 处理（fail-closed）
 // ============================================================================
 
 #[test]
-fn e2e_cors_missing_nebula_env_treated_as_development() {
+fn e2e_cors_missing_nebula_env_treated_as_production() {
     let _guard = E2E_ENV_LOCK.lock().unwrap();
     std::env::remove_var("NEBULA_ENV");
     std::env::remove_var("ALLOWED_ORIGINS");
 
-    // NEBULA_ENV 缺失时 unwrap_or_else 默认 "development"
+    // 反向默认：NEBULA_ENV 缺失时按生产环境处理（开发模式必须显式 opt-in）
+    assert!(crate::core::config::is_production());
     let _cors = create_env_aware_cors_layer();
 }
 

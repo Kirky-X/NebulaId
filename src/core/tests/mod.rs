@@ -21,6 +21,7 @@ pub mod cache_tests;
 // 需作为 crate 内 module 挂载）。为满足验证步骤并遵循既有惯例，仍在此注册。
 #[cfg(test)]
 pub mod auth_handlers_e2e_tests;
+#[cfg(test)]
 pub mod degradation_tests;
 #[cfg(test)]
 pub mod grpc_monitoring_e2e_tests;

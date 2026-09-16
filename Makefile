@@ -30,10 +30,7 @@ build-dev: ## Build development binary
 
 build-bin: ## Build specific binary
 	@if [ -z "$(BIN)" ]; then echo "Usage: make build-bin BIN=nebula-id"; exit 1; fi
-	cargo build --$(or $(PROFILE),release) --locked -p nebula-server --bin $(BIN)
-
-build-tui: ## Build TUI binary
-	cargo build --release --locked -p nebula-server --bin nebula-id-tui
+	cargo build --$(or $(PROFILE),release) --locked --package nebulaid --bin $(BIN)
 
 # ========== Docker Build ==========
 docker-build: ## Build Docker image
@@ -51,22 +48,22 @@ docker-build-multi: ## Build multi-architecture Docker image
 # ========== Test Commands ==========
 test: ## Run all tests with parallel execution
 	@echo "Running tests (threads: 4)..."
-	cargo test --all --jobs $(BUILD_JOBS) -- --test-threads=4
+	cargo test --package nebulaid --jobs $(BUILD_JOBS) -- --test-threads=4
 
 test-unit: ## Run unit tests only
 	cargo test --lib --bins --jobs $(BUILD_JOBS) -- --test-threads=4
 
-test-integration: ## Run integration tests only
-	cargo test --test integration_tests -- --test-threads=4
+test-integration: ## Run integration tests only (lib tests under src/core/tests)
+	cargo test --package nebulaid --lib --jobs $(BUILD_JOBS) -- --test-threads=4
 
 test-quick: ## Quick test (skip slow tests)
-	cargo test --all -- --test-threads=4 --skip bench --skip perf
+	cargo test --package nebulaid -- --test-threads=4 --skip bench --skip perf
 
 test-coverage:
 	cargo tarpaulin --out Html --jobs $(BUILD_JOBS)
 
 bench: ## Run benchmarks
-	cargo bench --all -- --test-threads=1
+	cargo bench --package nebulaid -- --test-threads=1
 
 # ========== Code Quality ==========
 lint: ## Check code formatting
@@ -114,8 +111,6 @@ clean: ## Clean build artifacts
 
 clean-cache: ## Clean cargo cache
 	@echo "Cleaning cargo cache..."
-	cargo clean -p nebula-core
-	cargo clean -p nebula-server
 	rm -rf target/debug/deps target/release/deps
 
 # ========== Analysis ==========
@@ -130,7 +125,7 @@ size-check: ## Check binary size
 
 # ========== Database ==========
 db-migrate:
-	cargo run --bin migrate -- crates/server
+	cargo run --package nebulaid --bin nebula-id -- migrate
 
 db-shell:
 	docker-compose exec postgres psql -U idgen -d idgen
@@ -152,7 +147,6 @@ help: ## Show this help message
 	@echo "  build          Build release binary"
 	@echo "  build-dev      Build development binary"
 	@echo "  build-bin      Build specific binary (BIN=name)"
-	@echo "  build-tui      Build TUI binary"
 	@echo "  docker-build   Build Docker image"
 	@echo "  docker-build-multi  Build multi-arch Docker image"
 	@echo ""

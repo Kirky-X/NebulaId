@@ -15,7 +15,10 @@
 //! Segment 算法模块
 //!
 //! 提供基于号段（Segment）的 ID 生成实现，包括双缓冲、动态切换与多数据中心
-//! 健康探测。生产路径使用 `DefaultSegmentLoader`、`DcFailureDetector` 与 `CpuMonitor`。
+//! 健康探测。生产路径通过 [`DbSegmentLoader`] 从仓储分配号段；`SegmentAlgorithm::new`
+//! 的默认装配是 [`UnconfiguredSegmentLoader`]（显性报错），需在装配处注入
+//! `DbSegmentLoader`；`cfg(test)` 构建下默认注入 [`TestSegmentLoader`] 以维持
+//! 既有 crate 内测试行为。
 
 use crate::core::algorithm::{
     AlgorithmMetricsSnapshot, GenerateContext, HealthStatus, IdAlgorithm,
@@ -23,6 +26,7 @@ use crate::core::algorithm::{
 use crate::core::config::{Config, SegmentAlgorithmConfig};
 #[cfg(feature = "etcd")]
 use crate::core::coordinator::EtcdClusterHealthMonitor;
+use crate::core::database::SegmentRepository;
 use crate::core::types::{AlgorithmType, CoreError, Id, IdBatch, Result};
 use arc_swap::{ArcSwap, ArcSwapOption};
 use async_trait::async_trait;
@@ -421,11 +425,31 @@ impl SegmentAlgorithm {
 
         let (shutdown_tx, _) = tokio::sync::watch::channel(false);
 
+        // 默认号段装载器：
+        // - 生产构建（非 test）：UnconfiguredSegmentLoader —— load_segment 显性
+        //   返回 ConfigurationError，杜绝历史「timestamp*10000 内存伪造号段」被
+        //   无感知地带入生产（多实例必然重复 ID）。真正接通需在装配处注入
+        //   DbSegmentLoader（由后续装配任务完成，本任务不改 main.rs）。
+        // - cfg(test) 构建：TestSegmentLoader —— 既有 crate 内测试（如
+        //   src/core/tests/integration_tests.rs）依赖 `SegmentAlgorithm::new`
+        //   开箱可用；为不越出本 lane 的文件所有权边界，测试构建保留内存
+        //   造段器默认值。segment.rs 自身的新增单测一律显式注入。
+        let segment_loader: Arc<dyn SegmentLoader + Send + Sync> = {
+            #[cfg(test)]
+            {
+                Arc::new(TestSegmentLoader::default())
+            }
+            #[cfg(not(test))]
+            {
+                Arc::new(UnconfiguredSegmentLoader)
+            }
+        };
+
         Self {
             config: SegmentAlgorithmConfig::default(),
             buffers: Arc::new(RwLock::new(HashMap::new())),
             metrics: Arc::new(AlgorithmMetricsInner::default()),
-            segment_loader: Arc::new(DefaultSegmentLoader::default()),
+            segment_loader,
             dc_failure_detector,
             #[cfg(feature = "etcd")]
             etcd_cluster_health_monitor: None,
@@ -434,6 +458,16 @@ impl SegmentAlgorithm {
             shutdown_tx: Arc::new(shutdown_tx),
             health_check_task: Arc::new(tokio::sync::Mutex::new(None)),
         }
+    }
+
+    /// 注入自定义号段装载器（仅测试构建）。
+    ///
+    /// 生产装配路径由后续 lane 在组装层完成注入；本方法仅供本模块单测
+    /// 显式替换造段行为（T014：依赖造段器行为的单测必须显式注入）。
+    #[cfg(test)]
+    fn with_segment_loader(mut self, loader: Arc<dyn SegmentLoader + Send + Sync>) -> Self {
+        self.segment_loader = loader;
+        self
     }
 
     pub fn with_cpu_monitor(mut self, cpu_monitor: Arc<CpuMonitor>) -> Self {
@@ -654,11 +688,92 @@ impl IdAlgorithm for SegmentAlgorithm {
     }
 }
 
-#[derive(Default)]
-struct DefaultSegmentLoader {}
+/// 未装配数据源的默认号段装载器（生产构建的 `SegmentAlgorithm::new` 默认值）。
+///
+/// `load_segment` 恒返回 [`CoreError::ConfigurationError`]：历史
+/// `DefaultSegmentLoader` 用 `timestamp * 10000` 在内存伪造号段，多实例部署
+/// 必然重复 ID，属静默数据正确性事故；改为显性失败后，必须在装配处注入
+/// [`DbSegmentLoader`]（经 [`SegmentRepository::allocate_segment`] 落库分配），
+/// Segment 算法才可用。
+struct UnconfiguredSegmentLoader;
 
 #[async_trait]
-impl SegmentLoader for DefaultSegmentLoader {
+impl SegmentLoader for UnconfiguredSegmentLoader {
+    async fn load_segment(&self, _ctx: &GenerateContext, _worker_id: u8) -> Result<SegmentData> {
+        Err(CoreError::ConfigurationError(
+            "Segment 算法未接通数据源，需在装配处注入 DbSegmentLoader \
+             （SegmentRepository::allocate_segment）"
+                .to_string(),
+        ))
+    }
+}
+
+/// 数据库号段装载器：调 [`SegmentRepository::allocate_segment`] 原子分配号段，
+/// 并把 [`SegmentInfo`] 映射为 [`SegmentData`]。
+///
+/// 字段对齐（以 `allocate_segment` 现有语义为准）：
+/// - `SegmentInfo.current_id` = 本次分配区间的**起始值**（含）；
+/// - `SegmentInfo.max_id` = 本次分配区间的**上界**（AtomicSegment 按
+///   `current + count <= max` 消费，实际发号至 `max - 1`）。
+///
+/// `worker_id` 参数不参与分配键（仓储按 workspace_id + biz_tag 定位号段行），
+/// 仅为兼容 [`SegmentLoader`] trait 签名而保留。
+///
+/// `dead_code` 豁免：本类型由**后续装配 lane** 在组装处注入（本 lane 不改
+/// main.rs / mod.rs），在此之前生产构建尚无构造点。
+#[allow(dead_code)]
+pub struct DbSegmentLoader<R: SegmentRepository> {
+    repository: Arc<R>,
+    step: i32,
+}
+
+#[allow(dead_code)]
+impl<R: SegmentRepository> DbSegmentLoader<R> {
+    /// 默认分配步长：与 `SegmentAlgorithmConfig::default().base_step`（1000）对齐。
+    pub const DEFAULT_STEP: i32 = 1000;
+
+    /// 以默认步长构建装载器。
+    pub fn new(repository: Arc<R>) -> Self {
+        Self {
+            repository,
+            step: Self::DEFAULT_STEP,
+        }
+    }
+
+    /// 以指定步长构建装载器（步长应落在 biz_tag 的 base_step～max_step 约束内，
+    /// 超大步长会放大 DB 崩溃时的号段空洞）。
+    pub fn with_step(repository: Arc<R>, step: i32) -> Self {
+        Self { repository, step }
+    }
+}
+
+#[async_trait]
+impl<R: SegmentRepository + 'static> SegmentLoader for DbSegmentLoader<R> {
+    async fn load_segment(&self, ctx: &GenerateContext, _worker_id: u8) -> Result<SegmentData> {
+        let info = self
+            .repository
+            .allocate_segment(&ctx.workspace_id, &ctx.biz_tag, self.step)
+            .await?;
+
+        // i64 → u64 防御性转换：正常路径两者恒为正（allocate_segment 从 1 起
+        // 步进），异常脏数据（负数）收敛为 0 而非按位回绕成超大号段。
+        let start_id = u64::try_from(info.current_id).unwrap_or(0);
+        let max_id = u64::try_from(info.max_id).unwrap_or(0);
+
+        Ok(SegmentData { start_id, max_id })
+    }
+}
+
+/// 内存造段器（仅测试构建）：以当前秒级时间戳为基址伪造号段，保证单进程内
+/// 多次取段互不重叠。仅供测试显式注入；生产构建由
+/// [`UnconfiguredSegmentLoader`] 兜底报错。
+#[cfg(test)]
+#[derive(Default)]
+struct TestSegmentLoader {}
+
+#[cfg(test)]
+#[async_trait]
+impl SegmentLoader for TestSegmentLoader {
     async fn load_segment(&self, _ctx: &GenerateContext, _worker_id: u8) -> Result<SegmentData> {
         // Generate timestamp-based segment for uniqueness
         let timestamp = std::time::SystemTime::now()
@@ -723,7 +838,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_segment_algorithm_generate() {
-        let algo = SegmentAlgorithm::new(0);
+        // 显式注入内存造段器（T014：依赖造段行为的测试不再隐式依赖默认装配）。
+        let algo =
+            SegmentAlgorithm::new(0).with_segment_loader(Arc::new(TestSegmentLoader::default()));
         let ctx = GenerateContext {
             workspace_id: "test".to_string(),
             group_id: "test".to_string(),
@@ -854,7 +971,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_segment_algorithm_batch_generate_basic_path() {
-        let algo = SegmentAlgorithm::new(0);
+        let algo =
+            SegmentAlgorithm::new(0).with_segment_loader(Arc::new(TestSegmentLoader::default()));
         let ctx = sample_ctx();
         let batch = algo.batch_generate(&ctx, 5).await.unwrap();
         assert_eq!(batch.ids.len(), 5);
@@ -868,7 +986,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_segment_algorithm_batch_generate_empty_returns_exhausted_error() {
-        let algo = SegmentAlgorithm::new(0);
+        let algo =
+            SegmentAlgorithm::new(0).with_segment_loader(Arc::new(TestSegmentLoader::default()));
         let ctx = sample_ctx();
         let result = algo.batch_generate(&ctx, 0).await;
         assert!(result.is_err());
@@ -890,7 +1009,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_segment_algorithm_health_check_returns_healthy_when_buffer_exists() {
-        let algo = SegmentAlgorithm::new(0);
+        let algo =
+            SegmentAlgorithm::new(0).with_segment_loader(Arc::new(TestSegmentLoader::default()));
         let ctx = sample_ctx();
         let _ = algo.generate(&ctx).await.unwrap();
         let status = algo.health_check();
@@ -908,7 +1028,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_segment_algorithm_metrics_with_cache_misses_records_qps_zero() {
-        let algo = SegmentAlgorithm::new(0);
+        let algo =
+            SegmentAlgorithm::new(0).with_segment_loader(Arc::new(TestSegmentLoader::default()));
         let ctx = sample_ctx();
         let _ = algo.generate(&ctx).await.unwrap();
         let m = algo.metrics();
@@ -991,5 +1112,181 @@ mod tests {
             states.get(&1).expect("dc 1").get_status(),
             DcStatus::Healthy
         );
+    }
+
+    // ===== DbSegmentLoader（T014）=====
+
+    use crate::core::types::SegmentInfo;
+
+    /// 受控 mock 仓储：`allocate_segment` 返回预设结果并记录调用参数。
+    struct MockSegmentRepository {
+        result: Result<SegmentInfo>,
+        calls: parking_lot::Mutex<Vec<(String, String, i32)>>,
+    }
+
+    impl MockSegmentRepository {
+        fn returning(result: Result<SegmentInfo>) -> Self {
+            Self {
+                result,
+                calls: parking_lot::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn recorded_calls(&self) -> Vec<(String, String, i32)> {
+            self.calls.lock().clone()
+        }
+    }
+
+    fn sample_segment_info(current_id: i64, max_id: i64) -> SegmentInfo {
+        SegmentInfo {
+            id: 1,
+            workspace_id: "ws".to_string(),
+            biz_tag: "tag".to_string(),
+            current_id,
+            max_id,
+            step: 1000,
+            delta: 1,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[async_trait]
+    impl SegmentRepository for MockSegmentRepository {
+        async fn get_segment(
+            &self,
+            _workspace_id: &str,
+            _biz_tag: &str,
+        ) -> Result<Option<SegmentInfo>> {
+            unimplemented!("DbSegmentLoader 单测只走 allocate_segment");
+        }
+
+        async fn allocate_segment(
+            &self,
+            workspace_id: &str,
+            biz_tag: &str,
+            step: i32,
+        ) -> Result<SegmentInfo> {
+            self.calls
+                .lock()
+                .push((workspace_id.to_string(), biz_tag.to_string(), step));
+            self.result.clone()
+        }
+
+        async fn allocate_segment_with_dc(
+            &self,
+            _workspace_id: &str,
+            _biz_tag: &str,
+            _step: i32,
+            _dc_id: i32,
+        ) -> Result<SegmentInfo> {
+            unimplemented!("DbSegmentLoader 单测只走 allocate_segment");
+        }
+
+        async fn update_segment(
+            &self,
+            _workspace_id: &str,
+            _biz_tag: &str,
+            _current_id: i64,
+            _max_id: i64,
+        ) -> Result<()> {
+            unimplemented!("DbSegmentLoader 单测只走 allocate_segment");
+        }
+
+        async fn create_segment(
+            &self,
+            _workspace_id: &str,
+            _biz_tag: &str,
+            _start_id: i64,
+            _max_id: i64,
+            _step: i32,
+            _delta: i32,
+        ) -> Result<SegmentInfo> {
+            unimplemented!("DbSegmentLoader 单测只走 allocate_segment");
+        }
+
+        async fn list_segments(&self, _workspace_id: &str) -> Result<Vec<SegmentInfo>> {
+            unimplemented!("DbSegmentLoader 单测只走 allocate_segment");
+        }
+
+        async fn delete_segment(&self, _workspace_id: &str, _biz_tag: &str) -> Result<()> {
+            unimplemented!("DbSegmentLoader 单测只走 allocate_segment");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_db_segment_loader_maps_segment_info_to_segment_data() {
+        let repo = Arc::new(MockSegmentRepository::returning(Ok(sample_segment_info(
+            1000, 2000,
+        ))));
+        let loader = DbSegmentLoader::new(repo.clone());
+
+        let data = loader.load_segment(&sample_ctx(), 7).await.unwrap();
+
+        // SegmentInfo.current_id = 分配区间起始（含），max_id = 上界，直接映射。
+        assert_eq!(data.start_id, 1000);
+        assert_eq!(data.max_id, 2000);
+
+        // 必须按 ctx 的 workspace_id + biz_tag、默认步长调 allocate_segment。
+        let calls = repo.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], ("ws".to_string(), "tag".to_string(), 1000));
+    }
+
+    #[tokio::test]
+    async fn test_db_segment_loader_uses_injected_step() {
+        let repo = Arc::new(MockSegmentRepository::returning(Ok(sample_segment_info(
+            1, 501,
+        ))));
+        let loader = DbSegmentLoader::with_step(repo.clone(), 500);
+
+        let data = loader.load_segment(&sample_ctx(), 0).await.unwrap();
+        assert_eq!(data.start_id, 1);
+        assert_eq!(data.max_id, 501);
+        assert_eq!(repo.recorded_calls()[0].2, 500);
+    }
+
+    #[tokio::test]
+    async fn test_db_segment_loader_propagates_repository_error() {
+        let repo = Arc::new(MockSegmentRepository::returning(Err(
+            CoreError::DatabaseError("allocate boom".to_string()),
+        )));
+        let loader = DbSegmentLoader::new(repo);
+
+        let result = loader.load_segment(&sample_ctx(), 0).await;
+        match result {
+            Err(CoreError::DatabaseError(msg)) => {
+                assert!(msg.contains("allocate boom"), "error must pass through");
+            }
+            other => panic!("expected DatabaseError passthrough, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_db_segment_loader_clamps_negative_dirty_values_to_zero() {
+        // 防御性转换：脏数据（负数）收敛为 0，而非按位回绕成超大号段。
+        let repo = Arc::new(MockSegmentRepository::returning(Ok(sample_segment_info(
+            -5, -1,
+        ))));
+        let loader = DbSegmentLoader::new(repo);
+
+        let data = loader.load_segment(&sample_ctx(), 0).await.unwrap();
+        assert_eq!(data.start_id, 0);
+        assert_eq!(data.max_id, 0);
+    }
+
+    #[tokio::test]
+    async fn test_unconfigured_segment_loader_returns_configuration_error() {
+        let loader = UnconfiguredSegmentLoader;
+        let result = loader.load_segment(&sample_ctx(), 0).await;
+        match result {
+            Err(CoreError::ConfigurationError(msg)) => {
+                assert!(
+                    msg.contains("DbSegmentLoader"),
+                    "message must point to DbSegmentLoader injection, got: {msg}"
+                );
+            }
+            other => panic!("expected ConfigurationError, got {other:?}"),
+        }
     }
 }

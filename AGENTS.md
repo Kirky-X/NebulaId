@@ -336,17 +336,16 @@ pub async fn generate_id(&self, ctx: &GenerateContext) -> Result<Id>;
 graph TD
     Root["src/"] --> Core["core/"]
     Root --> Server["server/"]
-    Root --> Infra["infrastructure/"]
+    Root --> Sdk["sdk/"]
     Root --> Lib["lib.rs"]
     Root --> Main["main.rs"]
     Root --> Build["build.rs"]
 
     Core --> Algo["algorithm/<br/>segment, snowflake, uuid_v8,<br/>router, degradation_manager, traits"]
-    Core --> Auth["auth/"]
     Core --> Config["config/"]
-    Core --> Container["container/<br/>app_container (DI)"]
     Core --> Coord["coordinator/<br/>etcd cluster health, worker allocator"]
     Core --> DB["database/<br/>SeaORM entities & repository"]
+    Core --> I18n["i18n.rs<br/>i18n error messages"]
     Core --> Mon["monitoring/"]
     Core --> Types["types/<br/>id, error, metrics, segment_info"]
     Core --> Tests["tests/<br/>integration, degradation, cache, dynamic_step"]
@@ -355,28 +354,28 @@ graph TD
     Server --> Rate["rate_limit/<br/>limiter, middleware"]
     Server --> Handlers["handlers/"]
     Server --> Audit["audit/"]
+    Server --> Auth["auth/"]
     Server --> Cfg["config/<br/>tls, cors, hot_reload, server, management"]
     Server --> Proto["proto/<br/>gRPC protobuf generated"]
     Server --> Router["router.rs, openapi.rs, grpc.rs"]
 
-    Infra --> Repos["repositories/"]
-    Infra --> Adapter["config_adapter,<br/>config_provider, database_adapter"]
+    Sdk --> Kit["kit.rs<br/>trait-kit Kit assembly"]
 
     style Root fill:#e1f5ff
     style Core fill:#b3e5fc
     style Server fill:#c8e6c9
-    style Infra fill:#fff9c4
+    style Sdk fill:#f3e5f5
 ```
 
 **Key modules:**
 - `src/core/algorithm/` - ID generation algorithms (Segment, Snowflake, UUID v8) with degradation manager, and router
-- `src/core/container/app_container.rs` - Dependency injection container
 - `src/core/coordinator/` - Etcd-based distributed coordination (leader election, worker allocation, cluster health)
 - `src/core/database/` - SeaORM entities and repository layer
+- `src/core/i18n.rs` - i18n 错误消息
 - `src/server/middleware/` - HTTP middleware (API key auth, size limit)
 - `src/server/rate_limit/` - Rate limiting (powered by `limiteron`)
 - `src/server/config/` - Server configuration (TLS, CORS, hot reload)
-- `src/infrastructure/` - Infrastructure adapters and repository implementations
+- `src/sdk/` - 嵌入式 SDK(trait-kit Kit 装配)
 
 ### Testing
 

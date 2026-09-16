@@ -32,6 +32,19 @@ use tracing::info;
 
 const DEFAULT_START_TIME: u64 = 1704067200000;
 
+/// clock drift 衰减阈值：距最近一次回拨事件持续无新事件达到该毫秒数后，
+/// `clock_drift_ms` 衰减清零、health_check 恢复 Healthy（T019）。
+const DEFAULT_DRIFT_DECAY_AFTER_MS: u64 = 60_000;
+
+/// 进程级单调锚点：`monotonic_millis()` 返回自首次调用起的毫秒数（恒 >= 1，
+/// 0 保留为 last_drift_at_ms 的「尚无事件」哨兵）。用于给 drift 事件打时间戳，
+/// 不受系统时钟回拨影响（回拨场景下 `SystemTime` 不可靠）。
+fn monotonic_millis() -> u64 {
+    static ANCHOR: OnceLock<SystemTime> = OnceLock::new();
+    let anchor = ANCHOR.get_or_init(SystemTime::now);
+    anchor.elapsed().unwrap_or(Duration::ZERO).as_millis() as u64 + 1
+}
+
 /// 缓存 epoch 起点（SystemTime::UNIX_EPOCH + DEFAULT_START_TIME），避免每次 checked_add
 fn epoch_start() -> SystemTime {
     static EPOCH_START: OnceLock<SystemTime> = OnceLock::new();
@@ -118,6 +131,11 @@ pub struct SnowflakeAlgorithm {
     rotation_count: AtomicU8,
     metrics: Arc<SnowflakeMetrics>,
     clock_drift_ms: AtomicU64,
+    /// 最近一次时钟回拨事件的单调时刻（`monotonic_millis()` 毫秒；0 = 尚无事件）。
+    /// 用于 drift 衰减判定：持续 `drift_decay_after_ms` 无新事件则清零漂移。
+    last_drift_at_ms: AtomicU64,
+    /// drift 衰减阈值（毫秒）。默认 60_000；测试可改小以模拟时间推进。
+    drift_decay_after_ms: u64,
     /// 串行化 `(last_timestamp, sequence)` 状态迁移（修复并发重复 ID 竞态）。
     /// 「新毫秒复位」与「同毫秒递增」必须互斥，否则两线程可同时复位
     /// sequence 并领取相同 seq，产生重复 ID。临界区可能跨越
@@ -155,7 +173,32 @@ impl SnowflakeAlgorithm {
             rotation_count: AtomicU8::new(0),
             metrics: Arc::new(SnowflakeMetrics::new()),
             clock_drift_ms: AtomicU64::new(0),
+            last_drift_at_ms: AtomicU64::new(0),
+            drift_decay_after_ms: DEFAULT_DRIFT_DECAY_AFTER_MS,
             gen_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// drift 衰减：距最近一次回拨事件超过 `drift_decay_after_ms` 且期间无新
+    /// 事件时，清零 `clock_drift_ms`，使 health_check 恢复 Healthy（T019）。
+    ///
+    /// 在每次进入生成路径时检查（成功与回拨失败共用入口）：若本次调用又发生
+    /// 回拨，回拨分支会刷新 `last_drift_at_ms` 并重新记录漂移，衰减不会吞掉
+    /// 持续回拨的健康告警。
+    fn maybe_decay_drift(&self) {
+        let drift = self.clock_drift_ms.load(Ordering::Relaxed);
+        if drift == 0 {
+            return;
+        }
+        let now = monotonic_millis();
+        let last = self.last_drift_at_ms.load(Ordering::Relaxed);
+        if now.saturating_sub(last) >= self.drift_decay_after_ms {
+            self.clock_drift_ms.store(0, Ordering::Relaxed);
+            info!(
+                event = "snowflake_clock_drift_decayed",
+                previous_drift_ms = drift,
+                quiet_ms = now.saturating_sub(last)
+            );
         }
     }
 
@@ -210,6 +253,10 @@ impl SnowflakeAlgorithm {
         // ID。锁内包含 wait_for_next_ms 的 .await（tokio Mutex 可安全跨 await）。
         let _guard = self.gen_lock.lock().await;
 
+        // drift 衰减检查（T019）：持续 60 秒无新回拨事件后清零漂移，
+        // health_check 据此恢复 Healthy。
+        self.maybe_decay_drift();
+
         let timestamp = Self::get_timestamp();
         let last_ts = self.last_timestamp.load(Ordering::SeqCst);
         let sequence_mask = self.config.sequence_mask();
@@ -217,6 +264,8 @@ impl SnowflakeAlgorithm {
         if timestamp < last_ts {
             let drift = last_ts - timestamp;
             self.clock_drift_ms.store(drift, Ordering::Relaxed);
+            self.last_drift_at_ms
+                .store(monotonic_millis(), Ordering::Relaxed);
             self.metrics.clock_backwards.fetch_add(1, Ordering::Relaxed);
 
             tracing::warn!(
@@ -677,6 +726,92 @@ mod tests {
         let threshold = algo.config.clock_drift_threshold_ms;
         algo.clock_drift_ms.store(threshold, Ordering::Relaxed);
         assert!(matches!(algo.health_check(), HealthStatus::Healthy));
+    }
+
+    // ========================================================================
+    // clock drift 衰减（T019）
+    // ========================================================================
+
+    /// 回拨事件必须同时记录 last_drift_at_ms（衰减判定的时钟基准）。
+    #[tokio::test]
+    async fn test_backward_event_records_last_drift_at() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        assert_eq!(algo.last_drift_at_ms.load(Ordering::Relaxed), 0);
+
+        let current = SnowflakeAlgorithm::get_timestamp();
+        algo.last_timestamp.store(current + 2000, Ordering::SeqCst);
+        assert!(algo.generate_id().await.is_err());
+
+        assert!(
+            algo.last_drift_at_ms.load(Ordering::Relaxed) > 0,
+            "backward event must refresh last_drift_at_ms"
+        );
+    }
+
+    /// 模拟时间推进（衰减阈值内）：drift 保持、health 维持 Unhealthy；
+    /// 超过衰减阈值后：drift 清零且 health 恢复 Healthy。
+    #[tokio::test]
+    async fn test_drift_decays_after_quiet_period_restores_health() {
+        let mut algo = SnowflakeAlgorithm::new(0, 0);
+        // 阈值注入：0 = 时间一推进（下一次生成路径检查）即衰减。
+        algo.drift_decay_after_ms = 0;
+
+        // 注入一次已记录的回拨事件（真实回拨会这样落盘）。
+        algo.clock_drift_ms.store(2000, Ordering::Relaxed);
+        algo.last_drift_at_ms
+            .store(monotonic_millis(), Ordering::Relaxed);
+        assert!(matches!(algo.health_check(), HealthStatus::Unhealthy(_)));
+
+        // 阈值内的保持路径：换一把阈值无穷大的实例，生成不得清零 drift。
+        let mut held = SnowflakeAlgorithm::new(0, 0);
+        held.drift_decay_after_ms = u64::MAX;
+        held.clock_drift_ms.store(2000, Ordering::Relaxed);
+        held.last_drift_at_ms
+            .store(monotonic_millis(), Ordering::Relaxed);
+        let id = held.generate_id().await.unwrap();
+        assert!(id.as_u128() > 0);
+        assert_eq!(
+            held.clock_drift_ms.load(Ordering::Relaxed),
+            2000,
+            "衰减阈值内 drift 不得被清零"
+        );
+        assert!(matches!(held.health_check(), HealthStatus::Unhealthy(_)));
+
+        // 超时路径：下一次生成成功后 drift 清零、health 恢复 Healthy。
+        let id = algo.generate_id().await.unwrap();
+        assert!(id.as_u128() > 0);
+        assert_eq!(
+            algo.clock_drift_ms.load(Ordering::Relaxed),
+            0,
+            "超过衰减阈值后 drift 必须清零"
+        );
+        assert!(matches!(algo.health_check(), HealthStatus::Healthy));
+    }
+
+    /// 持续回拨会刷新 last_drift_at_ms：即使衰减阈值已到，新事件后重新计时，
+    /// drift 不被清零（衰减不能吞掉正在发生的回拨告警）。
+    #[tokio::test]
+    async fn test_fresh_backward_event_blocks_decay() {
+        let mut algo = SnowflakeAlgorithm::new(0, 0);
+        // 阈值 0：若非新事件刷新时间戳，进入生成路径的衰减检查会立即清零。
+        algo.drift_decay_after_ms = 0;
+        // 预置一次「很久以前」的旧事件。
+        algo.clock_drift_ms.store(2000, Ordering::Relaxed);
+        algo.last_drift_at_ms
+            .store(monotonic_millis().saturating_sub(60_000), Ordering::Relaxed);
+
+        // 本次调用发生真实回拨（last_timestamp 在未来 2000ms）：
+        // 回拨分支刷新 last_drift_at_ms 并重新记录 drift。
+        let current = SnowflakeAlgorithm::get_timestamp();
+        algo.last_timestamp.store(current + 2000, Ordering::SeqCst);
+        assert!(algo.generate_id().await.is_err());
+
+        assert_eq!(
+            algo.clock_drift_ms.load(Ordering::Relaxed),
+            2000,
+            "新回拨事件后 drift 必须保持记录（重新计时）"
+        );
+        assert!(matches!(algo.health_check(), HealthStatus::Unhealthy(_)));
     }
 
     // ========================================================================

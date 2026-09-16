@@ -17,6 +17,7 @@ use crate::core::config::Config;
 use crate::core::types::id::AlgorithmType;
 use crate::core::types::Result;
 use arc_swap::ArcSwap;
+use confers::FsWatcher;
 use std::sync::{Arc, RwLock};
 use tokio::fs;
 use tokio::time::{interval, Duration};
@@ -59,7 +60,7 @@ impl HotReloadConfig {
     where
         F: Fn(Config) + Send + Sync + 'static,
     {
-        // M10 修复：原实现先检查锁中毒再 `write().unwrap()`，逻辑矛盾
+        // 修复：原实现先检查锁中毒再 `write().unwrap()`，逻辑矛盾
         // （锁中毒时第二次 write 仍会 Err，unwrap 会 panic）。
         // 改为复用 guard，与 `update_config` (line 228-240) 的正确模式一致。
         let mut guard = match self.reload_callbacks.write() {
@@ -199,26 +200,45 @@ impl HotReloadConfig {
     }
 
     pub async fn watch(&self, interval_ms: u64) {
-        let mut interval = interval(Duration::from_millis(interval_ms));
-        let mut last_modified = None;
+        // confers `FsWatcher`（notify 事件驱动 + 自适应去抖）替换旧 mtime
+        // 轮询：变更即时触发，消除轮询间隔的检测延迟与空转开销。
+        // `interval_ms` 语义由「轮询周期」收敛为「去抖窗口 + 监视器重建间隔」。
+        //
+        // 启动即重载一次：保持旧轮询「首个 tick 必触发 reload」的语义，使
+        // watch 启动前对文件的未跟踪修改被显性同步。
+        if let Err(e) = self.reload_config().await {
+            error!(
+                "{}",
+                t!("log.server.config.hot_reload.reload_error", error = e)
+            );
+        }
 
+        let mut retry = interval(Duration::from_millis(interval_ms));
         loop {
-            interval.tick().await;
-
-            if let Ok(metadata) = fs::metadata(&self.config_path).await {
-                let current_modified = metadata.modified().ok();
-
-                if last_modified.is_none() || current_modified != last_modified {
-                    last_modified = current_modified;
-
-                    if let Err(e) = self.reload_config().await {
-                        error!(
-                            "{}",
-                            t!("log.server.config.hot_reload.reload_error", error = e)
-                        );
-                    }
+            let mut watcher = match FsWatcher::new(&self.config_path, interval_ms).await {
+                Ok(watcher) => watcher,
+                Err(e) => {
+                    // 监视器建立失败（配置文件尚未创建 / inotify 资源耗尽等）：
+                    // 按间隔重试，文件出现或资源释放后自动进入事件驱动模式。
+                    warn!(
+                        error = %e,
+                        path = %self.config_path,
+                        "config file watcher init failed; retrying"
+                    );
+                    retry.tick().await;
+                    continue;
+                }
+            };
+            while watcher.recv().await.is_some() {
+                if let Err(e) = self.reload_config().await {
+                    error!(
+                        "{}",
+                        t!("log.server.config.hot_reload.reload_error", error = e)
+                    );
                 }
             }
+            // recv() 返回 None = 事件通道关闭（stop() 或系统级错误）：重建监视器。
+            warn!("config file watcher closed; re-establishing");
         }
     }
 
@@ -1173,7 +1193,7 @@ max_batch_size = 100
     }
 }
 
-/// T011：auto_watch 关闭（缺省）时不产生任何行为；watch 循环在文件
+/// auto_watch 关闭（缺省）时不产生任何行为；watch 循环在文件
 /// mtime 变化后触发 reload 回调。使用 tempfile + 短轮询间隔验证。
 #[tokio::test]
 async fn test_watch_triggers_reload_callback_on_mtime_change() {

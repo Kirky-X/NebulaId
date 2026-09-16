@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 // Re-export ApiKeyRole locally for use in this module
 pub use crate::core::database::ApiKeyRole;
 
-/// Phase 9 T043 (HIGH H6) — hard cap on the number of distinct IPs
+/// Phase 9 — hard cap on the number of distinct IPs
 /// tracked in `auth_failures`. When the map reaches this size, the
 /// oldest entries are evicted to bound memory usage. Prevents an
 /// attacker (especially one able to spoof IPs via the now-fixed
@@ -43,7 +43,7 @@ pub struct ApiKeyAuth {
     pub(crate) enabled: bool,
     trusted_proxies: Vec<IpAddr>,
     auth_failures: Arc<RwLock<HashMap<String, Vec<Instant>>>>,
-    /// wiring T008：garrison cache-memory 认证决策缓存；`None` = 不缓存。
+    /// garrison cache-memory 认证决策缓存；`None` = 不缓存。
     #[cfg(feature = "garrison-auth")]
     cache: Option<Arc<crate::server::auth::AuthCache>>,
 }
@@ -60,7 +60,7 @@ impl ApiKeyAuth {
         }
     }
 
-    /// 启用认证缓存（wiring T008）。命中即跳过 DB + Argon2id 校验。
+    /// 启用认证缓存。命中即跳过 DB + Argon2id 校验。
     ///
     /// TTL 与失效语义见 [`crate::server::auth::AuthCache`]。
     #[cfg(feature = "garrison-auth")]
@@ -69,12 +69,12 @@ impl ApiKeyAuth {
         self
     }
 
-    /// 认证是否启用（wiring T006：gRPC 侧据此决定放行/校验）。
+    /// 认证是否启用（gRPC 侧据此决定放行/校验）。
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
-    /// Phase 9 T043 (HIGH H3) — set the list of trusted proxy IPs.
+    /// Phase 9 — set the list of trusted proxy IPs.
     /// Requests whose direct peer IP appears in this list will have
     /// their `X-Forwarded-For` / `X-Real-IP` headers honored when
     /// determining the originating client IP for auth-failure
@@ -93,7 +93,7 @@ impl ApiKeyAuth {
         // 移除 5 分钟前的记录
         failures.retain(|t| now.duration_since(*t) < Duration::from_secs(300));
 
-        // Phase 9 T043 (HIGH H6) — evict empty entries so a long-lived
+        // Phase 9 — evict empty entries so a long-lived
         // process does not accumulate one dead `Vec` per unique IP ever
         // seen. Without this, an attacker rotating IPs can OOM the
         // process even after the per-IP failure windows expire.
@@ -113,7 +113,7 @@ impl ApiKeyAuth {
             return false;
         }
 
-        // Phase 9 T043 (HIGH H6) — bound the map size. If we are at
+        // Phase 9 — bound the map size. If we are at
         // capacity, drop the entry we just inserted (it has zero
         // failures) plus a sweep of any other empty entries. This
         // favors keeping actively-failing IPs over fresh ones.
@@ -147,7 +147,7 @@ impl ApiKeyAuth {
     }
 
     fn get_client_ip(&self, req: &Request<Body>) -> Option<String> {
-        // Phase 9 T043 (HIGH H3) — delegate to the shared, trusted-
+        // Phase 9 — delegate to the shared, trusted-
         // proxy-aware implementation. Previously this method blindly
         // trusted `X-Forwarded-For`, allowing an attacker to forge
         // the header and bypass per-IP auth-failure rate limiting.
@@ -180,7 +180,7 @@ impl ApiKeyAuth {
             .ok()
             .flatten()?;
 
-        // T010（D-A）：上一代凭证只在宽限期内有效，其有效期由 key 行里的
+        // 上一代凭证只在宽限期内有效，其有效期由 key 行里的
         // `rotate_expires_at` 决定，而缓存只能表达相对 TTL —— 一旦写入，旧凭证
         // 会在宽限期关闭后继续被放行直到 TTL 到期，等于变相延长窗口。因此这类命中
         // 不进缓存（代价：窗口期内每个请求都回源校验），并记显式告警供运维定位
@@ -260,7 +260,7 @@ impl ApiKeyAuth {
 
             // 设置默认的 workspace_id 和 role 扩展
             req.extensions_mut().insert(None::<uuid::Uuid>);
-            // LOW-1 修复（CWE-1188）：禁用认证时不再赋予 User 角色
+            // （CWE-1188）：禁用认证时不再赋予 User 角色
             // （User 是真实角色，有生成 ID 等业务权限）。改用 Anonymous，
             // 权限低于 User，只能访问公开端点（health/ready/metrics），
             // 其他端点由 `router.rs::verify_user_role` 拒绝。
@@ -289,7 +289,7 @@ impl ApiKeyAuth {
 
         let auth_header = req.headers().get("authorization").cloned();
 
-        // converge T026①：解析改调全仓唯一实现。此前这里是 Basic/ApiKey 的第二份
+        // 解析改调全仓唯一实现。此前这里是 Basic/ApiKey 的第二份
         // 手写解析，且与共享函数已出现语义分歧（空凭证一处拒绝、一处延后判断），
         // 修一边即漏一边。失败原因仍逐类打点，审计 reason 与 i18n 文案保持不变。
         let parsed = auth_header
@@ -463,7 +463,7 @@ fn require_non_empty(key_id: &str, key_secret: &str) -> Result<(String, String),
     Ok((key_id.to_string(), key_secret.to_string()))
 }
 
-/// wiring T006：Authorization 头解析的共享纯函数（不关心失败原因时的便捷版）。
+/// Authorization 头解析的共享纯函数（不关心失败原因时的便捷版）。
 ///
 /// 任何格式/编码/空凭证问题统一返回 `None`；需要区分原因（写审计日志）请用
 /// [`parse_authorization_header_detailed`]。
@@ -1077,7 +1077,7 @@ mod tests {
         assert_eq!(auth.workspace_id.unwrap(), Uuid::nil());
     }
 
-    // ===== 解析唯一实现（converge T026①）=====
+    // ===== 解析唯一实现 =====
 
     #[test]
     fn parse_detailed_accepts_both_schemes_and_classifies_every_failure() {
@@ -1188,7 +1188,7 @@ mod tests {
     }
 
     #[cfg(feature = "garrison-auth")]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_validate_key_cache_hit_skips_repository() {
         use crate::server::auth::AuthCache;
         use crate::server::handlers::mock_tests::MockApiKeyRepository;
@@ -1221,7 +1221,8 @@ mod tests {
         });
         mock.expect_get_api_key_by_id()
             .returning(|_| Ok(Some(info())));
-        let auth = ApiKeyAuth::new(Arc::new(mock), true).with_cache(Arc::new(AuthCache::new(300)));
+        let auth =
+            ApiKeyAuth::new(Arc::new(mock), true).with_cache(Arc::new(AuthCache::new(300).await));
 
         let first = auth.validate_key("k", "s").await;
         assert!(first.is_some());

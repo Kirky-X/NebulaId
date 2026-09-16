@@ -62,7 +62,7 @@ pub async fn create_router(
     create_router_with_rate_limit(handlers, auth, rate_limiter, audit_logger, true).await
 }
 
-/// 带显式限流开关的路由装配（converge T022③）。
+/// 带显式限流开关的路由装配。
 ///
 /// `rate_limit_enabled=false` 时不挂载限流层（此前 `[rate_limit].enabled`
 /// 无消费点，配置关不掉限流）。开关由调用方（main.rs 读真实 Config）传入，
@@ -80,7 +80,7 @@ pub async fn create_router_with_rate_limit(
     // Example: ALLOWED_ORIGINS="https://example.com,https://app.example.com"
     let cors = cors::create_env_aware_cors_layer();
 
-    // Phase 9 T043 (HIGH H3) — read trusted proxies from the same env
+    // Phase 9 — read trusted proxies from the same env
     // var that `main.rs` uses for `ApiKeyAuth`. Keeping a single source
     // of truth (env var) avoids plumbing a new parameter through
     // `create_router` and its 6 call sites. Default: empty list (no
@@ -119,7 +119,7 @@ pub async fn create_router_with_rate_limit(
             "/workspaces/{name}/regenerate-user-key",
             post(handle_regenerate_user_key),
         )
-        // SEC-CRITICAL-002 修复（CWE-862 / strix vuln-0002）：服务级配置变更
+        // （CWE-862 / strix vuln-0002）：服务级配置变更
         // 端点（速率限制、日志、热重载、默认算法）必须由 Admin 角色执行。
         // 原本错放在 v1_authenticated_routes，导致任何 User API key 都能
         // 将全局速率限制降到 1 RPS 或修改默认算法，影响全部租户。
@@ -162,7 +162,7 @@ pub async fn create_router_with_rate_limit(
         )
         // Apply auth middleware
         //
-        // SEC-CRITICAL-001 修复（CWE-1188）—— axum 0.8.x layer 语义：
+        // （CWE-1188）—— axum 0.8.x layer 语义
         // 后 `.layer()` 的中间件先执行（outer），先 `.layer()` 的后执行
         // （inner）。因此此处必须先 `anonymous_block_middleware`（inner，
         // 后执行），再 `auth_middleware_fn`（outer，先执行注入
@@ -187,7 +187,7 @@ pub async fn create_router_with_rate_limit(
         .nest(&format!("/api/{}", API_V1), v1_public_routes)
         // Apply API version middleware to all API routes
         .layer(axum::middleware::from_fn(api_version_middleware))
-        // Phase 8 T041 (M4 perf fix) — locale negotiation only needs
+        // Phase 8 (perf fix) — locale negotiation only needs
         // to run on `/api/v1/*` routes (handlers under this prefix
         // read `Extension<Locale>` for error translation). `/health`,
         // `/ready`, `/metrics`, and `/api-docs/openapi.json` do not
@@ -207,11 +207,17 @@ pub async fn create_router_with_rate_limit(
         )
         .merge(api_v1_routes)
         .with_state(app_state)
-        // wiring T002 + converge T022②③：全局限流真实挂载，且必须位于 CORS
-        // **内侧**（axum 中先 `.layer()` 的是内层、后挂载的先执行）。此前挂在
-        // CORS 外侧，导致 429 响应缺 CORS 头且 OPTIONS 预检消耗配额。
-        // `[rate_limit].enabled = false` 时不挂载该层。
-        ;
+        // Swagger UI（吸收 sdforge `docs` feature）：只挂 UI 路由，spec 复用
+        // 上方自有的 /api-docs/openapi.json（sdforge 捆绑版会在同路径注册
+        // 其 inventory 聚合 spec，与本仓路由冲突）。暴露面与 spec 一致：
+        // 两者均为公开只读文档端点。
+        .merge(sdforge::docs::swagger_ui_router_with_spec(
+            "/api-docs/openapi.json",
+        ));
+    // 全局限流真实挂载，且必须位于 CORS
+    // **内侧**（axum 中先 `.layer()` 的是内层、后挂载的先执行）。此前挂在
+    // CORS 外侧，导致 429 响应缺 CORS 头且 OPTIONS 预检消耗配额。
+    // `[rate_limit].enabled = false` 时不挂载该层。
 
     let routes = if rate_limit_enabled {
         routes.layer(axum::middleware::from_fn_with_state(
@@ -255,14 +261,22 @@ pub async fn create_router_with_rate_limit(
             audit_middleware_fn,
         ))
         .layer(axum::Extension(audit_logger))
+        // 请求上下文（吸收 sdforge `context` feature）：解析/生成
+        // x-request-id 与 W3C traceparent/x-trace-id，安装跨协议环境
+        // 上下文（审计/日志经 `sdforge::context::current()` 读取），响应
+        // 回显关联 ID。axum 0.8 后 `.layer()` 者先执行——本层必须最后
+        // 挂载，才能位于最外侧、先于全部业务中间件安装上下文。
+        .layer(axum::middleware::from_fn(
+            sdforge::context::context_middleware,
+        ))
 }
 
 // ========== Helper Functions ==========
 
-/// SEC-CRITICAL-001 修复（CWE-1188）：v1_authenticated_routes 的全局
+/// （CWE-1188）：v1_authenticated_routes 的全局
 /// Anonymous 拒绝中间件。
 ///
-/// **背景**：LOW-1 修复在禁用认证时把请求注入 `ApiKeyRole::Anonymous`，
+/// **背景** 在禁用认证时把请求注入 `ApiKeyRole::Anonymous`，
 /// 但 `verify_user_role` 只在 4 个 handler（generate/batch_generate/
 /// create_biz_tag/create_group）中调用，其余 13 个 authenticated
 /// endpoint（含 `POST /config/algorithm`、`DELETE /biz-tags/{id}` 等
@@ -277,7 +291,7 @@ pub async fn create_router_with_rate_limit(
 /// `auth_middleware_fn` 先执行并注入 `ApiKeyRole` 扩展。详见
 /// `v1_authenticated_routes` 处的注释。
 ///
-/// **NEW-LOW-002 修复（规则 12 失败显性化）**：若 `ApiKeyRole` 扩展
+/// **NEW-（规则 12 失败显性化）** 若 `ApiKeyRole` 扩展
 /// 缺失（说明 `auth_middleware_fn` 未执行或未注入），fail-closed 返回
 /// 401 + warn 日志，避免静默放行。
 ///
@@ -303,7 +317,7 @@ pub async fn anonymous_block_middleware(
         }
         Some(_) => next.run(req).await,
         None => {
-            // NEW-LOW-002：ApiKeyRole 扩展缺失，fail-closed。
+            // NEW-：ApiKeyRole 扩展缺失，fail-closed。
             tracing::warn!(
                 path = %req.uri().path(),
                 method = %req.method(),
@@ -322,10 +336,10 @@ pub async fn anonymous_block_middleware(
 
 /// Verify that the request is from a User API key (not Admin, not Anonymous).
 ///
-/// Phase 8 T041 — returns a locale-translated error response when the
+/// Phase 8 — returns a locale-translated error response when the
 /// caller is an Admin key.
 ///
-/// LOW-1 修复（CWE-1188）：当认证被禁用时，请求会携带 `ApiKeyRole::Anonymous`
+/// （CWE-1188）：当认证被禁用时，请求会携带 `ApiKeyRole::Anonymous`
 /// 扩展。此角色无业务权限，必须被拒绝（避免禁用认证时所有端点都开放）。
 fn verify_user_role(
     role: crate::server::middleware::ApiKeyRole,
@@ -353,7 +367,7 @@ fn validate_request<T: Validate>(
 
 /// Verify workspace_id match for User API Key (by workspace name lookup).
 ///
-/// Phase 8 T041 — all error responses are locale-translated.
+/// Phase 8 — all error responses are locale-translated.
 async fn verify_user_workspace(
     workspace_name: &str,
     key_workspace_id: &Option<uuid::Uuid>,
@@ -376,7 +390,7 @@ async fn verify_user_workspace(
 
 /// 提取通用的 workspace_id 比较逻辑
 ///
-/// Phase 8 T041 — returns locale-translated error on mismatch.
+/// Phase 8 — returns locale-translated error on mismatch.
 fn verify_workspace_id_match(
     workspace_uuid: uuid::Uuid,
     key_workspace_id: &Option<uuid::Uuid>,
@@ -435,7 +449,7 @@ async fn handle_batch_generate(
     // Only User API Key can generate IDs
     verify_user_role(extensions_role.0, locale)?;
 
-    // Phase 8 T041 (M5 perf fix) — server-side log uses structured
+    // Phase 8 (perf fix) — server-side log uses structured
     // fields only; no `t!()` translation. The downstream
     // `core_error_to_response` already localizes the client-facing
     // message, so a second `t!()` lookup here would be redundant
@@ -454,7 +468,7 @@ async fn handle_batch_generate(
     // Verify workspace_id match for User API Key
     verify_user_workspace(&req.workspace, &extensions.0, &state.handlers, locale).await?;
 
-    // Phase 8 T041 (HIGH H-2 fix) — route through `core_error_to_response`
+    // Phase 8 (HIGH fix) — route through `core_error_to_response`
     // so 5xx internal errors are sanitized to generic messages (CRITICAL
     // C-1) and 4xx caller-supplied strings are length-capped. The helper
     // records 5xx via `tracing::error!`; we additionally `warn!` 4xx
@@ -499,7 +513,7 @@ async fn handle_parse(
         return Err(validation_error_response(&validation_errors, locale));
     }
 
-    // Phase 8 T041 (HIGH H-2 fix) — route through `core_error_to_response`
+    // Phase 8 (HIGH fix) — route through `core_error_to_response`
     // so 5xx internal errors are sanitized to generic messages (CRITICAL
     // C-1) and 4xx caller-supplied strings are length-capped. The helper
     // records 5xx via `tracing::error!`; we additionally `warn!` 4xx
@@ -531,7 +545,7 @@ async fn handle_update_rate_limit(
     Extension(locale): Extension<Locale>,
     Json(req): Json<UpdateRateLimitRequest>,
 ) -> Result<Json<UpdateConfigResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Phase 8 T041 (MEDIUM M-2 fix) — invoke `validate_request` so
+    // Phase 8 (MEDIUM fix) — invoke `validate_request` so
     // `#[validate(range(min = 1, max = 1000000))]` etc. on
     // `UpdateRateLimitRequest` are actually enforced at the handler
     // boundary, rather than silently accepted by the config service.
@@ -544,7 +558,7 @@ async fn handle_update_logging(
     Extension(locale): Extension<Locale>,
     Json(req): Json<UpdateLoggingRequest>,
 ) -> Result<Json<UpdateConfigResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Phase 8 T041 (MEDIUM M-2 fix) — enforce `#[validate(length(min = 1, max = 20))]`
+    // Phase 8 (MEDIUM fix) — enforce `#[validate(length(min = 1, max = 20))]`
     // on `UpdateLoggingRequest::level` before forwarding to the service.
     validate_request(&req, locale)?;
     Ok(Json(state.config_service.update_logging(req).await))
@@ -570,7 +584,7 @@ async fn handle_set_algorithm(
     Extension(locale): Extension<Locale>,
     Json(req): Json<SetAlgorithmRequest>,
 ) -> Result<Json<SetAlgorithmResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Phase 8 T041 (MEDIUM M-2 fix) — enforce `#[validate(length(min = 1, max = 64))]`
+    // Phase 8 (MEDIUM fix) — enforce `#[validate(length(min = 1, max = 64))]`
     // on `biz_tag` and `#[validate(length(min = 1, max = 20))]` on `algorithm`.
     validate_request(&req, locale)?;
     Ok(Json(state.config_service.set_algorithm(req).await))
@@ -638,7 +652,7 @@ async fn handle_get_biz_tag(
 ) -> Result<Json<BizTagResponse>, (StatusCode, Json<ErrorResponse>)> {
     let uuid = uuid::Uuid::parse_str(&id).map_err(|_| invalid_uuid_response(locale))?;
 
-    // SEC-CRITICAL-003 修复（CWE-639 / strix vuln-0001）：IDOR 防护。
+    // （CWE-639 / strix vuln-0001）：IDOR 防护。
     // 与 handle_create_biz_tag 一致，仅 User API key 可访问 BizTag，
     // 且必须校验目标 BizTag 的 workspace_id 与调用者一致，防止跨租户访问。
     verify_user_role(extensions_role.0, locale)?;
@@ -670,7 +684,7 @@ async fn handle_update_biz_tag(
         return Err(validation_error_response(&validation_errors, locale));
     }
 
-    // SEC-CRITICAL-003 修复（CWE-639 / strix vuln-0001）：IDOR 防护。
+    // （CWE-639 / strix vuln-0001）：IDOR 防护。
     // 先查询现有 BizTag 校验 workspace 归属，再执行更新。
     verify_user_role(extensions_role.0, locale)?;
 
@@ -700,7 +714,7 @@ async fn handle_delete_biz_tag(
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
     let uuid = uuid::Uuid::parse_str(&id).map_err(|_| invalid_uuid_response(locale))?;
 
-    // SEC-CRITICAL-003 修复（CWE-639 / strix vuln-0001）：IDOR 防护。
+    // （CWE-639 / strix vuln-0001）：IDOR 防护。
     // 先查询现有 BizTag 校验 workspace 归属，再执行删除。
     verify_user_role(extensions_role.0, locale)?;
 
@@ -728,7 +742,7 @@ async fn handle_list_biz_tags(
     Extension(locale): Extension<Locale>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<BizTagListResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Phase 8 T041 (MEDIUM M-3/M-4/MED-003 fix) — surface errors
+    // Phase 8 (MEDIUM fix) — surface errors
     // via `core_error_to_response` instead of silently returning an
     // empty list. The `Extension<Locale>` parameter ensures the
     // locale-translated message is used.
@@ -738,7 +752,7 @@ async fn handle_list_biz_tags(
     let page_size = params.page_size.clamp(1, 100);
     let offset = (page - 1) * page_size;
 
-    // wiring T007 修复（CWE-639）：查询键只能来自认证身份或显式合法参数。
+    // 修复（CWE-639）：查询键只能来自认证身份或显式合法参数。
     // User key 强制绑定自身 workspace，`?workspace_id=` 覆盖一律忽略；
     // Admin key 无租户绑定，必须显式指定 workspace（跨租户全量导出属新增
     // 管理能力，本变更 Non-Goals 已排除）。
@@ -797,7 +811,7 @@ async fn handle_list_workspaces(
     State(state): State<AppState>,
     Extension(locale): Extension<Locale>,
 ) -> Result<Json<WorkspaceListResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Phase 8 T041 (MEDIUM M-3/M-4/MED-003 fix) — surface errors via
+    // Phase 8 (MEDIUM fix) — surface errors via
     // `core_error_to_response` instead of silently returning an empty
     // list, so 5xx internal errors are logged server-side and the
     // client sees a generic locale-translated message.
@@ -865,7 +879,7 @@ async fn handle_list_groups(
     Extension(locale): Extension<Locale>,
     Query(params): Query<GroupListParams>,
 ) -> Result<Json<GroupListResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Phase 8 T041 (MEDIUM M-3/M-4/MED-003 fix) — surface errors via
+    // Phase 8 (MEDIUM fix) — surface errors via
     // `core_error_to_response` and enforce `#[validate(range(min = 1, max = 100))]`
     // on `page_size`. The `Extension<Locale>` parameter ensures the
     // locale-translated message is used.
@@ -890,7 +904,7 @@ async fn handle_create_api_key(
 ) -> Result<Json<ApiKeyWithSecretResponse>, (StatusCode, Json<ErrorResponse>)> {
     validate_request(&req, locale)?;
 
-    // Phase 8 T041 (MEDIUM M-5 fix) — distinguish `workspace_id`
+    // Phase 8 (MEDIUM fix) — distinguish `workspace_id`
     // *missing* (return `workspace_id_required_response`) from
     // `workspace_id` *malformed* (return `invalid_uuid_response`).
     // Previously a malformed UUID silently returned "workspace_id is
@@ -911,7 +925,7 @@ async fn handle_create_api_key(
             None
         } else {
             // User keys must be bound to a workspace — distinguish
-            // missing vs malformed (M-5 fix).
+            // missing vs malformed (fix).
             Some(parse_user_workspace_id(&req.workspace_id)?)
         }
     } else {
@@ -932,7 +946,7 @@ async fn handle_list_api_keys(
     Extension(locale): Extension<Locale>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<ApiKeyListResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Phase 8 T041 (MEDIUM M-3/M-4/MED-003 fix) — surface errors via
+    // Phase 8 (MEDIUM fix) — surface errors via
     // `core_error_to_response` and enforce `#[validate(range(min = 1, max = 100))]`
     // on `page_size`. The `Extension<Locale>` parameter ensures the
     // locale-translated message is used.
@@ -942,7 +956,7 @@ async fn handle_list_api_keys(
     let page_size = params.page_size.clamp(1, 100);
     let offset = (page - 1) * page_size;
 
-    // Get workspace_id from query parameters. LOW L-3 fix — when
+    // Get workspace_id from query parameters. LOW fix — when
     // `workspace_id` is provided but is not a valid UUID, log a
     // server-side warning and fall back to `Uuid::nil()` (admin key
     // semantics: list across all workspaces). Returning an error here
@@ -1147,7 +1161,7 @@ mod tests {
         let _router = router;
     }
 
-    // ========== 限流层挂载契约（converge T022②③） ==========
+    // ========== 限流层挂载契约（③） ==========
 
     fn make_plain_request(uri: &str) -> axum::http::Request<axum::body::Body> {
         axum::http::Request::builder()
@@ -1214,7 +1228,7 @@ mod tests {
             Some("nosniff"),
             "429 必须穿过安全头与 CORS 层（CORS 与限流层序错误时丢失）"
         );
-        // R-rl-001：拒绝响应显式声明剩余配额
+        // 拒绝响应显式声明剩余配额
         assert_eq!(
             resp.headers()
                 .get(crate::server::rate_limit::middleware::HEADER_RATE_LIMIT_REMAINING)

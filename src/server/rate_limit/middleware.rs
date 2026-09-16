@@ -117,7 +117,7 @@ impl RateLimitMiddleware {
                     .headers_mut()
                     .insert(HEADER_RATE_LIMIT, limit_header);
             }
-            // R-rl-001：拒绝响应必须显式声明剩余配额为 0，
+            // 拒绝响应必须显式声明剩余配额为 0，
             // 客户端无需再从 Retry-After 推断是否已被限流。
             response
                 .headers_mut()
@@ -136,14 +136,14 @@ impl RateLimitMiddleware {
 ///
 /// Considers trusted proxies and X-Forwarded-For header.
 ///
-/// Phase 9 T043 (LOW L3) — delegates to the single shared implementation
+/// Phase 9 — delegates to the single shared implementation
 /// in `server::middleware::utils` so audit/rate_limit/api_key_auth
 /// middleware all share one source of truth.
 fn get_client_ip(req: &Request<Body>, trusted_proxies: &[IpAddr]) -> Option<String> {
     crate::server::middleware::utils::get_client_ip(req, trusted_proxies)
 }
 
-/// `from_fn_with_state` 兼容的自由函数包装（wiring T002）。
+/// `from_fn_with_state` 兼容的自由函数包装。
 ///
 /// axum 0.8 的 `FromFnLayer` 要求 `F: FnMut + Clone + Send + 'static` 且
 /// 签名严格匹配 `async fn(State<S>, Request, Next) -> Response`；实例
@@ -358,14 +358,15 @@ mod tests {
             .expect("X-RateLimit-Limit header should be present on 429 too");
         assert_eq!(limit_header.to_str().unwrap(), "1");
 
-        // R-rl-001：拒绝响应必须显式声明剩余配额为 0
+        // 拒绝响应必须显式声明剩余配额为 0
         let remaining = response
             .headers()
             .get("X-RateLimit-Remaining")
             .expect("X-RateLimit-Remaining header should be present on 429");
         assert_eq!(remaining.to_str().unwrap(), "0");
 
-        // Should carry Retry-After header (limiter.rs sets retry_after=Some(1) on reject)
+        // Should carry Retry-After header（拒绝时取快照 reset_secs；rate=1/
+        // capacity=1 桶补满需 1 秒）
         let retry_after = response
             .headers()
             .get("Retry-After")
@@ -394,7 +395,7 @@ mod tests {
         let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(body_json["code"], 429);
         assert_eq!(body_json["message"], "Rate limit exceeded");
-        // retry_after is Some(1) on rejection per limiteron TokenBucket
+        // retry_after 取快照 reset_secs（rate=1/capacity=1 → 补满 1 秒）
         assert_eq!(body_json["retry_after"], 1);
     }
 

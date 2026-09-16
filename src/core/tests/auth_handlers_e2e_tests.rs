@@ -295,7 +295,7 @@ async fn read_body_to_string(body: Body) -> String {
 // ============================================================================
 
 // ----------------------------------------------------------------------------
-// E2E-AUTH-001: Basic base64(key_id:key_secret) 头 → 200
+// Basic base64(key_id:key_secret) 头 → 200
 // ----------------------------------------------------------------------------
 
 #[tokio::test]
@@ -311,7 +311,7 @@ async fn e2e_auth_middleware_basic_auth_success() {
 }
 
 // ----------------------------------------------------------------------------
-// E2E-AUTH-002: ApiKey key_id:key_secret 头 → 200
+// ApiKey key_id:key_secret 头 → 200
 // ----------------------------------------------------------------------------
 
 #[tokio::test]
@@ -327,7 +327,7 @@ async fn e2e_auth_middleware_api_key_auth_success() {
 }
 
 // ----------------------------------------------------------------------------
-// E2E-AUTH-003: 无 Authorization 头 → 401
+// 无 Authorization 头 → 401
 // ----------------------------------------------------------------------------
 
 #[tokio::test]
@@ -342,7 +342,7 @@ async fn e2e_auth_middleware_missing_authorization_returns_401() {
 }
 
 // ----------------------------------------------------------------------------
-// E2E-AUTH-004: 格式错误的 Basic 头（非法 base64）→ 401
+// 格式错误的 Basic 头（非法 base64）→ 401
 // ----------------------------------------------------------------------------
 
 #[tokio::test]
@@ -361,7 +361,7 @@ async fn e2e_auth_middleware_invalid_base64_returns_401() {
 }
 
 // ----------------------------------------------------------------------------
-// E2E-AUTH-005: 空 key_id:key_secret → 401
+// 空 key_id:key_secret → 401
 // ----------------------------------------------------------------------------
 
 #[tokio::test]
@@ -378,7 +378,7 @@ async fn e2e_auth_middleware_empty_credentials_returns_401() {
 }
 
 // ----------------------------------------------------------------------------
-// E2E-AUTH-006: 错误密钥 → 401
+// 错误密钥 → 401
 // ----------------------------------------------------------------------------
 
 #[tokio::test]
@@ -394,7 +394,7 @@ async fn e2e_auth_middleware_wrong_secret_returns_401() {
 }
 
 // ----------------------------------------------------------------------------
-// E2E-AUTH-007: 认证禁用时注入 Anonymous 角色
+// 认证禁用时注入 Anonymous 角色
 // ----------------------------------------------------------------------------
 
 #[tokio::test]
@@ -412,7 +412,7 @@ async fn e2e_auth_middleware_disabled_injects_anonymous_role() {
 }
 
 // ----------------------------------------------------------------------------
-// E2E-AUTH-008: 5 分钟内 10 次失败后 → 429
+// 5 分钟内 10 次失败后 → 429
 // ----------------------------------------------------------------------------
 
 #[tokio::test]
@@ -441,7 +441,7 @@ async fn e2e_auth_failure_rate_blocks_after_10_failures() {
 }
 
 // ----------------------------------------------------------------------------
-// E2E-AUTH-009: 窗口未达阈值时放行（<10 次失败仍允许）
+// 窗口未达阈值时放行（<10 次失败仍允许）
 // ----------------------------------------------------------------------------
 
 #[tokio::test]
@@ -502,7 +502,7 @@ async fn e2e_auth_failure_rate_allows_after_window_expires() {
 // ============================================================================
 
 // ----------------------------------------------------------------------------
-// E2E-ADMIN-001: Admin 角色放行 → 200
+// Admin 角色放行 → 200
 // ----------------------------------------------------------------------------
 
 #[tokio::test]
@@ -518,7 +518,7 @@ async fn e2e_admin_required_allows_admin_role() {
 }
 
 // ----------------------------------------------------------------------------
-// E2E-ADMIN-002: User 角色拒绝 → 403
+// User 角色拒绝 → 403
 // ----------------------------------------------------------------------------
 
 #[tokio::test]
@@ -534,7 +534,7 @@ async fn e2e_admin_required_rejects_user_role() {
 }
 
 // ----------------------------------------------------------------------------
-// E2E-ADMIN-003: 无 ApiKeyRole 扩展 → 403（fail-closed）
+// 无 ApiKeyRole 扩展 → 403（fail-closed）
 // ----------------------------------------------------------------------------
 
 #[tokio::test]
@@ -552,7 +552,7 @@ async fn e2e_admin_required_rejects_missing_extension() {
 // ============================================================================
 
 // ----------------------------------------------------------------------------
-// E2E-VAL-001: GenerateRequest workspace 65 字符 → 验证失败
+// GenerateRequest workspace 65 字符 → 验证失败
 // ----------------------------------------------------------------------------
 
 #[test]
@@ -574,7 +574,7 @@ fn e2e_generate_request_validates_workspace_length_65_fails() {
 }
 
 // ----------------------------------------------------------------------------
-// E2E-VAL-002: GenerateRequest workspace 空 → 验证失败
+// GenerateRequest workspace 空 → 验证失败
 // ----------------------------------------------------------------------------
 
 #[test]
@@ -595,7 +595,7 @@ fn e2e_generate_request_validates_workspace_empty_fails() {
 }
 
 // ----------------------------------------------------------------------------
-// E2E-VAL-003: GenerateRequest algorithm 21 字符 → 验证失败
+// GenerateRequest algorithm 21 字符 → 验证失败
 // ----------------------------------------------------------------------------
 
 #[test]
@@ -617,7 +617,7 @@ fn e2e_generate_request_validates_algorithm_length_21_fails() {
 }
 
 // ----------------------------------------------------------------------------
-// E2E-VAL-004: BatchGenerateRequest size=0 → 验证失败
+// BatchGenerateRequest size=0 → 验证失败
 // ----------------------------------------------------------------------------
 
 #[test]
@@ -636,12 +636,12 @@ fn e2e_batch_generate_request_validates_size_zero_fails() {
 }
 
 // ----------------------------------------------------------------------------
-// E2E-VAL-005: BatchGenerateRequest 上限迁移（T012）
+// BatchGenerateRequest 上限迁移
 // ----------------------------------------------------------------------------
 
 #[test]
 fn e2e_batch_generate_request_validates_size_101_passes_struct_validation() {
-    // T012：结构校验仅保留 min=1；max 由 config.batch_generate.max_batch_size
+    // 结构校验仅保留 min=1；max 由 config.batch_generate.max_batch_size
     // （默认 100）在 handler 层运行时校验。此处断言 101 通过结构校验，
     // 超限拒绝行为由 id_handlers/grpc 的边界测试覆盖。
     let request = BatchGenerateRequest {
@@ -660,7 +660,7 @@ fn e2e_batch_generate_request_validates_size_101_passes_struct_validation() {
 }
 
 // ----------------------------------------------------------------------------
-// E2E-VAL-006: BatchGenerateRequest size=1 和 size=100 → 验证通过
+// BatchGenerateRequest size=1 和 size=100 → 验证通过
 // ----------------------------------------------------------------------------
 
 #[test]
@@ -689,7 +689,7 @@ fn e2e_batch_generate_request_validates_size_boundary_1_and_100_pass() {
 }
 
 // ============================================================================
-// wiring T007: GET /api/v1/biz-tags 租户隔离（CWE-639 / IDOR）
+// GET /api/v1/biz-tags 租户隔离（CWE-639 / IDOR）
 //
 // 背景：handler 曾把 `None` workspace 透传给分页查询，底层回退为 nil UUID
 // 过滤 —— 既拿不到本租户数据（功能失效），又会匹配 workspace_id 为 nil 的
@@ -886,7 +886,7 @@ mod biz_tag_tenant_isolation {
 }
 
 // ============================================================================
-// wiring T025⑤: biz-tags 端点对 Anonymous 身份一律 401（SEC-CRITICAL-001）
+// biz-tags 端点对 Anonymous 身份一律 401
 //
 // 走真实 `create_router` 全栈逐端点断言 401，锁定「Anonymous 无 biz-tags 业务
 // 权限」这一可观测契约。注意：路由层的 `anonymous_block_middleware` 与 handler
@@ -900,7 +900,7 @@ mod biz_tag_anonymous_guard {
     use crate::server::config::management::ConfigManagementService;
     use crate::server::handlers::mock_tests::{MockApiKeyRepository, MockConfigManagementService};
 
-    /// 认证禁用 → `auth_middleware_fn` 注入 `ApiKeyRole::Anonymous`（LOW-1 语义）。
+    /// 认证禁用 → `auth_middleware_fn` 注入 `ApiKeyRole::Anonymous`。
     fn anonymous_auth() -> Arc<ApiKeyAuth> {
         // ApiKeyRepository mock 无需任何期望：禁用分支在触达仓储前即短路返回。
         let repo = MockApiKeyRepository::new();
@@ -1000,7 +1000,7 @@ mod biz_tag_anonymous_guard {
 }
 
 // ============================================================================
-// wiring T008: garrison cache-memory 认证缓存接线（R-auth-001 / R-auth-002）
+// garrison cache-memory 认证缓存接线
 // ============================================================================
 
 #[cfg(feature = "garrison-auth")]
@@ -1013,7 +1013,7 @@ mod auth_cache_wiring {
     use crate::server::handlers::ApiHandlers;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    /// 共享仓储 mock（T027⑧：替代手写 `CountingRepo` 的 11 个样板方法）。
+    /// 共享仓储 mock（替代手写 `CountingRepo` 的 11 个样板方法）。
     ///
     /// 只登记本组测试真正触及的两个方法：
     /// - `validate_api_key`：合法凭证返回 User 身份并累计调用次数；`revoked`
@@ -1088,23 +1088,23 @@ mod auth_cache_wiring {
             .returning(move |_| Ok(Some(info.clone())));
     }
 
-    fn make_cached_auth(
+    async fn make_cached_auth(
         repo: Arc<MockApiKeyRepository>,
         ttl_seconds: u64,
     ) -> (ApiKeyAuth, Arc<AuthCache>) {
-        let cache = Arc::new(AuthCache::new(ttl_seconds));
+        let cache = Arc::new(AuthCache::new(ttl_seconds).await);
         let auth = ApiKeyAuth::new(repo, true).with_cache(cache.clone());
         (auth, cache)
     }
 
-    /// R-auth-001 (a)：同一合法凭证第二次校验命中缓存，不再调用仓储。
-    #[tokio::test]
+    /// (a)：同一合法凭证第二次校验命中缓存，不再调用仓储。
+    #[tokio::test(flavor = "multi_thread")]
     async fn second_validation_hits_cache_without_repository_call() {
         let workspace_id = Uuid::new_v4();
         // 整个测试只允许 1 次回源：第二次必须走缓存
         let (mut repo, validate_calls, _revoked) = mock_repo(workspace_id, 1);
         expect_cache_key_row(&mut repo, 1, workspace_id);
-        let (auth, _cache) = make_cached_auth(Arc::new(repo), 300);
+        let (auth, _cache) = make_cached_auth(Arc::new(repo), 300).await;
 
         assert!(auth
             .validate_key("cache-key", "cache-secret")
@@ -1128,13 +1128,13 @@ mod auth_cache_wiring {
     }
 
     /// 错误凭证永不命中缓存（每次都要回源，防止 key_id 枚举绕过）。
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn wrong_secret_always_falls_back_to_repository() {
         let workspace_id = Uuid::new_v4();
         let (mut repo, validate_calls, _revoked) = mock_repo(workspace_id, 2);
         // 校验未通过 → 不得写缓存 → 不得读 key 行
         repo.expect_get_api_key_by_id().never();
-        let (auth, _cache) = make_cached_auth(Arc::new(repo), 300);
+        let (auth, _cache) = make_cached_auth(Arc::new(repo), 300).await;
 
         assert!(auth.validate_key("cache-key", "bad-secret").await.is_none());
         assert!(auth.validate_key("cache-key", "bad-secret").await.is_none());
@@ -1145,7 +1145,7 @@ mod auth_cache_wiring {
         );
     }
 
-    /// 双代凭证仓储 mock（T010）：`cache-secret` 是当代凭证，`previous-secret`
+    /// 双代凭证仓储 mock：`cache-secret` 是当代凭证，`previous-secret`
     /// 代表轮换后仍在宽限期内的上一代凭证（`used_previous_credential = true`）。
     ///
     /// `times` 就是断言本身：它限制"允许回源仓储几次"，缓存若意外命中/未命中都
@@ -1177,16 +1177,16 @@ mod auth_cache_wiring {
         (repo, validate_calls)
     }
 
-    /// T010（D-A）：宽限期命中的决策有时效性（受 `rotate_expires_at` 约束），
+    /// 宽限期命中的决策有时效性（受 `rotate_expires_at` 约束），
     /// 缓存 TTL 表达不了这个绝对截止时间，因此这类命中不得写入认证决策缓存 ——
     /// 否则上一代凭证在宽限期结束后仍会被缓存放行到 TTL 到期，等于变相延长窗口。
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_grace_credential_hit_is_not_cached() {
         let workspace_id = Uuid::new_v4();
         let (mut repo, validate_calls) = mock_repo_two_generations(workspace_id, 2);
         // 跳过写入 ⇒ 连"读 key 行拿绝对过期时间"都不该发生
         repo.expect_get_api_key_by_id().never();
-        let (auth, cache) = make_cached_auth(Arc::new(repo), 300);
+        let (auth, cache) = make_cached_auth(Arc::new(repo), 300).await;
 
         for _ in 0..2 {
             let identity = auth
@@ -1210,15 +1210,15 @@ mod auth_cache_wiring {
         );
     }
 
-    /// T010 的另一半：跳过写入只针对宽限期命中，当代凭证的缓存路径不得受影响。
-    #[tokio::test]
+    /// 另一半：跳过写入只针对宽限期命中，当代凭证的缓存路径不得受影响。
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_current_credential_hit_is_cached() {
         let workspace_id = Uuid::new_v4();
         // 允许回源 2 次 = 上一代 1 次 + 当代首见 1 次；当代第二次必须命中缓存
         let (mut repo, validate_calls) = mock_repo_two_generations(workspace_id, 2);
         // 次数 1 = 只有当代凭证那次校验读了 key 行
         expect_cache_key_row(&mut repo, 1, workspace_id);
-        let (auth, _cache) = make_cached_auth(Arc::new(repo), 300);
+        let (auth, _cache) = make_cached_auth(Arc::new(repo), 300).await;
 
         assert!(auth
             .validate_key("cache-key", "previous-secret")
@@ -1245,8 +1245,8 @@ mod auth_cache_wiring {
         );
     }
 
-    /// R-auth-002：吊销后立即再校验返回 401（经真实中间件，不等待 TTL）。
-    #[tokio::test]
+    /// 吊销后立即再校验返回 401（经真实中间件，不等待 TTL）。
+    #[tokio::test(flavor = "multi_thread")]
     async fn revoked_key_is_rejected_immediately_via_middleware() {
         let workspace_id = Uuid::new_v4();
         // 2 次回源 = 吊销前首次校验 + 吊销后即时回源；
@@ -1254,7 +1254,7 @@ mod auth_cache_wiring {
         let (mut repo, validate_calls, revoked) = mock_repo(workspace_id, 2);
         // 真实吊销路径按行 id 查询（查不到）；缓存写入路径按 key_id 查询
         expect_cache_key_row(&mut repo, 1, workspace_id);
-        // T003：吊销守卫改用 `find_api_key_by_row_id`（按行主键），不再用
+        // 吊销守卫改用 `find_api_key_by_row_id`（按行主键），不再用
         // `get_api_key_by_id`（按 key_id 字符串）。本用例吊销的是与本组缓存键
         // 无关的随机行 id → 查不到 → 守卫跳过 → 删除照常执行。
         // 刻意不登记 `count_admin_keys`：行不存在时守卫不得进入计数分支。
@@ -1263,7 +1263,7 @@ mod auth_cache_wiring {
             .returning(|_| Ok(None));
         let repo = Arc::new(repo);
 
-        let (auth, cache) = make_cached_auth(repo.clone(), 300);
+        let (auth, cache) = make_cached_auth(repo.clone(), 300).await;
 
         let config_service: Arc<dyn crate::server::config::management::ConfigManagementService> =
             Arc::new(MockConfigManagementService::new());
@@ -1322,14 +1322,14 @@ mod auth_cache_wiring {
         );
     }
 
-    /// R-auth-001：TTL 过期后下一次校验回源仓储。
-    #[tokio::test]
+    /// TTL 过期后下一次校验回源仓储。
+    #[tokio::test(flavor = "multi_thread")]
     async fn ttl_expiry_forces_repository_revalidation() {
         let workspace_id = Uuid::new_v4();
         // 两次回源 + 两次写缓存（过期后重新写回）
         let (mut repo, validate_calls, _revoked) = mock_repo(workspace_id, 2);
         expect_cache_key_row(&mut repo, 2, workspace_id);
-        let (auth, _cache) = make_cached_auth(Arc::new(repo), 1);
+        let (auth, _cache) = make_cached_auth(Arc::new(repo), 1).await;
 
         assert!(auth
             .validate_key("cache-key", "cache-secret")
@@ -1351,13 +1351,13 @@ mod auth_cache_wiring {
     }
 
     /// cache_ttl_seconds=0：缓存禁用，每次校验都回源。
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn zero_ttl_disables_caching() {
         let workspace_id = Uuid::new_v4();
         let (mut repo, validate_calls, _revoked) = mock_repo(workspace_id, 2);
         // 缓存条目不会被命中，但写路径仍会读 key 行（ttl=0 时 put 为空操作）
         expect_cache_key_row(&mut repo, 2, workspace_id);
-        let (auth, _cache) = make_cached_auth(Arc::new(repo), 0);
+        let (auth, _cache) = make_cached_auth(Arc::new(repo), 0).await;
 
         assert!(auth
             .validate_key("cache-key", "cache-secret")
@@ -1372,7 +1372,7 @@ mod auth_cache_wiring {
 }
 
 // ============================================================================
-// key-rotation-and-config-failfast T005：admin key 吊销守卫 e2e
+// admin key 吊销守卫 e2e
 // ============================================================================
 
 /// 有状态内存仓储：把「key 行」完整建模（行 UUID + key_id + role + enabled +
@@ -1583,7 +1583,7 @@ mod admin_key_guard_e2e {
         ApiHandlers::with_api_key_repository(Arc::new(MockIdGenerator::new()), config_service, repo)
     }
 
-    /// T005：唯一启用中的 admin key 不得被吊销，且吊销被拒后该凭证仍可用。
+    /// 唯一启用中的 admin key 不得被吊销，且吊销被拒后该凭证仍可用。
     ///
     /// 缺陷形态：旧守卫用 `get_api_key_by_id(&id.to_string())` 查行 UUID
     /// （该方法按 `key_id` 过滤）→ 恒 `None` → 整块守卫跳过 → 管理员把自己

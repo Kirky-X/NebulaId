@@ -124,7 +124,7 @@ async fn rate_limit_handler(
 }
 
 // ============================================================================
-// E2E-APIVER-001: 默认版本协商（无 X-API-Version 头）
+// 默认版本协商（无 X-API-Version 头）
 // ============================================================================
 
 #[tokio::test]
@@ -146,7 +146,7 @@ async fn e2e_api_version_default_v1_when_header_missing() {
 }
 
 // ============================================================================
-// E2E-APIVER-002: 显式 v1 头被接受并回写
+// 显式 v1 头被接受并回写
 // ============================================================================
 
 #[tokio::test]
@@ -176,7 +176,7 @@ async fn e2e_api_version_explicit_v1_header_accepted() {
 }
 
 // ============================================================================
-// E2E-APIVER-003: v2 头返回 400 Bad Request
+// v2 头返回 400 Bad Request
 // ============================================================================
 
 #[tokio::test]
@@ -199,7 +199,7 @@ async fn e2e_api_version_v2_returns_bad_request() {
 }
 
 // ============================================================================
-// E2E-APIVER-004: 大小写不敏感（V1/V2/v1/v2 都能被 FromStr 解析）
+// 大小写不敏感（V1/V2/v1/v2 都能被 FromStr 解析）
 // ============================================================================
 
 #[tokio::test]
@@ -249,7 +249,7 @@ async fn e2e_api_version_case_insensitive_v2_uppercase_still_rejected() {
 }
 
 // ============================================================================
-// E2E-APIVER-005: 纯数字 "1" / "2" 也能被 FromStr 接受
+// 纯数字 "1" / "2" 也能被 FromStr 接受
 // ============================================================================
 
 #[tokio::test]
@@ -289,7 +289,7 @@ async fn e2e_api_version_numeric_only_header_v2_rejected() {
 }
 
 // ============================================================================
-// E2E-APIVER-006: 非法值（v3、unknown）→ 默认 v1（FromStr 失败 unwrap_or_default）
+// 非法值（v3、unknown）→ 默认 v1（FromStr 失败 unwrap_or_default）
 // ============================================================================
 
 #[tokio::test]
@@ -321,7 +321,7 @@ async fn e2e_api_version_unknown_header_falls_back_to_default_v1() {
 }
 
 // ============================================================================
-// E2E-SIZE-001: 小于 1MB 的 body 通过 size_limit middleware
+// 小于 1MB 的 body 通过 size_limit middleware
 // ============================================================================
 
 #[tokio::test]
@@ -345,7 +345,7 @@ async fn e2e_size_limit_small_body_accepted() {
 }
 
 // ============================================================================
-// E2E-SIZE-002: 恰好 1MB 边界通过
+// 恰好 1MB 边界通过
 // ============================================================================
 
 #[tokio::test]
@@ -370,7 +370,7 @@ async fn e2e_size_limit_exact_1mb_boundary_accepted() {
 }
 
 // ============================================================================
-// E2E-SIZE-003: 超过 1MB 返回 413 Payload Too Large
+// 超过 1MB 返回 413 Payload Too Large
 // ============================================================================
 
 #[tokio::test]
@@ -395,7 +395,7 @@ async fn e2e_size_limit_over_1mb_returns_payload_too_large() {
 }
 
 // ============================================================================
-// E2E-SIZE-004: RequestBodyTooLarge 错误响应包含 413 状态码 + 详情
+// RequestBodyTooLarge 错误响应包含 413 状态码 + 详情
 // ============================================================================
 
 #[test]
@@ -405,7 +405,7 @@ fn e2e_request_body_too_large_response_includes_max_size_details() {
 }
 
 // ============================================================================
-// E2E-CORS-001: create_cors_layer 显式配置源列表
+// create_cors_layer 显式配置源列表
 // ============================================================================
 
 #[test]
@@ -419,7 +419,7 @@ fn e2e_cors_create_with_explicit_origins_succeeds() {
 }
 
 // ============================================================================
-// E2E-CORS-002: create_cors_layer 空源列表 → 拒绝所有跨域
+// create_cors_layer 空源列表 → 拒绝所有跨域
 // ============================================================================
 
 #[test]
@@ -429,7 +429,7 @@ fn e2e_cors_create_with_empty_origins_does_not_panic() {
 }
 
 // ============================================================================
-// E2E-CORS-003: create_dev_cors_layer 提供 localhost 默认
+// create_dev_cors_layer 提供 localhost 默认
 // ============================================================================
 
 #[test]
@@ -439,7 +439,7 @@ fn e2e_cors_dev_layer_has_localhost_defaults() {
 }
 
 // ============================================================================
-// E2E-CORS-004: 生产环境缺 ALLOWED_ORIGINS → create_env_aware_cors_layer
+// 生产环境缺 ALLOWED_ORIGINS → create_env_aware_cors_layer
 // 返回空 CorsLayer（拒绝所有跨域）
 // ============================================================================
 
@@ -456,7 +456,7 @@ fn e2e_cors_production_missing_origins_returns_empty_layer() {
 }
 
 // ============================================================================
-// E2E-CORS-005: 生产环境配置 ALLOWED_ORIGINS → 应用配置
+// 生产环境配置 ALLOWED_ORIGINS → 应用配置
 // ============================================================================
 
 #[test]
@@ -475,7 +475,7 @@ fn e2e_cors_production_with_origins_uses_configured_origins() {
 }
 
 // ============================================================================
-// E2E-CORS-006: 开发环境缺 ALLOWED_ORIGINS → localhost 默认
+// 开发环境缺 ALLOWED_ORIGINS → localhost 默认
 // ============================================================================
 
 #[test]
@@ -491,7 +491,7 @@ fn e2e_cors_development_missing_origins_uses_localhost_defaults() {
 }
 
 // ============================================================================
-// E2E-CORS-007: 开发环境显式配置 ALLOWED_ORIGINS → 用 create_cors_layer
+// 开发环境显式配置 ALLOWED_ORIGINS → 用 create_cors_layer
 // ============================================================================
 
 #[test]
@@ -507,7 +507,7 @@ fn e2e_cors_development_with_explicit_origins_uses_them() {
 }
 
 // ============================================================================
-// E2E-CORS-008: 默认 NEBULA_ENV 缺失时按 development 处理
+// 默认 NEBULA_ENV 缺失时按 development 处理
 // ============================================================================
 
 #[test]
@@ -521,7 +521,7 @@ fn e2e_cors_missing_nebula_env_treated_as_development() {
 }
 
 // ============================================================================
-// E2E-AUDIT-001: 内存 AuditLogger 通过 log_id_generation 记录完整事件
+// 内存 AuditLogger 通过 log_id_generation 记录完整事件
 // ============================================================================
 
 #[tokio::test]
@@ -561,7 +561,7 @@ async fn e2e_audit_logger_in_memory_records_id_generation_event() {
 }
 
 // ============================================================================
-// E2E-AUDIT-002: log_batch_generation 记录批量生成事件
+// log_batch_generation 记录批量生成事件
 // ============================================================================
 
 #[tokio::test]
@@ -593,7 +593,7 @@ async fn e2e_audit_logger_in_memory_records_batch_generation_event() {
 }
 
 // ============================================================================
-// E2E-AUDIT-003: log_auth_event 记录认证事件
+// log_auth_event 记录认证事件
 // ============================================================================
 
 #[tokio::test]
@@ -620,7 +620,7 @@ async fn e2e_audit_logger_in_memory_records_auth_event() {
 }
 
 // ============================================================================
-// E2E-AUDIT-004: 内存记录器达到上限丢弃最旧事件（无文件持久化）
+// 内存记录器达到上限丢弃最旧事件（无文件持久化）
 // ============================================================================
 
 #[tokio::test]
@@ -660,7 +660,7 @@ async fn e2e_audit_logger_in_memory_drops_oldest_when_capacity_reached() {
 }
 
 // ============================================================================
-// E2E-AUDIT-005: get_events_by_workspace 按工作区过滤
+// get_events_by_workspace 按工作区过滤
 // ============================================================================
 
 #[tokio::test]
@@ -689,7 +689,7 @@ async fn e2e_audit_logger_get_events_by_workspace_filters_correctly() {
 }
 
 // ============================================================================
-// E2E-AUDIT-006: get_events_by_type 按事件类型过滤
+// get_events_by_type 按事件类型过滤
 // ============================================================================
 
 #[tokio::test]
@@ -729,7 +729,7 @@ async fn e2e_audit_logger_get_events_by_type_filters_correctly() {
 }
 
 // ============================================================================
-// E2E-AUDIT-007: clear() 清空内存事件
+// clear() 清空内存事件
 // ============================================================================
 
 #[tokio::test]
@@ -755,7 +755,7 @@ async fn e2e_audit_logger_clear_empties_in_memory_events() {
 }
 
 // ============================================================================
-// E2E-AUDIT-008: 文件持久化路径 - 正常写入文件
+// 文件持久化路径 - 正常写入文件
 // ============================================================================
 
 #[tokio::test]
@@ -794,7 +794,7 @@ async fn e2e_audit_logger_file_persistence_writes_events_to_file() {
 }
 
 // ============================================================================
-// E2E-AUDIT-009: 路径遍历防护 - `..` 路径回退到内存记录器
+// 路径遍历防护 - `..` 路径回退到内存记录器
 // ============================================================================
 
 #[tokio::test]
@@ -824,7 +824,7 @@ async fn e2e_audit_logger_path_traversal_falls_back_to_memory() {
 }
 
 // ============================================================================
-// E2E-AUDIT-010: 空路径防护 - 回退到内存记录器
+// 空路径防护 - 回退到内存记录器
 // ============================================================================
 
 #[tokio::test]
@@ -849,7 +849,7 @@ async fn e2e_audit_logger_empty_path_falls_back_to_memory() {
 }
 
 // ============================================================================
-// E2E-AUDIT-011: 文件持久化场景下 IP 脱敏（IPv6）
+// 文件持久化场景下 IP 脱敏（IPv6）
 // ============================================================================
 
 #[tokio::test]
@@ -883,7 +883,7 @@ async fn e2e_audit_logger_file_persistence_redacts_ipv6_address() {
 }
 
 // ============================================================================
-// E2E-AUDIT-012: 文件持久化场景下 user_agent 被替换为 UA(redacted)
+// 文件持久化场景下 user_agent 被替换为 UA(redacted)
 // ============================================================================
 
 #[tokio::test]
@@ -917,7 +917,7 @@ async fn e2e_audit_logger_file_persistence_redacts_user_agent() {
 }
 
 // ============================================================================
-// E2E-AUDIT-013: 多事件文件持久化（每行一个 JSON）
+// 多事件文件持久化（每行一个 JSON）
 // ============================================================================
 
 #[tokio::test]
@@ -955,7 +955,7 @@ async fn e2e_audit_logger_file_persistence_appends_multiple_events() {
 }
 
 // ============================================================================
-// E2E-AUDIT-014: CoreAuditLoggerTrait impl 适配 core 层事件
+// CoreAuditLoggerTrait impl 适配 core 层事件
 // ============================================================================
 
 #[tokio::test]
@@ -994,7 +994,7 @@ async fn e2e_audit_logger_core_trait_impl_adapts_core_event() {
 }
 
 // ============================================================================
-// E2E-RATE-001: Token Bucket 在 burst 容量内允许
+// Token Bucket 在 burst 容量内允许
 // ============================================================================
 
 #[tokio::test]
@@ -1010,7 +1010,7 @@ async fn e2e_rate_limiter_allows_within_burst_capacity() {
 }
 
 // ============================================================================
-// E2E-RATE-002: Token Bucket 超过 burst 后拒绝
+// Token Bucket 超过 burst 后拒绝
 // ============================================================================
 
 #[tokio::test]
@@ -1026,11 +1026,13 @@ async fn e2e_rate_limiter_rejects_after_burst_exhausted() {
     // 第 4 次应当被拒绝（rate=1 rps 无法立即补充 token）
     let result = limiter.check_rate_limit("key-B", None, None).await;
     assert!(!result.allowed, "超过 burst 后应被拒绝");
-    assert_eq!(result.retry_after, Some(1));
+    // Retry-After 取快照 reset_secs：3 个缺口按 1 token/s 补满需 3 秒
+    //（旧实现硬编码 1 秒，对本场景过早放行）。
+    assert_eq!(result.retry_after, Some(3));
 }
 
 // ============================================================================
-// E2E-RATE-003: 按 key 隔离（key-A 耗尽不影响 key-B）
+// 按 key 隔离（key-A 耗尽不影响 key-B）
 // ============================================================================
 
 #[tokio::test]
@@ -1050,7 +1052,7 @@ async fn e2e_rate_limiter_per_key_isolation() {
 }
 
 // ============================================================================
-// E2E-RATE-007（wiring T002）: create_router 必须真实挂载全局限流中间件
+// create_router 必须真实挂载全局限流中间件
 //
 // 背景：RateLimitMiddleware 曾仅以 Extension 注入（从不执行），全局限流
 // 是死代码。本测试用真实 create_router（mock 依赖）验证：公开端点请求
@@ -1160,7 +1162,7 @@ async fn e2e_create_router_applies_global_rate_limit() {
 
     let app = create_router(handlers, auth, rate_limiter, audit_logger).await;
 
-    // R-rl-001 / T002：同一 key 连发 5 个请求 —— burst 容量内的前 2 个必须
+    // 同一 key 连发 5 个请求 —— burst 容量内的前 2 个必须
     // 严格 200（原 `assert_ne!(429)` 会让 500/503 一并放行，属假绿），
     // 第 3 个起必须 429 且带 Retry-After，证明限流层真实挂在 create_router 栈上。
     for i in 0..5 {
@@ -1199,7 +1201,72 @@ async fn e2e_create_router_applies_global_rate_limit() {
 }
 
 // ============================================================================
-// E2E-RATE-008（wiring T003）: 限流热更新必须作用于实际流量
+// Swagger UI 挂载（sdforge docs 吸收）：UI 可达且 spec 复用自有端点
+// ============================================================================
+
+#[tokio::test]
+async fn e2e_swagger_ui_mounted_with_own_spec_endpoint() {
+    use crate::core::algorithm::AlgorithmRouter;
+    use crate::core::config::Config;
+    use crate::server::audit::AuditLogger;
+    use crate::server::config::hot_reload::HotReloadConfig;
+    use crate::server::config::management::ConfigManager;
+    use crate::server::handlers::ApiHandlers;
+    use crate::server::middleware::api_key_auth::ApiKeyAuth;
+    use crate::server::rate_limit::limiter::RateLimiter;
+    use crate::server::router::create_router;
+
+    let config = Config::default();
+    let alg_router = Arc::new(AlgorithmRouter::new(config.clone(), None));
+    let hot_config = Arc::new(HotReloadConfig::new(
+        config,
+        "config/config.toml".to_string(),
+    ));
+    let config_service = Arc::new(ConfigManager::new(hot_config, alg_router.clone()));
+    let handlers = Arc::new(ApiHandlers::new(alg_router, config_service));
+    let auth = Arc::new(ApiKeyAuth::new(Arc::new(NoopApiKeyRepo), true));
+    let rate_limiter = Arc::new(RateLimiter::new(1000, 100));
+    let audit_logger = Arc::new(AuditLogger::new(100));
+
+    let app = create_router(handlers, auth, rate_limiter, audit_logger).await;
+
+    // UI 首页可达且为 HTML
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/swagger-ui/")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "/swagger-ui/ 必须可达");
+    assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(""),
+        "text/html",
+        "Swagger UI 首页必须为 HTML"
+    );
+
+    // spec 仍是本仓自有端点（未与 sdforge 捆绑路由冲突——冲突会在
+    // Router::merge 时 panic，这里再钉一层运行期断言）
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api-docs/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "自有 spec 端点必须不受影响");
+}
+
+// ============================================================================
+// 限流热更新必须作用于实际流量
 //
 // 背景：POST /config/rate-limit 写入的 override 与运行中的 RateLimiter
 // 是两个独立实例，热更新曾不生效于流量。
@@ -1263,7 +1330,7 @@ async fn e2e_rate_limit_hot_update_takes_effect() {
 }
 
 // ============================================================================
-// E2E-RATE-009（converge T018）: 真实 TCP 请求必须按对端 IP 限流
+// 真实 TCP 请求必须按对端 IP 限流
 //
 // 背景：main.rs 曾未注入 ConnectInfo<SocketAddr>，get_client_ip 恒 None，
 // 全站流量共享 "anonymous" 单桶 —— 单个客户端即可把 /health、/metrics
@@ -1339,7 +1406,7 @@ async fn e2e_real_tcp_requests_consume_per_ip_rate_limit_bucket() {
 }
 
 // ============================================================================
-// E2E-RATE-004: token 随时间恢复（rate=1/s，等待 1s 后应允许 1 次）
+// token 随时间恢复（rate=1/s，等待 1s 后应允许 1 次）
 // ============================================================================
 
 #[tokio::test]
@@ -1362,7 +1429,7 @@ async fn e2e_rate_limiter_token_refills_over_time() {
 }
 
 // ============================================================================
-// E2E-RATE-005: RateLimitMiddleware 集成 - 允许时回写 X-RateLimit-* 头
+// RateLimitMiddleware 集成 - 允许时回写 X-RateLimit-* 头
 // ============================================================================
 
 #[tokio::test]
@@ -1385,7 +1452,7 @@ async fn e2e_rate_limit_middleware_writes_rate_limit_headers_on_allow() {
 }
 
 // ============================================================================
-// E2E-RATE-006: RateLimitMiddleware 集成 - 拒绝时返回 429 + Retry-After
+// RateLimitMiddleware 集成 - 拒绝时返回 429 + Retry-After
 // ============================================================================
 
 #[tokio::test]
@@ -1423,7 +1490,7 @@ async fn e2e_rate_limit_middleware_returns_429_on_reject() {
 }
 
 // ============================================================================
-// E2E-RATE-010（converge T022①）: burst=2 的严格序列契约
+// burst=2 的严格序列契约
 // ============================================================================
 
 #[tokio::test]
@@ -1480,7 +1547,7 @@ async fn e2e_rate_limit_burst_two_allows_two_then_rejects_with_headers() {
 }
 
 // ============================================================================
-// E2E-ANON-001: Anonymous 角色被 anonymous_block_middleware 拒绝
+// Anonymous 角色被 anonymous_block_middleware 拒绝
 // ============================================================================
 
 #[tokio::test]
@@ -1505,7 +1572,7 @@ async fn e2e_anonymous_block_middleware_rejects_anonymous_role() {
 }
 
 // ============================================================================
-// E2E-ANON-002: User 角色被 anonymous_block_middleware 放行
+// User 角色被 anonymous_block_middleware 放行
 // ============================================================================
 
 #[tokio::test]
@@ -1529,7 +1596,7 @@ async fn e2e_anonymous_block_middleware_allows_user_role() {
 }
 
 // ============================================================================
-// E2E-ANON-003: Admin 角色被 anonymous_block_middleware 放行
+// Admin 角色被 anonymous_block_middleware 放行
 // ============================================================================
 
 #[tokio::test]
@@ -1553,7 +1620,7 @@ async fn e2e_anonymous_block_middleware_allows_admin_role() {
 }
 
 // ============================================================================
-// E2E-ANON-004: ApiKeyRole 扩展缺失 → fail-closed 401
+// ApiKeyRole 扩展缺失 → fail-closed 401
 // ============================================================================
 
 #[tokio::test]
@@ -1573,7 +1640,7 @@ async fn e2e_anonymous_block_middleware_fail_closed_when_extension_missing() {
         .await
         .unwrap();
 
-    // NEW-LOW-002：扩展缺失时 fail-closed 返回 401
+    // NEW-：扩展缺失时 fail-closed 返回 401
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 

@@ -72,7 +72,13 @@ impl AuditMiddleware {
 
         let action = format!("{} {}", method, path);
 
-        let audit_event = crate::server::audit::AuditEvent::new(
+        // 请求上下文关联（sdforge `context` feature 的环境上下文，由
+        // router 最外侧 context_middleware 安装）：审计事件经 details
+        // 携带 request_id/trace_id，跨请求串联审计链。上下文缺失时
+        // （如直连测试 Router 未挂 context 层）静默跳过。
+        let request_ctx = sdforge::context::current();
+
+        let mut audit_event = crate::server::audit::AuditEvent::new(
             AuditEventType::IdGeneration,
             workspace_id.clone(),
             action,
@@ -82,6 +88,13 @@ impl AuditMiddleware {
         .with_client_ip(client_ip.unwrap_or_default())
         .with_user_agent(user_agent.unwrap_or_default())
         .with_duration(duration_ms);
+
+        if let Some(ctx) = request_ctx {
+            audit_event = audit_event.with_details(serde_json::json!({
+                "request_id": ctx.request_id(),
+                "trace_id": ctx.trace_id(),
+            }));
+        }
 
         self.audit_logger.log(audit_event).await;
 
@@ -102,7 +115,7 @@ impl AuditMiddleware {
 }
 
 fn get_client_ip(req: &Request<Body>, trusted_proxies: &[IpAddr]) -> Option<String> {
-    // Phase 9 T043 (LOW L3) — delegate to the single shared implementation
+    // Phase 9 — delegate to the single shared implementation
     // in `server::middleware::utils`. Previously this was a duplicate copy
     // of the same logic; now the audit/rate_limit/api_key_auth middleware
     // all share one source of truth.
@@ -277,6 +290,43 @@ mod tests {
     }
 
     // ========== audit_middleware request enrichment tests ==========
+
+    #[tokio::test]
+    async fn test_audit_middleware_details_carry_request_context_when_ambient() {
+        // sdforge context 环境上下文存在时，审计事件 details 携带
+        // request_id/trace_id（由 router 最外侧 context_middleware 安装）。
+        let (mid, logger) = make_audit_middleware();
+        let router = build_ok_router(mid);
+        let ctx = sdforge::context::RequestContext::with_ids(
+            "req-test-1".to_string(),
+            "trace-test-1".to_string(),
+        );
+        sdforge::context::scope(ctx, router.oneshot(make_test_request("GET", "/test")))
+            .await
+            .unwrap();
+        let events = logger.get_recent_events(10).await;
+        assert_eq!(events.len(), 1);
+        let details = events[0]
+            .details
+            .as_ref()
+            .expect("details 应携带请求上下文");
+        assert_eq!(details["request_id"], "req-test-1");
+        assert_eq!(details["trace_id"], "trace-test-1");
+    }
+
+    #[tokio::test]
+    async fn test_audit_middleware_details_absent_without_context() {
+        // 环境上下文缺失（直连 Router 未挂 context 层）时 details 为 None。
+        let (mid, logger) = make_audit_middleware();
+        let router = build_ok_router(mid);
+        router
+            .oneshot(make_test_request("GET", "/test"))
+            .await
+            .unwrap();
+        let events = logger.get_recent_events(10).await;
+        assert_eq!(events.len(), 1);
+        assert!(events[0].details.is_none());
+    }
 
     #[tokio::test]
     async fn test_audit_middleware_with_user_agent_records_it() {

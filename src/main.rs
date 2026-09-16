@@ -354,7 +354,7 @@ async fn start_http_server(
     config_service: Arc<dyn ConfigManagementService>,
     tls_manager: Option<Arc<TlsManager>>,
 ) -> Result<()> {
-    // converge T022③：限流开关来自真实配置（此前该参数被忽略，
+    // 限流开关来自真实配置（此前该参数被忽略，
     // `[rate_limit].enabled=false` 也照样挂限流层）。
     let rate_limit_enabled = config_service.get_config().rate_limit.enabled;
     let router = create_router_with_rate_limit(
@@ -368,11 +368,11 @@ async fn start_http_server(
     .layer(create_size_limit_middleware())
     .merge(merge_sdforge_routes(axum::Router::new()));
 
-    // wiring T005：按配置选择明文或 TLS 监听（此前 http_acceptor 只构造
+    // 按配置选择明文或 TLS 监听（此前 http_acceptor 只构造
     // 不消费，HTTPS 宣称启用却恒为明文）。
     let tls_acceptor = tls_manager.as_ref().and_then(|tls| {
         if tls.is_http_enabled() {
-            // T027④：文案纠偏 —— wiring T005 后 DualListener 用 TlsAcceptor 在
+            // 文案纠偏 —— 后 DualListener 用 TlsAcceptor 在
             // 该端口做真实 TLS 终结，不存在旧文案宣称的 "HTTP fallback"；
             // 保留旧文案会让运维误判加密端口仍是明文。
             info!("HTTPS enabled: HTTP port terminates TLS (rustls acceptor)");
@@ -386,7 +386,7 @@ async fn start_http_server(
     info!("{}", t!("log.main.starting_http_server", addr = bind_addr));
     let listener = DualListener::bind(bind_addr, tls_acceptor).await?;
 
-    // converge T018：注入 ConnectInfo<PeerAddr>，使限流键、认证失败计数、
+    // 注入 ConnectInfo<PeerAddr>，使限流键、认证失败计数、
     // 审计 client_ip 恢复 per-IP 语义（缺失时 get_client_ip 恒 None，全站
     // 共享单一 "anonymous" 桶——单攻击者可把 /health、/metrics 一并打成 429）。
     axum::serve(
@@ -415,7 +415,7 @@ async fn start_grpc_server(
         t!("log.main.configured_grpc_port", port = config.grpc_port)
     );
 
-    // wiring T006：gRPC 与 HTTP 使用同一认证器（共享 API key 仓储与失败限流）
+    // gRPC 与 HTTP 使用同一认证器（共享 API key 仓储与失败限流）
     let grpc_server = GrpcServer::with_auth(handlers, auth);
 
     let shutdown = async {
@@ -475,7 +475,7 @@ async fn shutdown_signal() {
     }
 }
 
-/// ARCH-LOW-003 修复：抽取 etcd / non-etcd 分支共用的 ApiHandlers 构造逻辑。
+/// 抽取 etcd / non-etcd 分支共用的 ApiHandlers 构造逻辑。
 ///
 /// 原代码在两个 cfg 分支重复调用 `ApiHandlers::with_api_key_repository`
 /// + `.with_key_rotation_grace_period`，未来新增 builder 方法需同步改两处
@@ -496,11 +496,17 @@ async fn main() -> Result<()> {
     // 日志初始化由 inklog 接管（替换原手写的 tracing_subscriber::fmt() 链）。
     // 本地 ../inklog 已切换至 EnvFilter，自动从 RUST_LOG 读取按模块过滤规则
     // （如 `RUST_LOG=nebulaid=debug,hyper=warn`），无需手动读取环境变量。
-    let _logger = inklog::LoggerManager::builder()
-        .level("info")
-        .format("json")
-        .build()
-        .await?;
+    // format 是渲染模板（inklog 0.3 语义，非旧命名格式）；JSON 行输出由
+    // console_json 开启。Arc 持有实例：热重载回调需借同一实例热调全局
+    // 级别（set_level 经内部 reload 句柄作用于 live subscriber）。
+    let logger = Arc::new(
+        inklog::LoggerManager::builder()
+            .level("info")
+            .format("{timestamp} [{level}] {target} - {message}")
+            .console_json(true)
+            .build()
+            .await?,
+    );
 
     // Phase 8 ICU i18n — initialize default locale before any t!() lookup.
     nebulaid::core::i18n::init_i18n("en");
@@ -534,7 +540,7 @@ async fn main() -> Result<()> {
 
     // Load config from file first, then merge with environment variables
     //
-    // T015（D-D）：加载失败不再降级为 `Config::default()`。原实现把错误 `error!` 一行
+    // 加载失败不再降级为 `Config::default()`。原实现把错误 `error!` 一行
     // 后继续启动，等价于用一套没人审阅过的默认配置对外提供服务；坏配置现在直接让
     // 进程以非零码退出，消息里带上路径与原因。只有"未显式指定 --config 且该路径确实
     // 不存在"才允许回落内置默认值，且必须显式 warn。
@@ -615,7 +621,7 @@ async fn main() -> Result<()> {
     };
 
     let repository: Option<Arc<database::SeaOrmRepository>> = if let Some(conn) = db_connection {
-        // M8 修复：注入分布式锁，避免 allocate_segment 在无锁降级时产生重复 ID。
+        // 修复：注入分布式锁，避免 allocate_segment 在无锁降级时产生重复 ID。
         // 默认构建（无 etcd feature）使用 LocalDistributedLock（进程内互斥）。
         #[cfg(not(feature = "etcd"))]
         let lock: std::sync::Arc<
@@ -696,7 +702,7 @@ async fn main() -> Result<()> {
         t!("log.main.auth_enabled", enabled = config.auth.enabled)
     );
 
-    // wiring T008 + converge T024②：认证决策缓存 —— ApiKeyAuth 与 ApiHandlers
+    // 认证决策缓存 —— ApiKeyAuth 与 ApiHandlers
     // 共享同一实例：前者读缓存加速校验，后者在吊销/轮换/重置时失效条目。
     // `cache_ttl_seconds = 0` 表示禁用，此时不再装配实例（装配了也不会写入，
     // 却仍要在每次校验后多打一次 get_api_key_by_id 判因，纯空转开销）。
@@ -708,7 +714,7 @@ async fn main() -> Result<()> {
                     ttl_seconds = ttl,
                     "auth decision cache enabled (in-process GarrisonDao impl)"
                 );
-                Some(Arc::new(nebulaid::server::auth::AuthCache::new(ttl)))
+                Some(Arc::new(nebulaid::server::auth::AuthCache::new(ttl).await))
             }
             (Some(_), 0) => {
                 info!("auth decision cache disabled (auth.cache_ttl_seconds = 0)");
@@ -718,7 +724,7 @@ async fn main() -> Result<()> {
         };
 
     // Create API key auth with repository for database-backed storage
-    // Phase 9 T043 (HIGH H3) — configure trusted proxies so the auth
+    // Phase 9 — configure trusted proxies so the auth
     // middleware only honors `X-Forwarded-For` / `X-Real-IP` when the
     // direct peer IP is in `NEBULA_TRUSTED_PROXIES`. Default: empty
     // (no headers trusted, all clients identified by TCP peer IP).
@@ -749,7 +755,19 @@ async fn main() -> Result<()> {
         "config/config.toml".to_string(),
     ));
 
-    // wiring T015：hot_reload 文件监视启动条件与 feature / repo 解耦 ——
+    // inklog set_level 热调：热重载/管理端改 logging.level 时同步热调全局
+    // subscriber（此前仅更新 hot config 快照，级别变更不生效，需重启进程）。
+    {
+        let logger = Arc::clone(&logger);
+        hot_config.add_reload_callback(move |cfg| {
+            let level = cfg.logging.level.to_string();
+            if let Err(e) = logger.set_level(None, &level) {
+                tracing::error!(error = ?e, level = %level, "inklog set_level hot-apply failed");
+            }
+        });
+    }
+
+    // hot_reload 文件监视启动条件与 feature / repo 解耦 ——
     // 仅取决于 `hot_reload.auto_watch_enabled`，etcd 与非 etcd 分支共用。
     // （原实现位于 etcd 分支"无 repo"路径，非 etcd 构建从不启动监视。）
     if config.hot_reload.auto_watch_enabled {
@@ -808,13 +826,13 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-        // wiring T003：限流器先于 ConfigManager 创建，经 with_rate_limiter
+        // 限流器先于 ConfigManager 创建，经 with_rate_limiter
         // 共享给运行时配置服务，使 POST /config/rate-limit 热更新作用于流量。
         let rate_limiter = Arc::new(RateLimiter::new(
             config.rate_limit.default_rps,
             config.rate_limit.burst_size,
         ));
-        // wiring T004：启动限流桶清理后台任务（5 分钟空闲桶回收，60s 周期），
+        // 启动限流桶清理后台任务（5 分钟空闲桶回收，60s 周期），
         // 停机时经 abort 退出，防止任务泄漏。
         let rate_limit_cleanup = rate_limiter.start_cleanup(
             std::time::Duration::from_secs(300),
@@ -851,12 +869,12 @@ async fn main() -> Result<()> {
                 ConfigManager::new(hot_config.clone(), id_generator.clone())
                     .with_rate_limiter(rate_limiter.clone()),
             );
-            // wiring T015：hot_reload 监视已移至两分支公共位置，此处不再重复启动。
+            // hot_reload 监视已移至两分支公共位置，此处不再重复启动。
             let h = Arc::new(ApiHandlers::new(id_generator.clone(), cs.clone()));
             (h, cs)
         };
 
-        // wiring T005：TLS 配置错误 fail-fast —— enabled=true 且证书缺失/
+        // TLS 配置错误 fail-fast —— enabled=true 且证书缺失/
         // 解析失败时拒绝启动（不再静默降级明文）。enabled=false 时
         // initialize() 直接返回 Ok，明文部署不受影响。
         let mut tls_manager = TlsManager::new(config.tls.clone());
@@ -895,7 +913,7 @@ async fn main() -> Result<()> {
             tls_manager,
         ));
 
-        // T027③：http / grpc / 停机信号任一路径先就绪时，统一在 select 之后回收
+        // http / grpc / 停机信号任一路径先就绪时，统一在 select 之后回收
         // 后台任务（降级巡检 + 限流桶清理）再返回。原实现只在 shutdown_signal
         // 分支 abort：服务器先退出（正常停止或错误退出）时清理任务泄漏，
         // tokio 运行时 drop 还会一直等这个永不自退的循环任务。
@@ -944,16 +962,16 @@ async fn main() -> Result<()> {
     {
         info!("{}", t!("log.main.etcd_disabled"));
 
-        // wiring T015：删除原此处创建后即丢弃的 AlgorithmRouter 死代码；
+        // 删除原此处创建后即丢弃的 AlgorithmRouter 死代码；
         // id_generator 由 create_id_generator 构建并作为实际生成器使用。
         let id_generator = create_id_generator(&config, audit_logger.clone(), None).await?;
 
-        // wiring T003：限流器先于 ConfigManager 创建并共享（同 etcd 分支）
+        // 限流器先于 ConfigManager 创建并共享（同 etcd 分支）
         let rate_limiter = Arc::new(RateLimiter::new(
             config.rate_limit.default_rps,
             config.rate_limit.burst_size,
         ));
-        // wiring T004：启动限流桶清理后台任务（5 分钟空闲桶回收，60s 周期），
+        // 启动限流桶清理后台任务（5 分钟空闲桶回收，60s 周期），
         // 停机时经 abort 退出，防止任务泄漏。
         let rate_limit_cleanup = rate_limiter.start_cleanup(
             std::time::Duration::from_secs(300),
@@ -994,7 +1012,7 @@ async fn main() -> Result<()> {
             (h, cs)
         };
 
-        // wiring T005：TLS 配置错误 fail-fast —— enabled=true 且证书缺失/
+        // TLS 配置错误 fail-fast —— enabled=true 且证书缺失/
         // 解析失败时拒绝启动（不再静默降级明文）。enabled=false 时
         // initialize() 直接返回 Ok，明文部署不受影响。
         let mut tls_manager = TlsManager::new(config.tls.clone());
@@ -1033,7 +1051,7 @@ async fn main() -> Result<()> {
             tls_manager,
         ));
 
-        // T027③：http / grpc / 停机信号任一路径先就绪时，统一在 select 之后回收
+        // http / grpc / 停机信号任一路径先就绪时，统一在 select 之后回收
         // 后台任务（降级巡检 + 限流桶清理）再返回。原实现只在 shutdown_signal
         // 分支 abort：服务器先退出（正常停止或错误退出）时清理任务泄漏，
         // tokio 运行时 drop 还会一直等这个永不自退的循环任务。
@@ -1095,7 +1113,7 @@ mod tests {
     #[tokio::test]
     async fn test_server_config_default() {
         let config = ServerConfig::default();
-        // 端口默认值唯一归属 AppConfig::default（T001：删除本地端口常量后）
+        // 端口默认值唯一归属 AppConfig::default（删除本地端口常量后）
         let app = nebulaid::core::config::AppConfig::default();
         assert_eq!(config.http_port, app.http_port);
         assert_eq!(config.grpc_port, app.grpc_port);

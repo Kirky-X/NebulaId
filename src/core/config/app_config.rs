@@ -21,7 +21,7 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 
-/// 热更新相关配置（T011）。
+/// 热更新相关配置。
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct HotReloadSettings {
@@ -54,7 +54,7 @@ pub struct Config {
     pub logging: LoggingConfig,
     /// Rate limiting settings
     pub rate_limit: RateLimitConfig,
-    /// 热更新设置（T011：auto_watch_enabled 默认 false，缺省时零行为变化）
+    /// 热更新设置（auto_watch_enabled 默认 false，缺省时零行为变化）
     #[serde(default)]
     pub hot_reload: HotReloadSettings,
     /// TLS settings
@@ -102,7 +102,7 @@ pub(crate) fn config_from_file_content(content: &str, source_id: &str) -> Config
     Ok(config)
 }
 
-/// 启动期配置的来源判定（T014）。
+/// 启动期配置的来源判定。
 ///
 /// 调用方据此决定是否需要输出"正在使用内置默认值"的显式告警：`Loaded` 之外只有
 /// `DefaultsBecauseMissing` 一种可能，不存在"静默用默认值"的第三种状态。
@@ -152,11 +152,11 @@ impl Config {
     /// # Errors
     ///
     /// * [`ConfigError::FileNotFound`] - 文件确实不存在，payload 为传入路径。
-    ///   这是唯一允许回落到内置默认值的情形（见 `resolve_startup_config`，T014）。
+    ///   这是唯一允许回落到内置默认值的情形（见 `resolve_startup_config`，）。
     /// * [`ConfigError::FileError`] - 读取失败但原因不是缺失（权限、路径是目录、磁盘错误）。
     /// * [`ConfigError::InvalidValue`] - TOML 解析、字段缺失/未知、或 `validate` 不通过。
     pub fn load_from_file(path: &str) -> ConfigResult<Self> {
-        // T013：只有 `NotFound` 才代表"文件不存在"，其余 IO 失败（权限、路径是目录、
+        // 只有 `NotFound` 才代表"文件不存在"，其余 IO 失败（权限、路径是目录、
         // 磁盘错误）必须保持 FileError，避免被启动期判定误当作可降级为默认值的缺失。
         let content = std::fs::read_to_string(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -311,7 +311,7 @@ impl Config {
             ));
         }
 
-        // SAST-MED-005 / ARCH-MED-002 修复：宽限期上限校验。
+        // SAST- 修复：宽限期上限校验。
         // `api_key_salt` 为空是 dev/test 的安全默认值（garrison 生产路径已 panic），
         // 不在 config validate 层拒绝，避免破坏测试。宽限期 > 30 天在 handler 层被
         // clamp 但配置文件中的值是静默的，运维无法从文件判断生效值，fail-fast 比
@@ -353,19 +353,29 @@ impl Config {
         Ok(())
     }
 
-    /// Expand environment variables in config content
-    /// Pattern: ${VAR_NAME} -> value of VAR_NAME
+    /// `${VAR}` / `${VAR:default}` 环境变量展开（confers `interpolation`
+    /// feature 引擎，替换手写 regex：获得 `${VAR:default}` 默认值与嵌套
+    /// 深度防护）。`allow_unresolved` 保持既有设计——缺失变量保留
+    /// `${VAR}` 字面量，由 `validate()` 对 auth 凭证字段显性报错。
     fn expand_env_vars(content: &str) -> String {
-        static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-        let re = RE.get_or_init(|| {
-            regex::Regex::new(r"\$\{([^}]+)\}")
-                .expect("BUG: Hardcoded regex pattern should never fail")
-        });
-        re.replace_all(content, |caps: &regex::Captures| {
-            let var_name = &caps[1];
-            std::env::var(var_name).unwrap_or_else(|_| caps[0].to_string())
+        static CONFIG: std::sync::OnceLock<confers::interpolation::InterpolationConfig> =
+            std::sync::OnceLock::new();
+        let interpolation_config =
+            CONFIG.get_or_init(|| confers::interpolation::InterpolationConfig {
+                allow_unresolved: true,
+                ..confers::interpolation::InterpolationConfig::default()
+            });
+        confers::interpolation::interpolate_with_config(
+            content,
+            &|var| std::env::var(var).ok(),
+            interpolation_config,
+        )
+        .unwrap_or_else(|e| {
+            // 展开引擎报错（如病态嵌套）时保留原文并告警：行为与
+            // allow_unresolved 一致，残留 `${` 由 validate() 兜底显性化。
+            tracing::warn!(error = ?e, "config interpolation failed; keeping raw content");
+            content.to_string()
         })
-        .to_string()
     }
 
     pub fn load_from_env() -> ConfigResult<Self> {
@@ -448,7 +458,7 @@ impl Config {
             self.auth.api_keys = other.auth.api_keys;
         }
 
-        // ARCH-HIGH-012：`key_rotation_grace_period_seconds` 不参与 merge。
+        // `key_rotation_grace_period_seconds` 不参与 merge。
         // 该值是部署期决策（运维显式配置一次即可），热重载变更它没有意义：
         // 进行中的轮换窗口会因阈值突变而产生不一致的凭证判定。
         // 如需调整，必须重启进程，由 `resolve_startup_config` 重新读取。
@@ -534,7 +544,7 @@ mod tests {
     // ==================== load_from_file 测试 ====================
 
     /// shutdown_timeout_seconds 往返：TOML 显式值保留；字段缺省时 serde default 兜底 30；
-    /// merge 仅在非默认值时覆盖（T002 回归钉）
+    /// merge 仅在非默认值时覆盖（回归钉）
     #[test]
     fn shutdown_timeout_roundtrip_default_and_merge() {
         // 1) 序列化往返保留显式值
@@ -550,7 +560,7 @@ mod tests {
         assert!(loaded.validate().is_ok());
 
         // 2) 字段从 TOML 缺省 → serde default 兜底 30
-        //    （必须整行删除而不是改名：T016 之后未知键会直接报错，改名不再等价于"字段缺省"）
+        //    （必须整行删除而不是改名：之后未知键会直接报错，改名不再等价于"字段缺省"）
         let without_field = toml_content.replace("shutdown_timeout_seconds = 45\n", "");
         assert!(
             !without_field.contains("shutdown_timeout"),
@@ -597,7 +607,7 @@ mod tests {
         );
     }
 
-    /// 路径不存在时应返回 `FileNotFound`（T013：与 IO 类失败区分开）
+    /// 路径不存在时应返回 `FileNotFound`（与 IO 类失败区分开）
     #[test]
     fn test_load_from_file_missing_path_returns_file_not_found() {
         let result = Config::load_from_file("/nonexistent/path/no/such/file.toml");
@@ -624,7 +634,7 @@ mod tests {
         );
     }
 
-    /// T014 判定矩阵前提：文件存在且合法 → `Loaded { path }`，且值来自文件而非默认值。
+    /// 判定矩阵前提：文件存在且合法 → `Loaded { path }`，且值来自文件而非默认值。
     #[test]
     fn test_resolve_startup_config_returns_loaded_with_path() {
         let mut original = Config::default();
@@ -643,11 +653,11 @@ mod tests {
         assert_eq!(config.auth.key_rotation_grace_period_seconds, 3600);
     }
 
-    /// T014 判定矩阵第 1 行：文件存在但解析失败 —— 错误必须原样上抛，且点名出错的键。
+    /// 判定矩阵第 1 行：文件存在但解析失败 —— 错误必须原样上抛，且点名出错的键。
     /// 形状复现历史事故：配置里把 `[algorithm.uuid_v8]` 误写成 `[algorithm.uuid_v7]`，
     /// 此前会被静默降级为默认值并"正常启动"。
     ///
-    /// T016 加上 `deny_unknown_fields` 后，误写的段名在反序列化阶段就以 `unknown field`
+    /// 加上 `deny_unknown_fields` 后，误写的段名在反序列化阶段就以 `unknown field`
     /// 暴露 —— 比原先的 `missing field uuid_v8` 更早，且直接点名误写的键。
     #[test]
     fn test_resolve_startup_config_propagates_parse_error_with_field_name() {
@@ -702,7 +712,7 @@ mod tests {
         }
     }
 
-    /// T014 判定矩阵第 1 行的另一半：文件能解析但 `validate` 不通过 —— 同样必须原样
+    /// 判定矩阵第 1 行的另一半：文件能解析但 `validate` 不通过 —— 同样必须原样
     /// 上抛并点名违规项，而不是降级为默认值（`http_port = 0` 是最常见的手误形状）。
     #[test]
     fn test_resolve_startup_config_propagates_validation_error() {
@@ -726,7 +736,7 @@ mod tests {
         }
     }
 
-    /// T014 判定矩阵第 2 行：`--config` 显式给出的路径不存在 → 启动失败。
+    /// 判定矩阵第 2 行：`--config` 显式给出的路径不存在 → 启动失败。
     #[test]
     fn test_resolve_startup_config_missing_explicit_path_errors() {
         let result = resolve_startup_config("/nonexistent/path/explicit.toml", true);
@@ -742,7 +752,7 @@ mod tests {
         }
     }
 
-    /// T014 判定矩阵第 3 行：默认路径且文件不存在 → 回落内置默认值（开箱可跑）。
+    /// 判定矩阵第 3 行：默认路径且文件不存在 → 回落内置默认值（开箱可跑）。
     #[test]
     fn test_resolve_startup_config_missing_default_path_falls_back_to_defaults() {
         let (config, source) = resolve_startup_config("/nonexistent/path/default.toml", false)
@@ -757,7 +767,7 @@ mod tests {
         );
     }
 
-    /// T014 判定矩阵第 4 行：权限/IO 类失败（非 NotFound）不得被当作"文件缺失"降级。
+    /// 判定矩阵第 4 行：权限/IO 类失败（非 NotFound）不得被当作"文件缺失"降级。
     #[test]
     fn test_resolve_startup_config_io_error_never_falls_back_to_defaults() {
         let dir = tempfile::tempdir().expect("创建临时目录应成功");
@@ -769,7 +779,7 @@ mod tests {
         );
     }
 
-    /// 判定矩阵第 4 行的另一半（T019 补空）：同一类 IO 失败在**显式**路径下同样必须
+    /// 判定矩阵第 4 行的另一半（补空）：同一类 IO 失败在**显式**路径下同样必须
     /// `Err(FileError)`。此前只测了 `explicit_path=false`，而显式路径那一格没测过。
     #[test]
     fn test_resolve_startup_config_io_error_with_explicit_path_errors() {
@@ -788,7 +798,7 @@ mod tests {
         }
     }
 
-    /// 判定矩阵第 1 行 × 非显式路径（T019 补空）：没写 `--config` 但默认路径下的文件
+    /// 判定矩阵第 1 行 × 非显式路径（补空）：没写 `--config` 但默认路径下的文件
     /// 坏了，同样不得回落内置默认值。这是最贴近生产开箱形状的一格 —— 发行包自带
     /// `config/config.toml`，运维改坏它就落在这一格。
     #[test]
@@ -810,7 +820,7 @@ mod tests {
         );
     }
 
-    /// 判定矩阵第 2 行的对照组（T019 补空）：非显式路径 + 文件合法 → 必须 `Loaded` 且
+    /// 判定矩阵第 2 行的对照组（补空）：非显式路径 + 文件合法 → 必须 `Loaded` 且
     /// 取值来自文件。缺了这一格就无法区分"回落默认值"和"读到了恰好等于默认值的文件"。
     #[test]
     fn test_resolve_startup_config_valid_file_without_explicit_path_loads() {
@@ -828,7 +838,7 @@ mod tests {
         assert_eq!(config.app.http_port, 18081, "值必须来自文件而非内置默认值");
     }
 
-    /// T019 安全审查 Q3：未定义变量在 `expand_env_vars` 后保留字面量 `${VAR}`，auth 侧
+    /// 未定义变量在 `expand_env_vars` 后保留字面量 `${VAR}`，auth 侧
     /// 凭证字段必须在 `validate` 被拒 —— 否则那段字面量会当作 pepper/密钥静默使用。
     #[test]
     fn validate_rejects_unexpanded_env_var_in_credential_fields() {
@@ -864,7 +874,7 @@ mod tests {
         );
     }
 
-    /// T019 安全审查 Q5：snowflake 三个位数分量用 u8 相加会溢出（debug panic / release
+    /// snowflake 三个位数分量用 u8 相加会溢出（debug panic / release
     /// 回绕后通过校验、在算法侧移位 panic）。必须在校验阶段以 u32 求和并拒绝。
     #[test]
     fn validate_rejects_snowflake_bits_that_overflow_u8_sum() {
@@ -884,7 +894,7 @@ mod tests {
         }
     }
 
-    /// T019 安全审查 Q5：`burst_size > default_rps * 10` 的乘法在 `default_rps` 接近
+    /// `burst_size > default_rps * 10` 的乘法在 `default_rps` 接近
     /// `u32::MAX` 时溢出。改为 saturating_mul 后：按真实数学关系判定，且不再 panic。
     #[test]
     fn validate_rate_limit_burst_check_does_not_overflow() {
@@ -913,7 +923,7 @@ mod tests {
         );
     }
 
-    /// T019 安全审查 Q1：凭证字段的 `Debug` 必须脱敏。此前 `derive(Debug)` 让任何一次
+    /// 凭证字段的 `Debug` 必须脱敏。此前 `derive(Debug)` 让任何一次
     /// `{:?}`（日志、panic 消息、断言失败输出）都把明文密钥落盘，且编译期零告警。
     #[test]
     fn config_debug_output_never_renders_credential_material() {
@@ -956,7 +966,7 @@ mod tests {
         );
     }
 
-    /// T019 安全审查 Q4：重复段不得被"后写覆盖前写"静默接受 —— 那会让运维以为生效的
+    /// 重复段不得被"后写覆盖前写"静默接受 —— 那会让运维以为生效的
     /// 那一段其实被整段丢弃。
     #[test]
     fn duplicate_toml_section_is_not_silently_accepted() {
@@ -982,7 +992,7 @@ mod tests {
         }
     }
 
-    /// T019 安全审查 Q4：段名大小写变体（`[App]`）在 TOML 里是另一个键，必须由顶层
+    /// 段名大小写变体（`[App]`）在 TOML 里是另一个键，必须由顶层
     /// `deny_unknown_fields` 拒绝，而不是当成"该段没写"回落默认值。
     #[test]
     fn section_name_case_variant_is_rejected_as_unknown_field() {
@@ -1005,10 +1015,10 @@ mod tests {
         }
     }
 
-    /// T016 各用例统一注入的未知键名（取值本身无语义，只用于在错误消息里定位）。
+    /// 各用例统一注入的未知键名（取值本身无语义，只用于在错误消息里定位）。
     const UNKNOWN_KEY: &str = "__bogus_key_for_test";
 
-    /// T016 测试夹具：在序列化后的默认配置里，向指定表头注入一个未知键。
+    /// 测试夹具：在序列化后的默认配置里，向指定表头注入一个未知键。
     ///
     /// `header` 形如 `[app]` 或 `[algorithm.segment]`；返回的文本除这一个键外与
     /// 默认配置完全等价，因此断言失败时唯一的可能就是该未知键没被拒绝。
@@ -1043,7 +1053,7 @@ mod tests {
         }
     }
 
-    /// T016 新契约：顶层未知表必须被拒绝（覆盖 `Config` 自身的 deny_unknown_fields）。
+    /// 新契约：顶层未知表必须被拒绝（覆盖 `Config` 自身的 deny_unknown_fields）。
     ///
     /// 本例替换旧测试 `load_from_file_ignores_unknown_fields_like_toml_crate` ——
     /// 旧断言固化的正是被废弃的"静默忽略未知键"契约：段名拼错的整段配置会被无声丢弃。
@@ -1054,7 +1064,7 @@ mod tests {
         assert_rejected_unknown_key(&format!("{} = true\n\n{}", UNKNOWN_KEY, base), "顶层未知键");
     }
 
-    /// T016 新契约：每一个配置段内的未知键都必须被拒绝。
+    /// 新契约：每一个配置段内的未知键都必须被拒绝。
     ///
     /// 逐段构造而非只测一段，是因为 `deny_unknown_fields` 必须落在全部 17 个结构体上
     /// —— 只在 `Config` 加属性时，`[app]` 里的拼错叶键仍会被静默忽略。
@@ -1119,7 +1129,7 @@ mod tests {
         assert_eq!(config.auth.enabled, Config::default().auth.enabled);
     }
 
-    /// T016 回归：仓库随附的**服务端**配置必须在严格模式下干净加载。
+    /// 回归：仓库随附的**服务端**配置必须在严格模式下干净加载。
     ///
     /// 失败时修配置文件，不得放宽 `deny_unknown_fields`。
     ///
@@ -1440,6 +1450,20 @@ mod tests {
         assert_eq!(result, "value=${NEBULA_TEST_EXPAND_MISSING}");
     }
 
+    /// confers interpolation 引擎新增能力：`${VAR:default}` 缺省值语法——
+    /// 变量缺失时取默认值，存在时仍以环境变量优先
+    #[test]
+    fn expand_env_vars_default_value_syntax() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _v = VarGuard::remove("NEBULA_TEST_EXPAND_DEFAULT");
+        let result = Config::expand_env_vars("value=${NEBULA_TEST_EXPAND_DEFAULT:fallback}");
+        assert_eq!(result, "value=fallback");
+
+        let _v = VarGuard::set("NEBULA_TEST_EXPAND_DEFAULT", "from-env");
+        let result = Config::expand_env_vars("value=${NEBULA_TEST_EXPAND_DEFAULT:fallback}");
+        assert_eq!(result, "value=from-env");
+    }
+
     /// 多个环境变量应同时被替换
     #[test]
     fn expand_env_vars_replaces_multiple_vars() {
@@ -1753,7 +1777,7 @@ mod tests {
     }
 }
 
-/// T011：hot_reload.auto_watch_enabled 缺省 false、显式 true 往返保留、
+/// hot_reload.auto_watch_enabled 缺省 false、显式 true 往返保留、
 /// merge 仅 true 覆盖（false 不回退已开启状态）。
 #[test]
 fn hot_reload_auto_watch_default_and_merge() {

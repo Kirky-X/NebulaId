@@ -106,14 +106,21 @@ impl InternalRateLimiter {
 
         let allowed = self.limiter.allow(1).await?;
 
-        // Get remaining tokens for response header
-        let remaining = self.limiter.tokens();
+        // 消费后经 limiteron 标准快照 API 读取限流头数据（limit/remaining/
+        // reset_secs），与 allow 共用同一补充逻辑；reset_secs 即补满所需秒数，
+        // 被拒时作为 Retry-After（此前硬编码 1 秒，慢补充大容量桶会过早放行）。
+        let snapshot = self.limiter.remaining().await?;
+        let retry_after = if allowed {
+            None
+        } else {
+            Some(snapshot.reset_secs.max(1))
+        };
 
         Ok(RateLimitResult {
             allowed,
-            remaining,
+            remaining: snapshot.remaining,
             limit: self.capacity,
-            retry_after: if allowed { None } else { Some(1) },
+            retry_after,
         })
     }
 }
@@ -350,7 +357,7 @@ impl RateLimiter {
         *defaults = (default_rps, default_burst);
     }
 
-    /// Update the default rate limit configuration at runtime (wiring T003).
+    /// Update the default rate limit configuration at runtime.
     ///
     /// Unlike [`Self::update_defaults`], this also drops existing buckets so
     /// they are lazily rebuilt with the new configuration on the next
@@ -427,7 +434,7 @@ impl ConcurrencyLimiter {
         self.inner.acquire(1).await
     }
 
-    // Phase 9 T043 (HIGH H4) — `try_acquire` removed. The previous
+    // Phase 9 — `try_acquire` removed. The previous
     // implementation called `self.inner.allow(1).await?` (consuming a
     // token) and then **unconditionally** returned `Err(...)`, so the
     // method could never produce a `SemaphorePermit`. No caller in the
@@ -663,6 +670,19 @@ mod tests {
         // Should have some tokens now
         let result = limiter.check_rate_limit("key", None, None).await;
         assert!(result.allowed, "Should allow after token refill");
+    }
+
+    #[tokio::test]
+    async fn test_retry_after_uses_snapshot_reset_secs() {
+        // rate=1, capacity=3：耗尽后被拒，Retry-After = 补满 3 个缺口所需 3 秒
+        // （快照 reset_secs；旧实现硬编码 1，对慢补充大容量桶会过早放行）。
+        let limiter = RateLimiter::new(1, 3);
+        for _ in 0..3 {
+            assert!(limiter.check_rate_limit("slow", None, None).await.allowed);
+        }
+        let denied = limiter.check_rate_limit("slow", None, None).await;
+        assert!(!denied.allowed);
+        assert_eq!(denied.retry_after, Some(3));
     }
 
     #[tokio::test]

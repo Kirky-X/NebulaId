@@ -394,10 +394,15 @@ impl IdAlgorithm for SnowflakeAlgorithm {
             }
         }
 
-        if ids.is_empty() {
-            return Err(CoreError::InternalError(
-                "Failed to generate IDs after max retries".to_string(),
-            ));
+        // 重试耗尽仍未凑满请求量（含一例未成的情况）：
+        // 显式报错并附上已生成/请求数量，不再静默返回短批次（T020）——
+        // 静默短批会让调用方误以为拿到了全部请求的 ID。
+        if ids.len() < size {
+            return Err(CoreError::InternalError(format!(
+                "Failed to generate IDs after max retries (generated {}/requested {})",
+                ids.len(),
+                size
+            )));
         }
 
         Ok(IdBatch::new(ids, AlgorithmType::Snowflake, String::new()))
@@ -666,7 +671,8 @@ mod tests {
         }
     }
 
-    /// batch_generate 在所有 generate_id 调用都失败时，应重试 MAX_RETRIES 次后返回 InternalError。
+    /// batch_generate 在所有 generate_id 调用都失败时，应重试 MAX_RETRIES 次
+    /// 后返回 InternalError，且消息显式包含「已生成 0/请求 5」两个数量（T020）。
     #[tokio::test]
     async fn test_batch_generate_retries_exhausted_returns_internal_error() {
         let algo = SnowflakeAlgorithm::new(0, 0);
@@ -684,9 +690,26 @@ mod tests {
                     "error message should mention max retries, got: {}",
                     msg
                 );
+                assert!(
+                    msg.contains("generated 0/requested 5"),
+                    "error message must contain both generated and requested counts, got: {}",
+                    msg
+                );
             }
             other => panic!("expected InternalError, got {:?}", other),
         }
+    }
+
+    /// 正常路径 batch 数量精确不变：凑满请求量时不得误报短批错误。
+    #[tokio::test]
+    async fn test_batch_generate_exact_size_is_not_treated_as_short_batch() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        let ctx = GenerateContext::default();
+        let batch = algo
+            .batch_generate(&ctx, 3)
+            .await
+            .expect("batch should succeed");
+        assert_eq!(batch.ids.len(), 3);
     }
 
     // ========================================================================

@@ -15,8 +15,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use dbnexus::sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QuerySelect, Set,
-    TransactionTrait,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter,
+    QuerySelect, Set, TransactionTrait,
 };
 use rand::{Rng, RngExt};
 use tracing::{debug, info};
@@ -25,6 +25,8 @@ use uuid::Uuid;
 use argon2::password_hash::phc::PasswordHash;
 use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 
+// 锁相关类型自 T015 起仅测试代码使用（号段热路径不再取锁）。
+#[cfg(test)]
 use crate::core::coordinator::{LockError, LockGuard};
 use crate::core::database::api_key_entity::{
     ActiveModel as ApiKeyActiveModel, ApiKey as ApiKeyInfo, ApiKeyResponse, ApiKeyRole,
@@ -415,11 +417,100 @@ impl SeaOrmRepository {
         self
     }
 
-    /// 构建用于 segment 分配的分布式锁键
-    fn segment_lock_key(&self, workspace_id: &str, biz_tag: &str, dc_id: Option<i32>) -> String {
-        match dc_id {
-            Some(dc) => format!("segment:{}:{}:dc:{}", workspace_id, biz_tag, dc),
-            None => format!("segment:{}:{}", workspace_id, biz_tag),
+    /// 读取注入的分布式锁（兼容/诊断用途）。
+    ///
+    /// 号段分配自 T015 起改为单语句原子 `UPDATE ... RETURNING`，并发正确性由
+    /// 数据库行锁保证，**热路径不再获取该锁**；注入 setter 与本读取器仅为
+    /// 兼容既有装配 API（main.rs / sdk::kit）而保留。
+    pub fn distributed_lock(
+        &self,
+    ) -> Option<&std::sync::Arc<dyn crate::core::coordinator::DistributedLock + Send + Sync>> {
+        self.distributed_lock.as_ref()
+    }
+
+    /// 号段原子分配（单语句 `UPDATE ... RETURNING`）。
+    ///
+    /// 并发正确性由数据库行锁保证：PostgreSQL 对同一行的并发 UPDATE 天然串行，
+    /// 每个调用在单条语句内原子地完成「推进 current_id 并取回旧值作区间起点」，
+    /// 各调用拿到的 `[start, max)` 区间互不重叠 —— 热路径**不再获取分布式锁**
+    /// （etcd 往返是号段分配的吞吐瓶颈，且单行 UPDATE 本身就是互斥点）。
+    ///
+    /// 首次分配（无行）：`INSERT ... ON CONFLICT DO NOTHING` 兜底建行后重试一次
+    /// UPDATE；并发首分配时输的一方 INSERT 静默跳过、由重试 UPDATE 正常取段
+    /// （依赖 `UNIQUE (workspace_id, biz_tag, dc_id)` 约束，见 scripts/init.sql）。
+    async fn allocate_segment_in_dc(
+        &self,
+        workspace_id: &str,
+        biz_tag: &str,
+        step: i32,
+        dc_id: i32,
+    ) -> Result<SegmentInfo> {
+        // 单语句原子推进：RETURNING 中 `current_id - $1` 是推进前的旧值（区间
+        // 起点，含），`current_id` 是推进后的新值（区间上界，不含）。
+        let update_sql = r#"UPDATE nebula_id.nebula_segments SET current_id = current_id + $1, updated_at = CURRENT_TIMESTAMP WHERE workspace_id = $2 AND biz_tag = $3 AND dc_id = $4 RETURNING id, current_id - $1 AS start_id, current_id AS max_id, step, delta, created_at, updated_at"#;
+        let update_stmt = || {
+            dbnexus::sea_orm::Statement::from_sql_and_values(
+                self.db.get_database_backend(),
+                update_sql,
+                [
+                    step.into(),
+                    workspace_id.into(),
+                    biz_tag.into(),
+                    dc_id.into(),
+                ],
+            )
+        };
+
+        if let Some(row) = self
+            .db
+            .query_one_raw(update_stmt())
+            .await
+            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?
+        {
+            debug!(
+                workspace_id,
+                biz_tag, dc_id, "segment allocated via atomic UPDATE RETURNING"
+            );
+            return segment_info_from_returning_row(&row, workspace_id, biz_tag);
+        }
+
+        // 无行：兜底建行。首段起点约定 dc_id * 10^12 + 1（dc_id = 0 时即 1），
+        // 与历史 INSERT 语义一致；行内 current_id 先落在起点上，由随后的重试
+        // UPDATE 推进一个步长、RETURNING 交出 [start, start + step) 区间。
+        let start_id = (dc_id as i64) * 1_000_000_000_000i64 + 1i64;
+        let insert_sql = r#"INSERT INTO nebula_id.nebula_segments (workspace_id, biz_tag, current_id, max_id, step, delta, dc_id) VALUES ($1, $2, $3, $3 + $4, $4, 1, $5) ON CONFLICT (workspace_id, biz_tag, dc_id) DO NOTHING"#;
+        let insert_stmt = dbnexus::sea_orm::Statement::from_sql_and_values(
+            self.db.get_database_backend(),
+            insert_sql,
+            [
+                workspace_id.into(),
+                biz_tag.into(),
+                start_id.into(),
+                step.into(),
+                dc_id.into(),
+            ],
+        );
+        self.db
+            .execute_raw(insert_stmt)
+            .await
+            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+
+        info!(
+            workspace_id,
+            biz_tag, dc_id, start_id, "segment row lazily created, retrying atomic allocation"
+        );
+
+        match self
+            .db
+            .query_one_raw(update_stmt())
+            .await
+            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?
+        {
+            Some(row) => segment_info_from_returning_row(&row, workspace_id, biz_tag),
+            None => Err(crate::core::CoreError::DatabaseError(format!(
+                "segment allocation failed after insert-on-conflict retry for \
+                 {workspace_id}/{biz_tag}/dc{dc_id}"
+            ))),
         }
     }
 }
@@ -1381,6 +1472,54 @@ impl ApiKeyRepository for SeaOrmRepository {
     }
 }
 
+/// 把原子分配 `UPDATE ... RETURNING` 的结果行映射为 [`SegmentInfo`]。
+///
+/// 列契约（见 `allocate_segment_in_dc` 的 SQL）：
+/// - `start_id` = 推进前旧 current_id（本次分配区间起点，含）；
+/// - `max_id` = 推进后新 current_id（区间上界，不含）；
+/// - `id`/`step`/`delta`/`created_at`/`updated_at` 原样回填。
+fn segment_info_from_returning_row(
+    row: &dbnexus::sea_orm::QueryResult,
+    workspace_id: &str,
+    biz_tag: &str,
+) -> Result<SegmentInfo> {
+    let id = row
+        .try_get::<i64>("", "id")
+        .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+    let start_id = row
+        .try_get::<i64>("", "start_id")
+        .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+    let max_id = row
+        .try_get::<i64>("", "max_id")
+        .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+    let step = row
+        .try_get::<i32>("", "step")
+        .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+    let delta = row
+        .try_get::<i32>("", "delta")
+        .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+    let created_at: DateTime<Utc> = naive_to_utc(
+        row.try_get::<Option<NaiveDateTime>>("", "created_at")
+            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?,
+    );
+    let updated_at: DateTime<Utc> = naive_to_utc(
+        row.try_get::<Option<NaiveDateTime>>("", "updated_at")
+            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?,
+    );
+
+    Ok(SegmentInfo {
+        id,
+        workspace_id: workspace_id.to_string(),
+        biz_tag: biz_tag.to_string(),
+        current_id: start_id,
+        max_id,
+        step: step.max(0) as u32,
+        delta: delta.max(0) as u32,
+        created_at,
+        updated_at,
+    })
+}
+
 #[async_trait]
 impl SegmentRepository for SeaOrmRepository {
     async fn get_segment(&self, workspace_id: &str, biz_tag: &str) -> Result<Option<SegmentInfo>> {
@@ -1410,141 +1549,10 @@ impl SegmentRepository for SeaOrmRepository {
         biz_tag: &str,
         step: i32,
     ) -> Result<SegmentInfo> {
-        // 获取分布式锁以防止并发分配冲突
-        let lock_key = self.segment_lock_key(workspace_id, biz_tag, None);
-        // 修复：未配置分布式锁时禁止静默降级（生产环境会导致重复 ID 分配）。
-        // 测试环境（SQLite 单连接）允许 NoopLockGuard，因为数据库事务本身提供原子性。
-        let lock_guard = if let Some(ref lock) = self.distributed_lock {
-            lock.acquire(&lock_key, 30).await.map_err(|e| {
-                crate::core::CoreError::InternalError(format!(
-                    "Failed to acquire distributed lock for segment allocation: {}",
-                    e
-                ))
-            })?
-        } else {
-            #[cfg(test)]
-            {
-                Box::new(NoopLockGuard)
-            }
-            #[cfg(not(test))]
-            {
-                return Err(crate::core::CoreError::ConfigurationError(
-                    "Distributed lock not configured for segment allocation".to_string(),
-                ));
-            }
-        };
-
-        let txn = self
-            .db
-            .begin()
+        // 非 dc 变体即 dc_id = 0 的号段（实体列默认值 0），与 dc 变体共用同一
+        // 原子分配路径，保证两种调用形态读写同一套行、互不越界。
+        self.allocate_segment_in_dc(workspace_id, biz_tag, step, 0)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
-
-        let existing = SegmentEntity::find()
-            .filter(SegmentColumn::WorkspaceId.eq(workspace_id))
-            .filter(SegmentColumn::BizTag.eq(biz_tag))
-            .one(&txn)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
-
-        let segment = match existing {
-            Some(model) => {
-                let current_id = model.current_id;
-                let max_id = model.max_id;
-                // 修复：使用 saturating_add 防止极端情况下溢出 panic
-                let new_max_id = current_id.saturating_add(step as i64);
-
-                let updated = SegmentActiveModel {
-                    id: Set(model.id),
-                    current_id: Set(new_max_id),
-                    updated_at: Set(chrono::Utc::now().naive_utc()),
-                    ..Default::default()
-                };
-
-                updated
-                    .update(&txn)
-                    .await
-                    .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
-
-                debug!(
-                    "{}",
-                    t!(
-                        "log.core.database.repository.segment_updated",
-                        workspace_id = workspace_id,
-                        biz_tag = biz_tag,
-                        current_id = new_max_id,
-                        max_id = max_id
-                    )
-                );
-
-                SegmentInfo {
-                    id: model.id,
-                    workspace_id: model.workspace_id,
-                    biz_tag: model.biz_tag,
-                    current_id,
-                    max_id: new_max_id,
-                    step: model.step as u32,
-                    delta: model.delta as u32,
-                    created_at: naive_to_utc(Some(model.created_at)),
-                    updated_at: Utc::now(),
-                }
-            }
-            None => {
-                let start_id = 1i64;
-                // 修复：saturating_add 防止溢出
-                let max_id = start_id.saturating_add(step as i64);
-                let delta = 1;
-
-                let new_segment = SegmentActiveModel {
-                    workspace_id: Set(workspace_id.to_string()),
-                    biz_tag: Set(biz_tag.to_string()),
-                    current_id: Set(max_id),
-                    max_id: Set(max_id),
-                    step: Set(step),
-                    delta: Set(delta),
-                    created_at: Set(chrono::Utc::now().naive_utc()),
-                    updated_at: Set(chrono::Utc::now().naive_utc()),
-                    ..Default::default()
-                };
-
-                let inserted = new_segment
-                    .insert(&txn)
-                    .await
-                    .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
-
-                info!(
-                    "{}",
-                    t!(
-                        "log.core.database.repository.segment_created",
-                        workspace_id = workspace_id,
-                        biz_tag = biz_tag,
-                        start_id = start_id,
-                        max_id = max_id
-                    )
-                );
-
-                SegmentInfo {
-                    id: inserted.id,
-                    workspace_id: inserted.workspace_id,
-                    biz_tag: inserted.biz_tag,
-                    current_id: start_id,
-                    max_id,
-                    step: step as u32,
-                    delta: delta as u32,
-                    created_at: naive_to_utc(Some(inserted.created_at)),
-                    updated_at: naive_to_utc(Some(inserted.updated_at)),
-                }
-            }
-        };
-
-        txn.commit()
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
-
-        // 释放分布式锁
-        let _ = lock_guard.release().await;
-
-        Ok(segment)
     }
 
     async fn allocate_segment_with_dc(
@@ -1554,144 +1562,8 @@ impl SegmentRepository for SeaOrmRepository {
         step: i32,
         dc_id: i32,
     ) -> Result<SegmentInfo> {
-        // 获取分布式锁以防止并发分配冲突
-        let lock_key = self.segment_lock_key(workspace_id, biz_tag, Some(dc_id));
-        // 修复：同 allocate_segment，未配置分布式锁时禁止静默降级。
-        let lock_guard = if let Some(ref lock) = self.distributed_lock {
-            lock.acquire(&lock_key, 30).await.map_err(|e| {
-                crate::core::CoreError::InternalError(format!(
-                    "Failed to acquire distributed lock for segment allocation: {}",
-                    e
-                ))
-            })?
-        } else {
-            #[cfg(test)]
-            {
-                Box::new(NoopLockGuard)
-            }
-            #[cfg(not(test))]
-            {
-                return Err(crate::core::CoreError::ConfigurationError(
-                    "Distributed lock not configured for segment allocation".to_string(),
-                ));
-            }
-        };
-
-        let txn = self
-            .db
-            .begin()
+        self.allocate_segment_in_dc(workspace_id, biz_tag, step, dc_id)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
-
-        let existing = SegmentEntity::find()
-            .filter(SegmentColumn::WorkspaceId.eq(workspace_id))
-            .filter(SegmentColumn::BizTag.eq(biz_tag))
-            .filter(SegmentColumn::DcId.eq(dc_id))
-            .one(&txn)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
-
-        let segment = match existing {
-            Some(model) => {
-                let current_id = model.current_id;
-                let max_id = model.max_id;
-                // 修复：使用 saturating_add 防止极端情况下溢出 panic
-                let new_max_id = current_id.saturating_add(step as i64);
-
-                let updated = SegmentActiveModel {
-                    id: Set(model.id),
-                    current_id: Set(new_max_id),
-                    updated_at: Set(chrono::Utc::now().naive_utc()),
-                    ..Default::default()
-                };
-
-                updated
-                    .update(&txn)
-                    .await
-                    .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
-
-                debug!(
-                    "{}",
-                    t!(
-                        "log.core.database.repository.segment_updated_with_dc",
-                        workspace_id = workspace_id,
-                        biz_tag = biz_tag,
-                        dc_id = dc_id,
-                        current_id = new_max_id,
-                        max_id = max_id
-                    )
-                );
-
-                SegmentInfo {
-                    id: model.id,
-                    workspace_id: model.workspace_id,
-                    biz_tag: model.biz_tag,
-                    current_id,
-                    max_id: new_max_id,
-                    step: model.step as u32,
-                    delta: model.delta as u32,
-                    created_at: naive_to_utc(Some(model.created_at)),
-                    updated_at: Utc::now(),
-                }
-            }
-            None => {
-                let start_id = (dc_id as i64) * 1000000000000i64 + 1i64;
-                // 修复：saturating_add 防止溢出
-                let max_id = start_id.saturating_add(step as i64);
-                let delta = 1;
-
-                let new_segment = SegmentActiveModel {
-                    workspace_id: Set(workspace_id.to_string()),
-                    biz_tag: Set(biz_tag.to_string()),
-                    current_id: Set(max_id),
-                    max_id: Set(max_id),
-                    step: Set(step),
-                    delta: Set(delta),
-                    dc_id: Set(dc_id),
-                    created_at: Set(chrono::Utc::now().naive_utc()),
-                    updated_at: Set(chrono::Utc::now().naive_utc()),
-                    ..Default::default()
-                };
-
-                let inserted = new_segment
-                    .insert(&txn)
-                    .await
-                    .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
-
-                info!(
-                    "{}",
-                    t!(
-                        "log.core.database.repository.segment_created_with_dc",
-                        workspace_id = workspace_id,
-                        biz_tag = biz_tag,
-                        dc_id = dc_id,
-                        start_id = start_id,
-                        max_id = max_id
-                    )
-                );
-
-                SegmentInfo {
-                    id: inserted.id,
-                    workspace_id: inserted.workspace_id,
-                    biz_tag: inserted.biz_tag,
-                    current_id: start_id,
-                    max_id,
-                    step: step as u32,
-                    delta: delta as u32,
-                    created_at: naive_to_utc(Some(inserted.created_at)),
-                    updated_at: naive_to_utc(Some(inserted.updated_at)),
-                }
-            }
-        };
-
-        txn.commit()
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
-
-        // 释放分布式锁
-        let _ = lock_guard.release().await;
-
-        Ok(segment)
     }
 
     async fn update_segment(
@@ -1928,7 +1800,8 @@ mod mock_tests {
     use crate::core::types::id::{AlgorithmType, IdFormat};
     use chrono::NaiveDateTime;
     use dbnexus::sea_orm::{
-        DatabaseBackend, DbErr, MockDatabase, MockExecResult, MockRow, QueryTrait, RuntimeErr,
+        DatabaseBackend, DbErr, IntoMockRow, MockDatabase, MockExecResult, MockRow, QueryTrait,
+        RuntimeErr,
     };
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -2103,42 +1976,6 @@ mod mock_tests {
         assert_ne!(s1, s3, "two non-consecutive calls must differ");
     }
 
-    // --- segment_lock_key ---
-
-    #[test]
-    fn test_segment_lock_key_without_dc_formats_as_segment_ws_tag() {
-        let repo = make_repo(empty_pg_connection());
-        let key = repo.segment_lock_key("ws1", "tag1", None);
-        assert_eq!(key, "segment:ws1:tag1");
-    }
-
-    #[test]
-    fn test_segment_lock_key_with_dc_appends_dc_suffix() {
-        let repo = make_repo(empty_pg_connection());
-        let key = repo.segment_lock_key("ws1", "tag1", Some(5));
-        assert_eq!(key, "segment:ws1:tag1:dc:5");
-    }
-
-    #[test]
-    fn test_segment_lock_key_with_dc_zero_is_treated_as_some() {
-        // dc_id = 0 is a valid Some(0), not None. Format must include suffix.
-        let repo = make_repo(empty_pg_connection());
-        let key = repo.segment_lock_key("ws1", "tag1", Some(0));
-        assert_eq!(key, "segment:ws1:tag1:dc:0");
-        assert_ne!(
-            key,
-            repo.segment_lock_key("ws1", "tag1", None),
-            "Some(0) and None must produce different lock keys"
-        );
-    }
-
-    #[test]
-    fn test_segment_lock_key_with_negative_dc_preserves_sign() {
-        let repo = make_repo(empty_pg_connection());
-        let key = repo.segment_lock_key("ws", "tag", Some(-1));
-        assert_eq!(key, "segment:ws:tag:dc:-1");
-    }
-
     // --- hash_key / verify_key ---
 
     #[test]
@@ -2260,16 +2097,15 @@ mod mock_tests {
         let lock: Arc<dyn DistributedLock + Send + Sync> = Arc::new(DummyDistributedLock);
         let repo = SeaOrmRepository::new(empty_pg_connection(), "salt".to_string())
             .with_distributed_lock(lock);
-        // No public getter for distributed_lock; allocate_segment tests
-        // below verify the lock is actually invoked.
-        let _ = repo.get_db_connection();
+        // T015 后锁仅为兼容注入保留（号段热路径不再取锁），getter 可诊断。
+        assert!(repo.distributed_lock().is_some());
     }
 
     #[test]
     fn test_with_lock_returns_repository_with_lock() {
         let lock: Arc<dyn DistributedLock + Send + Sync> = Arc::new(DummyDistributedLock);
         let repo = SeaOrmRepository::new(empty_pg_connection(), "salt".to_string()).with_lock(lock);
-        let _ = repo.get_db_connection();
+        assert!(repo.distributed_lock().is_some());
     }
 
     // ==================================================================
@@ -4239,110 +4075,99 @@ mod mock_tests {
         );
     }
 
-    // --- allocate_segment / allocate_segment_with_dc ---
+    // --- allocate_segment / allocate_segment_with_dc（T015 原子分配） ---
     //
-    // These require a distributed lock (NoopLockGuard in tests) and a
-    // transaction. The mock database supports `begin()` returning the
-    // same connection, so we mock the queries inside the transaction
-    // in order.
+    // 热路径已无分布式锁、无显式事务：正常路径是 1 条 `UPDATE ... RETURNING`；
+    // 首查无行路径是 `INSERT ... ON CONFLICT DO NOTHING` + 重试一次 UPDATE。
+    // MockDatabase 依序弹出 append 的 query（raw UPDATE）/exec（INSERT）结果。
+
+    use dbnexus::sea_orm::sea_query::Value;
+
+    /// 构造 `UPDATE ... RETURNING` 的结果行（列契约见
+    /// `segment_info_from_returning_row`）。
+    fn returning_row(start_id: i64, max_id: i64) -> MockRow {
+        BTreeMap::from([
+            ("id".to_string(), Value::BigInt(Some(1))),
+            ("start_id".to_string(), Value::BigInt(Some(start_id))),
+            ("max_id".to_string(), Value::BigInt(Some(max_id))),
+            ("step".to_string(), Value::Int(Some(100))),
+            ("delta".to_string(), Value::Int(Some(1))),
+            (
+                "created_at".to_string(),
+                Value::ChronoDateTime(Some(fixed_datetime(1_600_000_000))),
+            ),
+            (
+                "updated_at".to_string(),
+                Value::ChronoDateTime(Some(fixed_datetime(1_700_000_000))),
+            ),
+        ])
+        .into_mock_row()
+    }
 
     #[tokio::test]
-    async fn test_segment_allocate_creates_new_segment_when_none_exists() {
-        // Inside txn: 1) find existing (None), 2) insert with RETURNING.
-        // Then commit (exec).
-        let id = fixed_uuid(96);
-        let new_segment_model = segment_entity::Model {
-            id: 1,
-            workspace_id: "ws1".to_string(),
-            biz_tag: "t1".to_string(),
-            current_id: 100, // start_id (1) + step (100) - 1, but impl sets current_id = max_id
-            max_id: 101,     // start_id (1) + step (100)
-            step: 100,
-            delta: 1,
-            dc_id: 0,
-            created_at: fixed_datetime(1_600_000_000),
-            updated_at: fixed_datetime(1_700_000_000),
-        };
-        let _ = id;
+    async fn test_segment_allocate_normal_path_is_single_update_returning() {
+        // 正常路径：行已存在，仅 1 条 UPDATE RETURNING，别无其它语句。
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![
-                Vec::<segment_entity::Model>::new(), // find existing
-                vec![new_segment_model],             // insert RETURNING
-            ])
-            .append_exec_results(vec![MockExecResult {
-                last_insert_id: 0,
-                rows_affected: 1,
-            }]) // commit
+            .append_query_results(vec![vec![returning_row(100, 200)]])
             .into_connection();
         let repo = make_repo(db);
 
         let seg = repo.allocate_segment("ws1", "t1", 100).await.unwrap();
+        assert_eq!(seg.current_id, 100, "start_id = 推进前旧 current_id");
+        assert_eq!(seg.max_id, 200, "max_id = 推进后新 current_id");
+        assert_eq!(seg.step, 100);
         assert_eq!(seg.workspace_id, "ws1");
         assert_eq!(seg.biz_tag, "t1");
-        assert_eq!(seg.current_id, 1, "new segment starts at start_id");
-        assert_eq!(seg.max_id, 101, "max_id = start_id + step");
-        assert_eq!(seg.step, 100);
+
+        let log = repo.get_db_connection().clone().into_transaction_log();
+        assert_eq!(log.len(), 1, "热路径必须恰好 1 条语句");
+        let sql = log[0].statements()[0].sql.to_uppercase();
+        assert!(sql.contains("UPDATE"), "got: {sql}");
+        assert!(sql.contains("RETURNING"), "got: {sql}");
+        assert!(!sql.contains("INSERT"), "got: {sql}");
     }
 
     #[tokio::test]
-    async fn test_segment_allocate_advances_max_when_segment_exists() {
-        let existing = segment_entity::Model {
-            id: 1,
-            workspace_id: "ws1".to_string(),
-            biz_tag: "t1".to_string(),
-            current_id: 100,
-            max_id: 200,
-            step: 100,
-            delta: 1,
-            dc_id: 0,
-            created_at: fixed_datetime(1_600_000_000),
-            updated_at: fixed_datetime(1_700_000_000),
-        };
-        let updated_model = segment_entity::Model {
-            current_id: 200, // 100 + step
-            ..existing.clone()
-        };
+    async fn test_segment_allocate_creates_row_on_first_allocation() {
+        // 首查无行：UPDATE(0 行) → INSERT ON CONFLICT DO NOTHING → 重试 UPDATE。
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![
-                vec![existing],      // find existing returns Some
-                vec![updated_model], // update RETURNING
+                Vec::<MockRow>::new(),       // 首查 UPDATE：无行
+                vec![returning_row(1, 101)], // 重试 UPDATE
             ])
             .append_exec_results(vec![MockExecResult {
                 last_insert_id: 0,
                 rows_affected: 1,
-            }]) // commit
+            }]) // INSERT DO NOTHING
             .into_connection();
         let repo = make_repo(db);
 
         let seg = repo.allocate_segment("ws1", "t1", 100).await.unwrap();
-        // current_id is the previous current_id (100), max_id is advanced.
-        assert_eq!(seg.current_id, 100, "current_id must be the previous value");
-        assert_eq!(seg.max_id, 200, "max_id must advance by step");
+        assert_eq!(seg.current_id, 1, "首段起点为 1");
+        assert_eq!(seg.max_id, 101, "max_id = start + step");
+
+        let log = repo.get_db_connection().clone().into_transaction_log();
+        assert_eq!(log.len(), 3, "UPDATE + INSERT + UPDATE");
+        let kinds: Vec<String> = log
+            .iter()
+            .map(|t| t.statements()[0].sql.to_uppercase())
+            .collect();
+        assert!(kinds[0].starts_with("UPDATE"), "got: {}", kinds[0]);
+        assert!(
+            kinds[1].starts_with("INSERT") && kinds[1].contains("ON CONFLICT"),
+            "got: {}",
+            kinds[1]
+        );
+        assert!(kinds[2].starts_with("UPDATE"), "got: {}", kinds[2]);
     }
 
     #[tokio::test]
-    async fn test_segment_allocate_with_dc_creates_new_segment_with_dc_offset() {
-        let new_segment_model = segment_entity::Model {
-            id: 1,
-            workspace_id: "ws1".to_string(),
-            biz_tag: "t1".to_string(),
-            current_id: 5_000_000_000_001, // dc_id * 10^12 + 1
-            max_id: 5_000_000_000_101,     // start + step
-            step: 100,
-            delta: 1,
-            dc_id: 5,
-            created_at: fixed_datetime(1_600_000_000),
-            updated_at: fixed_datetime(1_700_000_000),
-        };
+    async fn test_segment_allocate_with_dc_normal_path_is_single_update_returning() {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![
-                Vec::<segment_entity::Model>::new(), // find existing
-                vec![new_segment_model],             // insert RETURNING
-            ])
-            .append_exec_results(vec![MockExecResult {
-                last_insert_id: 0,
-                rows_affected: 1,
-            }]) // commit
+            .append_query_results(vec![vec![returning_row(
+                5_000_000_000_100,
+                5_000_000_000_200,
+            )]])
             .into_connection();
         let repo = make_repo(db);
 
@@ -4350,44 +4175,175 @@ mod mock_tests {
             .allocate_segment_with_dc("ws1", "t1", 100, 5)
             .await
             .unwrap();
-        // start_id = dc_id * 10^12 + 1 = 5_000_000_000_001
-        assert_eq!(seg.current_id, 5_000_000_000_001);
-        assert_eq!(seg.max_id, 5_000_000_000_101);
+        assert_eq!(seg.current_id, 5_000_000_000_100);
+        assert_eq!(seg.max_id, 5_000_000_000_200);
+
+        let log = repo.get_db_connection().clone().into_transaction_log();
+        assert_eq!(log.len(), 1, "dc 正常路径同样恰好 1 条语句");
+        let sql = log[0].statements()[0].sql.to_uppercase();
+        assert!(
+            sql.contains("UPDATE") && sql.contains("RETURNING"),
+            "got: {sql}"
+        );
     }
 
     #[tokio::test]
-    async fn test_segment_allocate_with_distributed_lock_uses_injected_lock() {
-        // When a lock is injected, allocate_segment must acquire it
-        // instead of using NoopLockGuard. We verify by checking that
-        // the operation still succeeds (DummyDistributedLock always
-        // returns Ok).
-        let new_segment_model = segment_entity::Model {
-            id: 1,
-            workspace_id: "ws1".to_string(),
-            biz_tag: "t1".to_string(),
-            current_id: 100,
-            max_id: 101,
-            step: 100,
-            delta: 1,
-            dc_id: 0,
-            created_at: fixed_datetime(1_600_000_000),
-            updated_at: fixed_datetime(1_700_000_000),
-        };
+    async fn test_segment_allocate_with_dc_creates_row_with_dc_offset() {
+        // dc 变体首分配：起点约定 dc_id * 10^12 + 1。
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![
-                Vec::<segment_entity::Model>::new(),
-                vec![new_segment_model],
+                Vec::<MockRow>::new(),
+                vec![returning_row(5_000_000_000_001, 5_000_000_000_101)],
             ])
             .append_exec_results(vec![MockExecResult {
                 last_insert_id: 0,
                 rows_affected: 1,
             }])
             .into_connection();
-        let lock: Arc<dyn DistributedLock + Send + Sync> = Arc::new(DummyDistributedLock);
+        let repo = make_repo(db);
+
+        let seg = repo
+            .allocate_segment_with_dc("ws1", "t1", 100, 5)
+            .await
+            .unwrap();
+        assert_eq!(seg.current_id, 5_000_000_000_001);
+        assert_eq!(seg.max_id, 5_000_000_000_101);
+    }
+
+    #[tokio::test]
+    async fn test_segment_allocate_does_not_acquire_distributed_lock() {
+        // T015：热路径不再取分布式锁 —— 注入一把 acquire 必失败的锁，
+        // 分配仍应成功（若取锁则会 InternalError）。
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![returning_row(1, 101)]])
+            .into_connection();
+        let lock: Arc<dyn DistributedLock + Send + Sync> = Arc::new(FailingDistributedLock);
         let repo = SeaOrmRepository::new(db, "salt".to_string()).with_distributed_lock(lock);
 
         let seg = repo.allocate_segment("ws1", "t1", 100).await.unwrap();
-        assert_eq!(seg.workspace_id, "ws1");
+        assert_eq!(seg.current_id, 1);
+        assert_eq!(seg.max_id, 101);
+    }
+
+    #[tokio::test]
+    async fn test_segment_allocate_propagates_update_db_error() {
+        // 正常路径 UPDATE 报错 → DatabaseError 透传。
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_errors(vec![DbErr::Query(RuntimeErr::Internal(
+                "segment allocate update boom".to_string(),
+            ))])
+            .into_connection();
+        let repo = make_repo(db);
+        let result = repo.allocate_segment("ws1", "t1", 100).await;
+        assert!(
+            matches!(
+                result.unwrap_err(),
+                crate::core::CoreError::DatabaseError(_)
+            ),
+            "segment allocate update error must propagate as DatabaseError"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_segment_allocate_propagates_insert_db_error() {
+        // 首查无行且 INSERT 报错 → DatabaseError 透传。
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<MockRow>::new()])
+            .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
+                "segment allocate insert boom".to_string(),
+            ))])
+            .into_connection();
+        let repo = make_repo(db);
+        let result = repo.allocate_segment("ws1", "t1", 100).await;
+        assert!(
+            matches!(
+                result.unwrap_err(),
+                crate::core::CoreError::DatabaseError(_)
+            ),
+            "segment allocate insert error must propagate as DatabaseError"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_segment_allocate_propagates_retry_update_db_error() {
+        // 首查无行、INSERT 成功、重试 UPDATE 报错 → DatabaseError 透传。
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<MockRow>::new()])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_errors(vec![DbErr::Query(RuntimeErr::Internal(
+                "segment allocate retry update boom".to_string(),
+            ))])
+            .into_connection();
+        let repo = make_repo(db);
+        let result = repo.allocate_segment("ws1", "t1", 100).await;
+        assert!(
+            matches!(
+                result.unwrap_err(),
+                crate::core::CoreError::DatabaseError(_)
+            ),
+            "segment allocate retry update error must propagate as DatabaseError"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_segment_allocate_fails_loudly_when_retry_update_misses() {
+        // INSERT 后重试 UPDATE 仍无行（如行被并发删除）→ 显性报错而非静默。
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<MockRow>::new(), Vec::<MockRow>::new()])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+        let repo = make_repo(db);
+        let result = repo.allocate_segment("ws1", "t1", 100).await;
+        assert!(
+            matches!(
+                result.unwrap_err(),
+                crate::core::CoreError::DatabaseError(ref m) if m.contains("retry")
+            ),
+            "retry miss must fail loudly as DatabaseError"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_segment_allocate_with_dc_propagates_update_db_error() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_errors(vec![DbErr::Query(RuntimeErr::Internal(
+                "segment allocate_dc update boom".to_string(),
+            ))])
+            .into_connection();
+        let repo = make_repo(db);
+        let result = repo.allocate_segment_with_dc("ws1", "t1", 100, 1).await;
+        assert!(
+            matches!(
+                result.unwrap_err(),
+                crate::core::CoreError::DatabaseError(_)
+            ),
+            "segment allocate_with_dc update error must propagate as DatabaseError"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_segment_allocate_with_dc_propagates_insert_db_error() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<MockRow>::new()])
+            .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
+                "segment allocate_dc insert boom".to_string(),
+            ))])
+            .into_connection();
+        let repo = make_repo(db);
+        let result = repo.allocate_segment_with_dc("ws1", "t1", 100, 1).await;
+        assert!(
+            matches!(
+                result.unwrap_err(),
+                crate::core::CoreError::DatabaseError(_)
+            ),
+            "segment allocate_with_dc insert error must propagate as DatabaseError"
+        );
     }
 
     // ==================================================================
@@ -5471,169 +5427,6 @@ mod mock_tests {
             ),
             "segment delete exec error must propagate as DatabaseError"
         );
-    }
-
-    #[tokio::test]
-    async fn test_segment_allocate_propagates_find_db_error() {
-        // allocate_segment with no distributed lock (test cfg → NoopLockGuard).
-        // begin succeeds (mock), find fails.
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_errors(vec![DbErr::Query(RuntimeErr::Internal(
-                "segment allocate find boom".to_string(),
-            ))])
-            .into_connection();
-        let repo = make_repo(db);
-        let result = repo.allocate_segment("ws1", "t1", 100).await;
-        assert!(result.is_err());
-        assert!(
-            matches!(
-                result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
-            ),
-            "segment allocate find error must propagate as DatabaseError"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_segment_allocate_propagates_insert_db_error() {
-        // find returns None (no existing segment), insert fails.
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![Vec::<segment_entity::Model>::new()])
-            .append_query_errors(vec![DbErr::Query(RuntimeErr::Internal(
-                "segment allocate insert boom".to_string(),
-            ))])
-            .into_connection();
-        let repo = make_repo(db);
-        let result = repo.allocate_segment("ws1", "t1", 100).await;
-        assert!(result.is_err());
-        assert!(
-            matches!(
-                result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
-            ),
-            "segment allocate insert error must propagate as DatabaseError"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_segment_allocate_propagates_update_db_error() {
-        // find returns existing segment, update fails.
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![sample_segment_model(1, "ws1", "t1")]])
-            .append_query_errors(vec![DbErr::Query(RuntimeErr::Internal(
-                "segment allocate update boom".to_string(),
-            ))])
-            .into_connection();
-        let repo = make_repo(db);
-        let result = repo.allocate_segment("ws1", "t1", 100).await;
-        assert!(result.is_err());
-        assert!(
-            matches!(
-                result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
-            ),
-            "segment allocate update error must propagate as DatabaseError"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_segment_allocate_with_dc_propagates_find_db_error() {
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_errors(vec![DbErr::Query(RuntimeErr::Internal(
-                "segment allocate_dc find boom".to_string(),
-            ))])
-            .into_connection();
-        let repo = make_repo(db);
-        let result = repo.allocate_segment_with_dc("ws1", "t1", 100, 1).await;
-        assert!(result.is_err());
-        assert!(
-            matches!(
-                result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
-            ),
-            "segment allocate_with_dc find error must propagate as DatabaseError"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_segment_allocate_with_dc_propagates_insert_db_error() {
-        // find returns None, insert fails.
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![Vec::<segment_entity::Model>::new()])
-            .append_query_errors(vec![DbErr::Query(RuntimeErr::Internal(
-                "segment allocate_dc insert boom".to_string(),
-            ))])
-            .into_connection();
-        let repo = make_repo(db);
-        let result = repo.allocate_segment_with_dc("ws1", "t1", 100, 1).await;
-        assert!(result.is_err());
-        assert!(
-            matches!(
-                result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
-            ),
-            "segment allocate_with_dc insert error must propagate as DatabaseError"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_segment_allocate_with_dc_propagates_update_db_error() {
-        // find returns existing segment, update fails.
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![sample_segment_model(1, "ws1", "t1")]])
-            .append_query_errors(vec![DbErr::Query(RuntimeErr::Internal(
-                "segment allocate_dc update boom".to_string(),
-            ))])
-            .into_connection();
-        let repo = make_repo(db);
-        let result = repo.allocate_segment_with_dc("ws1", "t1", 100, 1).await;
-        assert!(result.is_err());
-        assert!(
-            matches!(
-                result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
-            ),
-            "segment allocate_with_dc update error must propagate as DatabaseError"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_segment_allocate_with_failing_lock_returns_internal_error() {
-        // When a distributed lock is configured and acquire fails, the
-        // allocation must abort with InternalError (M8 fix: no silent
-        // fallback to NoopLockGuard).
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-        let lock: Arc<dyn DistributedLock + Send + Sync> = Arc::new(FailingDistributedLock);
-        let repo = SeaOrmRepository::new(db, "salt".to_string()).with_distributed_lock(lock);
-        let result = repo.allocate_segment("ws1", "t1", 100).await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            crate::core::CoreError::InternalError(msg) => {
-                assert!(
-                    msg.contains("Failed to acquire distributed lock"),
-                    "expected InternalError mentioning lock acquire failure, got: {msg}"
-                );
-            }
-            other => panic!("expected InternalError for failing lock, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_segment_allocate_with_dc_with_failing_lock_returns_internal_error() {
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-        let lock: Arc<dyn DistributedLock + Send + Sync> = Arc::new(FailingDistributedLock);
-        let repo = SeaOrmRepository::new(db, "salt".to_string()).with_distributed_lock(lock);
-        let result = repo.allocate_segment_with_dc("ws1", "t1", 100, 1).await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            crate::core::CoreError::InternalError(msg) => {
-                assert!(
-                    msg.contains("Failed to acquire distributed lock"),
-                    "expected InternalError mentioning lock acquire failure, got: {msg}"
-                );
-            }
-            other => panic!("expected InternalError for failing lock, got {other:?}"),
-        }
     }
 
     // ==================================================================

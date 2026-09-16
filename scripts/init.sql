@@ -105,7 +105,13 @@ CREATE TABLE IF NOT EXISTS nebula_id.nebula_segments (
     delta INT NOT NULL DEFAULT 1,
     dc_id INT NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- 号段原子分配（单语句 UPDATE ... RETURNING）依赖此约束：
+    -- 1) INSERT ... ON CONFLICT (workspace_id, biz_tag, dc_id) DO NOTHING
+    --    需要它匹配冲突目标；
+    -- 2) 杜绝并发首分配插入重复行（否则 UPDATE ... RETURNING 会命中多行，
+    --    区间可能交叠）。非 dc 变体按 dc_id = 0 读写，dc 变体按 dc_id 读写。
+    CONSTRAINT uq_nebula_segments_ws_tag_dc UNIQUE (workspace_id, biz_tag, dc_id)
 );
 
 -- Worker nodes table（运维预留：实体暂未使用）

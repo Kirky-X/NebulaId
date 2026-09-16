@@ -164,6 +164,8 @@ services:
       - "${APP_GRPC_PORT:-9091}:9091"
       - "${APP_METRICS_PORT:-9092}:9092"
     environment:
+      # fail-closed: 未显式设置时按生产校验(TLS/盐值/CORS),开发需显式 NEBULA_ENV=development
+      - NEBULA_ENV=${NEBULA_ENV:-production}
       - DATABASE_URL=postgresql://idgen:${POSTGRES_PASSWORD:-idgen123}@postgres:5432/idgen
       - REDIS_URL=redis://redis:6379/0
       - ETCD_ENDPOINTS=etcd:2379

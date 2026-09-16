@@ -690,6 +690,27 @@ fn should_warn_default_worker_identity(
     !etcd_endpoints_configured && (worker_id == 0 || dc_id == 0)
 }
 
+/// T035 —— 进程默认 locale 解析（纯函数，便于单测）。
+///
+/// 优先级：环境变量 `NEBULA_LOCALE` > 配置 `app.locale` > 内置默认 "en"。
+/// 仅支持 `SUPPORTED_LOCALES` 中的取值；env/config 值非法时回退 "en" 并
+/// 返回 `was_invalid = true`（调用方输出本地化 warn）。
+fn resolve_locale(nebula_locale_env: Option<&str>, config_locale: &str) -> (String, bool) {
+    const SUPPORTED_LOCALES: [&str; 2] = ["en", "zh-CN"];
+
+    // 空串视同未设置（环境变量覆盖惯例：存在但无值不视为显式选择）
+    let candidate = match nebula_locale_env {
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => config_locale.to_string(),
+    };
+
+    if SUPPORTED_LOCALES.contains(&candidate.as_str()) {
+        (candidate, false)
+    } else {
+        ("en".to_string(), true)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // 日志初始化由 inklog 接管（替换原手写的 tracing_subscriber::fmt() 链）。
@@ -707,7 +728,8 @@ async fn main() -> Result<()> {
             .await?,
     );
 
-    // Phase 8 ICU i18n — initialize default locale before any t!() lookup.
+    // Phase 8 ICU i18n — 先以内置默认 en 初始化，覆盖配置加载前的极早期日志；
+    // 配置与 NEBULA_LOCALE 解析完成后按生效 locale 重新初始化（T035）。
     nebulaid::core::i18n::init_i18n("en");
 
     info!("{}", t!("log.main.starting_service"));
@@ -768,6 +790,25 @@ async fn main() -> Result<()> {
         ))
     })?);
     info!("{}", t!("log.main.config_loaded"));
+
+    // T035 —— 进程默认 locale 配置化：NEBULA_LOCALE > config.app.locale > "en"，
+    // 非法值回退 "en" 并告警。此后所有 t!() 输出按生效 locale 渲染。
+    let nebula_locale_env = env::var("NEBULA_LOCALE").ok();
+    let (locale, invalid_locale) =
+        resolve_locale(nebula_locale_env.as_deref(), &config.app.locale);
+    if invalid_locale {
+        let invalid_value =
+            nebula_locale_env.unwrap_or_else(|| config.app.locale.clone());
+        warn!(
+            "{}",
+            t!("log.main.invalid_locale_falling_back", locale = invalid_value.as_str())
+        );
+    }
+    info!(
+        "{}",
+        t!("log.main.locale_initialized", locale = &locale)
+    );
+    nebulaid::core::i18n::init_i18n(&locale);
 
     // T018 —— 无 etcd 时默认 worker 标识多实例风险告警：etcd 未配置意味着
     // 没有 worker_id 运行时分配兜底，worker_id/dc_id 任一为默认 0 时显性
@@ -1853,5 +1894,54 @@ mod tests {
     fn test_warn_default_worker_identity_skipped_when_explicitly_configured() {
         assert!(!should_warn_default_worker_identity(false, 1, 1));
         assert!(!should_warn_default_worker_identity(false, 255, 31));
+    }
+
+    // ==================== T035: 默认 locale 配置化 ====================
+
+    /// T035 —— 环境变量 NEBULA_LOCALE 优先于配置值。
+    #[test]
+    fn test_resolve_locale_env_overrides_config() {
+        let (locale, invalid) = resolve_locale(Some("zh-CN"), "en");
+        assert_eq!(locale, "zh-CN");
+        assert!(!invalid);
+    }
+
+    /// T035 —— 环境变量缺失时使用配置值。
+    #[test]
+    fn test_resolve_locale_falls_back_to_config() {
+        let (locale, invalid) = resolve_locale(None, "zh-CN");
+        assert_eq!(locale, "zh-CN");
+        assert!(!invalid);
+
+        let (locale, invalid) = resolve_locale(None, "en");
+        assert_eq!(locale, "en");
+        assert!(!invalid);
+    }
+
+    /// T035 —— 环境变量为空串视同未设置（沿环境变量覆盖惯例）。
+    #[test]
+    fn test_resolve_locale_empty_env_treated_as_unset() {
+        let (locale, invalid) = resolve_locale(Some(""), "zh-CN");
+        assert_eq!(locale, "zh-CN");
+        assert!(!invalid);
+    }
+
+    /// T035 —— 非法值（env 与 config 两侧）回退 en 并标记 invalid。
+    #[test]
+    fn test_resolve_locale_invalid_values_fall_back_to_en() {
+        // env 非法
+        let (locale, invalid) = resolve_locale(Some("fr"), "en");
+        assert_eq!(locale, "en", "非法 env 值必须回退 en");
+        assert!(invalid, "非法值必须被标记，供调用方告警");
+
+        // config 非法
+        let (locale, invalid) = resolve_locale(None, "es-ES");
+        assert_eq!(locale, "en", "非法 config 值必须回退 en");
+        assert!(invalid);
+
+        // 大小写敏感：非规范取值按非法处理（不做隐式归一化）
+        let (locale, invalid) = resolve_locale(Some("ZH-cn"), "en");
+        assert_eq!(locale, "en");
+        assert!(invalid);
     }
 }

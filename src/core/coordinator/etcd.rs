@@ -2780,7 +2780,7 @@ mod tests {
     /// key 已不存在（lease 过期被 etcd 回收）时幂等释放成功。
     #[tokio::test]
     async fn test_allocator_release_succeeds_with_ownership_check() {
-        let (mut mock, store) = stateful_store_mock();
+        let (mock, store) = stateful_store_mock();
         let allocator = EtcdWorkerAllocator::new(mock_into_client(mock), 1, EtcdConfig::default())
             .await
             .unwrap();

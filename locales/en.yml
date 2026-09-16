@@ -416,3 +416,5 @@ log.main.worker_id_allocated_from_etcd: "worker_id %{worker_id} allocated via et
 log.main.worker_id_released_on_shutdown: "worker_id %{worker_id} released via etcd on shutdown"
 log.main.worker_id_release_on_shutdown_failed: "Failed to release worker_id %{worker_id} on shutdown: %{error} (the key will expire with its lease TTL)"
 log.main.default_worker_id_warning: "etcd is not configured and worker_id/dc_id fall back to defaults (worker_id=%{worker_id}, dc_id=%{dc_id}). Multi-instance deployments MUST set WORKER_ID/DC_ID explicitly, otherwise Snowflake will produce duplicate IDs"
+log.main.locale_initialized: "Process default locale set to: %{locale}"
+log.main.invalid_locale_falling_back: "Unsupported locale value '%{locale}' (supported: en, zh-CN); falling back to 'en'"

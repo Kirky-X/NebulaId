@@ -19,6 +19,7 @@
 
 pub mod api_key_auth;
 pub mod locale;
+pub mod request_id;
 pub mod size_limit;
 pub(crate) mod utils;
 
@@ -30,3 +31,6 @@ pub use api_key_auth::{admin_required_middleware, auth_middleware_fn, ApiKeyAuth
 
 // Re-export locale middleware components (Phase 8 )
 pub use locale::{locale_middleware, Locale};
+
+// T022 — request_id 提取/生成/贯穿中间件
+pub use request_id::{current_request_id, request_id_middleware, RequestId};

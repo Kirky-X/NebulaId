@@ -292,12 +292,16 @@ pub fn core_error_to_response(e: &CoreError, locale: Locale) -> (StatusCode, Jso
     };
 
     // T032 — 状态码与业务码同表判定，request_id/timestamp 在装配处生成。
+    // T022 — request_id 优先取请求上下文（request_id 中间件安装的任务局部
+    // 上下文），保证错误响应体与 x-request-id 响应头一致；无中间件上下文
+    // （单元测试 / 独立调用）时保留装配处新生成的 UUID v4。
     let (status, business_code) = core_error_classification(e);
     let code = status.as_u16() as i32;
-    (
-        status,
-        Json(ErrorResponse::new(code, business_code, message)),
-    )
+    let mut error = ErrorResponse::new(code, business_code, message);
+    if let Some(request_id) = crate::server::middleware::request_id::current_request_id() {
+        error.request_id = request_id;
+    }
+    (status, Json(error))
 }
 
 // ========== 共享授权（T010）==========

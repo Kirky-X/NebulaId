@@ -512,6 +512,15 @@ pub async fn create_router_with_rate_limit(
         .layer(axum::middleware::from_fn(
             sdforge::context::context_middleware,
         ))
+        // T022 — request_id 中间件：UUID 语义的校验/生成层，挂载在
+        // context_middleware 外侧（后 `.layer()`，先执行）。它把校验通过
+        // /新生成的 UUID v7 回写进请求头，context_middleware 随后对同一
+        // 取值透传装配，保证两条路径响应头一致；同时安装 extensions
+        // （`RequestId`）、任务局部上下文（helpers 错误装配读取）与
+        // tracing span 属性。
+        .layer(axum::middleware::from_fn(
+            crate::server::middleware::request_id::request_id_middleware,
+        ))
 }
 
 // ========== Helper Functions ==========
@@ -1964,6 +1973,114 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ========== request_id 中间件全链路（T022） ==========
+
+    #[tokio::test]
+    async fn test_full_router_echoes_uuid_request_id_header() {
+        // 全链路装配：request_id 中间件位于 sdforge context_middleware 外侧，
+        // /health 响应必须回显合法 UUID 的 x-request-id。
+        let router = create_router(
+            create_test_api_handlers(),
+            create_test_auth(),
+            create_test_rate_limiter(),
+            create_test_audit_logger(),
+        )
+        .await;
+        let resp = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let header = resp
+            .headers()
+            .get("x-request-id")
+            .expect("响应必须携带 x-request-id 头")
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let parsed = uuid::Uuid::parse_str(&header).expect("request_id 必须是合法 UUID");
+        assert_eq!(parsed.get_version_num(), 7, "缺省生成必须是 UUID v7");
+    }
+
+    #[tokio::test]
+    async fn test_full_router_passes_through_valid_request_id() {
+        let router = create_router(
+            create_test_api_handlers(),
+            create_test_auth(),
+            create_test_rate_limiter(),
+            create_test_audit_logger(),
+        )
+        .await;
+        let upstream = "123e4567-e89b-12d3-a456-426614174000";
+        let resp = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .header("x-request-id", upstream)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let header = resp
+            .headers()
+            .get("x-request-id")
+            .expect("响应必须携带 x-request-id 头")
+            .to_str()
+            .unwrap();
+        assert_eq!(header, upstream, "合法上游 x-request-id 必须透传原值");
+    }
+
+    #[tokio::test]
+    async fn test_error_response_body_request_id_matches_response_header() {
+        // 错误信封装配（helpers::core_error_to_response）在 request_id
+        // 中间件作用域内执行时，响应体 request_id 必须与响应头一致。
+        async fn failing_handler() -> axum::response::Response {
+            let (status, json) = core_error_to_response(
+                &crate::core::types::CoreError::InvalidInput("boom".to_string()),
+                Locale::En,
+            );
+            (status, json).into_response()
+        }
+
+        let app = axum::Router::new()
+            .route("/boom", axum::routing::get(failing_handler))
+            .layer(axum::middleware::from_fn(
+                crate::server::middleware::request_id::request_id_middleware,
+            ));
+
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/boom")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let header = resp
+            .headers()
+            .get("x-request-id")
+            .expect("错误响应必须携带 x-request-id 头")
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("错误信封是 JSON");
+        assert_eq!(
+            json["request_id"].as_str().expect("request_id 是字符串"),
+            header,
+            "错误响应体 request_id 必须与响应头一致"
+        );
     }
 
     #[tokio::test]

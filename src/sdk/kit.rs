@@ -1117,9 +1117,7 @@ mod tests {
     /// 消费的就是 `allocate_segment` 返回的号段区间（生产装配的算法级语义）。
     #[tokio::test]
     async fn test_db_backed_segment_assembly_contract() {
-        use crate::core::algorithm::{
-            DbSegmentLoader, IdAlgorithm, SegmentAlgorithm,
-        };
+        use crate::core::algorithm::{DbSegmentLoader, IdAlgorithm, SegmentAlgorithm};
         use crate::core::database::SegmentRepository;
         use crate::core::types::SegmentInfo;
 

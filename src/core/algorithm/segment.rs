@@ -362,12 +362,28 @@ impl DoubleBuffer {
     }
 }
 
+/// 最近一次号段加载结果快照（loader 调用点写入，`health_check` 反映）。
+///
+/// 「最近一次」语义：新结果覆盖旧结果——失败后再次成功即视为恢复，
+/// health_check 恢复 Healthy；持续失败则保持非 Healthy。
+#[derive(Debug, Clone)]
+enum LastLoadResult {
+    /// 尚未发生过号段加载
+    NotYet,
+    /// 最近一次加载成功
+    Ok(Instant),
+    /// 最近一次加载失败（错误摘要）
+    Err(String),
+}
+
 pub struct SegmentAlgorithm {
     config: SegmentAlgorithmConfig,
     buffers: Arc<RwLock<HashMap<String, Arc<DoubleBuffer>>>>,
     metrics: Arc<AlgorithmMetricsInner>,
     segment_loader: Arc<dyn SegmentLoader + Send + Sync>,
     dc_failure_detector: Arc<DcFailureDetector>,
+    /// 最近一次号段加载结果（loader 调用点写入，health_check 反映）。
+    last_load_result: Mutex<LastLoadResult>,
     // 对齐修复：非 etcd 版本不再持有 `etcd_cluster_health_monitor: Option<()>`
     // 占位字段（与 AlgorithmBuilder / AlgorithmRouter 一致）。`with_etcd_cluster_health_monitor`
     // builder 方法仅在 etcd feature 下存在；非 etcd 版本根本不会调用它。
@@ -451,6 +467,7 @@ impl SegmentAlgorithm {
             metrics: Arc::new(AlgorithmMetricsInner::default()),
             segment_loader,
             dc_failure_detector,
+            last_load_result: Mutex::new(LastLoadResult::NotYet),
             #[cfg(feature = "etcd")]
             etcd_cluster_health_monitor: None,
             cpu_monitor: None,
@@ -541,6 +558,17 @@ impl SegmentAlgorithm {
             })
             .clone()
     }
+
+    /// 记录最近一次号段加载结果（loader 调用点写入）：成功记单调时刻，
+    /// 失败记错误摘要。`health_check` 据此在「最近一次 load 失败且尚无
+    /// 成功恢复」时返回非 Healthy。
+    fn record_load_result(&self, result: &Result<SegmentData>) {
+        let mut last = self.last_load_result.lock();
+        match result {
+            Ok(_) => *last = LastLoadResult::Ok(Instant::now()),
+            Err(e) => *last = LastLoadResult::Err(e.to_string()),
+        }
+    }
 }
 
 #[async_trait]
@@ -569,6 +597,7 @@ impl IdAlgorithm for SegmentAlgorithm {
                         self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
                         let load_result = self.segment_loader.load_segment(ctx, 0).await;
                         buffer.finish_loading(); // 无论成功失败都重置 loading
+                        self.record_load_result(&load_result);
                         let new_seg = load_result?;
                         let atomic_seg =
                             Arc::new(AtomicSegment::new(new_seg.start_id, new_seg.max_id));
@@ -619,7 +648,9 @@ impl IdAlgorithm for SegmentAlgorithm {
                 let next = buffer.get_next();
                 if next.is_none() {
                     self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
-                    let new_seg = self.segment_loader.load_segment(ctx, 0).await?;
+                    let load_result = self.segment_loader.load_segment(ctx, 0).await;
+                    self.record_load_result(&load_result);
+                    let new_seg = load_result?;
                     let atomic_seg = Arc::new(AtomicSegment::new(new_seg.start_id, new_seg.max_id));
                     buffer.set_next(atomic_seg);
                 }
@@ -646,11 +677,30 @@ impl IdAlgorithm for SegmentAlgorithm {
         ))
     }
 
+    /// 健康状况同时反映两路信号（T029）：
+    /// 1. buffer 空虚（尚无任何活动号段缓冲）→ Degraded；
+    /// 2. 最近一次号段加载失败且尚无成功恢复 → Degraded（附错误摘要）。
+    ///    「最近一次」为新结果覆盖旧结果：失败后再次成功加载即恢复 Healthy。
+    ///    [`UnconfiguredSegmentLoader`] 的 ConfigurationError 同样计入加载失败。
     fn health_check(&self) -> HealthStatus {
         if self.buffers.read().is_empty() {
             return HealthStatus::Degraded("No active buffers".to_string());
         }
-        HealthStatus::Healthy
+        match &*self.last_load_result.lock() {
+            LastLoadResult::Err(err) => {
+                HealthStatus::Degraded(format!("Last segment load failed: {err}"))
+            }
+            LastLoadResult::Ok(at) => {
+                // 成功时刻用于观测：debug 级别输出距上次成功加载的毫秒数，
+                // 供排障时确认号段装载新鲜度。
+                tracing::debug!(
+                    event = "segment_health_check_ok",
+                    ms_since_last_load = at.elapsed().as_millis() as u64
+                );
+                HealthStatus::Healthy
+            }
+            LastLoadResult::NotYet => HealthStatus::Healthy,
+        }
     }
 
     fn metrics(&self) -> AlgorithmMetricsSnapshot {
@@ -1017,6 +1067,128 @@ mod tests {
         let _ = algo.generate(&ctx).await.unwrap();
         let status = algo.health_check();
         assert!(matches!(status, HealthStatus::Healthy));
+    }
+
+    // ===== health_check 反映最近号段加载结果（T029）=====
+
+    /// 恒失败装载器：注入 load 错误以驱动 health_check 降级路径。
+    struct FailingSegmentLoader;
+
+    #[async_trait]
+    impl SegmentLoader for FailingSegmentLoader {
+        async fn load_segment(
+            &self,
+            _ctx: &GenerateContext,
+            _worker_id: u8,
+        ) -> Result<SegmentData> {
+            Err(CoreError::DatabaseError(
+                "segment db unreachable".to_string(),
+            ))
+        }
+    }
+
+    /// 可切换装载器：按 `fail` 标志注入失败/成功，驱动「失败 → 恢复」转换。
+    struct SwitchableSegmentLoader {
+        fail: std::sync::atomic::AtomicBool,
+    }
+
+    impl SwitchableSegmentLoader {
+        fn new(fail: bool) -> Self {
+            Self {
+                fail: std::sync::atomic::AtomicBool::new(fail),
+            }
+        }
+
+        fn set_fail(&self, fail: bool) {
+            self.fail.store(fail, Ordering::Relaxed);
+        }
+    }
+
+    #[async_trait]
+    impl SegmentLoader for SwitchableSegmentLoader {
+        async fn load_segment(
+            &self,
+            _ctx: &GenerateContext,
+            _worker_id: u8,
+        ) -> Result<SegmentData> {
+            if self.fail.load(Ordering::Relaxed) {
+                Err(CoreError::DatabaseError(
+                    "transient load failure".to_string(),
+                ))
+            } else {
+                Ok(SegmentData {
+                    start_id: 1,
+                    max_id: 1000,
+                })
+            }
+        }
+    }
+
+    /// loader 注入错误后：generate 失败且 health_check 非 Healthy，
+    /// 降级消息必须携带「最近一次加载失败」与错误摘要。
+    #[tokio::test]
+    async fn test_health_check_degrades_after_loader_failure() {
+        let algo = SegmentAlgorithm::new(0).with_segment_loader(Arc::new(FailingSegmentLoader));
+        let ctx = sample_ctx();
+
+        assert!(algo.generate(&ctx).await.is_err());
+        match algo.health_check() {
+            HealthStatus::Degraded(msg) => {
+                assert!(
+                    msg.contains("Last segment load failed")
+                        && msg.contains("segment db unreachable"),
+                    "degraded message must carry load error, got: {msg}"
+                );
+            }
+            other => panic!("expected Degraded after load failure, got {other:?}"),
+        }
+    }
+
+    /// loader 恢复成功后：最近一次成功加载覆盖失败记录，health_check 恢复 Healthy。
+    #[tokio::test]
+    async fn test_health_check_recovers_to_healthy_after_successful_reload() {
+        let loader = Arc::new(SwitchableSegmentLoader::new(true));
+        let algo = SegmentAlgorithm::new(0).with_segment_loader(loader.clone());
+        let ctx = sample_ctx();
+
+        // 失败阶段：generate 报错且 health 非 Healthy。
+        assert!(algo.generate(&ctx).await.is_err());
+        assert!(matches!(algo.health_check(), HealthStatus::Degraded(_)));
+
+        // 恢复阶段：注入成功 → 成功加载覆盖失败 → Healthy。
+        loader.set_fail(false);
+        assert!(algo.generate(&ctx).await.is_ok());
+        assert!(matches!(algo.health_check(), HealthStatus::Healthy));
+    }
+
+    /// batch_generate 的 loader 失败同样计入最近加载结果（batch 调用点记录）。
+    #[tokio::test]
+    async fn test_batch_generate_loader_failure_recorded_for_health() {
+        let algo = SegmentAlgorithm::new(0).with_segment_loader(Arc::new(FailingSegmentLoader));
+        let ctx = sample_ctx();
+
+        assert!(algo.batch_generate(&ctx, 3).await.is_err());
+        assert!(matches!(algo.health_check(), HealthStatus::Degraded(_)));
+    }
+
+    /// T014 语义不破坏：UnconfiguredSegmentLoader 的 ConfigurationError
+    /// 同样计入「最近一次加载失败」，health_check 非 Healthy。
+    #[tokio::test]
+    async fn test_unconfigured_loader_error_counts_as_load_failure_for_health() {
+        let algo =
+            SegmentAlgorithm::new(0).with_segment_loader(Arc::new(UnconfiguredSegmentLoader));
+        let ctx = sample_ctx();
+
+        assert!(algo.generate(&ctx).await.is_err());
+        match algo.health_check() {
+            HealthStatus::Degraded(msg) => {
+                assert!(
+                    msg.contains("DbSegmentLoader"),
+                    "message must point to DbSegmentLoader injection, got: {msg}"
+                );
+            }
+            other => panic!("expected Degraded, got {other:?}"),
+        }
     }
 
     #[test]

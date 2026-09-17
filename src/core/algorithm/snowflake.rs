@@ -126,8 +126,18 @@ pub struct SnowflakeAlgorithm {
     config: SnowflakeAlgorithmConfig,
     datacenter_id: u8,
     worker_id: u8,
-    sequence: AtomicU64,
-    last_timestamp: AtomicU64,
+    /// 生成状态单原子：`(last_timestamp_ms << sequence_bits) | sequence`。
+    ///
+    /// 全部生成路径（单条 / 批量）都通过对该字的 CAS 迁移推进，取代历史
+    /// `gen_lock: tokio::sync::Mutex` 的全局串行——旧锁把所有生成串行化，
+    /// 且临界区跨越 `wait_for_next_ms` 的 `.await`；CAS 方案下「新毫秒复位」
+    /// 与「同毫秒递增」的互斥由状态字本身的原子性保证，生成不再互相阻塞。
+    /// worker_id / datacenter_id 实例内恒定，不参与 CAS 状态。
+    ///
+    /// 序列号域为 `[0, sequence_mask]`，`sequence_mask` 本身保留为耗尽哨兵
+    /// 不发号：`seq + take` 必须落在 `[0, mask]` 内，否则原子加会溢出污染
+    /// 高位时间戳。故单毫秒可发号容量为 `sequence_mask`（10 位 → 1023 个）。
+    state: AtomicU64,
     rotation_count: AtomicU8,
     metrics: Arc<SnowflakeMetrics>,
     clock_drift_ms: AtomicU64,
@@ -136,12 +146,6 @@ pub struct SnowflakeAlgorithm {
     last_drift_at_ms: AtomicU64,
     /// drift 衰减阈值（毫秒）。默认 60_000；测试可改小以模拟时间推进。
     drift_decay_after_ms: u64,
-    /// 串行化 `(last_timestamp, sequence)` 状态迁移（修复并发重复 ID 竞态）。
-    /// 「新毫秒复位」与「同毫秒递增」必须互斥，否则两线程可同时复位
-    /// sequence 并领取相同 seq，产生重复 ID。临界区可能跨越
-    /// `wait_for_next_ms` 的 `.await`，故使用可安全跨 await 持有的
-    /// `tokio::sync::Mutex`（而非 parking_lot）。
-    gen_lock: tokio::sync::Mutex<()>,
 }
 
 struct SnowflakeMetrics {
@@ -168,14 +172,12 @@ impl SnowflakeAlgorithm {
             config: SnowflakeAlgorithmConfig::default(),
             datacenter_id,
             worker_id,
-            sequence: AtomicU64::new(0),
-            last_timestamp: AtomicU64::new(0),
+            state: AtomicU64::new(0),
             rotation_count: AtomicU8::new(0),
             metrics: Arc::new(SnowflakeMetrics::new()),
             clock_drift_ms: AtomicU64::new(0),
             last_drift_at_ms: AtomicU64::new(0),
             drift_decay_after_ms: DEFAULT_DRIFT_DECAY_AFTER_MS,
-            gen_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -247,99 +249,155 @@ impl SnowflakeAlgorithm {
         }
     }
 
-    async fn generate_id(&self) -> Result<Id> {
-        // 串行化 (last_timestamp, sequence) 状态迁移：若不加锁，两个线程可同时
-        // 观察到 timestamp > last_ts，各自复位 sequence 并领取相同 seq，产生重复
-        // ID。锁内包含 wait_for_next_ms 的 .await（tokio Mutex 可安全跨 await）。
-        let _guard = self.gen_lock.lock().await;
+    /// 打包生成状态：`(timestamp_ms << sequence_bits) | sequence`。
+    fn pack_state(&self, timestamp_ms: u64, sequence: u64) -> u64 {
+        (timestamp_ms << self.config.sequence_bits) | (sequence & self.config.sequence_mask())
+    }
+
+    /// 从状态字解出时间戳分量（高位）。
+    fn state_timestamp(&self, state: u64) -> u64 {
+        state >> self.config.sequence_bits
+    }
+
+    /// 从状态字解出序列号分量（低位）。
+    fn state_sequence(&self, state: u64) -> u64 {
+        state & self.config.sequence_mask()
+    }
+
+    /// 时钟回拨公共处理（单条 / 批量共用）：记录 drift、刷新衰减时钟基准
+    /// （T019）、计数并输出告警日志。
+    fn record_clock_backward(&self, current_timestamp: u64, last_timestamp: u64, drift: u64) {
+        self.clock_drift_ms.store(drift, Ordering::Relaxed);
+        self.last_drift_at_ms
+            .store(monotonic_millis(), Ordering::Relaxed);
+        self.metrics.clock_backwards.fetch_add(1, Ordering::Relaxed);
+
+        tracing::warn!(
+            event = "snowflake_clock_backward",
+            current_timestamp = current_timestamp,
+            last_timestamp = last_timestamp,
+            drift_ms = drift,
+            threshold_ms = self.config.clock_drift_threshold_ms
+        );
+    }
+
+    /// 无锁生成核心：在 [`Self::state`] 上以 CAS 预留 `count` 个连续序列号，
+    /// 返回 `(timestamp_ms, start_seq, count)`；调用方据此构造
+    /// `[start_seq, start_seq + count)` 的 ID 区间。单条生成即 `count = 1`。
+    ///
+    /// 状态迁移（全部为互斥的 CAS 成功路径，保证不重不漏）：
+    /// - 新毫秒（`timestamp > last_ts`）：CAS 复位 `seq → take`，从 0 起预留
+    ///   `min(count, sequence_mask)` 个；
+    /// - 同毫秒：CAS `state → state + take`（`fetch_add(n)` 区间预留的 CAS
+    ///   形式——先按已读状态校验剩余容量再做原子加，防止 seq 越界污染高位
+    ///   时间戳）；
+    /// - 同毫秒剩余不足（`take == 0`）：等待真实时钟越过当前毫秒后 CAS 轮转
+    ///   `(ts, seq) → (next_ts, 0)` 并重试；
+    /// - 时钟回拨：记录 drift（T019 衰减语义不变）；超阈值返回
+    ///   [`CoreError::ClockMovedBackward`]；阈值内等待时钟追平后 CAS 把
+    ///   `last_ts` 推进到 `wait_ts`（seq 归零）并重试。
+    ///
+    /// CAS 失败仅说明他线程已推进状态，循环重读即可，无锁且无饥饿。
+    async fn reserve(&self, count: u64) -> Result<(u64, u64, u64)> {
+        let seq_mask = self.config.sequence_mask();
+
+        // sequence_bits=0（mask=0）时单毫秒可发号容量为 0，直接报溢出，
+        // 避免 CAS 循环在零容量状态下空转。
+        if seq_mask == 0 {
+            return Err(CoreError::SequenceOverflow {
+                timestamp: Self::get_timestamp(),
+            });
+        }
 
         // drift 衰减检查（T019）：持续 60 秒无新回拨事件后清零漂移，
         // health_check 据此恢复 Healthy。
         self.maybe_decay_drift();
 
-        let timestamp = Self::get_timestamp();
-        let last_ts = self.last_timestamp.load(Ordering::SeqCst);
-        let sequence_mask = self.config.sequence_mask();
+        loop {
+            let state = self.state.load(Ordering::Acquire);
+            let last_ts = self.state_timestamp(state);
+            let seq = self.state_sequence(state);
+            let timestamp = Self::get_timestamp();
 
-        if timestamp < last_ts {
-            let drift = last_ts - timestamp;
-            self.clock_drift_ms.store(drift, Ordering::Relaxed);
-            self.last_drift_at_ms
-                .store(monotonic_millis(), Ordering::Relaxed);
-            self.metrics.clock_backwards.fetch_add(1, Ordering::Relaxed);
+            if timestamp < last_ts {
+                let drift = last_ts - timestamp;
+                self.record_clock_backward(timestamp, last_ts, drift);
 
-            tracing::warn!(
-                event = "snowflake_clock_backward",
-                current_timestamp = timestamp,
-                last_timestamp = last_ts,
-                drift_ms = drift,
-                threshold_ms = self.config.clock_drift_threshold_ms
-            );
+                if drift > self.config.clock_drift_threshold_ms {
+                    return Err(CoreError::ClockMovedBackward {
+                        last_timestamp: last_ts,
+                    });
+                }
 
-            if drift > self.config.clock_drift_threshold_ms {
-                return Err(CoreError::ClockMovedBackward {
-                    last_timestamp: last_ts,
-                });
+                // 阈值内：等时钟追平后 CAS 把 last_ts 推进到 wait_ts（seq 归零）。
+                // CAS 失败说明他线程已推进状态，直接重读重试。
+                let wait_ts = self.wait_for_next_ms(last_ts).await;
+                let _ = self.state.compare_exchange(
+                    state,
+                    self.pack_state(wait_ts, 0),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                continue;
             }
 
-            let wait_ts = self.wait_for_next_ms(last_ts).await;
-            return self.generate_id_with_timestamp(wait_ts, sequence_mask);
-        }
+            if timestamp > last_ts {
+                // 新毫秒：从 seq 0 起预留 take 个（take <= mask 保证可编码）。
+                let take = count.min(seq_mask);
+                let new_state = self.pack_state(timestamp, take);
+                if self
+                    .state
+                    .compare_exchange(state, new_state, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    return Ok((timestamp, 0, take));
+                }
+                continue;
+            }
 
-        if timestamp == last_ts {
-            let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
+            // 同毫秒：剩余 = mask - seq（seq=mask 保留为耗尽哨兵不入号）。
+            let take = count.min(seq_mask - seq);
+            if take > 0 {
+                if self
+                    .state
+                    .compare_exchange(state, state + take, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    return Ok((timestamp, seq, take));
+                }
+                continue;
+            }
 
-            // 序列号绕回（耗尽）判定：seq > 0 且掩码后归零（说明已绕过一圈回到 0）。
-            // seq=0 是合法起始值（首次 fetch_add 返回旧值 0），不得误判为耗尽。
-            if seq > 0 && seq & sequence_mask == 0 {
+            // 同毫秒序列耗尽：推进到下一毫秒重试（seq 归零）。
+            let next_ts = self.wait_for_next_ms(timestamp).await;
+            if self
+                .state
+                .compare_exchange(
+                    state,
+                    self.pack_state(next_ts, 0),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
                 self.rotation_count.fetch_add(1, Ordering::Relaxed);
-                let next_ts = self.wait_for_next_ms(timestamp).await;
-                return self.generate_id_with_timestamp(next_ts, sequence_mask);
+                self.metrics
+                    .sequence_overflows
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing::debug!(
+                    event = "snowflake_sequence_exhausted",
+                    timestamp = timestamp,
+                    next_timestamp = next_ts
+                );
             }
-
-            let id = self.construct_id(timestamp, seq & sequence_mask);
-            self.metrics.total_generated.fetch_add(1, Ordering::Relaxed);
-            return Ok(id);
         }
-
-        self.sequence.store(0, Ordering::SeqCst);
-        self.last_timestamp.store(timestamp, Ordering::SeqCst);
-
-        // 新毫秒的第一个 ID 用 seq=0，但要通过 fetch_add 推进 sequence 到 1，
-        // 否则下次同毫秒调用 fetch_add(1) 会返回 0，导致 ID 重复。
-        let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
-        let id = self.construct_id(timestamp, seq & sequence_mask);
-        self.metrics.total_generated.fetch_add(1, Ordering::Relaxed);
-        Ok(id)
     }
 
-    fn generate_id_with_timestamp(&self, timestamp: u64, sequence_mask: u64) -> Result<Id> {
-        self.last_timestamp.store(timestamp, Ordering::SeqCst);
-        self.sequence.store(0, Ordering::SeqCst);
-
-        let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
-
-        // 序列号溢出判定：seq > 0 且掩码后归零（说明已绕过一圈回到 0）。
-        // seq=0 是合法起始值（首次 fetch_add 返回旧值 0），不得误判为溢出。
-        // 注：timestamp == self.last_timestamp 比较冗余（前一行刚 store），已移除。
-        if seq > 0 && seq & sequence_mask == 0 {
-            self.metrics
-                .sequence_overflows
-                .fetch_add(1, Ordering::Relaxed);
-
-            tracing::warn!(
-                event = "snowflake_sequence_overflow",
-                timestamp = timestamp,
-                sequence = seq,
-                mask = sequence_mask
-            );
-
-            return Err(CoreError::SequenceOverflow { timestamp });
-        }
-
-        let id = self.construct_id(timestamp, seq & sequence_mask);
+    /// 单条生成：预留 1 个序列号并构造 ID。
+    async fn generate_id(&self) -> Result<Id> {
+        let (timestamp, sequence, _) = self.reserve(1).await?;
         self.metrics.total_generated.fetch_add(1, Ordering::Relaxed);
-        Ok(id)
+        Ok(self.construct_id(timestamp, sequence))
     }
 
     fn construct_id(&self, timestamp: u64, sequence: u64) -> Id {
@@ -379,9 +437,19 @@ impl IdAlgorithm for SnowflakeAlgorithm {
         let mut retries = 0;
         const MAX_RETRIES: usize = 100;
 
+        // 区间预留：每次向 reserve 申请「还差的个数」，一次 CAS 预留一整段
+        // 连续序列号。同毫秒剩余不足时 reserve 内部推进到下一毫秒重试；
+        // 时钟回拨超阈值返回 Err（回拨路径的 drift 记录与 T019 衰减不受影响）。
         while ids.len() < size && retries < MAX_RETRIES {
-            match self.generate_id().await {
-                Ok(id) => ids.push(id),
+            match self.reserve((size - ids.len()) as u64).await {
+                Ok((timestamp, start_seq, count)) => {
+                    for seq in start_seq..start_seq + count {
+                        ids.push(self.construct_id(timestamp, seq));
+                    }
+                    self.metrics
+                        .total_generated
+                        .fetch_add(count, Ordering::Relaxed);
+                }
                 Err(e) => {
                     tracing::debug!(
                         event = "snowflake_retry",
@@ -511,20 +579,99 @@ mod tests {
         }
     }
 
-    /// generate_id_with_timestamp 在 seq=0（首次调用）时必须成功，
-    /// 不得误判为 SequenceOverflow。
+    /// 状态字打包/解包互为逆运算（位结构钉子）。
     #[test]
-    fn test_generate_id_with_timestamp_first_seq_succeeds() {
+    fn test_state_pack_unpack_roundtrip() {
+        let algo = SnowflakeAlgorithm::new(1, 1);
+        let (ts, seq) = (0x000F_4240u64, 0x123u64);
+        let state = algo.pack_state(ts, seq);
+        assert_eq!(algo.state_timestamp(state), ts);
+        assert_eq!(algo.state_sequence(state), seq);
+    }
+
+    /// CAS 化后首颗 ID 必须以 seq=0 起步且成功
+    ///（钉住历史上「seq=0 被误判为 SequenceOverflow」的回归）。
+    #[tokio::test]
+    async fn test_generate_first_id_starts_at_sequence_zero() {
         let algo = SnowflakeAlgorithm::new(0, 0);
-        let sequence_mask = algo.config.sequence_mask();
-        let result = algo.generate_id_with_timestamp(1000, sequence_mask);
-        assert!(
-            result.is_ok(),
-            "first call with seq=0 should succeed, got: {:?}",
-            result.err()
-        );
-        let id = result.unwrap();
+        let id = algo
+            .generate_id()
+            .await
+            .expect("first generate must succeed");
         assert!(id.as_u128() > 0, "generated ID must be non-zero");
+
+        let layout = SnowflakeLayoutInfo::from_config(&algo.config);
+        let parsed = layout.parse(id.as_u128());
+        assert_eq!(parsed.sequence, 0, "first ID must use sequence 0");
+    }
+
+    /// 单线程连续生成：时间戳单调不减；同毫秒内序列严格 +1；跨毫秒后序列归零。
+    /// 生成量超过两个单毫秒容量（1023 x 2），强制跨越至少两次毫秒边界。
+    #[tokio::test]
+    async fn test_snowflake_single_thread_sequence_continuity() {
+        let algo = SnowflakeAlgorithm::new(1, 1);
+        let layout = SnowflakeLayoutInfo::from_config(&algo.config);
+        let mut prev: Option<ParsedSnowflakeId> = None;
+
+        for _ in 0..2500 {
+            let id = algo.generate_id().await.unwrap();
+            let parsed = layout.parse(id.as_u128());
+            if let Some(p) = prev {
+                if parsed.timestamp_ms == p.timestamp_ms {
+                    assert_eq!(
+                        parsed.sequence,
+                        p.sequence + 1,
+                        "sequences must increment by 1 within the same millisecond"
+                    );
+                } else {
+                    assert!(
+                        parsed.timestamp_ms > p.timestamp_ms,
+                        "timestamp must be monotonically increasing"
+                    );
+                    assert_eq!(
+                        parsed.sequence, 0,
+                        "sequence must reset to 0 on new millisecond"
+                    );
+                }
+            }
+            prev = Some(parsed);
+        }
+    }
+
+    /// 16 任务并发生成：总集合不得出现重复 ID（无锁 CAS 正确性钉子）。
+    /// 8000 个 ID 跨越多个毫秒边界，覆盖同毫秒递增、序列耗尽轮转与新毫秒
+    /// 复位的并发交织。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_snowflake_concurrent_generation_no_duplicates() {
+        let algo = Arc::new(SnowflakeAlgorithm::new(1, 1));
+        const TASKS: usize = 16;
+        const PER_TASK: usize = 500;
+
+        let handles: Vec<_> = (0..TASKS)
+            .map(|_| {
+                let algo = Arc::clone(&algo);
+                tokio::spawn(async move {
+                    let mut ids = Vec::with_capacity(PER_TASK);
+                    for _ in 0..PER_TASK {
+                        ids.push(algo.generate_id().await.unwrap().as_u128());
+                    }
+                    ids
+                })
+            })
+            .collect();
+
+        let mut all = std::collections::HashSet::new();
+        let mut total = 0usize;
+        for handle in handles {
+            for id in handle.await.unwrap() {
+                assert!(
+                    all.insert(id),
+                    "concurrent generation produced duplicate ID: {id}"
+                );
+                total += 1;
+            }
+        }
+        assert_eq!(total, TASKS * PER_TASK);
     }
 
     /// 同一毫秒内连续两次 generate_id 调用都应成功（验证 line 140 bug 修复）。
@@ -551,7 +698,8 @@ mod tests {
         let algo = SnowflakeAlgorithm::new(0, 0);
         let current = SnowflakeAlgorithm::get_timestamp();
         let future_ts = current + 2000;
-        algo.last_timestamp.store(future_ts, Ordering::SeqCst);
+        algo.state
+            .store(algo.pack_state(future_ts, 0), Ordering::SeqCst);
 
         let result = algo.generate_id().await;
         match result {
@@ -573,8 +721,9 @@ mod tests {
     async fn test_generate_id_clock_backward_within_threshold_waits_and_succeeds() {
         let algo = SnowflakeAlgorithm::new(0, 0);
         let current = SnowflakeAlgorithm::get_timestamp();
-        // 设置 last_timestamp 为未来 1ms，drift=1 <= 默认阈值 1000
-        algo.last_timestamp.store(current + 1, Ordering::SeqCst);
+        // 设置状态字时间戳为未来 1ms，drift=1 <= 默认阈值 1000
+        algo.state
+            .store(algo.pack_state(current + 1, 0), Ordering::SeqCst);
 
         let result = algo.generate_id().await;
         assert!(
@@ -585,8 +734,8 @@ mod tests {
         let id = result.unwrap();
         assert!(id.as_u128() > 0, "generated ID must be non-zero");
 
-        // 验证 last_timestamp 已推进到 wait_ts（> current）
-        let last_ts = algo.last_timestamp.load(Ordering::SeqCst);
+        // 验证状态字时间戳已推进到 wait_ts（> current）
+        let last_ts = algo.state_timestamp(algo.state.load(Ordering::SeqCst));
         assert!(
             last_ts > current,
             "last_timestamp should advance to wait_ts, got {}",
@@ -602,14 +751,16 @@ mod tests {
         let mask = algo.config.sequence_mask();
         let rotation_before = algo.rotation_count.load(Ordering::Relaxed);
 
-        // 重试多次以确保至少一次走绕回路径（依赖时间戳恰好等于 last_timestamp）
+        // 重试多次以确保至少一次走绕回路径（依赖时间戳恰好等于状态字时间戳）
         // 每次尝试失败的概率 < 1%（仅在跨毫秒边界时发生），50 次后几乎必然成功
         let mut triggered = false;
         for _ in 0..50 {
             let ts = SnowflakeAlgorithm::get_timestamp();
-            algo.last_timestamp.store(ts, Ordering::SeqCst);
-            // 设置 sequence 为 mask+1，模拟同毫秒内已生成 mask+1 个 ID 后的状态
-            algo.sequence.store(mask + 1, Ordering::SeqCst);
+            // CAS 布局下单毫秒 seq 合法域为 [0, mask]：置 seq=mask 即
+            // 「本毫秒序列耗尽（哨兵位）」，下一次生成必须走轮转分支
+            // （rotation_count 自增）并推进到下一毫秒发号。
+            algo.state
+                .store(algo.pack_state(ts, mask), Ordering::SeqCst);
 
             if let Ok(id) = algo.generate_id().await {
                 let rotation_after = algo.rotation_count.load(Ordering::Relaxed);
@@ -677,9 +828,9 @@ mod tests {
     async fn test_batch_generate_retries_exhausted_returns_internal_error() {
         let algo = SnowflakeAlgorithm::new(0, 0);
         let current = SnowflakeAlgorithm::get_timestamp();
-        // 设置 last_timestamp 远在未来（drift=10000 > 阈值 1000），所有 generate_id 调用都失败
-        algo.last_timestamp
-            .store(current + 10_000, Ordering::SeqCst);
+        // 设置状态字时间戳远在未来（drift=10000 > 阈值 1000），所有 reserve 调用都失败
+        algo.state
+            .store(algo.pack_state(current + 10_000, 0), Ordering::SeqCst);
 
         let ctx = GenerateContext::default();
         let result = algo.batch_generate(&ctx, 5).await;
@@ -762,7 +913,8 @@ mod tests {
         assert_eq!(algo.last_drift_at_ms.load(Ordering::Relaxed), 0);
 
         let current = SnowflakeAlgorithm::get_timestamp();
-        algo.last_timestamp.store(current + 2000, Ordering::SeqCst);
+        algo.state
+            .store(algo.pack_state(current + 2000, 0), Ordering::SeqCst);
         assert!(algo.generate_id().await.is_err());
 
         assert!(
@@ -823,10 +975,11 @@ mod tests {
         algo.last_drift_at_ms
             .store(monotonic_millis().saturating_sub(60_000), Ordering::Relaxed);
 
-        // 本次调用发生真实回拨（last_timestamp 在未来 2000ms）：
+        // 本次调用发生真实回拨（状态字时间戳在未来 2000ms）：
         // 回拨分支刷新 last_drift_at_ms 并重新记录 drift。
         let current = SnowflakeAlgorithm::get_timestamp();
-        algo.last_timestamp.store(current + 2000, Ordering::SeqCst);
+        algo.state
+            .store(algo.pack_state(current + 2000, 0), Ordering::SeqCst);
         assert!(algo.generate_id().await.is_err());
 
         assert_eq!(

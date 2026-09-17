@@ -208,8 +208,10 @@ async fn t042_5xx_database_error_does_not_leak_internal_string() {
             "/db",
             get(
                 |axum::Extension(locale): axum::Extension<Locale>| async move {
-                    let err =
-                        CoreError::DatabaseError("postgres://user:secret@host:5432/db".to_string(), None);
+                    let err = CoreError::DatabaseError(
+                        "postgres://user:secret@host:5432/db".to_string(),
+                        None,
+                    );
                     let (status, body) = core_error_to_response(&err, locale);
                     (status, body)
                 },

@@ -12,21 +12,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Phase 9 — file-level `#![allow(dead_code)]` retained
-//! with explicit justification. The `MonitoringCore` surface exposes
-//! the full alerting/metrics API (alert state machine, notification
-//! channels, webhook dispatch, etc.) but only a subset is currently
-//! wired into the production `/metrics` handler. The remaining items
-//! are retained because (a) they are exercised by this file's
-//! `#[cfg(test)]` blocks, (b) the alerting pipeline is scheduled for
-//! production enablement in v0.3.0, and (c) deleting them would
-//! discard the alert-state transition tests. Re-evaluate after the
-//! monitoring pipeline is fully integrated.
+//! T039 —— 告警子系统 feature 门控。
+//!
+//! 本文件的非测试项(AlertManager/AlertRule/告警状态机/通知通道/webhook
+//! 分发/broadcast 事件流)整体属于告警子系统,生产路径零引用
+//! (/metrics 仅消费 core::types::GlobalMetrics,与 monitoring::core 无关),
+//! 经 `#[cfg(any(test, feature = "alerting"))]` 门控:
+//! - 默认构建(不含 alerting feature)不编译告警子系统,产物不再携带
+//!   生产死代码;
+//! - `--features alerting` 显式启用;
+//! - test 构建恒包含 —— 告警单测与 e2e(core/tests/
+//!   grpc_monitoring_e2e_tests、remaining_e2e_tests 等,其 import 行不在
+//!   monitoring 文件所有权内)在默认 feature 下照常编译运行,测试清单与
+//!   门控前一致。
+//!
+//! 此前头注释声称存在 file-level `#![allow(dead_code)]` 并以 Phase 9
+//! 理由保留死代码 —— 该 allow 从未存在,描述与真实机制不符,已更正。
+//! 指标采集/环缓冲等生产在用部分位于 core/types/metrics.rs
+//! (GlobalMetrics/QpsWindow),不在本文件、不受本门控影响。
 
+#[cfg(any(test, feature = "alerting"))]
 use crate::core::types::GlobalMetrics;
+#[cfg(any(test, feature = "alerting"))]
 use arc_swap::ArcSwap;
+#[cfg(any(test, feature = "alerting"))]
 use parking_lot::RwLock;
+#[cfg(any(test, feature = "alerting"))]
 use serde::{Deserialize, Serialize};
+#[cfg(any(test, feature = "alerting"))]
 use std::{
     collections::HashMap,
     sync::{
@@ -35,17 +48,23 @@ use std::{
     },
     time::{Duration, Instant},
 };
+#[cfg(any(test, feature = "alerting"))]
 use thiserror::Error;
+#[cfg(any(test, feature = "alerting"))]
 use tokio::sync::{
     broadcast,
     mpsc::{self, Receiver},
 };
+#[cfg(any(test, feature = "alerting"))]
 use tracing::{debug, error, info, warn};
 
+#[cfg(any(test, feature = "alerting"))]
 const DEFAULT_EVALUATION_INTERVAL_MS: u64 = 1000;
+#[cfg(any(test, feature = "alerting"))]
 const DEFAULT_FOR_DURATION_SECS: u64 = 60;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[cfg(any(test, feature = "alerting"))]
 pub enum AlertError {
     #[error("Alert rule not found: {0}")]
     NotFound(String),
@@ -61,12 +80,14 @@ pub enum AlertError {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg(any(test, feature = "alerting"))]
 pub enum AlertSeverity {
     Critical = 1,
     Warning = 2,
     Info = 3,
 }
 
+#[cfg(any(test, feature = "alerting"))]
 impl std::fmt::Display for AlertSeverity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -78,6 +99,7 @@ impl std::fmt::Display for AlertSeverity {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[cfg(any(test, feature = "alerting"))]
 pub enum AlertStatus {
     Firing,
     Resolved,
@@ -86,12 +108,14 @@ pub enum AlertStatus {
 }
 
 /// Internal enum for alert actions
+#[cfg(any(test, feature = "alerting"))]
 enum AlertAction {
     Fire(Alert),
     Resolve(Alert),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg(any(test, feature = "alerting"))]
 pub struct Alert {
     pub rule_name: String,
     pub severity: AlertSeverity,
@@ -104,6 +128,7 @@ pub struct Alert {
     pub current_value: Option<String>,
 }
 
+#[cfg(any(test, feature = "alerting"))]
 impl Alert {
     pub fn new(
         rule_name: String,
@@ -141,6 +166,7 @@ impl Alert {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg(any(test, feature = "alerting"))]
 pub struct AlertRule {
     pub name: String,
     pub expression: String,
@@ -152,6 +178,7 @@ pub struct AlertRule {
     pub description: String,
 }
 
+#[cfg(any(test, feature = "alerting"))]
 impl Default for AlertRule {
     fn default() -> Self {
         Self {
@@ -167,6 +194,7 @@ impl Default for AlertRule {
     }
 }
 
+#[cfg(any(test, feature = "alerting"))]
 impl AlertRule {
     pub fn new<S: Into<String>>(name: S, expression: S, severity: AlertSeverity) -> Self {
         Self {
@@ -179,6 +207,7 @@ impl AlertRule {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg(any(test, feature = "alerting"))]
 pub enum ChannelType {
     Webhook,
     Email,
@@ -188,6 +217,7 @@ pub enum ChannelType {
     Stdout,
 }
 
+#[cfg(any(test, feature = "alerting"))]
 impl std::fmt::Display for ChannelType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -202,6 +232,7 @@ impl std::fmt::Display for ChannelType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg(any(test, feature = "alerting"))]
 pub struct NotificationChannel {
     pub name: String,
     pub channel_type: ChannelType,
@@ -209,6 +240,7 @@ pub struct NotificationChannel {
     pub enabled: bool,
 }
 
+#[cfg(any(test, feature = "alerting"))]
 impl Default for NotificationChannel {
     fn default() -> Self {
         Self {
@@ -221,6 +253,7 @@ impl Default for NotificationChannel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg(any(test, feature = "alerting"))]
 pub struct AlertingConfig {
     pub enabled: bool,
     pub evaluation_interval_ms: u64,
@@ -229,6 +262,7 @@ pub struct AlertingConfig {
     pub global_labels: HashMap<String, String>,
 }
 
+#[cfg(any(test, feature = "alerting"))]
 impl Default for AlertingConfig {
     fn default() -> Self {
         Self {
@@ -242,6 +276,7 @@ impl Default for AlertingConfig {
 }
 
 #[derive(Debug, Default, Clone)]
+#[cfg(any(test, feature = "alerting"))]
 pub struct AlertState {
     pub last_fired: Option<Instant>,
     pub consecutive_promotions: u8,
@@ -250,6 +285,7 @@ pub struct AlertState {
     pub current_value: Option<String>,
 }
 
+#[cfg(any(test, feature = "alerting"))]
 impl AlertState {
     pub fn new() -> Self {
         Self {
@@ -294,12 +330,15 @@ impl AlertState {
     }
 }
 
+#[cfg(any(test, feature = "alerting"))]
 pub trait AlertEvaluator: Send + Sync {
     fn evaluate(&self, rule: &AlertRule, metrics: &GlobalMetrics) -> (bool, Option<String>);
 }
 
+#[cfg(any(test, feature = "alerting"))]
 pub struct DefaultEvaluator;
 
+#[cfg(any(test, feature = "alerting"))]
 impl DefaultEvaluator {
     fn parse_threshold<T: std::str::FromStr>(
         expression: &str,
@@ -318,6 +357,7 @@ impl DefaultEvaluator {
     }
 }
 
+#[cfg(any(test, feature = "alerting"))]
 impl AlertEvaluator for DefaultEvaluator {
     fn evaluate(&self, rule: &AlertRule, metrics: &GlobalMetrics) -> (bool, Option<String>) {
         let expr = rule.expression.trim();
@@ -446,10 +486,12 @@ impl AlertEvaluator for DefaultEvaluator {
     }
 }
 
+#[cfg(any(test, feature = "alerting"))]
 pub struct AlertNotificationSender {
     channels: Arc<ArcSwap<Vec<NotificationChannel>>>,
 }
 
+#[cfg(any(test, feature = "alerting"))]
 impl AlertNotificationSender {
     pub fn new(channels: Vec<NotificationChannel>) -> Self {
         Self {
@@ -707,6 +749,7 @@ impl AlertNotificationSender {
     }
 }
 
+#[cfg(any(test, feature = "alerting"))]
 pub struct AlertManager {
     config: Arc<ArcSwap<AlertingConfig>>,
     states: Arc<RwLock<HashMap<String, AlertState>>>,
@@ -721,6 +764,7 @@ pub struct AlertManager {
     max_history_size: usize,
 }
 
+#[cfg(any(test, feature = "alerting"))]
 impl AlertManager {
     pub fn new(
         config: AlertingConfig,
@@ -1009,6 +1053,7 @@ impl AlertManager {
     }
 }
 
+#[cfg(any(test, feature = "alerting"))]
 pub fn default_alerting_config() -> AlertingConfig {
     AlertingConfig {
         enabled: true,

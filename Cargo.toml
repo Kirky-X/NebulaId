@@ -31,6 +31,10 @@ postgresql = ["dbnexus/postgres"]
 # 零使用，依赖面已解耦；sqlite 不可构建纯因上述 default 后端混用。）
 sqlite = ["dbnexus/sqlite"]
 etcd = ["dep:etcd-client"]
+# alerting: 门控告警子系统(src/core/monitoring 的 AlertManager/AlertRule/
+# 告警状态机/通知通道/broadcast 事件流)。生产路径零引用,默认不含以缩小
+# 产物;test 构建恒包含(机制见 monitoring/core.rs 头注释)。
+alerting = []
 # integration-tests: 门控需要真实数据库的 #[ignore] 集成测试
 integration-tests = []
 # sdforge 宏在 #[forge] 展开时 emit #[cfg(feature = "http"/"grpc"/"openapi")]，

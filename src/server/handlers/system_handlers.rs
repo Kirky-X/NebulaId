@@ -16,7 +16,9 @@
 //! and the background key-rotation task launcher (rule 25 split).
 
 use crate::server::models::{
-    AlgorithmMetrics, DegradationMetrics, HealthResponse, MetricsResponse, ReadyResponse,
+    AlgorithmMetrics, ApiInfoResponse, DegradationMetrics, ErrorResponse, HealthResponse,
+    MetricsResponse, ReadyResponse, SecureConfigResponse, SetAlgorithmRequest,
+    SetAlgorithmResponse, UpdateConfigResponse, UpdateLoggingRequest, UpdateRateLimitRequest,
 };
 use std::sync::atomic::Ordering;
 
@@ -212,6 +214,157 @@ impl super::ApiHandlers {
         Some(KeyRotationHandle { shutdown_tx })
     }
 }
+
+// ========== OpenAPI path 注解（T033）==========
+//
+// 实际的 axum handler 函数（`handle_health` / `handle_get_config` 等）位于
+// `src/server/router.rs`（本 lane 不可修改），此处以「注解载体函数」承载
+// `#[utoipa::path]`，仅供 `openapi.rs` 的 `paths(...)` 注册；路由信息
+// （路径/方法）以 router.rs 注册处为准。错误响应统一引用 `ErrorResponse`
+// （T032 信封）。config 五个端点的 handler 同在 router.rs，注解就近落在
+// 本文件（system/config 资源域）。
+
+/// OpenAPI 注解载体：`GET /health`（实际 handler：`router::handle_health`，公开）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    get,
+    path = "/health",
+    operation_id = "handle_health",
+    tag = "system",
+    responses(
+        (status = 200, description = "服务健康状态（算法视角）", body = HealthResponse),
+    )
+)]
+pub fn health_docs() {}
+
+/// OpenAPI 注解载体：`GET /ready`（实际 handler：`router::handle_ready`，公开）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    get,
+    path = "/ready",
+    operation_id = "handle_ready",
+    tag = "system",
+    responses(
+        (status = 200, description = "就绪探针结果（数据库/缓存依赖状态）", body = ReadyResponse),
+    )
+)]
+pub fn ready_docs() {}
+
+/// OpenAPI 注解载体：`GET /metrics`（实际 handler：`router::handle_metrics`，公开）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    get,
+    path = "/metrics",
+    operation_id = "handle_metrics",
+    tag = "system",
+    responses(
+        (status = 200, description = "聚合运行指标（吞吐/延迟/依赖健康）", body = MetricsResponse),
+    )
+)]
+pub fn metrics_docs() {}
+
+/// OpenAPI 注解载体：`GET /api/v1/`（实际 handler：`router::handle_api_info`，公开）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    get,
+    path = "/api/v1/",
+    operation_id = "handle_api_info",
+    tag = "system",
+    responses(
+        (status = 200, description = "服务元信息与端点清单", body = ApiInfoResponse),
+    )
+)]
+pub fn api_info_docs() {}
+
+/// OpenAPI 注解载体：`GET /api/v1/config`（实际 handler：`router::handle_get_config`，需认证）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    get,
+    path = "/api/v1/config",
+    operation_id = "handle_get_config",
+    tag = "config",
+    responses(
+        (status = 200, description = "当前配置（脱敏：不含数据库连接信息）", body = SecureConfigResponse),
+        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
+        (status = 429, description = "触发限流", body = ErrorResponse),
+        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+    )
+)]
+pub fn get_config_docs() {}
+
+/// OpenAPI 注解载体：`POST /api/v1/config/rate-limit`（实际 handler：`router::handle_update_rate_limit`，Admin-only）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    post,
+    path = "/api/v1/config/rate-limit",
+    operation_id = "handle_update_rate_limit",
+    tag = "config",
+    request_body = UpdateRateLimitRequest,
+    responses(
+        (status = 200, description = "更新结果", body = UpdateConfigResponse),
+        (status = 400, description = "请求参数校验失败", body = ErrorResponse),
+        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
+        (status = 403, description = "需要 Admin 角色（CWE-862）", body = ErrorResponse),
+        (status = 429, description = "触发限流", body = ErrorResponse),
+        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+    )
+)]
+pub fn update_rate_limit_docs() {}
+
+/// OpenAPI 注解载体：`POST /api/v1/config/logging`（实际 handler：`router::handle_update_logging`，Admin-only）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    post,
+    path = "/api/v1/config/logging",
+    operation_id = "handle_update_logging",
+    tag = "config",
+    request_body = UpdateLoggingRequest,
+    responses(
+        (status = 200, description = "更新结果", body = UpdateConfigResponse),
+        (status = 400, description = "请求参数校验失败", body = ErrorResponse),
+        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
+        (status = 403, description = "需要 Admin 角色（CWE-862）", body = ErrorResponse),
+        (status = 429, description = "触发限流", body = ErrorResponse),
+        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+    )
+)]
+pub fn update_logging_docs() {}
+
+/// OpenAPI 注解载体：`POST /api/v1/config/reload`（实际 handler：`router::handle_reload_config`，Admin-only）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    post,
+    path = "/api/v1/config/reload",
+    operation_id = "handle_reload_config",
+    tag = "config",
+    responses(
+        (status = 200, description = "重载结果（附最新配置）", body = UpdateConfigResponse),
+        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
+        (status = 403, description = "需要 Admin 角色（CWE-862）", body = ErrorResponse),
+        (status = 429, description = "触发限流", body = ErrorResponse),
+        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+    )
+)]
+pub fn reload_config_docs() {}
+
+/// OpenAPI 注解载体：`POST /api/v1/config/algorithm`（实际 handler：`router::handle_set_algorithm`，Admin-only）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    post,
+    path = "/api/v1/config/algorithm",
+    operation_id = "handle_set_algorithm",
+    tag = "config",
+    request_body = SetAlgorithmRequest,
+    responses(
+        (status = 200, description = "算法绑定结果", body = SetAlgorithmResponse),
+        (status = 400, description = "请求参数校验失败", body = ErrorResponse),
+        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
+        (status = 403, description = "需要 Admin 角色（CWE-862）", body = ErrorResponse),
+        (status = 429, description = "触发限流", body = ErrorResponse),
+        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+    )
+)]
+pub fn set_algorithm_docs() {}
 
 #[cfg(test)]
 mod tests {

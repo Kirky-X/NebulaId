@@ -55,25 +55,45 @@ impl From<String> for HealthStatus {
     }
 }
 
+/// T033 —— OpenAPI 示例值与 `docs/API_REFERENCE.md` 同一口径
+/// （workspace `demo`、biz_tag `order`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
+#[schema(example = json!({
+    "workspace": "demo",
+    "group": "order",
+    "biz_tag": "order",
+    "algorithm": "segment"
+}))]
 pub struct GenerateRequest {
     #[validate(length(min = 1, max = 64))]
+    #[schema(example = "demo")]
     pub workspace: String,
 
     #[validate(length(min = 1, max = 64))]
+    #[schema(example = "order")]
     pub group: String,
 
     #[validate(length(min = 1, max = 64))]
+    #[schema(example = "order")]
     pub biz_tag: String,
 
     #[validate(length(min = 1, max = 20))]
+    #[schema(example = "segment")]
     pub algorithm: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "id": "123456789012345",
+    "algorithm": "segment",
+    "timestamp": "2026-09-17T08:00:00+00:00"
+}))]
 pub struct GenerateResponse {
+    #[schema(example = "123456789012345")]
     pub id: String,
+    #[schema(example = "segment")]
     pub algorithm: String,
+    #[schema(example = "2026-09-17T08:00:00+00:00")]
     pub timestamp: String,
 }
 
@@ -129,6 +149,14 @@ pub struct ApiMetricsResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "code": 404,
+    "business_code": "2001",
+    "message": "Workspace not found",
+    "details": null,
+    "request_id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+    "timestamp": 1758096000000i64
+}))]
 pub struct ErrorResponse {
     pub code: i32,
     /// 结构化业务错误码（`ApiErrorCode` 的四位数字串，如 `"4001"`）。
@@ -378,29 +406,59 @@ pub struct DegradationMetrics {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
+#[schema(example = json!({
+    "id": "123456789012345",
+    "workspace": "demo",
+    "group": "order",
+    "biz_tag": "order",
+    "algorithm": "segment"
+}))]
 pub struct ParseRequest {
+    #[schema(example = "123456789012345")]
     pub id: String,
 
     #[validate(length(min = 1, max = 64))]
+    #[schema(example = "demo")]
     pub workspace: String,
 
     #[validate(length(min = 1, max = 64))]
+    #[schema(example = "order")]
     pub group: String,
 
     #[validate(length(min = 1, max = 64))]
+    #[schema(example = "order")]
     pub biz_tag: String,
 
     #[validate(length(min = 0, max = 32))]
     #[serde(default)]
+    #[schema(example = "segment")]
     pub algorithm: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "original_id": "123456789012345",
+    "numeric_value": "123456789012345",
+    "algorithm": "segment",
+    "metadata": {
+        "timestamp": 1758096000000u64,
+        "datacenter_id": 0,
+        "worker_id": 0,
+        "sequence": 1,
+        "algorithm": "segment",
+        "biz_tag": "order"
+    },
+    "timestamp": "2026-09-17T08:00:00+00:00"
+}))]
 pub struct ParseResponse {
+    #[schema(example = "123456789012345")]
     pub original_id: String,
+    #[schema(example = "123456789012345")]
     pub numeric_value: String,
+    #[schema(example = "segment")]
     pub algorithm: String,
     pub metadata: IdMetadataResponse,
+    #[schema(example = "2026-09-17T08:00:00+00:00")]
     pub timestamp: String,
 }
 

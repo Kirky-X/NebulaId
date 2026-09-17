@@ -19,7 +19,7 @@ use crate::core::database::{ApiKeyRole, CreateApiKeyRequest as CoreCreateApiKeyR
 use crate::core::{CoreError, Result};
 use crate::server::models::{
     ApiKeyListResponse, ApiKeyResponse, ApiKeyWithSecretResponse, CreateApiKeyRequest,
-    RevokeApiKeyResponse,
+    ErrorResponse, RevokeApiKeyResponse,
 };
 
 /// Handle for managing the key rotation background task.
@@ -286,6 +286,77 @@ impl super::ApiHandlers {
         key_with_secret.try_into()
     }
 }
+
+// ========== OpenAPI path 注解（T033）==========
+//
+// 实际的 axum handler 函数位于 `src/server/router.rs`（本 lane 不可修改），
+// 此处以「注解载体函数」承载 `#[utoipa::path]`，仅供 `openapi.rs` 的
+// `paths(...)` 注册；路由信息（路径/方法）以 router.rs 注册处为准。
+// 错误响应统一引用 `ErrorResponse`（T032 信封）。
+// 三个端点均为 Admin-only（router.rs 中位于 v1_admin_routes）。
+
+/// OpenAPI 注解载体：`POST /api/v1/api-keys`（实际 handler：`router::handle_create_api_key`，Admin-only）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    post,
+    path = "/api/v1/api-keys",
+    operation_id = "handle_create_api_key",
+    tag = "api-keys",
+    request_body = CreateApiKeyRequest,
+    responses(
+        (status = 200, description = "创建成功（明文 key_secret 仅此一次返回）", body = ApiKeyWithSecretResponse),
+        (status = 400, description = "请求参数校验失败（含 user key 缺失/非法 workspace_id）", body = ErrorResponse),
+        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
+        (status = 403, description = "需要 Admin 角色", body = ErrorResponse),
+        (status = 429, description = "触发限流", body = ErrorResponse),
+        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+    )
+)]
+pub fn create_api_key_docs() {}
+
+/// OpenAPI 注解载体：`GET /api/v1/api-keys`（实际 handler：`router::handle_list_api_keys`，Admin-only）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    get,
+    path = "/api/v1/api-keys",
+    operation_id = "handle_list_api_keys",
+    tag = "api-keys",
+    params(
+        ("workspace_id" = Option<String>, Query, description = "按 workspace UUID 过滤；缺省/非法值回退 nil UUID（跨全量语义）"),
+        ("page" = Option<u64>, Query, description = "页码，默认 1"),
+        ("page_size" = Option<u64>, Query, description = "每页数量，默认 20，上限 100"),
+    ),
+    responses(
+        (status = 200, description = "API key 分页列表", body = ApiKeyListResponse),
+        (status = 400, description = "请求参数校验失败", body = ErrorResponse),
+        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
+        (status = 403, description = "需要 Admin 角色", body = ErrorResponse),
+        (status = 429, description = "触发限流", body = ErrorResponse),
+        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+    )
+)]
+pub fn list_api_keys_docs() {}
+
+/// OpenAPI 注解载体：`DELETE /api/v1/api-keys/{id}`（实际 handler：`router::handle_revoke_api_key`，Admin-only）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    delete,
+    path = "/api/v1/api-keys/{id}",
+    operation_id = "handle_revoke_api_key",
+    tag = "api-keys",
+    params(
+        ("id" = String, Path, description = "API key 行 ID（UUID）"),
+    ),
+    responses(
+        (status = 200, description = "吊销成功", body = RevokeApiKeyResponse),
+        (status = 400, description = "id 不是合法 UUID", body = ErrorResponse),
+        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
+        (status = 403, description = "需要 Admin 角色", body = ErrorResponse),
+        (status = 429, description = "触发限流", body = ErrorResponse),
+        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+    )
+)]
+pub fn revoke_api_key_docs() {}
 
 #[cfg(test)]
 mod tests {

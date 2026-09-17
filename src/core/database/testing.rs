@@ -67,6 +67,7 @@ pub(crate) fn fixed_uuid(n: u8) -> Uuid {
     Uuid::from_bytes([n; 16])
 }
 
+#[allow(deprecated)] // 原 mock_tests 模块级 allow 随域迁移落到此 helper 上
 pub(crate) fn fixed_datetime(secs: i64) -> NaiveDateTime {
     NaiveDateTime::from_timestamp_opt(secs, 0).unwrap()
 }

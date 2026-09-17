@@ -15,8 +15,6 @@
 //! API Key 仓储:`ApiKeyRepository` trait 及其 SeaORM 实现，含 Argon2id 凭证
 //! 哈希/校验、两代凭证宽限期轮换、validate 冷路径与 last_used 写节流。
 
-use argon2::password_hash::phc::PasswordHash;
-use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 use async_trait::async_trait;
 use chrono::NaiveDateTime;
 use dbnexus::sea_orm::{
@@ -235,43 +233,20 @@ impl SeaOrmRepository {
         candidates
     }
 
-    /// Argon2 校验的 password 材料：`<pepper>|<key_id>:<key_secret>`。
+    /// Hash API key：委托构造注入的 [`KeyHasher`](crate::core::auth::KeyHasher)。
     ///
-    /// 编码规则必须有单一来源：`hash_key` 与 `verify_key` 各写一遍时，改分隔符或字段
-    /// 顺序只中一处就会让全量已存哈希静默验不过（且编译期无告警）。
-    fn password_material(&self, key_id: &str, key_secret: &str) -> String {
-        format!("{}|{}:{}", self.salt, key_id, key_secret)
-    }
-
-    /// Hash API key using Argon2id (replaces SHA256, CWE-916 fix).
-    ///
-    /// 使用 Argon2id（memory-hard, OWASP 2023 推荐）替代 SHA256。
-    /// - `self.salt` 作为 pepper（额外加在 password 前），增加深度防御
-    /// - password-hash 0.6 的 `hash_password` 自动生成 16 字节随机 salt
-    ///   （内嵌 PHC，与旧 SaltString 路径语义等价）
-    /// - 返回 PHC 格式字符串（约 96 字符），需 VARCHAR(255) 存储
+    /// T036 前此处内联 Argon2id 实现（replaces SHA256, CWE-916 fix）；哈希
+    /// 算法与 pepper/salt 材料编码现迁至 `crate::core::auth::key_hasher`
+    /// （默认 [`Argon2KeyHasher`](crate::core::auth::Argon2KeyHasher)），仓储
+    /// 不再直接依赖 argon2。行为逐字节一致。
     fn hash_key(&self, key_id: &str, key_secret: &str) -> Result<String> {
-        let password = self.password_material(key_id, key_secret);
-        let hash = Argon2::default()
-            .hash_password(password.as_bytes())
-            .map_err(|e| {
-                crate::core::CoreError::InternalError(format!("argon2 hash failed: {}", e))
-            })?;
-        Ok(hash.to_string())
+        self.key_hasher.hash(key_id, key_secret)
     }
 
-    /// Verify API key against stored PHC-format hash using Argon2id.
-    ///
-    /// Argon2 的 `verify_password` 内部使用 constant-time 比较，等价于原 `subtle::ConstantTimeEq`。
+    /// Verify API key against stored PHC-format hash（委托注入的 KeyHasher，
+    /// constant-time 比较由实现体保证）。
     fn verify_key(&self, key_id: &str, key_secret: &str, stored_hash: &str) -> bool {
-        let parsed = match PasswordHash::new(stored_hash) {
-            Ok(h) => h,
-            Err(_) => return false,
-        };
-        let password = self.password_material(key_id, key_secret);
-        Argon2::default()
-            .verify_password(password.as_bytes(), &parsed)
-            .is_ok()
+        self.key_hasher.verify(key_id, key_secret, stored_hash)
     }
 
     /// `validate_api_key` 的执行体（T023：抽出到 inherent 方法，使 trait
@@ -969,6 +944,24 @@ mod mock_tests {
     fn test_verify_key_fails_with_empty_hash() {
         let repo = make_repo(empty_pg_connection());
         assert!(!repo.verify_key("kid1", "secret1", ""));
+    }
+
+    /// T036 —— `with_key_hasher` 可在默认 Argon2id fallback 之上注入定制
+    /// 哈希器：注入不同 salt 的 `Argon2KeyHasher` 后，哈希结果随之改变
+    /// （注入生效），且输出仍为合法 PHC 格式。
+    #[test]
+    fn test_with_key_hasher_overrides_default_hasher() {
+        let repo = SeaOrmRepository::new(empty_pg_connection(), "salt_a".to_string())
+            .with_key_hasher(std::sync::Arc::new(
+                crate::core::auth::Argon2KeyHasher::new("salt_b".to_string()),
+            ));
+
+        let hashed = repo.hash_key("kid1", "secret1").unwrap();
+        assert!(
+            hashed.starts_with("$argon2id$"),
+            "injected hasher output must still be PHC format, got: {}",
+            hashed
+        );
     }
 
     // ==================================================================

@@ -16,6 +16,7 @@
 
 // Public API modules (re-exported in lib.rs)
 pub mod algorithm;
+pub mod auth;
 pub mod config;
 pub mod database;
 pub mod i18n;

@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::core::auth::{Argon2KeyHasher, KeyHasher};
 pub use crate::core::database::api_key_repository::ApiKeyRepository;
 pub use crate::core::database::biz_tag_repository::BizTagRepository;
 pub use crate::core::database::segment_repository::SegmentRepository;
@@ -50,14 +51,15 @@ where
     }
 }
 
-/// 分割（`db` 为连接池廉价克隆、`salt` 为 String、`distributed_lock` 为
-/// `Option<Arc<..>>`）；SDK Kit 化（trait-kit TypeMap 注入，`RepositoryInput`
-/// 需 `Clone`）依赖此 trait。
+/// 分割（`db` 为连接池廉价克隆、`key_hasher` 为 `Arc<dyn KeyHasher>`、
+/// `distributed_lock` 为 `Option<Arc<..>>`）；SDK Kit 化（trait-kit TypeMap
+/// 注入，`RepositoryInput` 需 `Clone`）依赖此 trait。
 #[derive(Clone)]
 pub struct SeaOrmRepository {
     pub(crate) db: dbnexus::sea_orm::DatabaseConnection,
-    /// Salt for API key hashing
-    pub(crate) salt: String,
+    /// API Key 凭证哈希器：默认 [`Argon2KeyHasher`]（pepper/salt 语义随实现体
+    /// 走），可经 [`Self::with_key_hasher`] 注入定制实现。
+    pub(crate) key_hasher: Arc<dyn KeyHasher>,
     /// 分布式锁（可选，用于 segment 分配）
     #[cfg(feature = "etcd")]
     pub(crate) distributed_lock:
@@ -80,11 +82,20 @@ impl SeaOrmRepository {
     pub fn new(db: dbnexus::sea_orm::DatabaseConnection, salt: String) -> Self {
         Self {
             db,
-            salt,
+            // 构造入口签名（`db`, `salt`）保持不变：默认提供 Argon2id 哈希器
+            // fallback，既有装配（main.rs / sdk::kit / router / management）
+            // 零改动；定制实现经 [`Self::with_key_hasher`] 注入。
+            key_hasher: Arc::new(Argon2KeyHasher::new(salt)),
             distributed_lock: None,
             last_used_writes: Arc::new(Mutex::new(HashMap::new())),
             statement_timeout: Duration::from_secs(DEFAULT_STATEMENT_TIMEOUT_SECS),
         }
+    }
+
+    /// 注入自定义 [`KeyHasher`]（默认构造已提供 [`Argon2KeyHasher`] fallback）。
+    pub fn with_key_hasher(mut self, key_hasher: Arc<dyn KeyHasher>) -> Self {
+        self.key_hasher = key_hasher;
+        self
     }
 
     /// T028 —— 接线语句超时（来自 `DatabaseConfig::statement_timeout_secs`）。

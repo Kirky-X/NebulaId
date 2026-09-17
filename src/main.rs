@@ -714,14 +714,19 @@ fn resolve_locale(nebula_locale_env: Option<&str>, config_locale: &str) -> (Stri
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // 日志初始化由 inklog 接管（替换原手写的 tracing_subscriber::fmt() 链）。
-    // 本地 ../inklog 已切换至 EnvFilter，自动从 RUST_LOG 读取按模块过滤规则
-    // （如 `RUST_LOG=nebulaid=debug,hyper=warn`），无需手动读取环境变量。
-    // format 是渲染模板（inklog 0.3 语义，非旧命名格式）；JSON 行输出由
-    // console_json 开启。Arc 持有实例：热重载回调需借同一实例热调全局
-    // 级别（set_level 经内部 reload 句柄作用于 live subscriber）。
+/// T037 —— 可观测性初始化:inklog 日志 + 早期 `en` i18n。
+///
+/// 日志初始化由 inklog 接管(替换原手写的 tracing_subscriber::fmt() 链)。
+/// 本地 ../inklog 已切换至 EnvFilter,自动从 RUST_LOG 读取按模块过滤规则
+/// (如 `RUST_LOG=nebulaid=debug,hyper=warn`),无需手动读取环境变量。
+/// format 是渲染模板(inklog 0.3 语义,非旧命名格式);JSON 行输出由
+/// console_json 开启。Arc 持有实例:热重载回调需借同一实例热调全局
+/// 级别(set_level 经内部 reload 句柄作用于 live subscriber)。
+///
+/// i18n 先以内置默认 en 初始化,覆盖配置加载前的极早期日志;配置与
+/// NEBULA_LOCALE 解析完成后按生效 locale 重新初始化(T035,见
+/// [`load_config`])。
+async fn init_observability() -> Result<Arc<inklog::LoggerManager>> {
     let logger = Arc::new(
         inklog::LoggerManager::builder()
             .level("info")
@@ -730,51 +735,46 @@ async fn main() -> Result<()> {
             .build()
             .await?,
     );
-
-    // Phase 8 ICU i18n — 先以内置默认 en 初始化，覆盖配置加载前的极早期日志；
-    // 配置与 NEBULA_LOCALE 解析完成后按生效 locale 重新初始化（T035）。
     nebulaid::core::i18n::init_i18n("en");
+    Ok(logger)
+}
 
-    info!("{}", t!("log.main.starting_service"));
-    info!(
-        "{}",
-        t!("log.main.version", version = env!("CARGO_PKG_VERSION"))
-    );
-
-    // Initialize sdforge plugins so inventory-registered routes are linked
-    // into the final binary (prevents linker stripping). Must be called
-    // before merge_sdforge_routes builds the axum Router.
-    let plugin_counts = init_sdforge();
-    info!(
-        routes = plugin_counts.routes,
-        "{}",
-        t!("log.main.sdforge_plugins_initialized")
-    );
-
-    // Parse command line arguments
-    let args: Vec<String> = env::args().collect();
+/// T037 —— 命令行配置路径解析(`--config <path>` 显式指定,否则内置默认路径)。
+fn parse_config_path(args: &[String]) -> (String, bool) {
     let explicit_path = args.len() > 2 && args[1] == "--config";
-    let config_path = if explicit_path {
-        args[2].clone()
+    if explicit_path {
+        (args[2].clone(), true)
     } else {
-        DEFAULT_CONFIG_PATH.to_string()
-    };
+        (DEFAULT_CONFIG_PATH.to_string(), false)
+    }
+}
 
+/// T037 —— 配置加载合并与 fail-fast 校验。
+///
+/// 顺序与原 main 内联实现逐字节一致:resolve_startup_config(仅「未显式
+/// 指定 --config 且该路径确实不存在」允许回落内置默认值,且必须显式 warn)
+/// → 环境变量覆盖合并 → T035 进程默认 locale 解析(NEBULA_LOCALE >
+/// config.app.locale > "en",非法回退 en 并告警)→ T018 无 etcd 默认
+/// worker 标识告警 → T008 生产环境强制 TLS(校验失败打印本地化 error 并
+/// 以非零码退出)。
+///
+/// 注:api_key_salt 的生产校验仍留在 [`init_repository`](与「DB 连接成功」
+/// 耦合),保持原有失败顺序不变。
+fn load_config(config_path: &str, explicit_path: bool) -> Result<Config> {
     info!("{}", t!("log.main.loading_config", path = config_path));
 
     // Load config from file first, then merge with environment variables
     //
     // 加载失败不再降级为 `Config::default()`。原实现把错误 `error!` 一行
-    // 后继续启动，等价于用一套没人审阅过的默认配置对外提供服务；坏配置现在直接让
-    // 进程以非零码退出，消息里带上路径与原因。只有"未显式指定 --config 且该路径确实
-    // 不存在"才允许回落内置默认值，且必须显式 warn。
-    let (mut config, source) =
-        resolve_startup_config(&config_path, explicit_path).map_err(|e| {
-            nebulaid::core::types::CoreError::ConfigurationError(format!(
-                "failed to load configuration from '{}': {}",
-                config_path, e
-            ))
-        })?;
+    // 后继续启动,等价于用一套没人审阅过的默认配置对外提供服务;坏配置现在直接让
+    // 进程以非零码退出,消息里带上路径与原因。只有"未显式指定 --config 且该路径确实
+    // 不存在"才允许回落内置默认值,且必须显式 warn。
+    let (mut config, source) = resolve_startup_config(config_path, explicit_path).map_err(|e| {
+        nebulaid::core::types::CoreError::ConfigurationError(format!(
+            "failed to load configuration from '{}': {}",
+            config_path, e
+        ))
+    })?;
     if matches!(source, StartupConfig::DefaultsBecauseMissing) {
         warn!(
             "{}",
@@ -794,7 +794,7 @@ async fn main() -> Result<()> {
     })?);
     info!("{}", t!("log.main.config_loaded"));
 
-    // T035 —— 进程默认 locale 配置化：NEBULA_LOCALE > config.app.locale > "en"，
+    // T035 —— 进程默认 locale 配置化:NEBULA_LOCALE > config.app.locale > "en",
     // 非法值回退 "en" 并告警。此后所有 t!() 输出按生效 locale 渲染。
     let nebula_locale_env = env::var("NEBULA_LOCALE").ok();
     let (locale, invalid_locale) = resolve_locale(nebula_locale_env.as_deref(), &config.app.locale);
@@ -811,9 +811,9 @@ async fn main() -> Result<()> {
     info!("{}", t!("log.main.locale_initialized", locale = &locale));
     nebulaid::core::i18n::init_i18n(&locale);
 
-    // T018 —— 无 etcd 时默认 worker 标识多实例风险告警：etcd 未配置意味着
-    // 没有 worker_id 运行时分配兜底，worker_id/dc_id 任一为默认 0 时显性
-    // 提醒（多实例必须显式配置，否则 Snowflake 会重复）。
+    // T018 —— 无 etcd 时默认 worker 标识多实例风险告警:etcd 未配置意味着
+    // 没有 worker_id 运行时分配兜底,worker_id/dc_id 任一为默认 0 时显性
+    // 提醒(多实例必须显式配置,否则 Snowflake 会重复)。
     if should_warn_default_worker_identity(
         !config.etcd.endpoints.is_empty(),
         config.app.worker_id,
@@ -829,10 +829,10 @@ async fn main() -> Result<()> {
         );
     }
 
-    // T008 —— 生产环境强制 TLS（fail-fast）。环境判定经 Environment::from_env()
-    //（含 T007 反向默认：NEBULA_ENV 缺失/未知值按生产执行，缺失时此处顺带
-    // 触发唯一一次 warn）。校验失败打印本地化 error 并以非零码退出；
-    // NEBULA_ALLOW_INSECURE_TLS=1 显式放行（函数内 warn）。
+    // T008 —— 生产环境强制 TLS(fail-fast)。环境判定经 Environment::from_env()
+    //(含 T007 反向默认:NEBULA_ENV 缺失/未知值按生产执行,缺失时此处顺带
+    // 触发唯一一次 warn)。校验失败打印本地化 error 并以非零码退出;
+    // NEBULA_ALLOW_INSECURE_TLS=1 显式放行(函数内 warn)。
     if validate_tls_required_in_production(
         Environment::from_env(),
         config.tls.enabled,
@@ -845,33 +845,24 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    let server_config = ServerConfig {
-        http_port: config.app.http_port,
-        grpc_port: config.app.grpc_port,
-        workers: std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(1),
-        shutdown_timeout_secs: config.app.shutdown_timeout_seconds,
-    };
+    Ok(config)
+}
 
-    // HTTP 绑定地址唯一来源于 config.app（host + http_port），修复原先
-    // 忽略配置、硬编码 [0,0,0,0]:8080 导致 http_port 配置失效的缺陷。
-    let http_bind_addr: SocketAddr = config.app.http_addr().map_err(|e| {
-        nebulaid::core::types::CoreError::InternalError(format!(
-            "invalid http bind address from config.app (host={}, port={}): {}",
-            config.app.host, config.app.http_port, e
-        ))
-    })?;
+/// T037 —— 仓储装配产物:SeaOrmRepository(可选)+ 协调组件(仅 etcd)。
+struct RepositoryStack {
+    repository: Option<Arc<database::SeaOrmRepository>>,
+    /// T016 协调装配产物;`client` 供健康巡检与 worker 分配复用。
+    #[cfg(feature = "etcd")]
+    coordination: CoordinationComponents,
+}
 
-    info!(
-        "{}",
-        t!(
-            "log.main.starting_server_on_ports",
-            http_port = server_config.http_port,
-            grpc_port = server_config.grpc_port
-        )
-    );
-
+/// T037 —— DB 连接/迁移/分布式锁协调/仓储构造。
+///
+/// 顺序与原 main 内联实现一致:连接(失败 exit 1)→ 迁移(失败 exit 1)→
+/// T016 分布式锁装配(fail-closed,etcd 配置了 endpoints 却不可达时
+/// exit 1;未配置 endpoints 才允许单机本地锁)→ 仓储构造(生产环境
+/// api_key_salt 弱默认校验 panic)。
+async fn init_repository(config: &Config) -> Result<RepositoryStack> {
     // Initialize database connection first (needed for API key auth)
     info!("{}", t!("log.main.connecting_to_database"));
     let db_connection = match database::create_connection(&config.database).await {
@@ -895,14 +886,14 @@ async fn main() -> Result<()> {
         }
     };
 
-    // T016 —— 分布式锁装配（fail-closed），提前到仓储构造之前：
-    // 配置显式含 etcd endpoints 时，etcd 不可用直接拒绝启动（多实例场景
-    // 静默回退进程内锁必然重复 ID）；未配置 endpoints 才允许单机本地锁。
+    // T016 —— 分布式锁装配(fail-closed),提前到仓储构造之前:
+    // 配置显式含 etcd endpoints 时,etcd 不可用直接拒绝启动(多实例场景
+    // 静默回退进程内锁必然重复 ID);未配置 endpoints 才允许单机本地锁。
     #[cfg(not(feature = "etcd"))]
     let lock: std::sync::Arc<dyn nebulaid::core::coordinator::DistributedLock + Send + Sync> =
         std::sync::Arc::new(nebulaid::core::coordinator::LocalDistributedLock::new());
     #[cfg(feature = "etcd")]
-    let coordination = match assemble_coordination(&config).await {
+    let coordination = match assemble_coordination(config).await {
         Ok(components) => components,
         Err(e) => {
             error!(
@@ -918,8 +909,8 @@ async fn main() -> Result<()> {
         coordination.lock.clone();
 
     let repository: Option<Arc<database::SeaOrmRepository>> = if let Some(conn) = db_connection {
-        // tiangang C1 修复：生产环境强制校验 api_key_salt 非空且非弱默认值。
-        // 规则 12（失败必须显性化）：校验失败时 panic，禁止弱 pepper 静默放行。
+        // tiangang C1 修复:生产环境强制校验 api_key_salt 非空且非弱默认值。
+        // 规则 12(失败必须显性化):校验失败时 panic,禁止弱 pepper 静默放行。
         if nebulaid::core::config::is_production() {
             let salt = &config.auth.api_key_salt;
             if salt.is_empty()
@@ -947,15 +938,43 @@ async fn main() -> Result<()> {
         None
     };
 
+    Ok(RepositoryStack {
+        repository,
+        #[cfg(feature = "etcd")]
+        coordination,
+    })
+}
+
+/// T037 —— 认证/审计栈装配产物。
+struct AuthStack {
+    auth: Arc<ApiKeyAuth>,
+    audit_logger: Arc<AuditLogger>,
+    hot_config: Arc<HotReloadConfig>,
+    /// garrison 认证决策缓存(与 ApiKeyAuth 共享同一实例)。
+    #[cfg(feature = "garrison-auth")]
+    auth_cache: Option<Arc<nebulaid::server::auth::AuthCache>>,
+}
+
+/// T037 —— 认证栈装配:决策缓存、ApiKeyAuth、API key 初始化、审计 logger、
+/// 热重载配置与文件监视。
+///
+/// - 认证决策缓存 —— ApiKeyAuth 与 ApiHandlers 共享同一实例:前者读缓存
+///   加速校验,后者在吊销/轮换/重置时失效条目。`cache_ttl_seconds = 0`
+///   表示禁用,此时不再装配实例(装配了也不会写入,却仍要在每次校验后
+///   多打一次 get_api_key_by_id 判因,纯空转开销)。
+/// - T030 —— 审计内存容量改用独立的 audit.memory_capacity;生产环境按
+///   audit.file_logging_enabled(默认 true)落盘 audit.file_logging_path
+///   (SOC2/GDPR 审计留痕);开发环境维持内存环形:最小意外原则。
+async fn init_auth_stack(
+    config: &Config,
+    repository: &Option<Arc<database::SeaOrmRepository>>,
+    logger: Arc<inklog::LoggerManager>,
+) -> AuthStack {
     info!(
         "{}",
         t!("log.main.auth_enabled", enabled = config.auth.enabled)
     );
 
-    // 认证决策缓存 —— ApiKeyAuth 与 ApiHandlers
-    // 共享同一实例：前者读缓存加速校验，后者在吊销/轮换/重置时失效条目。
-    // `cache_ttl_seconds = 0` 表示禁用，此时不再装配实例（装配了也不会写入，
-    // 却仍要在每次校验后多打一次 get_api_key_by_id 判因，纯空转开销）。
     #[cfg(feature = "garrison-auth")]
     let auth_cache: Option<Arc<nebulaid::server::auth::AuthCache>> =
         match (repository.as_ref(), config.auth.cache_ttl_seconds) {
@@ -996,13 +1015,9 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     };
     let _ = trusted_proxies; // also consumed by router.rs via env var
-    load_api_keys(&auth, &repository, &config).await;
+    load_api_keys(&auth, repository, config).await;
 
     // Initialize audit logger and config (used by both etcd and non-etcd modes)
-    // T030 —— 内存容量改用独立的 audit.memory_capacity（不再借用
-    // rate_limit.default_rps）；生产环境按 audit.file_logging_enabled（默认 true）
-    // 落盘 audit.file_logging_path（SOC2/GDPR 审计留痕）。开发环境维持内存
-    // 环形：最小意外原则 —— 不改变本地开发行为，不新增文件写入。
     let audit_logger = Arc::new(
         if nebulaid::core::config::is_production() && config.audit.file_logging_enabled {
             AuditLogger::with_file_logging(
@@ -1019,8 +1034,8 @@ async fn main() -> Result<()> {
         "config/config.toml".to_string(),
     ));
 
-    // inklog set_level 热调：热重载/管理端改 logging.level 时同步热调全局
-    // subscriber（此前仅更新 hot config 快照，级别变更不生效，需重启进程）。
+    // inklog set_level 热调:热重载/管理端改 logging.level 时同步热调全局
+    // subscriber(此前仅更新 hot config 快照,级别变更不生效,需重启进程)。
     {
         let logger = Arc::clone(&logger);
         hot_config.add_reload_callback(move |cfg| {
@@ -1032,8 +1047,8 @@ async fn main() -> Result<()> {
     }
 
     // hot_reload 文件监视启动条件与 feature / repo 解耦 ——
-    // 仅取决于 `hot_reload.auto_watch_enabled`，etcd 与非 etcd 分支共用。
-    // （原实现位于 etcd 分支"无 repo"路径，非 etcd 构建从不启动监视。）
+    // 仅取决于 `hot_reload.auto_watch_enabled`,etcd 与非 etcd 分支共用。
+    // (原实现位于 etcd 分支"无 repo"路径,非 etcd 构建从不启动监视。)
     if config.hot_reload.auto_watch_enabled {
         let watcher = hot_config.clone();
         tokio::spawn(async move {
@@ -1042,400 +1057,464 @@ async fn main() -> Result<()> {
         info!("{}", t!("log.main.hot_reload_watcher_started"));
     }
 
-    #[cfg(feature = "etcd")]
-    {
-        info!("{}", t!("log.main.initializing_etcd_health_monitor"));
-        // T027 —— 缓存文件名追加 pid 段：同机多副本共用 dc_id 时
-        // `./data/etcd_cache_{dc_id}.json` 会互相踩踏覆盖。
-        let etcd_cache_path = format!(
-            "./data/etcd_cache_{}_{}.json",
-            config.app.dc_id,
-            std::process::id()
-        );
+    AuthStack {
+        auth,
+        audit_logger,
+        hot_config,
+        #[cfg(feature = "garrison-auth")]
+        auth_cache,
+    }
+}
 
-        // T027 —— 健康巡检统一走注入的长连接 client：复用 T016 协调装配
-        // 的 EtcdClientWrapper（fail-closed 已 ping 探活）。原实现此处再建
-        // 一个 client 且 fallback 路径每次检查新建 client —— etcd connect
-        // 是 lazy 的，构造成功不代表可达，Failed 判定几乎永不触发。
-        let etcd_health_monitor = match &coordination.client {
-            Some(client) => {
-                info!("{}", t!("log.main.etcd_client_wrapper_initialized"));
-                Arc::new(EtcdClusterHealthMonitor::new_with_client(
-                    config.etcd.clone(),
-                    etcd_cache_path,
-                    client.clone(),
-                ))
-            }
-            None => Arc::new(EtcdClusterHealthMonitor::new(
+/// T037 —— 服务器运行栈:[`run_servers`] 的全部输入。
+struct ServerStack {
+    config: Config,
+    server_config: ServerConfig,
+    http_bind_addr: SocketAddr,
+    repository: Option<Arc<database::SeaOrmRepository>>,
+    auth: Arc<ApiKeyAuth>,
+    audit_logger: Arc<AuditLogger>,
+    hot_config: Arc<HotReloadConfig>,
+    /// garrison 认证决策缓存(与 ApiKeyAuth 共享同一实例)。
+    #[cfg(feature = "garrison-auth")]
+    auth_cache: Option<Arc<nebulaid::server::auth::AuthCache>>,
+    /// T016 协调组件(仅 etcd;`client` 供健康巡检与 worker 分配复用)。
+    #[cfg(feature = "etcd")]
+    coordination: CoordinationComponents,
+}
+
+/// T037 —— etcd/non-etcd 共用的 handlers + 配置服务构造。
+///
+/// 原实现两个 cfg 块各自内联 ConfigManager 与 `build_api_handlers` 调用
+/// (霰弹手术气味:新增 builder 方法需同步改两处)。本 helper 集中构造逻辑,
+/// 与既有 [`build_api_handlers`] 同一意图的延伸。
+fn build_handlers_and_config_service(
+    config: &Config,
+    id_generator: &Arc<nebulaid::core::algorithm::AlgorithmRouter>,
+    repository: &Option<Arc<database::SeaOrmRepository>>,
+    rate_limiter: &Arc<RateLimiter>,
+    hot_config: Arc<HotReloadConfig>,
+) -> (ApiHandlers, Arc<dyn ConfigManagementService>) {
+    if let Some(ref repo) = repository {
+        let cs = Arc::new(
+            ConfigManager::with_repository(
+                hot_config,
+                id_generator.clone(),
+                repo.clone(),
+                repo.clone(),
+                repo.clone(),
+            )
+            .with_rate_limiter(rate_limiter.clone()),
+        );
+        let h = build_api_handlers(
+            id_generator.clone(),
+            cs.clone(),
+            repo.clone(),
+            config.auth.key_rotation_grace_period_seconds,
+        );
+        (h, cs)
+    } else {
+        let cs = Arc::new(
+            ConfigManager::new(hot_config, id_generator.clone())
+                .with_rate_limiter(rate_limiter.clone()),
+        );
+        // hot_reload 监视已在公共路径启动,此处不重复。
+        (ApiHandlers::new(id_generator.clone(), cs.clone()), cs)
+    }
+}
+
+/// T037 —— TLS 管理器装配。
+///
+/// TLS 配置错误 fail-fast —— enabled=true 且证书缺失/解析失败时拒绝启动
+/// (不再静默降级明文)。enabled=false 时 initialize() 直接返回 Ok,明文
+/// 部署不受影响。未启用任何 TLS 端口时返回 None。
+async fn init_tls_manager(config: &Config) -> Result<Option<Arc<TlsManager>>> {
+    let mut tls_manager = TlsManager::new(config.tls.clone());
+    tls_manager.initialize().await.map_err(|e| {
+        error!("{}", t!("log.main.tls_init_failed", error = e));
+        nebulaid::core::types::CoreError::InternalError(format!("TLS configuration error: {}", e))
+    })?;
+    Ok(
+        if tls_manager.is_http_enabled() || tls_manager.is_grpc_enabled() {
+            Some(Arc::new(tls_manager))
+        } else {
+            None
+        },
+    )
+}
+
+/// T037 —— etcd 运行时组件(仅 etcd feature):T027 健康巡检 + T017 worker 租约。
+#[cfg(feature = "etcd")]
+struct EtcdRuntimeComponents {
+    health_monitor: Arc<EtcdClusterHealthMonitor>,
+    worker_lease: Option<WorkerLeaseGuard>,
+    /// worker 租约续期失败上报通道;仅在实际分配到 worker_id 时为 Some
+    /// (未分配时 select 臂的 future 恒 pending,与原 `worker_lease.is_some()`
+    /// 守卫等价)。
+    lease_failure_rx: Option<tokio::sync::oneshot::Receiver<String>>,
+}
+
+/// T037 —— etcd 运行时装配(仅 etcd feature)。
+///
+/// T027 健康巡检接线(注入协调装配的共享长连接 client + 缓存周期落盘)与
+/// T017 worker_id 运行时分配(分配失败 fail-closed:打印本地化 error 并以
+/// 非零码退出 —— 多实例回退静态默认 0 必然产生重复 worker_id)。
+#[cfg(feature = "etcd")]
+async fn init_etcd_runtime(
+    config: &mut Config,
+    coordination: &CoordinationComponents,
+) -> EtcdRuntimeComponents {
+    info!("{}", t!("log.main.initializing_etcd_health_monitor"));
+    // T027 —— 缓存文件名追加 pid 段:同机多副本共用 dc_id 时
+    // `./data/etcd_cache_{dc_id}.json` 会互相踩踏覆盖。
+    let etcd_cache_path = format!(
+        "./data/etcd_cache_{}_{}.json",
+        config.app.dc_id,
+        std::process::id()
+    );
+
+    // T027 —— 健康巡检统一走注入的长连接 client:复用 T016 协调装配
+    // 的 EtcdClientWrapper(fail-closed 已 ping 探活)。原实现此处再建
+    // 一个 client 且 fallback 路径每次检查新建 client —— etcd connect
+    // 是 lazy 的,构造成功不代表可达,Failed 判定几乎永不触发。
+    let etcd_health_monitor = match &coordination.client {
+        Some(client) => {
+            info!("{}", t!("log.main.etcd_client_wrapper_initialized"));
+            Arc::new(EtcdClusterHealthMonitor::new_with_client(
                 config.etcd.clone(),
                 etcd_cache_path,
-            )),
-        };
-
-        if let Err(e) = etcd_health_monitor.load_local_cache().await {
-            warn!("{}", t!("log.main.etcd_local_cache_load_failed", error = e));
-        }
-
-        // T027 —— 巡检与缓存持久化接线：健康状态周期刷新（真实 ping 判定
-        // Degraded/Failed 并驱动降级），本地缓存周期落盘（etcd 故障时
-        // 供重启后的实例读取）。未配置 etcd（单机）时同样不启动巡检意义
-        // 不大，但保持一致行为无副作用（check 走 no_endpoints early-return）。
-        etcd_health_monitor
-            .start_health_check(std::time::Duration::from_secs(30))
-            .await;
-        etcd_health_monitor
-            .start_cache_persistence(std::time::Duration::from_secs(300))
-            .await;
-
-        info!("{}", t!("log.main.etcd_health_monitor_initialized"));
-
-        // T017 —— worker_id 运行时分配：etcd 已配置（coordination.client 为
-        // Some）时于 Snowflake 构造前分配并覆盖静态配置值；分配失败 fail-closed
-        // （多实例回退静态默认 0 必然重复 ID）。
-        let (lease_failure_tx, lease_failure_rx) = tokio::sync::oneshot::channel::<String>();
-        let worker_lease: Option<WorkerLeaseGuard> = match &coordination.client {
-            Some(client) => {
-                match allocate_worker_id(client.clone(), &config, lease_failure_tx).await {
-                    Ok(guard) => Some(guard),
-                    Err(e) => {
-                        error!(
-                            "{}",
-                            t!("error.main.worker_id_allocation_failed", error = e)
-                        );
-                        error!("{}", t!("log.main.shutting_down"));
-                        std::process::exit(1);
-                    }
-                }
-            }
-            None => None,
-        };
-        if let Some(guard) = &worker_lease {
-            // 分配器 MAX_WORKER_ID=255，覆盖值必在 config.worker_id 的 u8 值域内
-            config.app.worker_id = guard.worker_id as u8;
-        }
-
-        let id_generator = create_id_generator(
-            &config,
-            audit_logger.clone(),
-            Some(etcd_health_monitor.clone()),
-        )
-        .await?;
-
-        // 限流器先于 ConfigManager 创建，经 with_rate_limiter
-        // 共享给运行时配置服务，使 POST /config/rate-limit 热更新作用于流量。
-        let rate_limiter = Arc::new(RateLimiter::new(
-            config.rate_limit.default_rps,
-            config.rate_limit.burst_size,
-        ));
-        // 启动限流桶清理后台任务（5 分钟空闲桶回收，60s 周期），
-        // 停机时经 abort 退出，防止任务泄漏。
-        let rate_limit_cleanup = rate_limiter.start_cleanup(
-            std::time::Duration::from_secs(300),
-            std::time::Duration::from_secs(60),
-        );
-
-        let (handlers, config_service) = if let Some(ref repo) = repository {
-            let cs = Arc::new(
-                ConfigManager::with_repository(
-                    hot_config.clone(),
-                    id_generator.clone(),
-                    repo.clone(),
-                    repo.clone(),
-                    repo.clone(),
-                )
-                .with_rate_limiter(rate_limiter.clone()),
-            );
-            let h = build_api_handlers(
-                id_generator.clone(),
-                cs.clone(),
-                repo.clone(),
-                config.auth.key_rotation_grace_period_seconds,
-            );
-            #[cfg(feature = "garrison-auth")]
-            let h = if let Some(cache) = auth_cache.clone() {
-                h.with_auth_cache(cache)
-            } else {
-                h
-            };
-            let h = Arc::new(h);
-            (h, cs)
-        } else {
-            let cs = Arc::new(
-                ConfigManager::new(hot_config.clone(), id_generator.clone())
-                    .with_rate_limiter(rate_limiter.clone()),
-            );
-            // hot_reload 监视已移至两分支公共位置，此处不再重复启动。
-            let h = Arc::new(ApiHandlers::new(id_generator.clone(), cs.clone()));
-            (h, cs)
-        };
-
-        // TLS 配置错误 fail-fast —— enabled=true 且证书缺失/
-        // 解析失败时拒绝启动（不再静默降级明文）。enabled=false 时
-        // initialize() 直接返回 Ok，明文部署不受影响。
-        let mut tls_manager = TlsManager::new(config.tls.clone());
-        tls_manager.initialize().await.map_err(|e| {
-            error!("{}", t!("log.main.tls_init_failed", error = e));
-            nebulaid::core::types::CoreError::InternalError(format!(
-                "TLS configuration error: {}",
-                e
+                client.clone(),
             ))
-        })?;
-        let tls_manager = if tls_manager.is_http_enabled() || tls_manager.is_grpc_enabled() {
-            Some(Arc::new(tls_manager))
-        } else {
-            None
-        };
+        }
+        None => Arc::new(EtcdClusterHealthMonitor::new(
+            config.etcd.clone(),
+            etcd_cache_path,
+        )),
+    };
 
-        info!("{}", t!("log.main.starting_degradation_check"));
-        let degradation_manager = id_generator.get_degradation_manager();
-        degradation_manager.start_background_check();
+    if let Err(e) = etcd_health_monitor.load_local_cache().await {
+        warn!("{}", t!("log.main.etcd_local_cache_load_failed", error = e));
+    }
 
-        info!("{}", t!("log.main.server_initialized_starting"));
+    // T027 —— 巡检与缓存持久化接线:健康状态周期刷新(真实 ping 判定
+    // Degraded/Failed 并驱动降级),本地缓存周期落盘(etcd 故障时
+    // 供重启后的实例读取)。未配置 etcd(单机)时同样不启动巡检意义
+    // 不大,但保持一致行为无副作用(check 走 no_endpoints early-return)。
+    etcd_health_monitor
+        .start_health_check(std::time::Duration::from_secs(30))
+        .await;
+    etcd_health_monitor
+        .start_cache_persistence(std::time::Duration::from_secs(300))
+        .await;
 
-        let http_server = tokio::spawn(start_http_server(
-            http_bind_addr,
-            handlers.clone(),
-            auth.clone(),
-            rate_limiter.clone(),
-            audit_logger.clone(),
-            config_service.clone(),
-            tls_manager.clone(),
-        ));
-        let grpc_server = tokio::spawn(start_grpc_server(
-            server_config,
-            handlers,
-            auth.clone(),
-            tls_manager,
-        ));
+    info!("{}", t!("log.main.etcd_health_monitor_initialized"));
 
-        // http / grpc / 停机信号任一路径先就绪时，统一在 select 之后回收
-        // 后台任务（降级巡检 + 限流桶清理）再返回。原实现只在 shutdown_signal
-        // 分支 abort：服务器先退出（正常停止或错误退出）时清理任务泄漏，
-        // tokio 运行时 drop 还会一直等这个永不自退的循环任务。
-        let server_result: Result<()> = tokio::select! {
-            http_result = http_server => match http_result {
-                Ok(Ok(())) => {
-                    info!("{}", t!("log.main.http_server_stopped"));
-                    Ok(())
-                }
-                Ok(Err(e)) => {
-                    error!("{}", t!("log.main.http_server_error", error = e));
-                    Err(e)
-                }
-                Err(e) => {
-                    error!("{}", t!("log.main.http_server_panic", error = e));
-                    Err(nebulaid::core::types::CoreError::InternalError(format!("HTTP server panic: {}", e)))
-                }
-            },
-            grpc_result = grpc_server => match grpc_result {
-                Ok(Ok(())) => {
-                    info!("{}", t!("log.main.grpc_server_stopped"));
-                    Ok(())
-                }
-                Ok(Err(e)) => {
-                    error!("{}", t!("log.main.grpc_server_error", error = e));
-                    Err(e)
-                }
-                Err(e) => {
-                    error!("{}", t!("log.main.grpc_server_panic", error = e));
-                    Err(nebulaid::core::types::CoreError::InternalError(format!("gRPC server panic: {}", e)))
-                }
-            },
-            _ = shutdown_signal() => {
-                info!("{}", t!("log.main.shutdown_signal_received"));
-                Ok(())
-            }
-            // T017 —— lease 续期连续失败 fail-stop：etcd 不可达使 lease 失效后，
-            // 该 worker_id 可能已被其他实例接管，继续发号会重复 ID → 触发优雅停机。
-            // 未配置 etcd（worker_lease 为 None）时该臂永不触发。
-            lease_reason = async {
-                if worker_lease.is_some() {
-                    lease_failure_rx
-                        .await
-                        .unwrap_or_else(|_| "lease keepalive task dropped".to_string())
-                } else {
-                    std::future::pending::<String>().await
-                }
-            } => {
+    // T017 —— worker_id 运行时分配:etcd 已配置(coordination.client 为
+    // Some)时于 Snowflake 构造前分配并覆盖静态配置值;分配失败 fail-closed
+    //(多实例回退静态默认 0 必然重复 ID)。
+    let (lease_failure_tx, lease_failure_rx) = tokio::sync::oneshot::channel::<String>();
+    let worker_lease: Option<WorkerLeaseGuard> = match &coordination.client {
+        Some(client) => match allocate_worker_id(client.clone(), config, lease_failure_tx).await {
+            Ok(guard) => Some(guard),
+            Err(e) => {
                 error!(
                     "{}",
-                    t!("error.main.worker_lease_renewal_failed", reason = lease_reason)
+                    t!("error.main.worker_id_allocation_failed", error = e)
                 );
                 error!("{}", t!("log.main.shutting_down"));
-                Err(nebulaid::core::types::CoreError::InternalError(format!(
-                    "worker lease renewal failed: {}",
-                    lease_reason
-                )))
+                std::process::exit(1);
             }
-        };
-
-        degradation_manager.stop_background_check().await;
-        rate_limit_cleanup.abort();
-
-        // T017 —— 停机收尾：停 keepalive 任务，并经归属校验释放 worker_id
-        //（best-effort：失败仅告警，lease TTL 到期后 etcd 会自动回收 key）。
-        if let Some(guard) = &worker_lease {
-            let _ = guard.stop_tx.send(true);
-            if let Err(e) = guard.allocator.release(guard.worker_id).await {
-                warn!(
-                    "{}",
-                    t!(
-                        "log.main.worker_id_release_on_shutdown_failed",
-                        worker_id = guard.worker_id,
-                        error = e
-                    )
-                );
-            } else {
-                info!(
-                    "{}",
-                    t!(
-                        "log.main.worker_id_released_on_shutdown",
-                        worker_id = guard.worker_id
-                    )
-                );
-            }
-        }
-
-        server_result
+        },
+        None => None,
+    };
+    if let Some(guard) = &worker_lease {
+        // 分配器 MAX_WORKER_ID=255,覆盖值必在 config.worker_id 的 u8 值域内
+        config.app.worker_id = guard.worker_id as u8;
     }
 
+    // 仅在实际分配到 worker_id 时启用失败上报臂(未分配时恒 pending)
+    let lease_failure_rx = worker_lease.is_some().then_some(lease_failure_rx);
+    EtcdRuntimeComponents {
+        health_monitor: etcd_health_monitor,
+        worker_lease,
+        lease_failure_rx,
+    }
+}
+
+/// T017 —— lease 续期失败等待:etcd 构建等待上报通道(未分配 worker 时
+/// 恒 pending);非 etcd 构建恒 pending(select 臂永不触发,等价于原实现
+/// 「非 etcd 无此臂」)。
+async fn wait_for_lease_failure(
+    #[cfg_attr(not(feature = "etcd"), allow(unused))] rx: Option<
+        tokio::sync::oneshot::Receiver<String>,
+    >,
+) -> String {
+    #[cfg(feature = "etcd")]
+    if let Some(rx) = rx {
+        return rx
+            .await
+            .unwrap_or_else(|_| "lease keepalive task dropped".to_string());
+    }
+    std::future::pending::<String>().await
+}
+
+/// T037 —— 服务器运行编排:ID 生成器/限流/handlers/TLS/降级巡检装配、
+/// HTTP/gRPC spawn 与优雅停机 select。
+///
+/// etcd 与非 etcd 构建共用同一实现(此前为两段近乎复制的 cfg 块:限流器、
+/// handlers/TLS/降级巡检/服务器 spawn/select/收尾清理全部双写,新增装配
+/// 步骤需霰弹式同步修改两处)。etcd 专属阶段(健康巡检 + worker 租约)经
+/// cfg 隔离在 [`init_etcd_runtime`]。
+async fn run_servers(stack: ServerStack) -> Result<()> {
+    #[cfg(feature = "etcd")]
+    let coordination = stack.coordination;
+    #[cfg_attr(not(feature = "etcd"), allow(unused_mut))]
+    let mut config = stack.config;
+    let server_config = stack.server_config;
+    let http_bind_addr = stack.http_bind_addr;
+    let repository = stack.repository;
+    let auth = stack.auth;
+    let audit_logger = stack.audit_logger;
+    let hot_config = stack.hot_config;
+    #[cfg(feature = "garrison-auth")]
+    let auth_cache = stack.auth_cache;
+
+    // T027 健康巡检 + T017 worker 租约(仅 etcd feature;非 etcd 构建
+    // 无此阶段)。
+    #[cfg(feature = "etcd")]
+    let etcd_runtime = init_etcd_runtime(&mut config, &coordination).await;
+
+    #[cfg(feature = "etcd")]
+    let id_generator = create_id_generator(
+        &config,
+        audit_logger.clone(),
+        Some(etcd_runtime.health_monitor.clone()),
+    )
+    .await?;
     #[cfg(not(feature = "etcd"))]
-    {
+    let id_generator = {
         info!("{}", t!("log.main.etcd_disabled"));
 
-        // 删除原此处创建后即丢弃的 AlgorithmRouter 死代码；
+        // 删除原此处创建后即丢弃的 AlgorithmRouter 死代码;
         // id_generator 由 create_id_generator 构建并作为实际生成器使用。
-        let id_generator = create_id_generator(&config, audit_logger.clone(), None).await?;
+        create_id_generator(&config, audit_logger.clone(), None).await?
+    };
 
-        // 限流器先于 ConfigManager 创建并共享（同 etcd 分支）
-        let rate_limiter = Arc::new(RateLimiter::new(
-            config.rate_limit.default_rps,
-            config.rate_limit.burst_size,
-        ));
-        // 启动限流桶清理后台任务（5 分钟空闲桶回收，60s 周期），
-        // 停机时经 abort 退出，防止任务泄漏。
-        let rate_limit_cleanup = rate_limiter.start_cleanup(
-            std::time::Duration::from_secs(300),
-            std::time::Duration::from_secs(60),
-        );
+    // 限流器先于 ConfigManager 创建,经 with_rate_limiter
+    // 共享给运行时配置服务,使 POST /config/rate-limit 热更新作用于流量。
+    let rate_limiter = Arc::new(RateLimiter::new(
+        config.rate_limit.default_rps,
+        config.rate_limit.burst_size,
+    ));
+    // 启动限流桶清理后台任务(5 分钟空闲桶回收,60s 周期),
+    // 停机时经 abort 退出,防止任务泄漏。
+    let rate_limit_cleanup = rate_limiter.start_cleanup(
+        std::time::Duration::from_secs(300),
+        std::time::Duration::from_secs(60),
+    );
 
-        let (handlers, config_service) = if let Some(ref repo) = repository {
-            let cs = Arc::new(
-                ConfigManager::with_repository(
-                    hot_config,
-                    id_generator.clone(),
-                    repo.clone(),
-                    repo.clone(),
-                    repo.clone(),
-                )
-                .with_rate_limiter(rate_limiter.clone()),
-            );
-            let h = build_api_handlers(
-                id_generator.clone(),
-                cs.clone(),
-                repo.clone(),
-                config.auth.key_rotation_grace_period_seconds,
-            );
-            #[cfg(feature = "garrison-auth")]
-            let h = if let Some(cache) = auth_cache.clone() {
-                h.with_auth_cache(cache)
-            } else {
-                h
-            };
-            let h = Arc::new(h);
-            (h, cs)
-        } else {
-            let cs = Arc::new(
-                ConfigManager::new(hot_config, id_generator.clone())
-                    .with_rate_limiter(rate_limiter.clone()),
-            );
-            let h = Arc::new(ApiHandlers::new(id_generator.clone(), cs.clone()));
-            (h, cs)
-        };
+    let (handlers, config_service) = build_handlers_and_config_service(
+        &config,
+        &id_generator,
+        &repository,
+        &rate_limiter,
+        hot_config,
+    );
+    // garrison-auth 决策缓存注入(原两个 cfg 分支重复的尾部装配)。
+    #[cfg(feature = "garrison-auth")]
+    let handlers = if let Some(cache) = auth_cache {
+        handlers.with_auth_cache(cache)
+    } else {
+        handlers
+    };
+    let handlers = Arc::new(handlers);
 
-        // TLS 配置错误 fail-fast —— enabled=true 且证书缺失/
-        // 解析失败时拒绝启动（不再静默降级明文）。enabled=false 时
-        // initialize() 直接返回 Ok，明文部署不受影响。
-        let mut tls_manager = TlsManager::new(config.tls.clone());
-        tls_manager.initialize().await.map_err(|e| {
-            error!("{}", t!("log.main.tls_init_failed", error = e));
-            nebulaid::core::types::CoreError::InternalError(format!(
-                "TLS configuration error: {}",
-                e
-            ))
-        })?;
-        let tls_manager = if tls_manager.is_http_enabled() || tls_manager.is_grpc_enabled() {
-            Some(Arc::new(tls_manager))
-        } else {
-            None
-        };
+    let tls_manager = init_tls_manager(&config).await?;
 
-        info!("{}", t!("log.main.starting_degradation_check"));
-        let degradation_manager = id_generator.get_degradation_manager();
-        degradation_manager.start_background_check();
+    info!("{}", t!("log.main.starting_degradation_check"));
+    let degradation_manager = id_generator.get_degradation_manager();
+    degradation_manager.start_background_check();
 
-        info!("{}", t!("log.main.server_initialized_starting"));
+    info!("{}", t!("log.main.server_initialized_starting"));
 
-        let http_server = tokio::spawn(start_http_server(
-            http_bind_addr,
-            handlers.clone(),
-            auth.clone(),
-            rate_limiter.clone(),
-            audit_logger.clone(),
-            config_service.clone(),
-            tls_manager.clone(),
-        ));
-        let grpc_server = tokio::spawn(start_grpc_server(
-            server_config,
-            handlers,
-            auth.clone(),
-            tls_manager,
-        ));
+    let http_server = tokio::spawn(start_http_server(
+        http_bind_addr,
+        handlers.clone(),
+        auth.clone(),
+        rate_limiter.clone(),
+        audit_logger.clone(),
+        config_service.clone(),
+        tls_manager.clone(),
+    ));
+    let grpc_server = tokio::spawn(start_grpc_server(
+        server_config,
+        handlers,
+        auth.clone(),
+        tls_manager,
+    ));
 
-        // http / grpc / 停机信号任一路径先就绪时，统一在 select 之后回收
-        // 后台任务（降级巡检 + 限流桶清理）再返回。原实现只在 shutdown_signal
-        // 分支 abort：服务器先退出（正常停止或错误退出）时清理任务泄漏，
-        // tokio 运行时 drop 还会一直等这个永不自退的循环任务。
-        let server_result: Result<()> = tokio::select! {
-            http_result = http_server => match http_result {
-                Ok(Ok(())) => {
-                    info!("{}", t!("log.main.http_server_stopped"));
-                    Ok(())
-                }
-                Ok(Err(e)) => {
-                    error!("{}", t!("log.main.http_server_error", error = e));
-                    Err(e)
-                }
-                Err(e) => {
-                    error!("{}", t!("log.main.http_server_panic", error = e));
-                    Err(nebulaid::core::types::CoreError::InternalError(format!("HTTP server panic: {}", e)))
-                }
-            },
-            grpc_result = grpc_server => match grpc_result {
-                Ok(Ok(())) => {
-                    info!("{}", t!("log.main.grpc_server_stopped"));
-                    Ok(())
-                }
-                Ok(Err(e)) => {
-                    error!("{}", t!("log.main.grpc_server_error", error = e));
-                    Err(e)
-                }
-                Err(e) => {
-                    error!("{}", t!("log.main.grpc_server_panic", error = e));
-                    Err(nebulaid::core::types::CoreError::InternalError(format!("gRPC server panic: {}", e)))
-                }
-            },
-            _ = shutdown_signal() => {
-                info!("{}", t!("log.main.shutdown_signal_received"));
+    // T017 —— lease 续期失败臂的 future 输入:非 etcd 构建恒 None。
+    #[cfg(feature = "etcd")]
+    let lease_failure_rx = etcd_runtime.lease_failure_rx;
+    #[cfg(not(feature = "etcd"))]
+    let lease_failure_rx: Option<tokio::sync::oneshot::Receiver<String>> = None;
+
+    // http / grpc / 停机信号 / lease 续期失败任一路径先就绪时,统一在
+    // select 之后回收后台任务(降级巡检 + 限流桶清理)再返回。原实现只在
+    // shutdown_signal 分支 abort:服务器先退出(正常停止或错误退出)时清理
+    // 任务泄漏,tokio 运行时 drop 还会一直等这个永不自退的循环任务。
+    let server_result: Result<()> = tokio::select! {
+        http_result = http_server => match http_result {
+            Ok(Ok(())) => {
+                info!("{}", t!("log.main.http_server_stopped"));
                 Ok(())
             }
-        };
+            Ok(Err(e)) => {
+                error!("{}", t!("log.main.http_server_error", error = e));
+                Err(e)
+            }
+            Err(e) => {
+                error!("{}", t!("log.main.http_server_panic", error = e));
+                Err(nebulaid::core::types::CoreError::InternalError(format!("HTTP server panic: {}", e)))
+            }
+        },
+        grpc_result = grpc_server => match grpc_result {
+            Ok(Ok(())) => {
+                info!("{}", t!("log.main.grpc_server_stopped"));
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                error!("{}", t!("log.main.grpc_server_error", error = e));
+                Err(e)
+            }
+            Err(e) => {
+                error!("{}", t!("log.main.grpc_server_panic", error = e));
+                Err(nebulaid::core::types::CoreError::InternalError(format!("gRPC server panic: {}", e)))
+            }
+        },
+        _ = shutdown_signal() => {
+            info!("{}", t!("log.main.shutdown_signal_received"));
+            Ok(())
+        }
+        // T017 —— lease 续期连续失败 fail-stop:etcd 不可达使 lease 失效后,
+        // 该 worker_id 可能已被其他实例接管,继续发号会重复 ID → 触发优雅停机。
+        // 未分配 worker lease(含非 etcd 构建)时该 future 恒 pending。
+        lease_reason = wait_for_lease_failure(lease_failure_rx) => {
+            error!(
+                "{}",
+                t!("error.main.worker_lease_renewal_failed", reason = lease_reason)
+            );
+            error!("{}", t!("log.main.shutting_down"));
+            Err(nebulaid::core::types::CoreError::InternalError(format!(
+                "worker lease renewal failed: {}",
+                lease_reason
+            )))
+        }
+    };
 
-        degradation_manager.stop_background_check().await;
-        rate_limit_cleanup.abort();
+    degradation_manager.stop_background_check().await;
+    rate_limit_cleanup.abort();
 
-        server_result
+    // T017 —— 停机收尾:停 keepalive 任务,并经归属校验释放 worker_id
+    //(best-effort:失败仅告警,lease TTL 到期后 etcd 会自动回收 key)。
+    #[cfg(feature = "etcd")]
+    if let Some(guard) = &etcd_runtime.worker_lease {
+        let _ = guard.stop_tx.send(true);
+        if let Err(e) = guard.allocator.release(guard.worker_id).await {
+            warn!(
+                "{}",
+                t!(
+                    "log.main.worker_id_release_on_shutdown_failed",
+                    worker_id = guard.worker_id,
+                    error = e
+                )
+            );
+        } else {
+            info!(
+                "{}",
+                t!(
+                    "log.main.worker_id_released_on_shutdown",
+                    worker_id = guard.worker_id
+                )
+            );
+        }
     }
+
+    server_result
+}
+
+/// T037 —— main 主体只保留顺序编排:可观测性 → 配置 → 仓储 → 认证/审计
+/// 栈 → 服务器运行。各阶段细节见对应装配函数。
+#[tokio::main]
+async fn main() -> Result<()> {
+    let logger = init_observability().await?;
+
+    info!("{}", t!("log.main.starting_service"));
+    info!(
+        "{}",
+        t!("log.main.version", version = env!("CARGO_PKG_VERSION"))
+    );
+
+    // Initialize sdforge plugins so inventory-registered routes are linked
+    // into the final binary (prevents linker stripping). Must be called
+    // before merge_sdforge_routes builds the axum Router.
+    let plugin_counts = init_sdforge();
+    info!(
+        routes = plugin_counts.routes,
+        "{}",
+        t!("log.main.sdforge_plugins_initialized")
+    );
+
+    // Parse command line arguments
+    let args: Vec<String> = env::args().collect();
+    let (config_path, explicit_path) = parse_config_path(&args);
+
+    let config = load_config(&config_path, explicit_path)?;
+
+    let server_config = ServerConfig {
+        http_port: config.app.http_port,
+        grpc_port: config.app.grpc_port,
+        workers: std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1),
+        shutdown_timeout_secs: config.app.shutdown_timeout_seconds,
+    };
+
+    // HTTP 绑定地址唯一来源于 config.app(host + http_port),修复原先
+    // 忽略配置、硬编码 [0,0,0,0]:8080 导致 http_port 配置失效的缺陷。
+    let http_bind_addr: SocketAddr = config.app.http_addr().map_err(|e| {
+        nebulaid::core::types::CoreError::InternalError(format!(
+            "invalid http bind address from config.app (host={}, port={}): {}",
+            config.app.host, config.app.http_port, e
+        ))
+    })?;
+
+    info!(
+        "{}",
+        t!(
+            "log.main.starting_server_on_ports",
+            http_port = server_config.http_port,
+            grpc_port = server_config.grpc_port
+        )
+    );
+
+    let stacks = init_repository(&config).await?;
+    let auth_stack = init_auth_stack(&config, &stacks.repository, logger).await;
+
+    run_servers(ServerStack {
+        config,
+        server_config,
+        http_bind_addr,
+        repository: stacks.repository,
+        auth: auth_stack.auth,
+        audit_logger: auth_stack.audit_logger,
+        hot_config: auth_stack.hot_config,
+        #[cfg(feature = "garrison-auth")]
+        auth_cache: auth_stack.auth_cache,
+        #[cfg(feature = "etcd")]
+        coordination: stacks.coordination,
+    })
+    .await
 }
 
 #[cfg(test)]

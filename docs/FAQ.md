@@ -1739,40 +1739,17 @@ API 文档与教程
 
 <br>
 
-**双重许可：**
-
-<table>
-<tr>
-<td width="50%" align="center">
-
-**MIT 许可证**
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../LICENSE-MIT)
-
-**权限：**
-- ✅ 商业使用
-- ✅ 修改
-- ✅ 分发
-- ✅ 私有使用
-
-</td>
-<td width="50%" align="center">
-
 **Apache License 2.0**
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](../LICENSE-APACHE)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](../LICENSE)
 
 **权限：**
 - ✅ 商业使用
 - ✅ 修改
 - ✅ 分发
 - ✅ 专利授权
-
-</td>
-</tr>
-</table>
-
-**你可以任选其中一种许可证使用。**
+- ⚠️ 需附上许可证文本和版权声明
+- ⚠️ 需声明所做的修改
 
 </details>
 
@@ -1781,7 +1758,7 @@ API 文档与教程
 
 <br>
 
-**可以！**MIT 与 Apache 2.0 许可证均允许商业使用。
+**可以！**Apache 2.0 许可证允许商业使用。
 
 **你需要做的：**
 1. ✅ 附上许可证文本

@@ -174,6 +174,27 @@ fail-fast（change `key-rotation-and-config-failfast`）。**含多项行为变�
   删除以旧约束为前提的文本守卫测试
   `repo_docs_guards_tests.rs` 及 2 处 sqlite 死测试。运行时 `DatabaseEngine`
   枚举的 `Sqlite`/`Mysql` 变体保留，但构建不含对应驱动，连接会失败。
+- **修复号段唯一约束的迁移漂移（真库 bug）**：`scripts/init.sql` 的
+  `nebula_segments` 建表 DDL 带 `uq_nebula_segments_ws_tag_dc UNIQUE
+  (workspace_id, biz_tag, dc_id)`，而 `run_migrations` 的同表 DDL 漏了它；
+  生产代码 `allocate_segment` 的首查无行路径 `INSERT ... ON CONFLICT
+  (workspace_id, biz_tag, dc_id) DO NOTHING` 依赖该约束，经自动迁移建表的
+  库上首次号段分配必然报错。迁移现于建表 DDL 内联该约束，并对存量库补
+  幂等回填（`DO $$ ... EXCEPTION WHEN duplicate_object`）；回填失败终止
+  启动（缺约束 = 多实例首分配不可用，fail-closed）。此修复同时让 7 个
+  因 mock 配额欠账（未随迁移语句增长更新）而长期失败的迁移测试转绿，
+  **当前全量测试 0 失败**，本地覆盖率门禁随之移除 `--skip`。
+- **许可表述统一为 Apache-2.0**：仓库唯一许可文本 `LICENSE` 自始为
+  Apache-2.0，`LICENSE-MIT` 从不存在（FAQ 旧文引用的 `../LICENSE-MIT`
+  为死链），双许可声明（Cargo.toml 元数据、README 徽章与尾注）是空承诺。
+  Cargo.toml `license` 字段、README 双语徽章与尾注、FAQ 许可章节统一为
+  Apache-2.0。
+- **文档事实性修正**（遗留 WIP 收口）：`database.engine`/连接池默认值/
+  `dc_id` 范围（0-7）等配置文档与实现对齐；`nebula_segments` 手工建表
+  DDL 对齐 `init.sql`（VARCHAR(255)、`dc_id` 列、唯一约束）；部署架构图
+  更正为指标经主端口 `/metrics` 暴露（`METRICS_PORT` 等环境变量当前无
+  代码消费者，属遗留死配置）；FAQ 的 Rust 基础镜像、限流描述、许可
+  章节与链接修正。
 
 ### Added
 

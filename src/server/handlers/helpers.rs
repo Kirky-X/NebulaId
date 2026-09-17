@@ -48,7 +48,7 @@ use crate::core::database::ApiKeyRole;
 use crate::core::i18n::{translate_with_locale, translate_with_locale_args};
 use crate::core::CoreError;
 use crate::server::middleware::locale::Locale;
-use crate::server::models::ErrorResponse;
+use crate::server::models::{ApiErrorCode, ErrorResponse};
 use axum::http::StatusCode;
 use axum::Json;
 
@@ -64,6 +64,62 @@ pub(super) fn map_uuid_error<E: std::fmt::Display>(error: E) -> CoreError {
     )
 }
 
+/// `CoreError` → `(HTTP 状态码, 业务错误码)` 单表分类（T032）。
+///
+/// 这是唯一的事实来源：HTTP 错误响应的状态码与 `business_code`
+/// （[`ErrorResponse`]）都从本表取值，保证两者不会各自漂移；
+/// gRPC 侧的 [`core_error_grpc_code`] 与本表逐行同语义。
+///
+/// Phase 8 (LOW fix) 历史 — 本表承接自原 `core_error_status_code`
+/// （旧 `CoreError::to_http_response` / `http_status_code` /
+/// `error_code` 依赖进程级全局 locale，已作为死代码移除）；locale
+/// 化文案统一经 `to_localized_string` + 下方 helpers 生成。
+/// T032 起原函数并入本表（一张映射表两用），不再单设状态码查询口。
+///
+/// 业务码沿用 `ApiErrorCode` 注册表：
+/// - 404 泛型 `NotFound` 默认映射 `WorkspaceNotFound`（2001，沿用被移除的
+///   `From<ErrorResponse>` 的「默认资源错误」惯例）；特定资源由
+///   `BizTagNotFound`（2003）区分。
+/// - `GroupNotFound`（2002）/`ResourceAlreadyExists`（2004）当前无对应
+///   `CoreError` 变体、不会出现（预留码，见 openapi 错误码表标注）。
+fn core_error_classification(e: &CoreError) -> (StatusCode, ApiErrorCode) {
+    match e {
+        CoreError::InvalidIdFormat(_)
+        | CoreError::InvalidIdString(_)
+        | CoreError::InvalidAlgorithmType(_)
+        | CoreError::InvalidInput(_)
+        | CoreError::ParseError(_) => (StatusCode::BAD_REQUEST, ApiErrorCode::InvalidInput),
+        CoreError::AuthenticationError(_) => (StatusCode::UNAUTHORIZED, ApiErrorCode::Unauthorized),
+        CoreError::InvalidApiKeySignature => {
+            (StatusCode::UNAUTHORIZED, ApiErrorCode::InvalidApiKey)
+        }
+        CoreError::ApiKeyDisabled => (StatusCode::UNAUTHORIZED, ApiErrorCode::ApiKeyDisabled),
+        CoreError::ApiKeyExpired => (StatusCode::UNAUTHORIZED, ApiErrorCode::ApiKeyExpired),
+        CoreError::WorkspaceDisabled(_) => (StatusCode::FORBIDDEN, ApiErrorCode::Forbidden),
+        CoreError::NotFound(_) => (StatusCode::NOT_FOUND, ApiErrorCode::WorkspaceNotFound),
+        CoreError::BizTagNotFound(_) => (StatusCode::NOT_FOUND, ApiErrorCode::BizTagNotFound),
+        CoreError::RateLimitExceeded => (
+            StatusCode::TOO_MANY_REQUESTS,
+            ApiErrorCode::RateLimitExceeded,
+        ),
+        CoreError::TimeoutError => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            ApiErrorCode::ServiceUnavailable,
+        ),
+        CoreError::DatabaseError(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ApiErrorCode::DatabaseError,
+        ),
+        CoreError::CacheError(_) => (StatusCode::INTERNAL_SERVER_ERROR, ApiErrorCode::CacheError),
+        // 其余 5xx 类（InternalError/ConfigurationError/EtcdError/IoError/
+        // 算法类/Unknown）统一收敛 InternalError（5001）。
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ApiErrorCode::InternalError,
+        ),
+    }
+}
+
 /// HTTP status code for a `CoreError` variant.
 ///
 /// Phase 8 (LOW fix) — this is the single source of
@@ -73,23 +129,12 @@ pub(super) fn map_uuid_error<E: std::fmt::Display>(error: E) -> CoreError {
 /// locale via `to_string()`) were removed as dead code; all
 /// locale-aware translation now goes through `to_localized_string`
 /// + the helpers below.
+///
+/// T032 — 状态码判定委托给 [`core_error_classification`] 单表
+/// （同一张表同时给出 `business_code`），本函数只保留旧行接口。
+#[cfg(test)]
 fn core_error_status_code(e: &CoreError) -> StatusCode {
-    match e {
-        CoreError::InvalidIdFormat(_)
-        | CoreError::InvalidIdString(_)
-        | CoreError::InvalidAlgorithmType(_)
-        | CoreError::InvalidInput(_)
-        | CoreError::ParseError(_) => StatusCode::BAD_REQUEST,
-        CoreError::AuthenticationError(_)
-        | CoreError::InvalidApiKeySignature
-        | CoreError::ApiKeyDisabled
-        | CoreError::ApiKeyExpired => StatusCode::UNAUTHORIZED,
-        CoreError::WorkspaceDisabled(_) => StatusCode::FORBIDDEN,
-        CoreError::NotFound(_) | CoreError::BizTagNotFound(_) => StatusCode::NOT_FOUND,
-        CoreError::RateLimitExceeded => StatusCode::TOO_MANY_REQUESTS,
-        CoreError::TimeoutError => StatusCode::SERVICE_UNAVAILABLE,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
-    }
+    core_error_classification(e).0
 }
 
 /// Maximum message length returned to clients for 4xx-class errors.
@@ -146,8 +191,6 @@ fn sanitize_for_production(msg: &str) -> String {
 ///   `InvalidApiKeySignature`, `TimeoutError`): the localized message is
 ///   returned verbatim — there is no caller-controlled content to filter.
 pub fn core_error_to_response(e: &CoreError, locale: Locale) -> (StatusCode, Json<ErrorResponse>) {
-    let status = core_error_status_code(e);
-
     // 5xx-class internal errors — log full detail server-side, return
     // generic locale-translated message to the client.
     let message = match e {
@@ -248,8 +291,13 @@ pub fn core_error_to_response(e: &CoreError, locale: Locale) -> (StatusCode, Jso
         | CoreError::TimeoutError => e.to_localized_string(locale.as_str()),
     };
 
+    // T032 — 状态码与业务码同表判定，request_id/timestamp 在装配处生成。
+    let (status, business_code) = core_error_classification(e);
     let code = status.as_u16() as i32;
-    (status, Json(ErrorResponse::new(code, message)))
+    (
+        status,
+        Json(ErrorResponse::new(code, business_code, message)),
+    )
 }
 
 // ========== 共享授权（T010）==========
@@ -357,7 +405,7 @@ pub fn invalid_uuid_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>
     let message = translate_with_locale(locale.as_str(), "api.error.invalid_uuid_format");
     (
         StatusCode::BAD_REQUEST,
-        Json(ErrorResponse::new(400, message)),
+        Json(ErrorResponse::new(400, ApiErrorCode::InvalidUuid, message)),
     )
 }
 
@@ -409,7 +457,11 @@ pub(crate) fn validation_error_response(
 
     (
         StatusCode::BAD_REQUEST,
-        Json(ErrorResponse::new(400, message)),
+        Json(ErrorResponse::new(
+            400,
+            ApiErrorCode::ValidationError,
+            message,
+        )),
     )
 }
 
@@ -418,7 +470,7 @@ pub(crate) fn admin_cannot_perform_response(locale: Locale) -> (StatusCode, Json
     let message = translate_with_locale(locale.as_str(), "api.error.admin_cannot_perform");
     (
         StatusCode::FORBIDDEN,
-        Json(ErrorResponse::new(403, message)),
+        Json(ErrorResponse::new(403, ApiErrorCode::Forbidden, message)),
     )
 }
 
@@ -428,7 +480,7 @@ pub(crate) fn auth_required_response(locale: Locale) -> (StatusCode, Json<ErrorR
     let message = translate_with_locale(locale.as_str(), "api.error.auth_required");
     (
         StatusCode::UNAUTHORIZED,
-        Json(ErrorResponse::new(401, message)),
+        Json(ErrorResponse::new(401, ApiErrorCode::Unauthorized, message)),
     )
 }
 
@@ -437,7 +489,7 @@ pub(crate) fn workspace_mismatch_response(locale: Locale) -> (StatusCode, Json<E
     let message = translate_with_locale(locale.as_str(), "api.error.workspace_mismatch");
     (
         StatusCode::FORBIDDEN,
-        Json(ErrorResponse::new(403, message)),
+        Json(ErrorResponse::new(403, ApiErrorCode::Forbidden, message)),
     )
 }
 
@@ -473,7 +525,11 @@ pub(crate) fn workspace_name_not_found_response(
     );
     (
         StatusCode::NOT_FOUND,
-        Json(ErrorResponse::new(404, message)),
+        Json(ErrorResponse::new(
+            404,
+            ApiErrorCode::WorkspaceNotFound,
+            message,
+        )),
     )
 }
 
@@ -482,7 +538,11 @@ pub(crate) fn workspace_not_found_response(locale: Locale) -> (StatusCode, Json<
     let message = translate_with_locale(locale.as_str(), "api.error.workspace_not_found");
     (
         StatusCode::NOT_FOUND,
-        Json(ErrorResponse::new(404, message)),
+        Json(ErrorResponse::new(
+            404,
+            ApiErrorCode::WorkspaceNotFound,
+            message,
+        )),
     )
 }
 
@@ -491,7 +551,11 @@ pub(crate) fn invalid_workspace_id_response(locale: Locale) -> (StatusCode, Json
     let message = translate_with_locale(locale.as_str(), "api.error.invalid_workspace_id");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(500, message)),
+        Json(ErrorResponse::new(
+            500,
+            ApiErrorCode::InternalError,
+            message,
+        )),
     )
 }
 
@@ -500,7 +564,11 @@ pub(crate) fn workspace_id_required_response(locale: Locale) -> (StatusCode, Jso
     let message = translate_with_locale(locale.as_str(), "api.error.workspace_id_required");
     (
         StatusCode::BAD_REQUEST,
-        Json(ErrorResponse::new(400, message)),
+        Json(ErrorResponse::new(
+            400,
+            ApiErrorCode::MissingRequiredField,
+            message,
+        )),
     )
 }
 
@@ -637,6 +705,228 @@ mod tests {
         assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
         let (s, _) = core_error_to_response(&CoreError::Unknown, Locale::En);
         assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ========== T032 —— 统一错误信封 business_code ==========
+
+    /// 单表分类全变体矩阵：`core_error_classification` 给出的
+    /// (状态码, business_code) 必须与 `core_error_status_code` 既有
+    /// 映射逐行一致（一张映射表两用的钉桩）。
+    #[test]
+    fn test_core_error_classification_full_matrix() {
+        use crate::server::models::ApiErrorCode;
+
+        let cases: &[(CoreError, StatusCode, ApiErrorCode)] = &[
+            (
+                CoreError::InvalidInput("x".into()),
+                StatusCode::BAD_REQUEST,
+                ApiErrorCode::InvalidInput,
+            ),
+            (
+                CoreError::InvalidIdFormat("x".into()),
+                StatusCode::BAD_REQUEST,
+                ApiErrorCode::InvalidInput,
+            ),
+            (
+                CoreError::InvalidIdString("x".into()),
+                StatusCode::BAD_REQUEST,
+                ApiErrorCode::InvalidInput,
+            ),
+            (
+                CoreError::InvalidAlgorithmType("x".into()),
+                StatusCode::BAD_REQUEST,
+                ApiErrorCode::InvalidInput,
+            ),
+            (
+                CoreError::ParseError("x".into()),
+                StatusCode::BAD_REQUEST,
+                ApiErrorCode::InvalidInput,
+            ),
+            (
+                CoreError::AuthenticationError("x".into()),
+                StatusCode::UNAUTHORIZED,
+                ApiErrorCode::Unauthorized,
+            ),
+            (
+                CoreError::InvalidApiKeySignature,
+                StatusCode::UNAUTHORIZED,
+                ApiErrorCode::InvalidApiKey,
+            ),
+            (
+                CoreError::ApiKeyDisabled,
+                StatusCode::UNAUTHORIZED,
+                ApiErrorCode::ApiKeyDisabled,
+            ),
+            (
+                CoreError::ApiKeyExpired,
+                StatusCode::UNAUTHORIZED,
+                ApiErrorCode::ApiKeyExpired,
+            ),
+            (
+                CoreError::WorkspaceDisabled("x".into()),
+                StatusCode::FORBIDDEN,
+                ApiErrorCode::Forbidden,
+            ),
+            (
+                CoreError::NotFound("x".into()),
+                StatusCode::NOT_FOUND,
+                ApiErrorCode::WorkspaceNotFound,
+            ),
+            (
+                CoreError::BizTagNotFound("x".into()),
+                StatusCode::NOT_FOUND,
+                ApiErrorCode::BizTagNotFound,
+            ),
+            (
+                CoreError::RateLimitExceeded,
+                StatusCode::TOO_MANY_REQUESTS,
+                ApiErrorCode::RateLimitExceeded,
+            ),
+            (
+                CoreError::TimeoutError,
+                StatusCode::SERVICE_UNAVAILABLE,
+                ApiErrorCode::ServiceUnavailable,
+            ),
+            (
+                CoreError::DatabaseError("x".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiErrorCode::DatabaseError,
+            ),
+            (
+                CoreError::CacheError("x".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiErrorCode::CacheError,
+            ),
+            (
+                CoreError::InternalError("x".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiErrorCode::InternalError,
+            ),
+            (
+                CoreError::ConfigurationError("x".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiErrorCode::InternalError,
+            ),
+            (
+                CoreError::EtcdError("x".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiErrorCode::InternalError,
+            ),
+            (
+                CoreError::IoError("x".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiErrorCode::InternalError,
+            ),
+            (
+                CoreError::ClockMovedBackward { last_timestamp: 1 },
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiErrorCode::InternalError,
+            ),
+            (
+                CoreError::SequenceOverflow { timestamp: 1 },
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiErrorCode::InternalError,
+            ),
+            (
+                CoreError::SegmentExhausted { max_id: 1 },
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiErrorCode::InternalError,
+            ),
+            (
+                CoreError::Unknown,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiErrorCode::InternalError,
+            ),
+        ];
+
+        for (e, expected_status, expected_business) in cases {
+            let (status, business) = core_error_classification(e);
+            assert_eq!(status, *expected_status, "variant: {e:?}");
+            assert_eq!(business, *expected_business, "variant: {e:?}");
+            // 同源性：core_error_status_code 与单表 .0 一致。
+            assert_eq!(core_error_status_code(e), *expected_status);
+        }
+    }
+
+    /// 任务规定的三类代表性错误信封断言：
+    /// 限流 → 4001；校验失败 → 3002；资源不存在 → 2001/2003。
+    #[test]
+    fn test_error_envelope_business_codes_for_required_classes() {
+        let _g = LocaleGuard::new();
+        rust_i18n::set_locale("en");
+
+        // 限流：RateLimitExceeded → "4001"。
+        let (_, json) = core_error_to_response(&CoreError::RateLimitExceeded, Locale::En);
+        assert_eq!(json.business_code, "4001");
+        assert_eq!(json.code, 429);
+
+        // 校验失败：validation_error_response → "3002"。
+        #[derive(validator::Validate)]
+        struct SampleReq {
+            #[validate(length(min = 1, max = 64))]
+            name: String,
+        }
+        let errs = SampleReq {
+            name: String::new(),
+        }
+        .validate()
+        .unwrap_err();
+        let (_, json) = validation_error_response(&errs, Locale::En);
+        assert_eq!(json.business_code, "3002");
+        assert_eq!(json.code, 400);
+
+        // 资源不存在：泛型 NotFound → "2001"；BizTagNotFound → "2003"；
+        // workspace 名未找到（handler 构造）→ "2001"。
+        let (_, json) = core_error_to_response(&CoreError::NotFound("ghost".into()), Locale::En);
+        assert_eq!(json.business_code, "2001");
+        assert_eq!(json.code, 404);
+        let (_, json) =
+            core_error_to_response(&CoreError::BizTagNotFound("tag".into()), Locale::En);
+        assert_eq!(json.business_code, "2003");
+        let (_, json) = workspace_name_not_found_response("ghost-ws", Locale::En);
+        assert_eq!(json.business_code, "2001");
+        assert_eq!(json.code, 404);
+    }
+
+    /// handler 构造类错误的业务码：UUID 非法 → 3004、缺必填 → 3003、
+    /// 跨 workspace/Admin 拒绝 → 1002、未认证 → 1001。
+    #[test]
+    fn test_error_envelope_business_codes_for_handler_constructed() {
+        let _g = LocaleGuard::new();
+        rust_i18n::set_locale("en");
+
+        let (_, json) = invalid_uuid_response(Locale::En);
+        assert_eq!(json.business_code, "3004");
+
+        let (_, json) = workspace_id_required_response(Locale::En);
+        assert_eq!(json.business_code, "3003");
+
+        let (_, json) = admin_cannot_perform_response(Locale::En);
+        assert_eq!(json.business_code, "1002");
+
+        let (_, json) = workspace_mismatch_response(Locale::En);
+        assert_eq!(json.business_code, "1002");
+
+        let (_, json) = auth_required_response(Locale::En);
+        assert_eq!(json.business_code, "1001");
+
+        let (_, json) = invalid_workspace_id_response(Locale::En);
+        assert_eq!(json.business_code, "5001");
+    }
+
+    /// 信封装配：`core_error_to_response` 生成的响应必须携带
+    /// request_id（UUID v4）与毫秒级 timestamp。
+    #[test]
+    fn test_core_error_to_response_envelope_tracks_request() {
+        let _g = LocaleGuard::new();
+        rust_i18n::set_locale("en");
+
+        let (_, json) =
+            core_error_to_response(&CoreError::InvalidInput("x".to_string()), Locale::En);
+        let parsed =
+            uuid::Uuid::parse_str(&json.request_id).expect("request_id must be a valid UUID");
+        assert_eq!(parsed.get_version_num(), 4);
+        assert!(json.timestamp > 0, "timestamp must be millis since epoch");
     }
 
     /// CRITICAL C-1 / HIGH — 5xx internal errors MUST NOT leak the

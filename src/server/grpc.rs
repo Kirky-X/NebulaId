@@ -13,8 +13,9 @@
 // limitations under the License.
 
 use crate::core::types::CoreError;
+use crate::server::handlers::helpers::authorize_workspace_access;
 use crate::server::handlers::ApiHandlers;
-use crate::server::middleware::api_key_auth::{parse_authorization_header, ApiKeyAuth};
+use crate::server::middleware::api_key_auth::{parse_authorization_header, ApiKeyAuth, ApiKeyRole};
 use crate::server::models::{BatchGenerateRequest, GenerateRequest, ParseRequest};
 use async_trait::async_trait;
 use sdforge::tonic::{Request, Response, Status};
@@ -150,6 +151,109 @@ fn peer_ip<T>(request: &Request<T>) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// 从请求扩展中提取资源级授权所需的身份（T011）。
+///
+/// 认证启用且校验成功时，[`GrpcServer::authenticate`] 必然注入
+/// `Option<uuid::Uuid>`（workspace_id）与 `ApiKeyRole` 两个扩展。二者缺失
+/// 意味着认证未装配（`GrpcServer::new`，内网部署）或 `auth.enabled=false`
+/// （降级放行）——两条路径都返回 `None`，由 [`authorize_namespace`] 跳过
+/// 资源级判定，维持既有 e2e 钉住的降级语义。
+fn auth_identity<T>(request: &Request<T>) -> Option<(ApiKeyRole, Option<uuid::Uuid>)> {
+    let role = request.extensions().get::<ApiKeyRole>().cloned()?;
+    let workspace_id = request.extensions().get::<Option<uuid::Uuid>>().copied()?;
+    Some((role, workspace_id))
+}
+
+/// generate 系接口的资源级授权判定（T011）。
+///
+/// 与 HTTP 侧 `verify_user_role` + `verify_user_workspace` 同源：
+///
+/// - Admin key → `Status::permission_denied`（HTTP `verify_user_role` 的
+///   `admin_cannot_perform` 403 语义；generate 类接口仅面向 User）。
+/// - User key 的 namespace 经 handlers 既有 config_service
+///   （`repository::get_workspace_by_name`，不改仓储层）反查 UUID；
+///   反查不到 → `Status::not_found`，反查基础设施失败 → `Status::internal`
+///   （固定文案，与 HTTP 侧 500 泛化消息同语义，不透出内部错误）。
+/// - 反查成功后交由共享授权函数 [`authorize_workspace_access`]（T010）做
+///   角色租户判定：跨租户 → `Status::permission_denied`。
+///
+/// 认证未装配 / 禁用（`identity = None`）时跳过判定放行：与既有
+/// `bypasses_when_auth_disabled` 等 e2e 钉住的降级语义一致。
+async fn authorize_namespace(
+    handlers: &ApiHandlers,
+    identity: Option<(ApiKeyRole, Option<uuid::Uuid>)>,
+    namespace: &str,
+) -> Result<(), Status> {
+    let Some((role, key_workspace_id)) = identity else {
+        return Ok(());
+    };
+
+    // Admin：generate 类接口仅面向 User（对齐 HTTP verify_user_role）。
+    if role == ApiKeyRole::Admin {
+        return Err(Status::permission_denied(
+            t!("api.error.admin_cannot_perform").to_string(),
+        ));
+    }
+
+    // User 角色但 key 无租户绑定：无法证明归属，fail-closed。
+    let Some(key_workspace_id) = key_workspace_id else {
+        tracing::warn!(
+            event = "authz_user_key_without_workspace",
+            "user-role key carries no workspace binding; denying generate access"
+        );
+        return Err(Status::permission_denied(
+            t!("api.error.workspace_mismatch").to_string(),
+        ));
+    };
+
+    // namespace → workspace 反查（NotFound / 基础设施失败两条出口分开处理）。
+    let workspace = match handlers.get_workspace(namespace).await {
+        Ok(Some(ws)) => ws,
+        Ok(None) => {
+            return Err(Status::not_found(
+                t!("api.error.workspace_not_found").to_string(),
+            ));
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                namespace = %namespace,
+                "workspace lookup failed during gRPC authorization"
+            );
+            return Err(Status::internal("internal error"));
+        }
+    };
+
+    let target_workspace_id = match uuid::Uuid::parse_str(&workspace.id) {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                workspace_id = %workspace.id,
+                "workspace row carries a non-UUID id"
+            );
+            return Err(Status::internal("internal error"));
+        }
+    };
+
+    match authorize_workspace_access(&role, key_workspace_id, target_workspace_id).await {
+        Ok(()) => Ok(()),
+        // User 请求他人 namespace → permission_denied（HTTP 403
+        // workspace_mismatch 同语义）。
+        Err(CoreError::WorkspaceDisabled(_)) => Err(Status::permission_denied(
+            t!("api.error.workspace_mismatch").to_string(),
+        )),
+        Err(e) => {
+            // 其余拒绝变体（Anonymous 等，gRPC 正常路径不会注入）按
+            // unauthenticated 处理，fail-closed。
+            tracing::warn!(error = %e, "workspace authorization denied");
+            Err(Status::unauthenticated(
+                t!("api.error.auth_required").to_string(),
+            ))
+        }
+    }
+}
+
 /// 认证拒绝的统一出口：先打一条与 HTTP 侧同 schema 的 `auth_failure` 审计
 /// 日志（`reason` 机器可读 + `client_ip` + 掩码 `key_id_prefix`），再返回
 /// 调用方给定的 Status。日志与 Status 缺一不可 —— 只返 Status 会让 gRPC
@@ -271,6 +375,13 @@ impl NebulaIdService for GrpcServer {
         request: Request<GrpcGenerateRequest>,
     ) -> Result<Response<GrpcGenerateResponse>, Status> {
         let request = self.authenticate(request).await?;
+        // T011 资源级授权：namespace 在消息体内，into_inner 前按借用读取。
+        authorize_namespace(
+            &self.handlers,
+            auth_identity(&request),
+            &request.get_ref().namespace,
+        )
+        .await?;
         let req = request.into_inner();
         let tag = req.tag.clone();
 
@@ -301,6 +412,13 @@ impl NebulaIdService for GrpcServer {
         request: Request<GrpcBatchGenerateRequest>,
     ) -> Result<Response<GrpcBatchGenerateResponse>, Status> {
         let request = self.authenticate(request).await?;
+        // T011 资源级授权：与 generate 同一判定点（into_inner 前）。
+        authorize_namespace(
+            &self.handlers,
+            auth_identity(&request),
+            &request.get_ref().namespace,
+        )
+        .await?;
         let req = request.into_inner();
         let tag = req.tag.clone();
 
@@ -383,6 +501,9 @@ impl NebulaIdService for GrpcServer {
     ) -> Result<Response<Self::BatchGenerateStreamStream>, Status> {
         // request-init 先于流消费被校验，流式入口同样受保护
         let request = self.authenticate(request).await?;
+        // T011 资源级授权：身份在 into_inner 前提取；namespace 是逐项字段，
+        // 逐项判定在流任务内完成，拒绝以 Status 终止流（Admin/跨租户均如此）。
+        let identity = auth_identity(&request);
         let mut stream = request.into_inner();
         let (tx, rx) = mpsc::channel(128);
 
@@ -392,6 +513,14 @@ impl NebulaIdService for GrpcServer {
             while let Some(req) = stream.next().await {
                 match req {
                     Ok(stream_req) => {
+                        // T011 资源级授权：逐项 namespace 判定，拒绝以 Status 终止流。
+                        if let Err(status) =
+                            authorize_namespace(&handlers, identity.clone(), &stream_req.namespace)
+                                .await
+                        {
+                            let _ = tx.send(Err(status)).await;
+                            break;
+                        }
                         let tag = stream_req.tag.clone();
                         let batch_req = BatchGenerateRequest {
                             workspace: stream_req.namespace,

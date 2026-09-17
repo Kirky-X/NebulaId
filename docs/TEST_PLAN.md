@@ -25,7 +25,7 @@
 - **场景编号**：`<域>-<序号>`。域前缀：CFG 配置 / ALG 算法 / DEG 降级熔断 / AUTH 认证授权 / IDGEN 发号 API / RES 资源管理 / RATE 限流 / GRPC / OBS 观测审计 / TLS 传输安全 / COORD 分布式协调 / DB 数据库 / I18N 国际化 / SEC 安全防护 / SDK 嵌入式 / LIFE 生命周期 / FAULT 故障注入。
 - **现状标记**：✅ 已有自动化覆盖（附位置）；⚠️ 部分覆盖或覆盖方式有缺陷；❌ 缺口（第 6 节给出新增建议）。
 - **特性口径**：`--all-features` **可构建**（sqlite feature 已删除，dbnexus 的 embedded/server 互斥不再触发；= default + etcd + alerting + sdk + integration-tests + openapi）。CI、hooks 与本文档统一采用该口径；`--no-default-features` 另作轻量编译检查（仅编译，不跑测试，运行时需自备 PostgreSQL）。
-- **基线豁免**：干净基线（2026-09-17，c3bc165 起）即存在 **7 个失败测试**，非回归：6 个 `core::database::connection::tests::test_run_migrations_*`（MockDatabase 与真库迁移建 enum 的预期差异）+ 1 个 `core::tests::infra_e2e_tests::e2e_database_run_migrations_creates_tables`（需真实 PostgreSQL）。门禁验证一律 `--no-fail-fast` 并对照该清单。
+- ~~**基线豁免**~~（已失效，2026-09-18 修复）：干净基线（2026-09-17，c3bc165 起）曾有 **7 个失败测试**——6 个 `core::database::connection::tests::test_run_migrations_*` + 1 个 `infra_e2e_tests::e2e_database_run_migrations_creates_tables`，根因是 mock 配额未随迁移语句列表的增长（枚举类型 +2）同步更新。随号段唯一约束回填语句的加入已一并修正配额，**当前全套测试 0 失败**。
 
 ---
 
@@ -458,7 +458,7 @@ init_observability → init_sdforge(防inventory剥离) → load_config(fail-fas
 |---|---|---|---|---|---|
 | DB-01 | 密码缺失/含 `${` 未展开 | 非 URL 且非 SQLite 连接 | `ConfigurationError`（提示 NEBULA_DATABASE_PASSWORD） | 内联 + infra_e2e | ✅ |
 | DB-02 | PG URL 无 options | create_connection | 自动注入 `search_path=nebula_id,public`（sea-orm 枚举 CAST 依赖） | 内联 | ✅ |
-| DB-03 | 迁移幂等 | 重复 run_migrations | 枚举/表 already-exists 吞掉继续；**ALTER 补列失败→终止启动**；失败消息通用化（CWE-209） | 内联 7 语句 mock | ⚠️ 真库路径仅 ignore+基线失败 7 项 |
+| DB-03 | 迁移幂等 | 重复 run_migrations | 枚举/表/约束 already-exists 吞掉继续；**ALTER 补列失败→终止启动**；失败消息通用化（CWE-209） | 内联 10 语句 mock | ✅（mock 全绿；真库路径仍为 ignore 集成测试） |
 | DB-04 | 并发首分配 | 多实例同 tag 首次 allocate | `ON CONFLICT DO NOTHING`+重试保证单次插入，无重复号段 | **真库并发测试** | ❌ 自动化缺口（shell 脚本部分覆盖） |
 | DB-05 | 原子分配 | allocate_segment | 单语句 `UPDATE…RETURNING` 起止区间；行锁串行化 | SQL 形状 mock | ✅ |
 | DB-06 | 语句超时 | 慢查询 >statement_timeout_secs | `CoreError::TimeoutError`（语义区分"慢"与"坏"） | mock 注入 | ✅ |
@@ -592,9 +592,9 @@ cargo bench --bench i18n
 |---|---|---|
 | fmt+clippy | `--all-features` `-D warnings`（另有 `--no-default-features` 编译检查） | 零告警 |
 | deny+audit | cargo-deny / cargo-audit | deny warnings |
-| 多特性矩阵测试 | matrix = default / all（`--all-features`，覆盖 sdk+etcd+alerting+integration-tests） | 全绿（对照基线豁免在 CI 真库环境天然通过） |
+| 多特性矩阵测试 | matrix = default / all（`--all-features`，覆盖 sdk+etcd+alerting+integration-tests） | 全绿 |
 | 覆盖率 | `llvm-cov --fail-under-lines 95 --ignore-filename-regex "server/proto/"`（default leg 权威门禁；all leg 只跑测试不进门禁——sdk 代码测试密度低，与旧独立 sdk job 策略一致） | 95% 行覆盖 |
-| lefthook pre-push | `--all-features` test + coverage `--fail-under-lines 90`（本地实测约 93.2%：sdk 稀释 + 7 个基线失败测试经 `--skip` 排除） | 90% |
+| lefthook pre-push | `--all-features` test + coverage `--fail-under-lines 90`（本地实测约 93.6%：sdk 代码稀释） | 90% |
 
 ### 5.4 新增测试的落位约定
 
@@ -646,4 +646,4 @@ cargo bench --bench i18n
 
 - 场景总数：**16 域约 190 个**（正常流 + 异常流 + 边界 + 故障注入），其中已有自动化覆盖约 8 成（L0+L1 ≈1879 个测试函数），明确缺口 18 项（P0×5 / P1×8 / P2×5）。
 - 特性组合：全部组合可构建（`--all-features` 已解禁，`--no-default-features` 仅作编译检查），行为差异点 11 处（§2.3）。
-- 覆盖率基线：本地 `llvm-cov` 约 94.25%（7 个基线失败项拖累）；CI 真库环境 ≥95% 门禁。
+- 覆盖率基线：本地 `llvm-cov` 全特性口径约 93.6%（sdk 代码测试密度低）；CI default leg ≥95% 权威门禁。

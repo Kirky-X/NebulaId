@@ -34,8 +34,8 @@ pre-push:
       tags: [rust, test]
       run: cargo test --package nebulaid --all-features
 
-    # 2. 覆盖率门禁（本地口径 ≥90%：全特性 + 跳过 7 个基线失败测试，实测约
-    #    93.2%；权威 95% 门禁在 ci.yml default leg。脚本抽到独立 .sh，原因同上）
+    # 2. 覆盖率门禁（本地口径 ≥90%：全特性实测约 93%+，sdk 稀释；权威 95%
+    #    门禁在 ci.yml default leg。脚本抽到独立 .sh，原因同上）
     cargo-coverage:
       tags: [rust, coverage]
       run: bash scripts/_coverage_gate.sh

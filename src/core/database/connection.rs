@@ -168,6 +168,28 @@ pub(crate) fn api_keys_grace_period_alter_sql() -> String {
     )
 }
 
+/// 幂等地给 `nebula_id.nebula_segments` 补齐号段唯一约束（存量库升级路径）。
+///
+/// `allocate_segment` 的首查无行路径是 `INSERT ... ON CONFLICT
+/// (workspace_id, biz_tag, dc_id) DO NOTHING`，该子句要求同名唯一约束真实
+/// 存在（见 init.sql 与本文件建表 DDL 的注释）；缺约束时该 INSERT 直接报
+/// "there is no unique or exclusion constraint"，号段首分配在存量库上必失败。
+/// PostgreSQL 无 `ADD CONSTRAINT IF NOT EXISTS`，按本文件枚举类型的既有
+/// 模式用 `EXCEPTION WHEN duplicate_object` 吞掉已存在。
+///
+/// 抽成独立函数是测试接缝（同 [`api_keys_grace_period_alter_sql`]）。
+pub(crate) fn nebula_segments_unique_constraint_sql() -> String {
+    format!(
+        r#"DO $$ BEGIN
+            ALTER TABLE {}.nebula_segments
+                ADD CONSTRAINT uq_nebula_segments_ws_tag_dc UNIQUE (workspace_id, biz_tag, dc_id);
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$"#,
+        NEBULA_SCHEMA
+    )
+}
+
 /// Auto-create schema and tables for Nebula ID
 pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
     info!("{}", t!("log.core.database.connection.running_migrations"));
@@ -326,7 +348,13 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
             delta INT NOT NULL DEFAULT 1,
             dc_id INT NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            -- 号段原子分配（单语句 UPDATE ... RETURNING）依赖此约束：
+            -- 1) INSERT ... ON CONFLICT (workspace_id, biz_tag, dc_id) DO NOTHING
+            --    需要它匹配冲突目标；
+            -- 2) 杜绝并发首分配插入重复行（否则 UPDATE ... RETURNING 会命中多行，
+            --    区间可能交叠）。非 dc 变体按 dc_id = 0 读写，dc 变体按 dc_id 读写。
+            CONSTRAINT uq_nebula_segments_ws_tag_dc UNIQUE (workspace_id, biz_tag, dc_id)
         )
         "#,
             NEBULA_SCHEMA
@@ -369,6 +397,33 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
                     ));
                 }
             }
+        }
+    }
+
+    // 号段唯一约束的存量库迁移：`CREATE TABLE IF NOT EXISTS` 对已存在的表
+    // 不生效，由本语句补齐（约束已存在时被 DO 块吞掉，是 no-op）。
+    // 失败必须终止启动 —— 缺约束会让首查无行路径的 INSERT ... ON CONFLICT
+    // 直接报错，号段首分配在多实例场景下不可用。
+    match db
+        .execute_unprepared(&nebula_segments_unique_constraint_sql())
+        .await
+    {
+        Ok(_) => tracing::info!(
+            event = "nebula_segments_unique_constraint_ensured",
+            table = "nebula_segments",
+            "segment first-allocation unique constraint ensured"
+        ),
+        Err(e) => {
+            let error_msg = e.to_string();
+            tracing::error!(
+                event = "db_alter_table_failed",
+                error = %error_msg,
+                "nebula_segments unique constraint creation failed"
+            );
+            return Err(CoreError::DatabaseError(
+                "Failed to alter table (see server logs for details)".to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            ));
         }
     }
 
@@ -674,8 +729,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_succeeds_when_all_executes_succeed() {
-        // 1 schema + 5 tables + 1 grace-column ALTER = 7 successful executes.
-        let db = mock_db_with_n_ok(7);
+        // 1 schema + 2 enum types + 5 tables + 1 constraint backfill
+        //   + 1 grace-column ALTER = 10 successful executes.
+        let db = mock_db_with_n_ok(10);
         let result = run_migrations(&db).await;
         assert!(
             result.is_ok(),
@@ -685,12 +741,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_logs_warn_but_continues_when_schema_create_fails() {
-        // Schema create fails (logged as warn), tables + grace-column ALTER still succeed.
+        // Schema create fails (logged as warn), enum types + tables + constraint
+        // backfill + grace-column ALTER still succeed.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "schema creation permission denied".to_string(),
             ))])
-            .append_exec_results(ok_exec_results(6))
+            .append_exec_results(ok_exec_results(9))
             .into_connection();
         let result = run_migrations(&db).await;
         assert!(
@@ -701,9 +758,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_returns_database_error_when_table_create_fails() {
-        // Schema + first table succeed, second table fails with non-"already exists".
+        // Schema + 2 enum types succeed, first table fails with non-"already exists".
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_exec_results(vec![
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
                 MockExecResult {
                     last_insert_id: 0,
                     rows_affected: 0,
@@ -735,14 +796,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_treats_already_exists_as_info_not_error() {
-        // Schema + first table succeed, second table fails with "already exists",
-        // remaining tables + the grace-column ALTER succeed.
+        // Schema + 2 enum types + first table succeed, second table fails with
+        // "already exists", remaining tables + constraint backfill + the
+        // grace-column ALTER succeed.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_exec_results(ok_exec_results(2))
+            .append_exec_results(ok_exec_results(4))
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "relation already exists".to_string(),
             ))])
-            .append_exec_results(ok_exec_results(4))
+            .append_exec_results(ok_exec_results(6))
             .into_connection();
         let result = run_migrations(&db).await;
         assert!(
@@ -753,14 +815,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_treats_duplicate_as_info_not_error() {
-        // Schema + 2 tables succeed, third table fails with "duplicate",
-        // remaining table + the grace-column ALTER succeed.
+        // Schema + 2 enum types + 2 tables succeed, third table fails with
+        // "duplicate", remaining 2 tables + constraint backfill + the
+        // grace-column ALTER succeed.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_exec_results(ok_exec_results(3))
+            .append_exec_results(ok_exec_results(5))
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "duplicate table name".to_string(),
             ))])
-            .append_exec_results(ok_exec_results(3))
+            .append_exec_results(ok_exec_results(4))
             .into_connection();
         let result = run_migrations(&db).await;
         assert!(
@@ -793,12 +856,35 @@ mod tests {
         );
     }
 
+    /// 号段唯一约束的存量库回填必须是幂等 DO 块：约束已存在时
+    /// `duplicate_object` 被吞掉（no-op），目标表与约束名必须正确 ——
+    /// `INSERT ... ON CONFLICT (workspace_id, biz_tag, dc_id)` 依赖它。
+    #[test]
+    fn test_run_migrations_emits_unique_constraint_for_segments() {
+        let sql = nebula_segments_unique_constraint_sql();
+
+        assert!(
+            sql.contains(&format!("ALTER TABLE {}.nebula_segments", NEBULA_SCHEMA)),
+            "ALTER must target the nebula_id nebula_segments table, got: {sql}"
+        );
+        assert!(
+            sql.contains(
+                "ADD CONSTRAINT uq_nebula_segments_ws_tag_dc UNIQUE (workspace_id, biz_tag, dc_id)"
+            ),
+            "constraint name and columns must match init.sql / ON CONFLICT target, got: {sql}"
+        );
+        assert!(
+            sql.contains("WHEN duplicate_object THEN null"),
+            "backfill must be idempotent via duplicate_object swallow, got: {sql}"
+        );
+    }
+
     /// ALTER 硬失败必须终止迁移 —— 缺列会让 `validate_api_key` 读不到宽限期，
     /// 从而静默按"无旧凭证"处理，属于必须响而不能兜底的故障。
     #[tokio::test]
     async fn test_run_migrations_returns_error_when_grace_column_alter_fails() {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_exec_results(ok_exec_results(6))
+            .append_exec_results(ok_exec_results(9))
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "permission denied for table api_keys".to_string(),
             ))])

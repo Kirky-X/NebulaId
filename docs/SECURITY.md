@@ -88,7 +88,7 @@
 | 依赖许可证与 Advisories | `ci.yml` · deny | — | `cargo-deny check`（`deny.toml`） |
 | 依赖漏洞审计 | `ci.yml` · audit；`release.yml` 发布前置 | — | `cargo audit --deny warnings` |
 | 静态安全分析 | `codeql.yml` | — | CodeQL Rust 分析（README 的 Security 徽章） |
-| 测试 + 覆盖率 | `ci.yml` · test（default / all 矩阵；覆盖率门禁仅在 default leg） | lefthook pre-push | `cargo llvm-cov --fail-under-lines 95`（CI default leg）/ `≥ 90%` 全特性口径（pre-push 本地门禁，`scripts/_coverage_gate.sh`，跳过 7 个基线失败测试），排除 `server/proto/` 生成代码 |
+| 测试 + 覆盖率 | `ci.yml` · test（default / all 矩阵；覆盖率门禁仅在 default leg） | lefthook pre-push | `cargo llvm-cov --fail-under-lines 95`（CI default leg）/ `≥ 90%` 全特性口径（pre-push 本地门禁，`scripts/_coverage_gate.sh`），排除 `server/proto/` 生成代码 |
 | 私钥扫描 | — | lefthook pre-commit | gitleaks（`scripts/_gitleaks_scan.sh`） |
 | 聚合门禁 | `ci.yml` · gate | — | 任一前置 job 失败即阻断合并 |
 

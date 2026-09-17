@@ -13,12 +13,12 @@ pre-commit:
       glob: "*.rs"
       run: cargo fmt --package nebulaid -- --check
 
-    # 2. 静态分析（--all-features 不可用：dbnexus 禁止 sqlite+postgres 特性混用，
-    #    compile_error! 直接编译失败；默认特性已含 postgresql/http/grpc，叠加 etcd）
+    # 2. 静态分析（--all-features 可构建：sqlite feature 已删除，dbnexus 的
+    #    embedded/server 互斥不再触发；一条命令覆盖 etcd + sdk + alerting）
     cargo-clippy:
       tags: [rust, lint]
       glob: "*.rs"
-      run: cargo clippy --package nebulaid --features etcd -- -D warnings
+      run: cargo clippy --package nebulaid --all-features -- -D warnings
 
     # 3. 私钥/密钥扫描（gitleaks）
     #    脚本抽到独立 .sh：Windows 下 lefthook 会破坏多行 `run: |` 的换行语义
@@ -29,12 +29,13 @@ pre-commit:
 pre-push:
   parallel: false
   commands:
-    # 1. 全特性测试（特性互斥约束同上，用 etcd 叠加而非 all-features）
+    # 1. 全特性测试（口径与 ci.yml 一致：--all-features 覆盖 etcd/sdk/alerting）
     cargo-test:
       tags: [rust, test]
-      run: cargo test --package nebulaid --features etcd
+      run: cargo test --package nebulaid --all-features
 
-    # 2. 覆盖率门禁（≥80%；脚本抽到独立 .sh，原因同 pre-commit private-key-scan）
+    # 2. 覆盖率门禁（本地口径 ≥90%：全特性 + 跳过 7 个基线失败测试，实测约
+    #    93.2%；权威 95% 门禁在 ci.yml default leg。脚本抽到独立 .sh，原因同上）
     cargo-coverage:
       tags: [rust, coverage]
       run: bash scripts/_coverage_gate.sh

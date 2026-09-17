@@ -3,6 +3,7 @@
 # 本地 CI 预检脚本
 # 在提交前运行所有 CI 检查，确保流水线能够通过
 # 使用方法: ./pre-commit-check.sh
+# 特性口径与 lefthook/ci.yml 一致：--all-features（可构建，覆盖 etcd/sdk/alerting）。
 
 set -e
 set -o pipefail
@@ -136,20 +137,20 @@ fi
 # 2. Clippy Lint 检查
 # ============================================================================
 # Only check lib and bin targets, not tests (tests may have type inference issues that don't affect runtime)
-print_step "运行 Clippy lint 检查" "cargo clippy --lib --bins -- -D warnings"
+print_step "运行 Clippy lint 检查" "cargo clippy --all-features --lib --bins -- -D warnings"
 
 if ! check_command cargo-clippy; then
     print_warning "clippy 未安装，跳过 lint 检查"
     print_info "安装命令: rustup component add clippy"
 else
     echo "  (这可能需要一些时间...)"
-    if cargo clippy --lib --bins -- -D warnings > /tmp/clippy_output.txt 2>&1; then
+    if cargo clippy --all-features --lib --bins -- -D warnings > /tmp/clippy_output.txt 2>&1; then
         print_success "Clippy 检查通过，无警告"
     else
         print_error "Clippy 发现问题"
         echo ""
         echo -e "${BLUE}💡 详细命令:${NC}"
-        echo -e "  ${YELLOW}cargo clippy --all${NC}"
+        echo -e "  ${YELLOW}cargo clippy --all-features --lib --bins -- -D warnings${NC}"
         echo ""
         echo -e "${BLUE}💡 前 20 个问题:${NC}"
         grep -E "warning:|error:" /tmp/clippy_output.txt | head -20
@@ -182,10 +183,10 @@ fi
 # ============================================================================
 # 4. 运行测试
 # ============================================================================
-print_step "运行所有测试" "cargo test --lib"
+print_step "运行所有测试" "cargo test --all-features --lib"
 
 echo "  (这可能需要一些时间...)"
-if cargo test --lib > /tmp/test_output.txt 2>&1; then
+if cargo test --all-features --lib > /tmp/test_output.txt 2>&1; then
     TEST_STATS=$(grep -E "test result:" /tmp/test_output.txt | tail -1)
     print_success "所有测试通过"
     if [ -n "$TEST_STATS" ]; then
@@ -196,7 +197,7 @@ else
     print_error "部分测试失败"
     echo ""
     echo -e "${BLUE}💡 详细命令:${NC}"
-    echo -e "  ${YELLOW}cargo test --lib${NC}"
+    echo -e "  ${YELLOW}cargo test --all-features --lib${NC}"
     echo ""
     echo -e "${BLUE}💡 失败的测试:${NC}"
     grep -A 5 "failures:" /tmp/test_output.txt | head -20
@@ -326,15 +327,15 @@ else
         echo ""
     fi
     
-    if ! cargo clippy --lib --bins -- -D warnings > /dev/null 2>&1; then
+    if ! cargo clippy --all-features --lib --bins -- -D warnings > /dev/null 2>&1; then
         echo -e "  ${YELLOW}2.${NC} 修复 Clippy 警告："
-        echo -e "     ${YELLOW}cargo clippy --lib --bins -- -D warnings${NC}"
+        echo -e "     ${YELLOW}cargo clippy --all-features --lib --bins -- -D warnings${NC}"
         echo ""
     fi
     
-    if ! cargo test --workspace > /dev/null 2>&1; then
+    if ! cargo test --all-features > /dev/null 2>&1; then
         echo -e "  ${YELLOW}3.${NC} 修复测试失败："
-        echo -e "     ${YELLOW}cargo test --workspace${NC}"
+        echo -e "     ${YELLOW}cargo test --all-features${NC}"
         echo ""
     fi
     

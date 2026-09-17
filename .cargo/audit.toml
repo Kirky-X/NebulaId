@@ -13,7 +13,7 @@
 ignore = [
     # RUSTSEC-2023-0071 — rsa 0.9.10 — Marvin Attack (timing sidechannel, medium)
     # Root cause: rsa is a transitive dep of sqlx-mysql (sqlx's mysql backend).
-    # nebulaid enables only postgresql/sqlite features of sqlx, never mysql —
+    # nebulaid enables only the postgresql feature of sqlx, never mysql —
     # sqlx-mysql is in Cargo.lock metadata only, never compiled into the binary
     # (verified via `cargo tree --all-features --target all -i rsa` → "nothing to print").
     # Upstream status: "No fixed upgrade is available!" per RustSec.

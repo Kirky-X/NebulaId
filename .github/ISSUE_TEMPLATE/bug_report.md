@@ -30,7 +30,7 @@ assignees:
 - NebulaID 版本: [e.g. 0.1.1]
 - Rust 版本: [e.g. 1.82.0]
 - 操作系统: [e.g. Ubuntu 22.04 x86_64]
-- 启用特性: [e.g. default, postgresql, sqlite, etcd]
+- 启用特性: [e.g. default, etcd, alerting]
 - 部署方式: [ ] 单机  [ ] Docker  [ ] K8s
 
 ## 日志 / 错误堆栈

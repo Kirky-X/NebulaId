@@ -103,9 +103,9 @@ jobs:
           cache-targets: false
 
       - name: Validate Package
-        # default 已含 postgresql；etcd 是唯一可安全叠加的可选特性
-        # （dbnexus 禁止 sqlite+postgres 混用，全特性开关必然 compile_error）
-        run: cargo check --package nebulaid --features etcd
+        # 与 ci.yml 口径一致：--all-features 可构建（sqlite feature 已删除），
+        # 发布前以最大特性集验证包完整性
+        run: cargo check --package nebulaid --all-features
 
       - name: Get crates.io Auth Token
         uses: rust-lang/crates-io-auth-action@v1

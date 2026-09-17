@@ -18,7 +18,11 @@ use dbnexus::sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter,
     QuerySelect, Set, TransactionTrait,
 };
+use parking_lot::Mutex;
 use rand::{Rng, RngExt};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -47,6 +51,16 @@ use crate::core::database::workspace_entity::{
     Workspace,
 };
 use crate::core::types::{Result, SegmentInfo};
+
+/// `validate_api_key` 冷路径的 last_used 写节流窗口：窗口内同一 key 的重复
+/// 认证不再触发第二次 `last_used_at` UPDATE（写入最多滞后一个窗口，仅影响
+/// 用量统计的粒度，不影响认证结论）。
+const LAST_USED_THROTTLE_WINDOW: Duration = Duration::from_secs(60);
+
+/// last_used 写节流表的容量上限。与 `api_key_auth` 失败表同量级
+/// （`MAX_TRACKED_AUTH_FAILURE_IPS`）：超限逐出"最旧写入"的条目，
+/// 保证恶意扫描大量伪造 key_id 也不会让节流表无界增长。
+const MAX_TRACKED_LAST_USED_KEYS: usize = 10_000;
 
 #[async_trait]
 pub trait SegmentRepository: Send + Sync {
@@ -179,7 +193,12 @@ pub trait ApiKeyRepository: Send + Sync {
     ) -> Result<Vec<ApiKeyInfo>>;
     async fn delete_api_key(&self, id: Uuid) -> Result<()>;
     async fn revoke_api_key(&self, id: Uuid) -> Result<()>;
-    async fn update_last_used(&self, id: Uuid) -> Result<()>; // Changed from String to Uuid
+    /// 标记 key 已被使用（单语句 UPDATE，写入 `last_used_at`/`updated_at`）。
+    ///
+    /// key 行不存在时静默返回 `Ok(())`（约定俗成：用量标记不得影响主流程）。
+    /// 认证冷路径的调用方 [`Self::validate_api_key`] 额外做了 60 秒按 key
+    /// 节流；本方法自身不做节流，handler 显式调用时"调用即写"。
+    async fn update_last_used(&self, id: Uuid) -> Result<()>;
     async fn get_admin_api_key(&self, workspace_id: Uuid) -> Result<Option<ApiKeyInfo>>;
     async fn count_api_keys(&self, workspace_id: Uuid) -> Result<u64>;
 
@@ -228,6 +247,10 @@ pub struct SeaOrmRepository {
     #[cfg(not(feature = "etcd"))]
     distributed_lock:
         Option<std::sync::Arc<dyn crate::core::coordinator::DistributedLock + Send + Sync>>,
+    /// last_used 写节流表：`key_id -> 上次触发 UPDATE 的时刻`。挂在 `Arc` 上
+    /// 是刻意的 —— `SeaOrmRepository` 按 `Clone` 传播（SDK Kit 化克隆连接池），
+    /// 各克隆必须共享同一份节流状态，否则节流形同虚设。
+    last_used_writes: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 impl SeaOrmRepository {
@@ -236,7 +259,40 @@ impl SeaOrmRepository {
             db,
             salt,
             distributed_lock: None,
+            last_used_writes: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// 冷路径 last_used 写节流判定：该 key 当前**是否允许**触发一次
+    /// `last_used_at` UPDATE。
+    ///
+    /// - 窗口内（60 秒）已写过 → 返回 `false`，跳过第二次写库；
+    /// - 允许写入时登记当前时刻；触顶（[`MAX_TRACKED_LAST_USED_KEYS`]）时
+    ///   先逐出"最旧写入"的一条再插入，界内内存 O(10_000)。
+    ///
+    /// 判定与登记在同一临界区内完成，并发验证同一 key 只有一个调用方拿到
+    /// `true`（写库次数不放大）。
+    fn should_touch_last_used(&self, key_id: &str) -> bool {
+        let now = Instant::now();
+        let mut writes = self.last_used_writes.lock();
+        if let Some(last) = writes.get(key_id) {
+            if now.duration_since(*last) < LAST_USED_THROTTLE_WINDOW {
+                return false;
+            }
+        }
+        if writes.len() >= MAX_TRACKED_LAST_USED_KEYS {
+            // 逐出最旧写入的一条。O(n) 扫描只在触顶瞬间发生（10_000 量级
+            // 的比较开销远低于一次 DB 往返），平时零成本。
+            if let Some(oldest) = writes
+                .iter()
+                .min_by_key(|(_, instant)| **instant)
+                .map(|(key, _)| key.clone())
+            {
+                writes.remove(&oldest);
+            }
+        }
+        writes.insert(key_id.to_string(), now);
+        true
     }
 
     /// Inject a distributed lock implementation (M8 fix).
@@ -1252,7 +1308,13 @@ impl ApiKeyRepository for SeaOrmRepository {
                     continue;
                 }
 
-                let _ = self.update_last_used(model.id).await;
+                // 冷路径读已经是单 SELECT（行内自带启用状态/角色/过期时间/哈希，
+                // 无需二次查询）。last_used 写按 key 节流：60 秒内的重复验证
+                // 不再触发第二次 UPDATE，把认证冷路径的 DB 往返从
+                // 「SELECT + find_by_id + UPDATE + 回读刷新」压到 1 读 + 最多 1 写。
+                if self.should_touch_last_used(key_id) {
+                    let _ = self.update_last_used(model.id).await;
+                }
                 let role: ApiKeyRole = model.role.clone().into();
                 tracing::debug!(
                     event = "validate_api_key",
@@ -1344,25 +1406,27 @@ impl ApiKeyRepository for SeaOrmRepository {
         Ok(())
     }
 
+    /// 更新 last_used_at（单语句 UPDATE）。
+    ///
+    /// 旧实现 `find_by_id` → `ActiveModel::update` 实为三次往返（find SELECT、
+    /// UPDATE、update 后的回读刷新）；现改为 `update_many().set(..)` 单语句，
+    /// 无行命中（key 已删除）时 `rows_affected == 0`，与旧行为一致返回 `Ok(())`。
+    ///
+    /// 节流不在本方法内做：`update_last_used` 也被 handler 侧直接调用（显式
+    /// 标记用量），语义是"调用即写"；认证冷路径的节流在
+    /// [`Self::should_touch_last_used`] + `validate_api_key` 调用点完成。
     async fn update_last_used(&self, id: Uuid) -> Result<()> {
-        let existing = ApiKeyEntity::find_by_id(id)
-            .one(&self.db)
+        let now = chrono::Utc::now().naive_utc();
+        ApiKeyEntity::update_many()
+            .filter(ApiKeyColumn::Id.eq(id))
+            .set(ApiKeyActiveModel {
+                last_used_at: Set(Some(now)),
+                updated_at: Set(now),
+                ..Default::default()
+            })
+            .exec(&self.db)
             .await
             .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
-
-        if let Some(model) = existing {
-            let updated = ApiKeyActiveModel {
-                id: Set(model.id),
-                last_used_at: Set(Some(chrono::Utc::now().naive_utc())),
-                updated_at: Set(chrono::Utc::now().naive_utc()),
-                ..Default::default()
-            };
-
-            updated
-                .update(&self.db)
-                .await
-                .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
-        }
 
         Ok(())
     }
@@ -3439,6 +3503,224 @@ mod mock_tests {
         assert_eq!(candidates[0], (model.key_secret_hash.clone(), false));
     }
 
+    // --- validate_api_key 冷路径往返数与 last_used 写节流 ---
+
+    /// 造一行当代凭证可通过 Argon2 校验的 key（哈希由同一 salt 推导）。
+    fn authenticatable_model(
+        repo: &SeaOrmRepository,
+        id: Uuid,
+        key_id: &str,
+        secret: &str,
+    ) -> ApiKeyModel {
+        api_key_entity::Model {
+            key_secret_hash: repo.hash_key(key_id, secret).unwrap(),
+            ..sample_api_key_model(id, key_id, "admin")
+        }
+    }
+
+    /// 提取 mock 事务日志里全部语句的大写 SQL 前缀（按出现顺序）。
+    fn statement_kinds(repo: &SeaOrmRepository) -> Vec<String> {
+        repo.get_db_connection()
+            .clone()
+            .into_transaction_log()
+            .iter()
+            .map(|t| t.statements()[0].sql.to_uppercase())
+            .collect()
+    }
+
+    /// 冷路径往返钉桩：一次成功认证 = 恰好 1 条 SELECT（行内自带启用状态/
+    /// 角色/过期时间/两代哈希）+ 至多 1 条节流后的 last_used UPDATE。
+    /// 旧实现为 3 次 SELECT（key 行 + find_by_id + update 后的回读刷新）+ 1 UPDATE。
+    #[tokio::test]
+    async fn test_validate_cold_path_is_single_select() {
+        let id = fixed_uuid(150);
+        let db_repo = make_repo(empty_pg_connection());
+        let model = authenticatable_model(&db_repo, id, "niad_cold", "cold-secret-value-01");
+        let repo = make_repo(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results(vec![vec![model]])
+                .append_exec_results(vec![MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 1,
+                }])
+                .into_connection(),
+        );
+
+        let auth = repo
+            .validate_api_key("niad_cold", "cold-secret-value-01")
+            .await
+            .unwrap()
+            .expect("cold credential must authenticate");
+
+        assert_eq!(auth.role, ApiKeyRole::Admin);
+
+        let kinds = statement_kinds(&repo);
+        assert_eq!(
+            kinds.iter().filter(|s| s.starts_with("SELECT")).count(),
+            1,
+            "冷路径读必须恰好 1 次 SELECT（由 3 降 1），got {kinds:?}"
+        );
+        assert_eq!(
+            kinds.iter().filter(|s| s.starts_with("UPDATE")).count(),
+            1,
+            "首次认证允许一次 last_used UPDATE，got {kinds:?}"
+        );
+    }
+
+    /// 60 秒节流窗口内，同 key 的第二次认证不得触发第二次 last_used UPDATE。
+    #[tokio::test]
+    async fn test_validate_throttles_second_last_used_write_within_window() {
+        let id = fixed_uuid(151);
+        let db_repo = make_repo(empty_pg_connection());
+        let model = authenticatable_model(&db_repo, id, "niad_throttle", "throttle-secret-001");
+        let repo = make_repo(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results(vec![vec![model.clone()], vec![model]])
+                .append_exec_results(vec![MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 1,
+                }])
+                .into_connection(),
+        );
+
+        for _ in 0..2 {
+            repo.validate_api_key("niad_throttle", "throttle-secret-001")
+                .await
+                .unwrap()
+                .expect("both validations must succeed");
+        }
+
+        let kinds = statement_kinds(&repo);
+        assert_eq!(
+            kinds.iter().filter(|s| s.starts_with("SELECT")).count(),
+            2,
+            "两次认证各读一次，got {kinds:?}"
+        );
+        assert_eq!(
+            kinds.iter().filter(|s| s.starts_with("UPDATE")).count(),
+            1,
+            "60 秒内重复验证不得触发第二次 last_used UPDATE，got {kinds:?}"
+        );
+    }
+
+    /// 节流窗口过期后（超过 60 秒未写），下一次认证重新触发 UPDATE。
+    #[tokio::test]
+    async fn test_validate_last_used_write_resumes_after_throttle_window() {
+        let id = fixed_uuid(152);
+        let db_repo = make_repo(empty_pg_connection());
+        let model = authenticatable_model(&db_repo, id, "niad_resume", "resume-secret-00001");
+        let repo = make_repo(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results(vec![vec![model]])
+                .append_exec_results(vec![MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 1,
+                }])
+                .into_connection(),
+        );
+        // 预置一条"早已过窗口"的写入记录，等效于等待 60 秒。
+        repo.last_used_writes.lock().insert(
+            "niad_resume".to_string(),
+            Instant::now() - LAST_USED_THROTTLE_WINDOW - Duration::from_secs(1),
+        );
+
+        repo.validate_api_key("niad_resume", "resume-secret-00001")
+            .await
+            .unwrap()
+            .expect("validation must succeed");
+
+        let kinds = statement_kinds(&repo);
+        assert_eq!(
+            kinds.iter().filter(|s| s.starts_with("UPDATE")).count(),
+            1,
+            "窗口过期后必须重新触发 last_used UPDATE，got {kinds:?}"
+        );
+    }
+
+    /// 节流按 key 隔离：不同 key 的认证各自触发一次 UPDATE，互不吞并。
+    #[tokio::test]
+    async fn test_validate_last_used_throttle_is_per_key() {
+        let db_repo = make_repo(empty_pg_connection());
+        let m1 = authenticatable_model(&db_repo, fixed_uuid(153), "niad_k1", "key-one-secret-01");
+        let m2 = authenticatable_model(&db_repo, fixed_uuid(154), "niad_k2", "key-two-secret-02");
+        let repo = make_repo(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results(vec![vec![m1], vec![m2]])
+                .append_exec_results(vec![
+                    MockExecResult {
+                        last_insert_id: 0,
+                        rows_affected: 1,
+                    },
+                    MockExecResult {
+                        last_insert_id: 0,
+                        rows_affected: 1,
+                    },
+                ])
+                .into_connection(),
+        );
+
+        repo.validate_api_key("niad_k1", "key-one-secret-01")
+            .await
+            .unwrap();
+        repo.validate_api_key("niad_k2", "key-two-secret-02")
+            .await
+            .unwrap();
+
+        let kinds = statement_kinds(&repo);
+        assert_eq!(
+            kinds.iter().filter(|s| s.starts_with("UPDATE")).count(),
+            2,
+            "不同 key 必须各自触发一次 last_used UPDATE，got {kinds:?}"
+        );
+    }
+
+    #[test]
+    fn test_should_touch_last_used_throttles_within_window() {
+        let repo = make_repo(empty_pg_connection());
+
+        assert!(repo.should_touch_last_used("k"), "首次必须放行");
+        assert!(
+            !repo.should_touch_last_used("k"),
+            "60 秒窗口内的重复判定必须被节流"
+        );
+
+        repo.last_used_writes.lock().insert(
+            "stale".to_string(),
+            Instant::now() - LAST_USED_THROTTLE_WINDOW - Duration::from_secs(1),
+        );
+        assert!(
+            repo.should_touch_last_used("stale"),
+            "窗口过期后必须重新放行"
+        );
+    }
+
+    #[test]
+    fn test_should_touch_last_used_evicts_oldest_at_capacity() {
+        let repo = make_repo(empty_pg_connection());
+        {
+            let mut writes = repo.last_used_writes.lock();
+            // 灌满节流表；k0 的写入时刻最早（最旧）。
+            for i in 0..MAX_TRACKED_LAST_USED_KEYS {
+                writes.insert(
+                    format!("k{i}"),
+                    Instant::now() - Duration::from_secs(100_000 - i as u64),
+                );
+            }
+        }
+
+        assert!(repo.should_touch_last_used("brand-new-key"));
+
+        let writes = repo.last_used_writes.lock();
+        assert_eq!(
+            writes.len(),
+            MAX_TRACKED_LAST_USED_KEYS,
+            "触顶逐出后总量必须维持在上限"
+        );
+        assert!(!writes.contains_key("k0"), "最旧写入的条目必须被逐出");
+        assert!(writes.contains_key("k1"), "其余条目必须保留");
+        assert!(writes.contains_key("brand-new-key"), "新条目必须登记");
+    }
+
     #[tokio::test]
     async fn test_api_key_list_returns_keys_for_workspace() {
         let ws_id = fixed_uuid(80);
@@ -3525,33 +3807,69 @@ mod mock_tests {
     #[tokio::test]
     async fn test_api_key_update_last_used_succeeds_when_key_missing() {
         // Per the implementation, update_last_used returns Ok(()) even
-        // when the key is not found (it silently no-ops). This is a
-        // documented behavior to test.
+        // when the key is not found (single-statement UPDATE affecting 0
+        // rows). This is a documented behavior to test.
         let id = fixed_uuid(87);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![Vec::<api_key_entity::Model>::new()])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 0,
+            }])
             .into_connection();
         let repo = make_repo(db);
 
         repo.update_last_used(id).await.unwrap();
+
+        let kinds: Vec<String> = repo
+            .get_db_connection()
+            .clone()
+            .into_transaction_log()
+            .iter()
+            .map(|t| t.statements()[0].sql.to_uppercase())
+            .collect();
+        assert_eq!(
+            kinds.len(),
+            1,
+            "update_last_used 必须是单语句，got {kinds:?}"
+        );
+        assert!(
+            kinds[0].starts_with("UPDATE"),
+            "必须是单语句 UPDATE，got {}",
+            kinds[0]
+        );
     }
 
     #[tokio::test]
     async fn test_api_key_update_last_used_succeeds_when_key_found() {
         let id = fixed_uuid(88);
-        let updated_model = api_key_entity::Model {
-            last_used_at: Some(fixed_datetime(1_700_000_000)),
-            ..sample_api_key_model(id, "niad_x", "admin")
-        };
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![
-                vec![sample_api_key_model(id, "niad_x", "admin")],
-                vec![updated_model],
-            ])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
             .into_connection();
         let repo = make_repo(db);
 
         repo.update_last_used(id).await.unwrap();
+
+        let kinds: Vec<String> = repo
+            .get_db_connection()
+            .clone()
+            .into_transaction_log()
+            .iter()
+            .map(|t| t.statements()[0].sql.to_uppercase())
+            .collect();
+        assert_eq!(
+            kinds.len(),
+            1,
+            "旧实现 find+update+回读共 3 次往返，现在必须恰好 1 条"
+        );
+        assert!(kinds[0].starts_with("UPDATE"), "got {}", kinds[0]);
+        assert!(
+            kinds[0].contains("LAST_USED_AT"),
+            "更新必须覆盖 last_used_at 列，got {}",
+            kinds[0]
+        );
     }
 
     #[tokio::test]
@@ -5192,12 +5510,10 @@ mod mock_tests {
     }
 
     #[tokio::test]
-    async fn test_api_key_update_last_used_propagates_find_db_error() {
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_errors(vec![DbErr::Query(RuntimeErr::Internal(
-                "api_key last_used find boom".to_string(),
-            ))])
-            .into_connection();
+    async fn test_api_key_update_last_used_propagates_db_error() {
+        // 单语句 UPDATE 后不再有 find/update 两次失败面 —— mock 的 exec
+        // 结果缓冲为空即 UPDATE 失败，错误必须透传为 DatabaseError。
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
         let repo = make_repo(db);
         let result = repo.update_last_used(fixed_uuid(75)).await;
         assert!(result.is_err());
@@ -5206,29 +5522,7 @@ mod mock_tests {
                 result.unwrap_err(),
                 crate::core::CoreError::DatabaseError(_)
             ),
-            "update_last_used find error must propagate as DatabaseError"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_api_key_update_last_used_propagates_update_db_error() {
-        // find succeeds, update fails.
-        let id = fixed_uuid(76);
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![sample_api_key_model(id, "niad_76", "admin")]])
-            .append_query_errors(vec![DbErr::Query(RuntimeErr::Internal(
-                "api_key last_used update boom".to_string(),
-            ))])
-            .into_connection();
-        let repo = make_repo(db);
-        let result = repo.update_last_used(id).await;
-        assert!(result.is_err());
-        assert!(
-            matches!(
-                result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
-            ),
-            "update_last_used update error must propagate as DatabaseError"
+            "update_last_used error must propagate as DatabaseError"
         );
     }
 

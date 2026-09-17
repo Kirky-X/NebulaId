@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::core::types::CoreError;
-use crate::server::handlers::helpers::authorize_workspace_access;
+use crate::server::handlers::helpers::{authorize_workspace_access, core_error_to_grpc_status};
 use crate::server::handlers::ApiHandlers;
 use crate::server::middleware::api_key_auth::{parse_authorization_header, ApiKeyAuth, ApiKeyRole};
 use crate::server::models::{BatchGenerateRequest, GenerateRequest, ParseRequest};
@@ -225,7 +225,8 @@ async fn authorize_namespace(
                 namespace = %namespace,
                 "workspace lookup failed during gRPC authorization"
             );
-            return Err(Status::internal("internal error"));
+            // T013 同源消毒：基础设施失败收敛为 Internal + 固定文案
+            return Err(sdforge::tonic::Status::internal("internal error"));
         }
     };
 
@@ -414,7 +415,8 @@ impl NebulaIdService for GrpcServer {
                     algorithm: resp.algorithm,
                 }))
             }
-            Err(e) => Err(Status::internal(format!("{}", e))),
+            // T013 错误消毒：变体同源映射 + 5xx 固定文案，不再明文回传
+            Err(e) => Err(core_error_to_grpc_status(&e)),
         }
     }
 
@@ -502,7 +504,8 @@ impl NebulaIdService for GrpcServer {
 
                 Ok(Response::new(GrpcBatchGenerateResponse { ids }))
             }
-            Err(e) => Err(Status::internal(format!("{}", e))),
+            // T013 错误消毒：变体同源映射 + 5xx 固定文案
+            Err(e) => Err(core_error_to_grpc_status(&e)),
         }
     }
 
@@ -560,33 +563,20 @@ impl NebulaIdService for GrpcServer {
                                     }
                                 }
                             }
+                            // T013 错误消毒：业务失败以 Err(Status) 终止流
+                            // （变体同源映射 + 5xx 固定文案），不再把错误串塞进
+                            // 响应 algorithm 字段伪装成正常项。
                             Err(e) => {
-                                let _ = tx
-                                    .send(Ok(BatchGenerateStreamResponse {
-                                        id: Some(GrpcGenerateResponse {
-                                            id: String::new(),
-                                            timestamp: 0,
-                                            sequence: 0,
-                                            worker_id: 0,
-                                            algorithm: format!("error: {}", e),
-                                        }),
-                                    }))
-                                    .await;
+                                let _ = tx.send(Err(core_error_to_grpc_status(&e))).await;
+                                break;
                             }
                         }
                     }
-                    Err(e) => {
-                        let _ = tx
-                            .send(Ok(BatchGenerateStreamResponse {
-                                id: Some(GrpcGenerateResponse {
-                                    id: String::new(),
-                                    timestamp: 0,
-                                    sequence: 0,
-                                    worker_id: 0,
-                                    algorithm: format!("stream error: {}", e),
-                                }),
-                            }))
-                            .await;
+                    // 传输层读流失败：Status 本就是 gRPC 原生错误形态，
+                    // 原样终止流（此前塞进 algorithm 字段的
+                    // "stream error: ..." 明文一并移除）。
+                    Err(status) => {
+                        let _ = tx.send(Err(status)).await;
                         break;
                     }
                 }
@@ -637,7 +627,9 @@ impl NebulaIdService for GrpcServer {
                     metadata,
                 }))
             }
-            Err(e) => Err(Status::invalid_argument(format!("{}", e))),
+            // T013 错误消毒：parse 的 4xx（InvalidIdString 等）走同一
+            // 变体映射表，消息截断策略与 HTTP 一致。
+            Err(e) => Err(core_error_to_grpc_status(&e)),
         }
     }
 
@@ -717,8 +709,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_generate_empty_namespace_returns_internal_error() {
+    async fn test_generate_empty_namespace_returns_invalid_argument() {
         // MockIdGenerator returns InvalidInput when workspace is empty.
+        // T013：InvalidInput 属 4xx → InvalidArgument（原误映射为 Internal）。
         let server = create_test_grpc_server();
         let req = Request::new(GrpcGenerateRequest {
             namespace: String::new(),
@@ -728,7 +721,7 @@ mod tests {
         let resp = server.generate(req).await;
         assert!(resp.is_err());
         let err = resp.unwrap_err();
-        assert_eq!(err.code(), sdforge::tonic::Code::Internal);
+        assert_eq!(err.code(), sdforge::tonic::Code::InvalidArgument);
     }
 
     #[tokio::test]
@@ -838,7 +831,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_batch_generate_empty_namespace_returns_internal_error() {
+    async fn test_batch_generate_empty_namespace_returns_invalid_argument() {
+        // T013：InvalidInput 属 4xx → InvalidArgument（原误映射为 Internal）。
         let server = create_test_grpc_server();
         let req = Request::new(GrpcBatchGenerateRequest {
             namespace: String::new(),
@@ -847,7 +841,7 @@ mod tests {
             metadata: Default::default(),
         });
         let err = server.batch_generate(req).await.unwrap_err();
-        assert_eq!(err.code(), sdforge::tonic::Code::Internal);
+        assert_eq!(err.code(), sdforge::tonic::Code::InvalidArgument);
     }
 
     #[tokio::test]

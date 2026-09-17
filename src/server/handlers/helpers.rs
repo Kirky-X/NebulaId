@@ -298,6 +298,59 @@ pub(crate) async fn authorize_workspace_access(
     }
 }
 
+// ========== gRPC 错误消毒（T013）==========
+
+/// gRPC 侧「变体 → Code」映射，与 [`core_error_status_code`] 同源：
+/// 4xx 变体逐一对应同语义的 gRPC Code（400→InvalidArgument、401→
+/// Unauthenticated、403→PermissionDenied、404→NotFound、429→
+/// ResourceExhausted、503→Unavailable），5xx 一律收敛到 `Code::Internal`。
+///
+/// 映射表不含 `Code::AlreadyExists`：`CoreError` 当前没有冲突类变体，
+/// 不预造空映射。
+fn core_error_grpc_code(e: &CoreError) -> sdforge::tonic::Code {
+    match e {
+        CoreError::InvalidIdFormat(_)
+        | CoreError::InvalidIdString(_)
+        | CoreError::InvalidAlgorithmType(_)
+        | CoreError::InvalidInput(_)
+        | CoreError::ParseError(_) => sdforge::tonic::Code::InvalidArgument,
+        CoreError::AuthenticationError(_)
+        | CoreError::InvalidApiKeySignature
+        | CoreError::ApiKeyDisabled
+        | CoreError::ApiKeyExpired => sdforge::tonic::Code::Unauthenticated,
+        CoreError::WorkspaceDisabled(_) => sdforge::tonic::Code::PermissionDenied,
+        CoreError::NotFound(_) | CoreError::BizTagNotFound(_) => sdforge::tonic::Code::NotFound,
+        CoreError::RateLimitExceeded => sdforge::tonic::Code::ResourceExhausted,
+        CoreError::TimeoutError => sdforge::tonic::Code::Unavailable,
+        _ => sdforge::tonic::Code::Internal,
+    }
+}
+
+/// Convert `CoreError` to a sanitized gRPC `Status`（与 HTTP 侧
+/// [`core_error_status_code`] / [`core_error_to_response`] 同源）。
+///
+/// 消毒策略与 HTTP 侧逐条对应：
+///
+/// - **5xx 类**（`DatabaseError`、`CacheError`、`InternalError` 等）：全量
+///   错误细节（内层 `String` 可能携带 DB URL、文件路径）只进服务端
+///   `tracing::error!` 日志；客户端只拿固定文案 `"internal error"` 的
+///   `Code::Internal` —— 此前 gRPC 的 `Status::internal(format!("{}", e))`
+///   会把内部细节明文回传，与 HTTP 侧的消毒承诺不一致。
+/// - **4xx 类**：本地化 Display 消息，经 [`sanitize_for_production`] 截断
+///   （与 HTTP 4xx 同一上限），消息本身面向调用方（与 HTTP 同策略）。
+pub(crate) fn core_error_to_grpc_status(e: &CoreError) -> sdforge::tonic::Status {
+    let code = core_error_grpc_code(e);
+    if code == sdforge::tonic::Code::Internal {
+        tracing::error!(
+            event = "core_error",
+            error = ?e,
+            "internal error returned to grpc client as generic message"
+        );
+        return sdforge::tonic::Status::internal("internal error");
+    }
+    sdforge::tonic::Status::new(code, sanitize_for_production(&e.to_string()))
+}
+
 /// Build a 400 response for an invalid UUID path parameter, with the
 /// locale-translated message.
 pub fn invalid_uuid_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>) {
@@ -909,6 +962,78 @@ mod tests {
         assert!(matches!(err, CoreError::AuthenticationError(_)));
         let (status, _) = core_error_to_response(&err, Locale::En);
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    // ========== core_error_to_grpc_status（T013 gRPC 错误消毒）==========
+
+    /// 5xx 类错误必须消毒：Code 固定 Internal，message 固定 "internal
+    /// error"，不得携带 Display 明文（含变体前缀 "Database error"）或内层
+    /// 敏感串 —— 与 HTTP 侧 5xx 泛化承诺对齐。
+    #[test]
+    fn test_core_error_to_grpc_status_sanitizes_5xx() {
+        let sensitive = "postgres://idgen:pwd@internal-host:5432/nebulaid";
+        let e = CoreError::DatabaseError(format!("Database error: {sensitive}"));
+        let status = core_error_to_grpc_status(&e);
+        assert_eq!(status.code(), sdforge::tonic::Code::Internal);
+        assert_eq!(status.message(), "internal error");
+        assert!(
+            !status.message().contains("Database error"),
+            "message must not carry the Display text, got: {}",
+            status.message()
+        );
+        assert!(
+            !status.message().contains(sensitive),
+            "message must not leak the inner string"
+        );
+        assert!(!status.message().contains("pwd"));
+
+        // 其余 5xx 变体同样收敛（抽验 CacheError / SegmentExhausted）。
+        let status = core_error_to_grpc_status(&CoreError::CacheError("redis://:s@h:1".into()));
+        assert_eq!(status.code(), sdforge::tonic::Code::Internal);
+        assert_eq!(status.message(), "internal error");
+        let status = core_error_to_grpc_status(&CoreError::SegmentExhausted { max_id: 42 });
+        assert_eq!(status.code(), sdforge::tonic::Code::Internal);
+        assert_eq!(status.message(), "internal error");
+    }
+
+    /// NotFound → Code::NotFound 且消息保留（4xx 面向调用方）；
+    /// 4xx 变体逐一映射到同语义 Code（抽验 400/401/403/404/429/503）。
+    #[test]
+    fn test_core_error_to_grpc_status_maps_4xx_codes() {
+        let status = core_error_to_grpc_status(&CoreError::NotFound("ghost-ws".to_string()));
+        assert_eq!(status.code(), sdforge::tonic::Code::NotFound);
+        assert!(status.message().contains("ghost-ws"));
+
+        let status = core_error_to_grpc_status(&CoreError::BizTagNotFound("tag".into()));
+        assert_eq!(status.code(), sdforge::tonic::Code::NotFound);
+
+        let status = core_error_to_grpc_status(&CoreError::InvalidInput("bad".into()));
+        assert_eq!(status.code(), sdforge::tonic::Code::InvalidArgument);
+
+        let status = core_error_to_grpc_status(&CoreError::AuthenticationError("x".into()));
+        assert_eq!(status.code(), sdforge::tonic::Code::Unauthenticated);
+
+        let status = core_error_to_grpc_status(&CoreError::WorkspaceDisabled("x".into()));
+        assert_eq!(status.code(), sdforge::tonic::Code::PermissionDenied);
+
+        let status = core_error_to_grpc_status(&CoreError::RateLimitExceeded);
+        assert_eq!(status.code(), sdforge::tonic::Code::ResourceExhausted);
+
+        let status = core_error_to_grpc_status(&CoreError::TimeoutError);
+        assert_eq!(status.code(), sdforge::tonic::Code::Unavailable);
+    }
+
+    /// 4xx 消息走与 HTTP 相同的 200 字节截断上限。
+    #[test]
+    fn test_core_error_to_grpc_status_4xx_truncates_long_message() {
+        let big = "x".repeat(300);
+        let status = core_error_to_grpc_status(&CoreError::InvalidInput(big));
+        assert_eq!(status.code(), sdforge::tonic::Code::InvalidArgument);
+        assert!(
+            status.message().ends_with("... (truncated)"),
+            "4xx message must respect the shared truncation cap, got: {}",
+            status.message()
+        );
     }
 
     #[test]

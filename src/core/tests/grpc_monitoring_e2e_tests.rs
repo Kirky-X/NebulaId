@@ -1425,10 +1425,11 @@ mod grpc_auth {
         jh.abort();
     }
 
-    /// 流式 batch 失败分支：count=0 触发批大小校验错误，流内以
-    /// `algorithm: "error: ..."` 的错误项回传而非断流。
+    /// 流式 batch 失败分支（T013 后语义）：count=0 触发批大小校验错误，
+    /// 流以 `Err(Status::InvalidArgument)` 终止 —— 不再把错误串塞进
+    /// `algorithm` 字段伪装成正常项。
     #[tokio::test]
-    async fn stream_batch_validation_error_yields_error_item() {
+    async fn stream_batch_validation_error_terminates_stream_with_status() {
         let (addr, jh) = spawn_auth_server().await;
 
         let mut client =
@@ -1452,16 +1453,20 @@ mod grpc_auth {
             .await
             .expect("调用必须建立")
             .into_inner();
-        let first = tokio_stream::StreamExt::next(&mut stream)
-            .await
-            .expect("流必须产出首项")
-            .expect("首项必须是正常响应");
-        let inner = first.id.expect("响应必须含 ID");
-        assert!(
-            inner.algorithm.starts_with("error:"),
-            "校验失败必须以 error 项回传，实际: {:?}",
-            inner.algorithm
-        );
+        match tokio_stream::StreamExt::next(&mut stream).await {
+            Some(Err(status)) => {
+                assert_eq!(
+                    status.code(),
+                    Code::InvalidArgument,
+                    "count=0 校验失败必须以 InvalidArgument 终止流，实际: {status:?}"
+                );
+                assert!(
+                    !status.message().contains("error:"),
+                    "消毒后的 Status 不得携带旧实现的 'error:' 前缀明文"
+                );
+            }
+            other => panic!("校验失败必须以 Status 终止流，实际: {other:?}"),
+        }
 
         jh.abort();
     }

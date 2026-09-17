@@ -86,7 +86,7 @@
 </tr>
 </table>
 
-除上述核心能力外，PostgreSQL 之外的引擎声明（`sqlite` 当前不可构建）、需要真实数据库的 `integration-tests` 门控、热重载监听与 Redis 缓存等也以配置或 feature 形式提供；逐项说明见 [⚙️ 配置](#️-配置) 一节与 [配置迁移指南](docs/CONFIG_MIGRATION_GUIDE.md)。
+除上述核心能力外，PostgreSQL 之外的引擎声明（运行时配置枚举保留 `sqlite`/`mysql` 变体，但构建不含对应驱动，连接会失败）、需要真实数据库的 `integration-tests` 门控、热重载监听与 Redis 缓存等也以配置或 feature 形式提供；逐项说明见 [⚙️ 配置](#️-配置) 一节与 [配置迁移指南](docs/CONFIG_MIGRATION_GUIDE.md)。
 
 ---
 
@@ -166,15 +166,15 @@ cargo build --release
 
 | feature | 默认 | 说明 |
 |---------|:----:|------|
-| `postgresql` | ✅ | dbnexus PostgreSQL 存储后端 |
+| `postgresql` | ✅ | dbnexus PostgreSQL 存储后端（`--no-default-features` 可关，仅保证编译，运行时需自备 PostgreSQL） |
 | `http` / `grpc` | ✅ | REST 与 gRPC 接入（sdforge 镜像 feature） |
-| `garrison-auth` | ✅ | garrison 接管 API key 验证 |
-| `etcd` | ➖ | etcd 分布式协调（可构建的最大特性集为 default + etcd） |
+| `garrison-auth` | ✅ | garrison 接管 API key 验证（关闭后回退手写 Argon2id 路径） |
+| `etcd` | ➖ | etcd 分布式协调 |
 | `sdk` | ➖ | 嵌入式 SDK facade（`NebulaIdKit`，蕴含 `openapi`） |
 | `integration-tests` | ➖ | 门控需要真实数据库的 `#[ignore]` 测试 |
-| `sqlite` | ➖ | 保留定义但**当前不可构建**：default 恒含 dbnexus/postgres，叠加 sqlite 会触发 dbnexus 的 compile_error |
+| `alerting` | ➖ | 门控告警子系统（`src/core/monitoring`，生产默认不编译） |
 
-> ⚠️ 本项目**不存在可用的「全特性」构建**（原因见上表 sqlite 行），CI 与文档均不推荐该开关。
+> 💡 `--all-features` **可构建**（= default + etcd + alerting + sdk + integration-tests + openapi），CI 与文档统一采用该口径。
 
 ### 💡 最小示例
 
@@ -386,20 +386,19 @@ CI（`ci.yml` / `release.yml` / `health-check.yml`）也通过同一入口调用
 ### ▶️ 运行命令（与 CI 一致）
 
 ```bash
-# 全量测试（CI 矩阵按 default / postgresql / etcd 三档运行）
-cargo test --package nebulaid --features etcd
+# 全量测试（CI 矩阵按 default / all（--all-features）两档运行）
+cargo test --package nebulaid --all-features
 
 # Lint 与格式门禁
 cargo fmt --package nebulaid -- --check
-cargo clippy --package nebulaid --features etcd -- -D warnings
+cargo clippy --package nebulaid --all-features -- -D warnings
 
-# 覆盖率门禁：行覆盖率 ≥ 95%（排除 server/proto/ 生成代码）
-cargo llvm-cov --package nebulaid --features etcd \
+# 覆盖率门禁：行覆盖率 ≥ 95%（CI default leg 权威门禁，排除 server/proto/ 生成代码）
+cargo llvm-cov --package nebulaid \
   --fail-under-lines 95 --ignore-filename-regex "server/proto/"
 
-# SDK 特性面（独立 CI job）
-cargo clippy --package nebulaid --features sdk -- -D warnings
-cargo test --package nebulaid --features sdk
+# 轻量编译检查（garrison 回退等 no-default 路径，CI fmt-clippy job 同款）
+cargo check --package nebulaid --no-default-features --lib --bins
 
 # 基准测试
 cargo bench --bench i18n
@@ -457,7 +456,7 @@ CI 五阶段门禁（fmt + clippy → cargo-deny → cargo-audit `--deny warning
 
 ### 🛠️ 开发环境
 
-提交前运行 `./scripts/run.sh pre-commit`（或 lefthook 等价钩子：pre-commit 执行 rustfmt、clippy 与 gitleaks 私钥扫描，pre-push 执行 `cargo test --package nebulaid --features etcd` 与覆盖率门禁）；commit message 遵循 Conventional Commits。完整环境搭建步骤见 [🤝 贡献指南 · 快速开始](docs/CONTRIBUTING.md#快速开始)。
+提交前运行 `./scripts/run.sh pre-commit`（或 lefthook 等价钩子：pre-commit 执行 rustfmt、clippy 与 gitleaks 私钥扫描，pre-push 执行 `cargo test --package nebulaid --all-features` 与覆盖率门禁）；commit message 遵循 Conventional Commits。完整环境搭建步骤见 [🤝 贡献指南 · 快速开始](docs/CONTRIBUTING.md#快速开始)。
 
 ### 💖 贡献方式
 

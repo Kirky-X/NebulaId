@@ -84,17 +84,17 @@
 
 | 门禁 | CI 位置 | 本地等价 | 内容 |
 |------|---------|----------|------|
-| 格式 + Lint | `ci.yml` · fmt-clippy | lefthook pre-commit / `run.sh lint` | `cargo fmt --check`；`cargo clippy --features etcd -- -D warnings`（0 警告） |
+| 格式 + Lint | `ci.yml` · fmt-clippy | lefthook pre-commit / `run.sh lint` | `cargo fmt --check`；`cargo clippy --all-features -- -D warnings`（0 警告） |
 | 依赖许可证与 Advisories | `ci.yml` · deny | — | `cargo-deny check`（`deny.toml`） |
 | 依赖漏洞审计 | `ci.yml` · audit；`release.yml` 发布前置 | — | `cargo audit --deny warnings` |
 | 静态安全分析 | `codeql.yml` | — | CodeQL Rust 分析（README 的 Security 徽章） |
-| 测试 + 覆盖率 | `ci.yml` · test（default / postgresql / etcd 矩阵） | lefthook pre-push | `cargo llvm-cov --fail-under-lines 95`（CI）/ `≥ 80%`（pre-push 本地门禁，`scripts/_coverage_gate.sh`），排除 `server/proto/` 生成代码 |
+| 测试 + 覆盖率 | `ci.yml` · test（default / all 矩阵；覆盖率门禁仅在 default leg） | lefthook pre-push | `cargo llvm-cov --fail-under-lines 95`（CI default leg）/ `≥ 90%` 全特性口径（pre-push 本地门禁，`scripts/_coverage_gate.sh`，跳过 7 个基线失败测试），排除 `server/proto/` 生成代码 |
 | 私钥扫描 | — | lefthook pre-commit | gitleaks（`scripts/_gitleaks_scan.sh`） |
 | 聚合门禁 | `ci.yml` · gate | — | 任一前置 job 失败即阻断合并 |
 
 补充事实：
 
-- 不存在可用的「全特性」构建（dbnexus 禁止 sqlite 与 postgres 特性混用），可构建的最大特性集是 default + etcd；该约束由 `src/core/tests/repo_docs_guards_tests.rs` 以仓库文本守卫钉住（CI、README、docs 不得推荐 `--all-features` 命令）。
+- `--all-features` 可构建（sqlite feature 已删除，dbnexus 的 embedded/server 互斥不再触发），CI 与文档统一采用该口径；`--no-default-features` 另有轻量编译检查（garrison 回退路径等）。
 - `docker/vendor-deps.sh` 向 `.docker-vendor/` 打包依赖副本时排除 `.env*` / `local_settings*`，不把凭据带进镜像上下文。
 - `Cargo.lock` 提交入库，保证 CI 与发布构建的依赖可复现。
 

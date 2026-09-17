@@ -86,7 +86,7 @@ Double-buffered segments, drift-guarded bit slicing, custom UUID v8 layouts — 
 </tr>
 </table>
 
-Beyond the core capabilities above, engine declarations other than PostgreSQL (`sqlite` is currently unbuildable), the `integration-tests` gate for tests that need a real database, hot-reload watching, and Redis caching are also provided via configuration or features; see the [⚙️ Configuration](#️-configuration) section and the [Config Migration Guide](docs/CONFIG_MIGRATION_GUIDE.md) for itemized details.
+Beyond the core capabilities above, engine declarations other than PostgreSQL (the runtime config enum keeps `sqlite`/`mysql` variants, but the build contains no matching driver, so connecting fails), the `integration-tests` gate for tests that need a real database, hot-reload watching, and Redis caching are also provided via configuration or features; see the [⚙️ Configuration](#️-configuration) section and the [Config Migration Guide](docs/CONFIG_MIGRATION_GUIDE.md) for itemized details.
 
 ---
 
@@ -166,15 +166,15 @@ cargo build --release
 
 | Feature | Default | Description |
 |---------|:----:|------|
-| `postgresql` | ✅ | dbnexus PostgreSQL storage backend |
+| `postgresql` | ✅ | dbnexus PostgreSQL storage backend (can be turned off with `--no-default-features`; compile-only guarantee, a real PostgreSQL is needed at runtime) |
 | `http` / `grpc` | ✅ | REST and gRPC access (sdforge mirror features) |
-| `garrison-auth` | ✅ | garrison takes over API key verification |
-| `etcd` | ➖ | etcd distributed coordination (the maximal buildable set is default + etcd) |
+| `garrison-auth` | ✅ | garrison takes over API key verification (falling back to the hand-written Argon2id path when disabled) |
+| `etcd` | ➖ | etcd distributed coordination |
 | `sdk` | ➖ | Embedded SDK facade (`NebulaIdKit`, implies `openapi`) |
 | `integration-tests` | ➖ | Gates `#[ignore]` tests that need a real database |
-| `sqlite` | ➖ | Kept but **currently unbuildable**: default always enables dbnexus/postgres, and adding sqlite trips dbnexus's compile_error |
+| `alerting` | ➖ | Gates the alerting subsystem (`src/core/monitoring`, not compiled into production builds by default) |
 
-> ⚠️ There is **no buildable "all features" combination** for this project (see the sqlite row above); neither CI nor the docs recommend that switch.
+> 💡 `--all-features` **is buildable** (= default + etcd + alerting + sdk + integration-tests + openapi); CI and docs uniformly adopt that switch.
 
 ### 💡 Minimal Example
 
@@ -385,20 +385,20 @@ Testing is layered: inline unit tests in `src/` (`#[cfg(test)]`), E2E modules un
 ### ▶️ Commands (matching CI)
 
 ```bash
-# Full test run (CI matrix runs default / postgresql / etcd)
-cargo test --package nebulaid --features etcd
+# Full test run (CI matrix runs default / all (--all-features))
+cargo test --package nebulaid --all-features
 
 # Lint and format gates
 cargo fmt --package nebulaid -- --check
-cargo clippy --package nebulaid --features etcd -- -D warnings
+cargo clippy --package nebulaid --all-features -- -D warnings
 
-# Coverage gate: at least 95% line coverage (excluding server/proto/ generated code)
-cargo llvm-cov --package nebulaid --features etcd \
+# Coverage gate: at least 95% line coverage (authoritative gate on the CI default leg,
+# excluding server/proto/ generated code)
+cargo llvm-cov --package nebulaid \
   --fail-under-lines 95 --ignore-filename-regex "server/proto/"
 
-# SDK feature surface (separate CI job)
-cargo clippy --package nebulaid --features sdk -- -D warnings
-cargo test --package nebulaid --features sdk
+# Light compile check (no-default paths such as the garrison fallback; same as CI fmt-clippy job)
+cargo check --package nebulaid --no-default-features --lib --bins
 
 # Benchmarks
 cargo bench --bench i18n
@@ -456,7 +456,7 @@ For the detailed contribution workflow and code standards, see the [🤝 Contrib
 
 ### 🛠️ Development Environment
 
-Run `./scripts/run.sh pre-commit` before committing (or the equivalent lefthook hooks: pre-commit runs rustfmt, clippy, and the gitleaks private-key scan; pre-push runs `cargo test --package nebulaid --features etcd` and the coverage gate); commit messages follow Conventional Commits. For the full environment setup, see the [Contributing Guide · getting started](docs/CONTRIBUTING.md#快速开始).
+Run `./scripts/run.sh pre-commit` before committing (or the equivalent lefthook hooks: pre-commit runs rustfmt, clippy, and the gitleaks private-key scan; pre-push runs `cargo test --package nebulaid --all-features` and the coverage gate); commit messages follow Conventional Commits. For the full environment setup, see the [Contributing Guide · getting started](docs/CONTRIBUTING.md#快速开始).
 
 ### 💖 Ways to Contribute
 

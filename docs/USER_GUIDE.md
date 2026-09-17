@@ -128,7 +128,7 @@ nebulaid = { version = "0.2", features = ["postgresql"] }
 cargo add nebulaid
 ```
 
-> 💡 **可用 features**：`postgresql`（默认）、`sqlite`、`etcd`、`http`（默认）、`grpc`（默认）。项目为单包结构（无 `crates/` 子目录），不要使用 `path = "./crates/core"`。
+> 💡 **可用 features**：`postgresql`（默认）、`etcd`、`alerting`、`garrison-auth`（默认）、`sdk`、`integration-tests`、`http` / `grpc`（默认，sdforge 镜像）。`--all-features` 可构建。项目为单包结构（无 `crates/` 子目录），不要使用 `path = "./crates/core"`。
 
 ### 第一步
 

@@ -4,7 +4,7 @@
 > 编写依据（只读核对）：`Cargo.toml [features]` 与 `[[bench]]`、`src/core/tests/mod.rs` 模块注册表、`tests/` 目录、`.github/workflows/ci.yml`、`lefthook.yml`、`scripts/_coverage_gate.sh`、`CHANGELOG.md`。
 > 所有模块级测试计数均经 `grep -c '#\[test\]|#\[tokio::test'` 核实。
 
-[🏠 主页](../README.md) • [架构文档](ARCHITECTURE.md) • [性能指南](PERFORMANCE.md)
+[🏠 主页](../README.md) • [架构文档](ARCHITECTURE.md) • [性能指南](PERFORMANCE.md) • **深度方案**：[测试总体方案](TEST_PLAN.md)（模块交互分析 · 场景穷举 · 特性组合 · 执行计划）
 
 ---
 
@@ -24,7 +24,7 @@
 
 - **编号**：`<域>-<序号>`（如 `ALG-01`），域前缀见场景矩阵各表。
 - **覆盖位置**：指向实际存在的测试文件 / 模块；不虚构测试函数名，函数级细节以对应文件为准。
-- **特性口径**：本仓库不存在可用的「全特性」构建（dbnexus 禁止 sqlite 与 postgres 混用），可构建的最大特性集是 default + etcd；矩阵中的运行命令均遵守该约束。
+- **特性口径**：`--all-features` 可构建（sqlite feature 已删除，dbnexus 的 embedded/server 互斥不再触发），矩阵中的运行命令均采用该口径。
 
 ---
 
@@ -54,7 +54,6 @@
 | `cache_tests.rs` | 5 | 缓存 |
 | `integration_tests.rs` | 4 | 集成冒烟 |
 | `segment_monitoring_e2e_tests.rs` | 2 | Segment 监控 |
-| `repo_docs_guards_tests.rs` | 1 | 仓库文本守卫（禁止推荐不可构建特性） |
 
 ---
 
@@ -142,13 +141,7 @@
 | SDK-01 | Kit 装配校验 | trait-kit AsyncKit 依赖图缺失依赖 / 环在 `build()` 期报错 | `src/sdk/kit.rs` 内联测试（feature `sdk`） |
 | SDK-02 | 纯算法零 DB | `Config::default()` + snowflake/uuid_v8 可发号 | `src/sdk` 内联测试 |
 | SDK-03 | 错误不外泄 | `to_api_error` 对外固定概要 + `error_id` | `src/sdk` 内联测试 |
-| SDK-04 | 示例可构建 | `embedded` / `sdk_server` 以 `required-features` 门控编译 | CI `sdk` job |
-
-### 仓库与文档守卫（GUARD）
-
-| 编号 | 场景 | 验证点 | 覆盖位置 |
-|------|------|--------|----------|
-| GUARD-01 | 不推荐不可构建特性 | README / `.github` / `docs` 任何行不得同时含 `cargo` 与全特性开关 | `src/core/tests/repo_docs_guards_tests.rs` |
+| SDK-04 | 示例可构建 | `embedded` / `sdk_server` 以 `required-features` 门控编译 | CI test job（`--all-features` leg） |
 
 ---
 

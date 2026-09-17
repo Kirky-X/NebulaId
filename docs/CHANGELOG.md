@@ -159,6 +159,21 @@ fail-fast（change `key-rotation-and-config-failfast`）。**含多项行为变�
   行 id 精确查询与 SQL 侧 `role='admin' AND enabled=true` 计数（无 workspace
   过滤、无 1000 行分页上界）。**注意作用范围**：守卫只在 HTTP `POST /api-keys`
   上生效，启动期环境/配置引导的 admin key 走仓储层直插，不经过守卫。
+- **特性模型解禁 `--all-features`**：dbnexus 的 `pub use sea_orm` 不再绑定驱动
+  feature（`dbnexus` 40580df，sea-orm prelude 只依赖 macros/with-chrono/with-uuid，
+  与驱动无关），无驱动构建不再报 187 个错误；`sqlite` feature 删除（此前
+  default 恒含 dbnexus/postgres 使其必然触发引擎互斥 `compile_error!`，从未可
+  构建），`--all-features`（= default + etcd + alerting + sdk + integration-tests
+  + openapi）自此可构建。CI（clippy/test/coverage）、lefthook、预检脚本与全部
+  文档统一收敛到 `--all-features` 口径；fmt-clippy job 新增
+  `--no-default-features --lib --bins` 编译检查钉住 garrison 回退路径；
+  test matrix 由 default/postgresql/etcd（postgresql 与 default 等价、冗余）
+  改为 default/all，独立 sdk job 并入 all leg（只跑测试；覆盖率门禁仍以
+  default leg ≥95% 为权威——sdk 代码测试密度低，进 all leg 门禁会挂）；
+  本地覆盖率门禁补 proto 排除正则并改用全特性口径实测阈值 90%；
+  删除以旧约束为前提的文本守卫测试
+  `repo_docs_guards_tests.rs` 及 2 处 sqlite 死测试。运行时 `DatabaseEngine`
+  枚举的 `Sqlite`/`Mysql` 变体保留，但构建不含对应驱动，连接会失败。
 
 ### Added
 

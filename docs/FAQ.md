@@ -349,8 +349,7 @@ async fn main() -> nebulaid::core::Result<()> {
    ```
 
 2. **确保所需特性已启用**（默认为
-   `["postgresql", "http", "grpc", "garrison-auth"]`；`sqlite` 目前
-   无法构建，因为 `limiteron` 硬依赖 `dbnexus/postgres`）：
+   `["postgresql", "http", "grpc", "garrison-auth"]`）：
    ```toml
    nebulaid = "0.2"
    ```

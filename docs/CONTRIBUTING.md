@@ -188,14 +188,12 @@ git remote -v
 # 构建项目（default = postgresql + http + grpc + garrison-auth）
 cargo build --package nebulaid
 
-# 最大可构建特性集（default + etcd）
-# 注意：不存在「全特性」构建 —— dbnexus 禁止 sqlite 与 postgres 混用
-# （compile_error），且 limiteron 硬依赖 dbnexus/postgres，
-# 因此 sqlite 特性当前不可构建。
-cargo build --package nebulaid --features etcd
+# 全特性构建（--all-features 可构建，覆盖 etcd + sdk + alerting +
+# integration-tests + openapi；CI 与 hooks 统一采用该口径）
+cargo build --package nebulaid --all-features
 
 # 运行全部测试
-cargo test --package nebulaid --features etcd
+cargo test --package nebulaid --all-features
 
 # 构建文档
 cargo doc --no-deps --package nebulaid

@@ -348,9 +348,9 @@ scripts/run.sh <subcommand> [args...]
 6. **文档构建**：`cargo doc --no-deps`
 7. **覆盖率**：`cargo tarpaulin`（若已安装）
 
-需要覆盖可选特性（etcd 协调）或集成测试时，用最大可构建特性集手动补跑：
-`cargo test --package nebulaid --features etcd`。不存在「全特性」构建 ——
-dbnexus 禁止 sqlite 与 postgres 混用，limiteron 硬依赖 dbnexus/postgres。
+需要覆盖可选特性或集成测试时，直接使用全特性口径：
+`cargo test --package nebulaid --all-features`。`--all-features` 可构建
+（= default + etcd + alerting + sdk + integration-tests + openapi）。
 
 GitHub Actions CI（`.github/workflows/ci.yml`）通过同一入口调用此子命令，确保本地与 CI 行为一致。
 

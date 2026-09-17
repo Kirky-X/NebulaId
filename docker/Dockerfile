@@ -90,7 +90,7 @@ ENV RUST_LOG=info \
     SERVER_HTTP_PORT=8080 \
     METRICS_ENABLED=true \
     METRICS_HOST=0.0.0.0 \
-    METRICS_PORT=9091
+    METRICS_PORT=9092
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \

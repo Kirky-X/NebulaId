@@ -244,17 +244,21 @@ RUST_LOG=nebulaid::core::algorithm=debug,info
 psql -U idgen -d idgen -f scripts/init.sql
 
 # 或手动创建表
-psql -U idgen -d idgen <<EOF
-CREATE TABLE IF NOT EXISTS segment (
+psql -U idgen -d idgen <<'EOF'
+CREATE SCHEMA IF NOT EXISTS nebula_id;
+
+CREATE TABLE IF NOT EXISTS nebula_id.nebula_segments (
     id BIGSERIAL PRIMARY KEY,
-    workspace_id VARCHAR(64) NOT NULL,
-    biz_tag VARCHAR(128) NOT NULL,
-    current_id BIGINT NOT NULL DEFAULT 0,
+    workspace_id VARCHAR(255) NOT NULL,
+    biz_tag VARCHAR(255) NOT NULL,
+    current_id BIGINT NOT NULL,
     max_id BIGINT NOT NULL,
-    step INTEGER NOT NULL,
-    delta INTEGER NOT NULL DEFAULT 1,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    step INT NOT NULL DEFAULT 1000,
+    delta INT NOT NULL DEFAULT 1,
+    dc_id INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_nebula_segments_ws_tag_dc UNIQUE (workspace_id, biz_tag, dc_id)
 );
 EOF
 ```
@@ -387,8 +391,8 @@ GitHub Actions CI（`.github/workflows/ci.yml`）通过同一入口调用此子�
 
 - 健康检查端点：`GET /health`、`GET /ready`
 - 指标端点：`GET /metrics`
-- ID 生成端点：`POST /api/v1/id/generate`、`POST /api/v1/id/batch-generate`
-- ID 解析端点：`POST /api/v1/id/parse`
+- ID 生成端点：`POST /api/v1/generate`、`POST /api/v1/generate/batch`
+- ID 解析端点：`POST /api/v1/parse`
 - 鉴权测试：`X-API-Key` 头校验
 - 配置端点：`GET /api/v1/config`
 

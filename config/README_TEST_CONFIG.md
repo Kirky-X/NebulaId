@@ -8,7 +8,6 @@
 |------|------|
 | `test_config.toml` | 测试脚本默认配置文件 |
 | `config.toml` | 主服务配置文件（生产） |
-| `config_test.toml` | 服务测试配置（SQLite 内存数据库） |
 
 > 注：无 etcd 环境请通过 `config.toml` 中 `[etcd] endpoints = []` 控制，不再单独维护 `config_no_etcd.toml`。
 

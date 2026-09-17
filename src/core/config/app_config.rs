@@ -1153,7 +1153,7 @@ mod tests {
     /// 放宽严格模式 —— 两者都不是正确方向，故按真相排除并留档。
     #[test]
     fn test_shipped_config_files_load_cleanly() {
-        for path in ["config/config.toml", "config/config_test.toml"] {
+        for path in ["config/config.toml"] {
             assert!(
                 std::path::Path::new(path).exists(),
                 "测试前提：仓库内应存在随附配置 {}",

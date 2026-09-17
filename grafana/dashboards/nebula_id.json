@@ -76,7 +76,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -89,7 +91,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "nebula_id_total_generated",
+          "expr": "sum(nebula_id_ids_generated_total)",
           "refId": "A"
         }
       ],
@@ -141,7 +143,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -154,7 +158,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "nebula_id_current_qps",
+          "expr": "sum(rate(nebula_id_ids_generated_total[1m]))",
           "refId": "A"
         }
       ],
@@ -189,7 +193,7 @@
               }
             ]
           },
-          "unit": "ms"
+          "unit": "s"
         },
         "overrides": []
       },
@@ -206,7 +210,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -219,7 +225,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "nebula_id_p99_latency_ms",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(nebula_id_generate_latency_seconds_bucket[5m])))",
           "refId": "A"
         }
       ],
@@ -271,7 +277,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -284,7 +292,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "nebula_id_cache_hit_rate",
+          "expr": "avg(nebula_id_cache_hit_rate)",
           "refId": "A"
         }
       ],
@@ -367,7 +375,11 @@
       "id": 7,
       "options": {
         "legend": {
-          "calcs": ["mean", "max", "lastNotNull"],
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -383,8 +395,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(nebula_id_total_generated[1m])",
-          "legendFormat": "生成速率",
+          "expr": "sum by (algorithm) (rate(nebula_id_ids_generated_total[1m]))",
+          "legendFormat": "{{algorithm}}",
           "refId": "A"
         }
       ],
@@ -454,7 +466,11 @@
       "id": 8,
       "options": {
         "legend": {
-          "calcs": ["mean", "max", "lastNotNull"],
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -470,8 +486,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "nebula_id_current_qps",
-          "legendFormat": "当前 QPS",
+          "expr": "sum by (algorithm) (rate(nebula_id_ids_generated_total[1m]))",
+          "legendFormat": "{{algorithm}}",
           "refId": "A"
         }
       ],
@@ -541,7 +557,7 @@
               }
             ]
           },
-          "unit": "ms"
+          "unit": "s"
         },
         "overrides": [
           {
@@ -600,7 +616,11 @@
       "id": 10,
       "options": {
         "legend": {
-          "calcs": ["mean", "max", "lastNotNull"],
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -616,7 +636,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "nebula_id_p50_latency_ms",
+          "expr": "nebula_id_generate_latency_p50_seconds",
           "legendFormat": "P50",
           "refId": "A"
         },
@@ -625,7 +645,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "nebula_id_p99_latency_ms",
+          "expr": "nebula_id_generate_latency_p99_seconds",
           "legendFormat": "P99",
           "refId": "B"
         },
@@ -634,7 +654,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "nebula_id_p999_latency_ms",
+          "expr": "nebula_id_generate_latency_p999_seconds",
           "legendFormat": "P999",
           "refId": "C"
         }
@@ -692,7 +712,7 @@
               }
             ]
           },
-          "unit": "ms"
+          "unit": "s"
         },
         "overrides": []
       },
@@ -705,7 +725,11 @@
       "id": 11,
       "options": {
         "legend": {
-          "calcs": ["mean", "max", "lastNotNull"],
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -721,8 +745,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(nebula_id_p99_latency_ms[5m])",
-          "legendFormat": "P99 变化率",
+          "expr": "nebula_id_generate_latency_p99_seconds",
+          "legendFormat": "{{algorithm}}",
           "refId": "A"
         }
       ],
@@ -805,7 +829,11 @@
       "id": 13,
       "options": {
         "legend": {
-          "calcs": ["mean", "max", "lastNotNull"],
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -822,7 +850,7 @@
             "uid": "prometheus"
           },
           "expr": "nebula_id_cache_hit_rate",
-          "legendFormat": "缓存命中率",
+          "legendFormat": "{{algorithm}}",
           "refId": "A"
         }
       ],
@@ -892,7 +920,11 @@
       "id": 14,
       "options": {
         "legend": {
-          "calcs": ["mean", "max", "lastNotNull"],
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -908,8 +940,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(nebula_id_cache_hit_rate[5m])",
-          "legendFormat": "命中率变化率",
+          "expr": "avg_over_time(nebula_id_cache_hit_rate[5m])",
+          "legendFormat": "{{algorithm}}",
           "refId": "A"
         }
       ],
@@ -992,7 +1024,11 @@
       "id": 16,
       "options": {
         "legend": {
-          "calcs": ["mean", "max", "lastNotNull"],
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -1008,8 +1044,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(nebula_id_total_failed[1m])",
-          "legendFormat": "错误率",
+          "expr": "sum by (algorithm) (rate(nebula_id_generate_failures_total[1m]))",
+          "legendFormat": "{{algorithm}}",
           "refId": "A"
         },
         {
@@ -1017,8 +1053,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "nebula_id_total_errors",
-          "legendFormat": "总错误数",
+          "expr": "sum(nebula_id_generate_failures_total)",
+          "legendFormat": "失败总数",
           "refId": "B"
         }
       ],
@@ -1088,7 +1124,11 @@
       "id": 17,
       "options": {
         "legend": {
-          "calcs": ["mean", "max", "lastNotNull"],
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -1104,12 +1144,21 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "nebula_id_active_connections",
-          "legendFormat": "活跃连接数",
+          "expr": "nebula_id_algorithm_degraded",
+          "legendFormat": "降级 {{algorithm}}",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "nebula_id_circuit_breaker_open",
+          "legendFormat": "熔断开启 {{algorithm}}",
+          "refId": "B"
         }
       ],
-      "title": "活跃连接数",
+      "title": "降级与熔断状态",
       "type": "timeseries"
     },
     {
@@ -1162,7 +1211,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -1219,7 +1270,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -1232,7 +1285,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "nebula_id_total_requests",
+          "expr": "nebula_id_requests_total",
           "refId": "A"
         }
       ],
@@ -1269,16 +1322,24 @@
       },
       "id": 21,
       "options": {
-        "displayLabels": ["name", "percent"],
+        "displayLabels": [
+          "name",
+          "percent"
+        ],
         "legend": {
           "displayMode": "table",
           "placement": "right",
           "showLegend": true,
-          "values": ["value", "percent"]
+          "values": [
+            "value",
+            "percent"
+          ]
         },
         "pieType": "pie",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -1293,7 +1354,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "nebula_id_total_generated by (algorithm)",
+          "expr": "sum by (algorithm) (nebula_id_ids_generated_total)",
           "legendFormat": "{{algorithm}}",
           "refId": "A"
         }
@@ -1305,7 +1366,10 @@
   "refresh": "30s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["nebula-id", "distributed-id"],
+  "tags": [
+    "nebula-id",
+    "distributed-id"
+  ],
   "templating": {
     "list": []
   },
@@ -1314,7 +1378,18 @@
     "to": "now"
   },
   "timepicker": {
-    "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "1d"]
+    "refresh_intervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h",
+      "2h",
+      "1d"
+    ]
   },
   "timezone": "browser",
   "title": "NebulaID 监控仪表板",

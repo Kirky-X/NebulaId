@@ -38,8 +38,13 @@ use crate::server::rate_limit::{limiter::RateLimiter, middleware::RateLimitMiddl
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderValue, StatusCode},
+    response::IntoResponse,
     routing::{delete, get, post},
     Extension, Json, Router,
+};
+use metrics::{Key, KeyName, Label, Metadata, Recorder, Unit};
+use metrics_exporter_prometheus::{
+    Matcher, PrometheusBuilder, PrometheusHandle, PrometheusRecorder,
 };
 use sdforge::tower_http::set_header::SetResponseHeaderLayer;
 use std::sync::Arc;
@@ -50,6 +55,243 @@ pub struct AppState {
     pub handlers: Arc<ApiHandlers>,
     pub auth: Arc<ApiKeyAuth>,
     pub config_service: Arc<dyn ConfigManagementService>,
+    /// Prometheus 文本渲染桥（T021）：/metrics 渲染路径把既有指标快照
+    /// 灌入 exporter 自有 registry。generate 热路径不经过本桥，零新增开销。
+    pub prometheus: Arc<PrometheusMetricsBridge>,
+}
+
+// ========== Prometheus /metrics 桥接（T021） ==========
+
+/// `nebula_id_generate_latency_seconds` 直方图桶（秒）。ID 生成典型耗时
+/// 在微秒到毫秒量级，桶按此密度分布并延伸到秒级长尾。
+const PROMETHEUS_LATENCY_BUCKETS_SECONDS: &[f64] = &[
+    0.000_05, 0.000_1, 0.000_25, 0.000_5, 0.001, 0.002_5, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
+    1.0, 2.5, 5.0,
+];
+
+/// 渲染路径 `register_*` 专用的元数据；本桥不安装全局 recorder，
+/// 该常量只作为 `Recorder` trait 调用的必填参数。
+const PROMETHEUS_METADATA: Metadata =
+    Metadata::new(module_path!(), metrics::Level::INFO, Some(module_path!()));
+
+/// 把既有指标源（`ApiHandlers::metrics()` 快照：路由层原子计数 +
+/// 观测环分位数 + 降级/熔断状态）渲染成 Prometheus 文本格式的桥。
+///
+/// **热路径零开销论证**：id 生成热路径（`AlgorithmRouter::observe`）只写
+/// 既有原子计数与延迟环，本桥不对其做任何改动；桥仅在 `/metrics` 被抓取时
+/// （低频）读取快照并把绝对值灌入 exporter registry（counter 用
+/// `Counter::absolute` = `fetch_max`，快照单调故幂等；gauge 直接 `set`；
+/// histogram 以渲染期分位数观测增量累计）。registry 由 exporter 私有，
+/// 未安装为全局 recorder，其余路径不受影响。
+pub struct PrometheusMetricsBridge {
+    /// 保活 exporter registry；`handle` 渲染的就是它的内部状态。
+    recorder: PrometheusRecorder,
+    handle: PrometheusHandle,
+}
+
+impl PrometheusMetricsBridge {
+    fn new() -> Self {
+        let recorder = PrometheusBuilder::new()
+            .set_buckets_for_metric(
+                Matcher::Full("nebula_id_generate_latency_seconds".to_owned()),
+                PROMETHEUS_LATENCY_BUCKETS_SECONDS,
+            )
+            .expect("static latency buckets are finite and sorted")
+            .build_recorder();
+
+        // HELP/UNIT 描述一次性登记（幂等），渲染时输出 `# HELP` 行。
+        recorder.describe_counter(
+            KeyName::from("nebula_id_ids_generated_total"),
+            None,
+            "Total IDs generated per algorithm (router observation).".into(),
+        );
+        recorder.describe_counter(
+            KeyName::from("nebula_id_generate_failures_total"),
+            None,
+            "Total failed generate calls per algorithm (router observation).".into(),
+        );
+        recorder.describe_counter(
+            KeyName::from("nebula_id_clock_backwards_total"),
+            None,
+            "Total observed clock backwards events per algorithm.".into(),
+        );
+        recorder.describe_histogram(
+            KeyName::from("nebula_id_generate_latency_seconds"),
+            Some(Unit::Seconds),
+            "End-to-end generate latency per algorithm (router observation).".into(),
+        );
+        for (name, quantile) in [
+            ("nebula_id_generate_latency_p50_seconds", "p50"),
+            ("nebula_id_generate_latency_p99_seconds", "p99"),
+            ("nebula_id_generate_latency_p999_seconds", "p999"),
+        ] {
+            recorder.describe_gauge(
+                KeyName::from(name),
+                Some(Unit::Seconds),
+                format!("Render-time {quantile} latency gauge per algorithm (0 = no samples yet).")
+                    .into(),
+            );
+        }
+        recorder.describe_gauge(
+            KeyName::from("nebula_id_cache_hit_rate"),
+            None,
+            "Cache hit rate percent per algorithm (0-100).".into(),
+        );
+        recorder.describe_gauge(
+            KeyName::from("nebula_id_algorithm_degraded"),
+            None,
+            "1 when the algorithm is currently degraded, 0 otherwise.".into(),
+        );
+        recorder.describe_gauge(
+            KeyName::from("nebula_id_circuit_breaker_open"),
+            None,
+            "1 when the algorithm circuit breaker is Open, 0 otherwise.".into(),
+        );
+        recorder.describe_gauge(
+            KeyName::from("nebula_id_circuit_breaker_half_open"),
+            None,
+            "1 when the algorithm circuit breaker is HalfOpen, 0 otherwise.".into(),
+        );
+        recorder.describe_counter(
+            KeyName::from("nebula_id_requests_total"),
+            None,
+            "Total requests observed by the API layer.".into(),
+        );
+        recorder.describe_counter(
+            KeyName::from("nebula_id_successful_generations_total"),
+            None,
+            "Total successful generate requests observed by the API layer.".into(),
+        );
+        recorder.describe_counter(
+            KeyName::from("nebula_id_failed_generations_total"),
+            None,
+            "Total failed generate requests observed by the API layer.".into(),
+        );
+        recorder.describe_gauge(
+            KeyName::from("nebula_id_uptime_seconds"),
+            Some(Unit::Seconds),
+            "Process uptime in seconds.".into(),
+        );
+
+        let handle = recorder.handle();
+        Self { recorder, handle }
+    }
+
+    /// 采样快照 → 灌入 registry → 渲染 Prometheus 文本。
+    fn render(&self, snapshot: &MetricsResponse) -> String {
+        for alg in &snapshot.algorithms {
+            let labels = vec![Label::new("algorithm", alg.algorithm.clone())];
+
+            // counter：绝对值桥接（fetch_max 幂等，快照单调递增）。
+            self.recorder
+                .register_counter(
+                    &Key::from_parts("nebula_id_ids_generated_total", labels.clone()),
+                    &PROMETHEUS_METADATA,
+                )
+                .absolute(alg.total_generated);
+            self.recorder
+                .register_counter(
+                    &Key::from_parts("nebula_id_generate_failures_total", labels.clone()),
+                    &PROMETHEUS_METADATA,
+                )
+                .absolute(alg.total_failed);
+            self.recorder
+                .register_counter(
+                    &Key::from_parts("nebula_id_clock_backwards_total", labels.clone()),
+                    &PROMETHEUS_METADATA,
+                )
+                .absolute(alg.clock_backwards);
+
+            // gauge：分位数（ms → s；0 = 未观测，与核心语义一致）。
+            for (name, value_ms) in [
+                ("nebula_id_generate_latency_p50_seconds", alg.p50_latency_ms),
+                ("nebula_id_generate_latency_p99_seconds", alg.p99_latency_ms),
+                (
+                    "nebula_id_generate_latency_p999_seconds",
+                    alg.p999_latency_ms,
+                ),
+            ] {
+                self.recorder
+                    .register_gauge(&Key::from_parts(name, labels.clone()), &PROMETHEUS_METADATA)
+                    .set(value_ms / 1_000.0);
+            }
+            // `None` = 该算法无缓存概念：不产出命中率序列。
+            if let Some(hit_rate) = alg.cache_hit_rate {
+                self.recorder
+                    .register_gauge(
+                        &Key::from_parts("nebula_id_cache_hit_rate", labels.clone()),
+                        &PROMETHEUS_METADATA,
+                    )
+                    .set(hit_rate);
+            }
+
+            // histogram：渲染期以当前环分位数（p50/p99/p999，秒）做增量观测。
+            // 环数据只暴露分位数不暴露原始样本，三档观测是既有观测环的
+            // 最忠实近似；跨抓取累计，`histogram_quantile` / `rate` 语义成立。
+            // 三档全 0 表示观测环无样本（核心层约定），跳过以免伪造 0 延迟。
+            if alg.p50_latency_ms > 0.0 || alg.p99_latency_ms > 0.0 || alg.p999_latency_ms > 0.0 {
+                let histogram = self.recorder.register_histogram(
+                    &Key::from_parts("nebula_id_generate_latency_seconds", labels.clone()),
+                    &PROMETHEUS_METADATA,
+                );
+                histogram.record(alg.p50_latency_ms / 1_000.0);
+                histogram.record(alg.p99_latency_ms / 1_000.0);
+                histogram.record(alg.p999_latency_ms / 1_000.0);
+            }
+        }
+
+        // 降级 / 熔断状态 gauge（低成本：快照里已是现成布尔/字符串）。
+        for degradation in &snapshot.degradation_metrics {
+            let labels = vec![Label::new("algorithm", degradation.algorithm.clone())];
+            self.recorder
+                .register_gauge(
+                    &Key::from_parts("nebula_id_algorithm_degraded", labels.clone()),
+                    &PROMETHEUS_METADATA,
+                )
+                .set(u8::from(degradation.is_degraded) as f64);
+            self.recorder
+                .register_gauge(
+                    &Key::from_parts("nebula_id_circuit_breaker_open", labels.clone()),
+                    &PROMETHEUS_METADATA,
+                )
+                .set(u8::from(degradation.circuit_breaker_state == "Open") as f64);
+            self.recorder
+                .register_gauge(
+                    &Key::from_parts("nebula_id_circuit_breaker_half_open", labels.clone()),
+                    &PROMETHEUS_METADATA,
+                )
+                .set(u8::from(degradation.circuit_breaker_state == "HalfOpen") as f64);
+        }
+
+        // API 层全局计数 / 运行时长。
+        self.recorder
+            .register_counter(
+                &Key::from_name("nebula_id_requests_total"),
+                &PROMETHEUS_METADATA,
+            )
+            .absolute(snapshot.total_requests);
+        self.recorder
+            .register_counter(
+                &Key::from_name("nebula_id_successful_generations_total"),
+                &PROMETHEUS_METADATA,
+            )
+            .absolute(snapshot.successful_generations);
+        self.recorder
+            .register_counter(
+                &Key::from_name("nebula_id_failed_generations_total"),
+                &PROMETHEUS_METADATA,
+            )
+            .absolute(snapshot.failed_generations);
+        self.recorder
+            .register_gauge(
+                &Key::from_name("nebula_id_uptime_seconds"),
+                &PROMETHEUS_METADATA,
+            )
+            .set(snapshot.uptime_seconds as f64);
+
+        self.handle.run_upkeep();
+        self.handle.render()
+    }
 }
 
 pub async fn create_router(
@@ -101,6 +343,7 @@ pub async fn create_router_with_rate_limit(
         handlers: handlers.clone(),
         auth: auth.clone(),
         config_service: config_service.clone(),
+        prometheus: Arc::new(PrometheusMetricsBridge::new()),
     };
 
     // ========== V1 API Routes ==========
@@ -509,8 +752,23 @@ async fn handle_ready(State(state): State<AppState>) -> Json<ReadyResponse> {
     Json(state.handlers.ready().await)
 }
 
-async fn handle_metrics(State(state): State<AppState>) -> Json<MetricsResponse> {
-    Json(state.handlers.metrics().await)
+/// T021 — `/metrics` 输出 Prometheus 文本格式（text/plain; version=0.0.4）。
+///
+/// 渲染路径采样：读取既有指标快照（`ApiHandlers::metrics()`，内部仅
+/// 原子计数/观测环读取），灌入 exporter registry 后渲染；JSON 输出移除
+/// （结构化 JSON 快照仍可经 `GET /api/v1/config` 等管理面获取，监控抓取
+/// 统一走本端点）。
+async fn handle_metrics(State(state): State<AppState>) -> axum::response::Response {
+    let snapshot = state.handlers.metrics().await;
+    let body = state.prometheus.render(&snapshot);
+    (
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response()
 }
 
 async fn handle_parse(
@@ -640,7 +898,7 @@ async fn handle_api_info() -> Json<ApiInfoResponse> {
         endpoints: vec![
             "GET /health - Health check".to_string(),
             "GET /ready - Readiness probe".to_string(),
-            "GET /metrics - Prometheus metrics".to_string(),
+            "GET /metrics - Prometheus metrics (text format, version 0.0.4)".to_string(),
             "GET /api/v1 - API information".to_string(),
             "POST /api/v1/generate - Generate ID".to_string(),
             "POST /api/v1/generate/batch - Batch generate IDs".to_string(),
@@ -1156,6 +1414,7 @@ mod tests {
     use super::*;
     use crate::core::algorithm::AlgorithmRouter;
     use crate::core::config::Config;
+    use crate::core::types::AlgorithmType;
     use crate::server::config::management::ConfigManager;
     use crate::server::config::HotReloadConfig;
     use std::sync::Arc;
@@ -1829,6 +2088,7 @@ mod tests {
             handlers,
             auth,
             config_service,
+            prometheus: Arc::new(PrometheusMetricsBridge::new()),
         }
     }
 
@@ -1900,16 +2160,97 @@ mod tests {
         assert!(resp.message.is_empty() || !resp.message.is_empty());
     }
 
-    // ========== handle_metrics tests ==========
+    // ========== handle_metrics (Prometheus 文本) tests ==========
 
     #[tokio::test]
-    async fn test_handle_metrics_returns_counters() {
+    async fn test_handle_metrics_renders_prometheus_text() {
         let state = create_test_app_state();
         let resp = handle_metrics(State(state)).await;
-        // Counters must be present (any value).
-        let _ = resp.total_requests;
-        let _ = resp.uptime_seconds;
-        assert!(!resp.algorithms.is_empty() || resp.algorithms.is_empty());
+        assert_eq!(resp.status(), StatusCode::OK);
+        let content_type = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .expect("content-type header must be present")
+            .to_str()
+            .expect("content-type must be visible ascii")
+            .to_owned();
+        assert!(
+            content_type.starts_with("text/plain"),
+            "content-type 应为 Prometheus 文本格式，实际 {content_type}"
+        );
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body = std::str::from_utf8(&body).expect("prometheus text is utf-8");
+        assert!(body.contains("# HELP"), "缺少 # HELP 行:\n{body}");
+        assert!(
+            body.contains("nebula_id_"),
+            "缺少 nebula_id_ 前缀指标:\n{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_metrics_ids_generated_total_increments_after_generates() {
+        // 真实算法路由：多次真实 generate 走 `SnowflakeAlgorithm` 内部计数器
+        // （generate 每次自增 total_generated，无 DB/etcd 依赖），
+        // /metrics 渲染出的 nebula_id_ids_generated_total 必须跟随递增。
+        // 注：快照的 total_generated 来源是各算法内部计数器
+        // （`IdAlgorithm::metrics()`）；uuid_v8 的实现当前返回默认快照
+        // （路由层观测面仅合并分位数/时钟回拨），属于上游既有口径，
+        // 本测试钉住「生成动作必须反映到 nebula_id_ids_generated_total」。
+        let config = Config::default();
+        let hot_config = Arc::new(HotReloadConfig::new(
+            config.clone(),
+            "config/config.toml".to_string(),
+        ));
+        let algorithm_router = Arc::new(AlgorithmRouter::new(config.clone(), None));
+        algorithm_router
+            .initialize()
+            .await
+            .expect("initialize 必须至少注册一个算法（snowflake/uuid_v8 均无外部依赖）");
+
+        let config_service: Arc<dyn ConfigManagementService> =
+            Arc::new(ConfigManager::new(hot_config, algorithm_router.clone()));
+        let handlers = Arc::new(ApiHandlers::new(
+            algorithm_router.clone(),
+            config_service.clone(),
+        ));
+        let state = AppState {
+            handlers,
+            auth: create_test_auth(),
+            config_service,
+            prometheus: Arc::new(PrometheusMetricsBridge::new()),
+        };
+
+        const GENERATES: u64 = 5;
+        for _ in 0..GENERATES {
+            algorithm_router
+                .generate_with_algorithm(AlgorithmType::Snowflake, "ws", "g", "bt")
+                .await
+                .expect("snowflake generate must succeed");
+        }
+
+        let resp = handle_metrics(State(state)).await;
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body = std::str::from_utf8(&body).expect("prometheus text is utf-8");
+
+        let line = body
+            .lines()
+            .find(|l| l.starts_with("nebula_id_ids_generated_total{algorithm=\"snowflake\"}"))
+            .expect("snowflake 的 ids_generated_total 必须出现在渲染输出中");
+        let value: u64 = line
+            .rsplit(' ')
+            .next()
+            .expect("prometheus sample 行以数值结尾")
+            .parse()
+            .expect("sample value must be an integer");
+        assert_eq!(
+            value, GENERATES,
+            "算法级计数器递增必须桥接到 nebula_id_ids_generated_total"
+        );
     }
 
     // ========== handle_reload_config tests ==========
@@ -2853,6 +3194,7 @@ mod tests {
             handlers,
             auth,
             config_service,
+            prometheus: Arc::new(PrometheusMetricsBridge::new()),
         }
     }
 

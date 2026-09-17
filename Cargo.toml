@@ -119,6 +119,15 @@ parking_lot = "0.12"
 # 日志追踪（tracing-subscriber 由 inklog 间接引入，日志初始化通过 inklog 接管）
 tracing = "0.1"
 
+# 指标（metrics facade + Prometheus 文本 exporter）：
+# /metrics 渲染路径把既有原子快照灌入 exporter 自有 registry（见
+# router.rs PrometheusMetricsBridge），generate 热路径零改动。
+# http-listener/push-gateway 不启用——指标经本服务自身 HTTP 端点暴露，
+# 不另起监听器。
+# metrics 0.24 起无任何 feature 开关（facade 本体），default-features = false 为显式表态。
+metrics = { version = "0.24", default-features = false }
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+
 # 工具库
 uuid = { version = "1.26", features = ["v4", "v7", "v8", "serde"] }
 chrono = { version = "0.4", features = ["std"] }

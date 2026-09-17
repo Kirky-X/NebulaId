@@ -21,7 +21,7 @@
 ```mermaid
 graph TB
     subgraph Docker Compose
-        App[Nebula ID App<br/>nebula-app<br/>:8080 HTTP<br/>:9091 gRPC<br/>:9092 Metrics]
+        App[Nebula ID App<br/>nebula-app<br/>:8080 HTTP 含 /metrics<br/>:9091 gRPC]
         PG[(PostgreSQL 16<br/>nebula-postgres<br/>:5432)]
         Redis[(Redis 7.2<br/>nebula-redis<br/>:6379)]
         Etcd[(Etcd 3.5<br/>nebula-etcd<br/>:2379)]
@@ -74,7 +74,7 @@ docker compose -f docker/docker-compose.yml logs -f app
 | `postgres` | postgres:16-alpine | 5432 | 2 CPU / 2G RAM | `pg_isready` |
 | `redis` | redis:7.2-alpine | 6379 | 0.5 CPU / 512M RAM | `redis-cli ping` |
 | `etcd` | quay.io/coreos/etcd:v3.5.11 | 2379, 2380 | 0.5 CPU / 512M RAM | `etcdctl endpoint health` |
-| `app` | 本地构建 nebula-id:latest | 8080, 9091, 9092 | 2 CPU / 2G RAM | `curl /health` |
+| `app` | 本地构建 nebula-id:latest | 8080, 9091 | 2 CPU / 2G RAM | `curl /health` |
 
 ### 2.4 单独构建镜像
 
@@ -85,7 +85,7 @@ docker build -f docker/Dockerfile -t nebula-id:latest .
 # 运行（需要外部 PostgreSQL/Redis/Etcd）
 docker run -d \
   --name nebula-id \
-  -p 8080:8080 -p 9091:9091 -p 9092:9092 \
+  -p 8080:8080 -p 9091:9091 \
   -e DATABASE_URL=postgresql://idgen:password@host:5432/idgen \
   -e REDIS_URL=redis://host:6379/0 \
   -e ETCD_ENDPOINTS=host:2379 \
@@ -155,7 +155,6 @@ docker run -d \
 |------|--------|------|
 | `APP_HTTP_PORT` | 8080 | HTTP 端口 |
 | `APP_GRPC_PORT` | 9091 | gRPC 端口 |
-| `APP_METRICS_PORT` | 9092 | 指标端口 |
 | `DC_ID` | 0 | 数据中心 ID |
 | `RUST_LOG` | info | 日志级别 (trace/debug/info/warn/error) |
 | `RUST_BACKTRACE` | 0 | 错误堆栈 (0/1/full) |
@@ -206,16 +205,20 @@ Docker Compose 配置了 `HEALTHCHECK`，每 30 秒检查一次。
 ### 5.2 Prometheus 指标
 
 ```bash
-# 抓取指标
-curl http://localhost:9092/metrics
+# 抓取指标（与 HTTP 服务同端口，无独立指标端口）
+curl http://localhost:8080/metrics
 ```
 
-指标端口（9092）暴露 Prometheus 格式指标，包含：
-- ID 生成总数（按算法分类）
-- 缓存命中率
-- 请求延迟分布
-- 熔断器状态
-- 数据中心健康状态
+`GET /metrics` 在 HTTP 主端口上暴露 Prometheus 文本格式指标
+（`text/plain; version=0.0.4`），包含：
+- `nebula_id_ids_generated_total{algorithm}` — 各算法累计生成 ID 数（counter）
+- `nebula_id_generate_latency_seconds{algorithm}` — 生成延迟直方图（histogram，
+  配套 `histogram_quantile()` 使用）；另有 p50/p99/p999 分位数 gauge
+- `nebula_id_generate_failures_total{algorithm}` / `nebula_id_clock_backwards_total{algorithm}` — 失败与时钟回拨计数
+- `nebula_id_algorithm_degraded{algorithm}` / `nebula_id_circuit_breaker_open{algorithm}` — 降级与熔断器状态 gauge
+- `nebula_id_requests_total` / `nebula_id_uptime_seconds` — API 层请求计数与运行时长
+
+Grafana 面板见 `grafana/dashboards/nebula_id.json`。
 
 ### 5.3 日志
 

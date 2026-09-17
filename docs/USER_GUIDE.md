@@ -89,7 +89,7 @@ Segment、Snowflake、UUID
 **可选**
 - 🔧 支持 Rust 的 IDE (如 VS Code + rust-analyzer)
 - 🔧 Docker (用于容器化部署)
-- 🔧 PostgreSQL/MySQL (用于 Segment 算法持久化)
+- 🔧 PostgreSQL (用于 Segment 算法持久化)
 
 </td>
 </tr>

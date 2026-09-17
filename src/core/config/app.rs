@@ -70,7 +70,7 @@ pub struct AppConfig {
     pub http_port: u16,
     /// gRPC server port
     pub grpc_port: u16,
-    /// Datacenter ID (0-31)
+    /// Datacenter ID (0-7)
     ///
     /// 多实例约束：未配置 etcd（无 worker_id 运行时分配）时，本值与
     /// [`AppConfig::worker_id`] 共同构成 Snowflake 的机器标识；多实例部署

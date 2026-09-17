@@ -780,20 +780,20 @@ WHERE role = 'admin' AND enabled;
 | `app.host` | String | `"0.0.0.0"` | ✅ | 服务器绑定地址 |
 | `app.http_port` | u16 | `8080` | ✅ | HTTP 端口，必须 > 0 |
 | `app.grpc_port` | u16 | `9091` | ✅ | gRPC 端口，必须 > 0 |
-| `app.dc_id` | u8 | `0` | ✅ | 数据中心 ID，必须 ≤ 31 |
+| `app.dc_id` | u8 | `0` | ✅ | 数据中心 ID，必须 ≤ 7（`datacenter_id_bits = 3`） |
 | `app.worker_id` | u8 | `0` | ✅ | 工作节点 ID |
 | `app.shutdown_timeout_seconds` | u64 | `30` | ➖ | 优雅停机超时，必须 > 0 |
-| `database.engine` | String | `"postgresql"` | ✅ | `postgresql` / `postgres` / `mysql` / `sqlite` |
+| `database.engine` | String | `"postgresql"` | ✅ | 仅 `postgresql` / `postgres` 实际可用；`mysql` / `sqlite` 仅为枚举变体，无连接实现 |
 | `database.host` / `port` / `username` / `password` / `database` | — | `localhost` / `5432` / `idgen` / `$NEBULA_DATABASE_PASSWORD` / `idgen` | ✅ | 逐项连接参数 |
 | `database.url` | String | `""` | ➖ | 上面各项的整串替代写法 |
-| `database.max_connections` | u32 | `100` | ✅ | 连接池大小，必须 > 0 |
-| `database.min_connections` | u32 | `10` | ✅ | 必须 ≤ `max_connections` |
+| `database.max_connections` | u32 | `100` | ✅ | 连接池大小，必须 > 0（`config.toml` 默认 50） |
+| `database.min_connections` | u32 | `10` | ✅ | 必须 ≤ `max_connections`（`config.toml` 默认 5） |
 | `database.acquire_timeout_seconds` | u64 | `30` | ✅ | 必须 > 0 |
 | `database.idle_timeout_seconds` | u64 | `300` | ✅ | 空闲连接超时 |
 | `redis` | 段 | — | ➖ | 整段可省略 |
 | `redis.url` | String | `$REDIS_URL` 或 `redis://localhost:6379` | ✅（写了 `[redis]` 就必填） | Redis 连接 URL |
 | `redis.pool_size` / `key_prefix` / `ttl_seconds` | u32 / String / u64 | `16` / `"nebula:id:"` / `600` | ➖ | 缓存调优 |
-| `etcd.endpoints` | Vec&lt;String&gt; | `["etcd:2379"]` | ✅ | `[]` 时退回 `LocalDistributedLock` |
+| `etcd.endpoints` | Vec&lt;String&gt; | `["etcd:2379"]` | ✅ | `[]` 时退回 `LocalDistributedLock`；`config.toml` 默认 `["http://localhost:2379"]` |
 | `etcd.connect_timeout_ms` / `watch_timeout_ms` | u64 | `5000` / `5000` | ✅ | etcd 超时 |
 | `auth.enabled` | bool | `true` | ✅ | API Key 中间件总开关 |
 | `auth.cache_ttl_seconds` | u64 | `300` | ✅ | 认证缓存 TTL |

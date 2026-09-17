@@ -423,7 +423,7 @@ cargo tarpaulin --package nebula-id-core --out Html
 - **公共 API**: 所有 `pub` 项目必须包含文档注释 `///`。
 - **示例代码**: 文档注释中应包含可运行的示例代码。
 - **更新同步**: 代码变更时必须同步更新相关的 README 和 API 文档。
-- **算法文档**: 新算法实现需要在 `docs/ALGORITHM.md` 中添加设计文档。
+- **算法文档**: 新算法实现需要在 `docs/ARCHITECTURE.md` 中添加设计文档。
 
 ---
 

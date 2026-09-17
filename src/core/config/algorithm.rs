@@ -85,11 +85,11 @@ impl Default for SnowflakeAlgorithmConfig {
     }
 }
 
-/// UUID v7 configuration
+/// UUID v8 configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UuidV8Config {
-    /// Enable/disable UUID v7 generation
+    /// Enable/disable UUID v8 generation
     pub enabled: bool,
 }
 
@@ -109,7 +109,7 @@ pub struct AlgorithmConfig {
     pub segment: SegmentAlgorithmConfig,
     /// Snowflake algorithm settings
     pub snowflake: SnowflakeAlgorithmConfig,
-    /// UUID v7 settings
+    /// UUID v8 settings
     pub uuid_v8: UuidV8Config,
 }
 

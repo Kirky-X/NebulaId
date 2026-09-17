@@ -122,7 +122,7 @@
 </tr>
 </table>
 
-> **注意：**升级版本前请务必查阅[更新日志](../CHANGELOG.md)。
+> **注意：**升级版本前请务必查阅[更新日志](CHANGELOG.md)。
 
 </details>
 
@@ -323,7 +323,7 @@ async fn main() -> nebulaid::core::Result<()> {
 </tr>
 <tr>
 <td>数据库</td>
-<td>PostgreSQL/MySQL</td>
+<td>PostgreSQL</td>
 <td>PostgreSQL 13+</td>
 </tr>
 </table>
@@ -376,12 +376,12 @@ async fn main() -> nebulaid::core::Result<()> {
 **Dockerfile 示例：**
 
 ```dockerfile
-FROM rust:1.75 as builder
+FROM rust:1.92.0-bullseye AS builder
 WORKDIR /app
 COPY . .
 RUN cargo build --release
 
-FROM debian:bookworm-slim
+FROM debian:bullseye-slim
 COPY --from=builder /app/target/release/nebula-id /usr/local/bin/
 CMD ["nebula-id"]
 ```
@@ -442,8 +442,8 @@ port = 5432
 username = "idgen"
 password = "${NEBULA_DATABASE_PASSWORD}"
 database = "idgen"
-max_connections = 100
-min_connections = 10
+max_connections = 50
+min_connections = 5
 acquire_timeout_seconds = 30
 idle_timeout_seconds = 300
 
@@ -1328,13 +1328,14 @@ default_rps = 1000
 burst_size = 100
 ```
 
-**各套餐的限流：**
+**按 API Key 限流：**
 
-| 套餐 | 每秒请求数 | 突发 |
-|------|-----------------|-------|
-| 免费版 | 100 | 10 |
-| Pro | 1,000 | 100 |
-| 企业版 | 10,000 | 1,000 |
+限流通过 `[rate_limit]` 配置段全局控制，也支持按 API Key 粒度覆盖（通过管理 API 设置）。
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `default_rps` | 1000 | 每秒请求数 |
+| `burst_size` | 100 | 突发容量 |
 
 **响应头：**
 
@@ -1566,7 +1567,7 @@ curl http://localhost:8080/metrics
 2. **增大号段步长：**
    ```toml
    [algorithm.segment]
-   step = 10000
+   base_step = 10000
    ```
 
 3. **添加 Redis 缓存：**
@@ -1577,7 +1578,7 @@ curl http://localhost:8080/metrics
 
 </details>
 
-**还有其他问题？**查看[故障排查指南](TROUBLESHOOTING.md)
+**还有其他问题？**查看 [DEPLOYMENT.md](DEPLOYMENT.md) 中的故障排查章节，或在 [GitHub Issues](https://github.com/nebula-id/nebula-id/issues) 中提问。
 
 ---
 

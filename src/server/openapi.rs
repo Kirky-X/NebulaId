@@ -31,7 +31,7 @@ use crate::server::models::{
 #[openapi(
     info(
         title = "Nebula ID API",
-        version = "1.0.0",
+        version = env!("CARGO_PKG_VERSION"),
         description = concat!(
             "# Nebula ID Service API\n\n",
             "Enterprise-grade distributed ID generation system supporting multiple algorithms:\n",

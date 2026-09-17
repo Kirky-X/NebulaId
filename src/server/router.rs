@@ -600,10 +600,37 @@ async fn handle_set_algorithm(
     Ok(Json(state.config_service.set_algorithm(req).await))
 }
 
+/// `/api/v1` 路由前缀清单（T005）—— `handle_api_info` 的 parity 守卫
+/// 数据源，路径风格与 endpoints 展示一致（`:name`/`:id`；axum 0.8 路由
+/// 注册处为 `{name}` 语法，语义一一对应）。新增 /api/v1 路由时必须同步
+/// 本表：`test_api_info_endpoints_cover_v1_routes` 断言 api-info 的
+/// endpoints 清单覆盖全部前缀，漏登会在测试面显性失败而非静默漂移。
+/// （守卫按子串匹配，条目文字（方法/描述）改动不会误报。）
+const API_V1_ROUTE_PREFIXES: &[&str] = &[
+    "/generate",
+    "/generate/batch",
+    "/parse",
+    "/config",
+    "/config/rate-limit",
+    "/config/logging",
+    "/config/reload",
+    "/config/algorithm",
+    "/workspaces",
+    "/workspaces/:name",
+    "/workspaces/:name/regenerate-user-key",
+    "/groups",
+    "/biz-tags",
+    "/biz-tags/:id",
+    "/api-keys",
+    "/api-keys/:id",
+];
+
 async fn handle_api_info() -> Json<ApiInfoResponse> {
     Json(ApiInfoResponse {
         name: "Nebula ID Service".to_string(),
-        version: "1.0.0".to_string(),
+        // T005 — 版本号唯一来源 = Cargo.toml（此前与 openapi.rs 各自
+        // 硬编码 "1.0.0"，发版时会漂移）。
+        version: env!("CARGO_PKG_VERSION").to_string(),
         description: "Distributed ID Generation Service".to_string(),
         endpoints: vec![
             "GET /health - Health check".to_string(),
@@ -618,11 +645,20 @@ async fn handle_api_info() -> Json<ApiInfoResponse> {
             "POST /api/v1/config/logging - Update logging".to_string(),
             "POST /api/v1/config/reload - Reload configuration".to_string(),
             "POST /api/v1/config/algorithm - Set algorithm".to_string(),
+            "GET /api/v1/workspaces - List workspaces".to_string(),
+            "POST /api/v1/workspaces - Create workspace".to_string(),
+            "GET /api/v1/workspaces/:name - Get workspace".to_string(),
+            "POST /api/v1/workspaces/:name/regenerate-user-key - Regenerate user key".to_string(),
+            "POST /api/v1/groups - Create group".to_string(),
+            "GET /api/v1/groups - List groups".to_string(),
             "POST /api/v1/biz-tags - Create biz tag".to_string(),
             "GET /api/v1/biz-tags - List biz tags".to_string(),
             "GET /api/v1/biz-tags/:id - Get biz tag".to_string(),
             "PUT /api/v1/biz-tags/:id - Update biz tag".to_string(),
             "DELETE /api/v1/biz-tags/:id - Delete biz tag".to_string(),
+            "POST /api/v1/api-keys - Create API key".to_string(),
+            "GET /api/v1/api-keys - List API keys".to_string(),
+            "DELETE /api/v1/api-keys/:id - Revoke API key".to_string(),
         ],
     })
 }
@@ -1437,12 +1473,30 @@ mod tests {
     async fn test_handle_api_info_returns_response() {
         let resp = handle_api_info().await;
         assert_eq!(resp.name, "Nebula ID Service");
-        assert_eq!(resp.version, "1.0.0");
+        // T005 — 版本号唯一来源 = Cargo.toml（openapi.rs 同步）。
+        assert_eq!(resp.version, env!("CARGO_PKG_VERSION"));
         assert!(!resp.endpoints.is_empty());
         // Verify endpoints list contains expected entries.
         assert!(resp.endpoints.iter().any(|e| e.contains("/health")));
         assert!(resp.endpoints.iter().any(|e| e.contains("/generate")));
         assert!(resp.endpoints.iter().any(|e| e.contains("/parse")));
+    }
+
+    /// T005 parity 守卫：api-info 的 endpoints 清单必须覆盖
+    /// `API_V1_ROUTE_PREFIXES` 全部路由前缀。方案说明：axum 不公开
+    /// 路由枚举 API，故以 router.rs 内与路由注册同处维护的前缀常量表
+    /// 为准，按「子串包含」断言（条目文字改动不误报）；新增路由漏登
+    /// 清单时本测试显性失败。
+    #[tokio::test]
+    async fn test_api_info_endpoints_cover_v1_routes() {
+        let resp = handle_api_info().await;
+        for prefix in API_V1_ROUTE_PREFIXES {
+            let path = format!("/api/v1{prefix}");
+            assert!(
+                resp.endpoints.iter().any(|e| e.contains(&path)),
+                "api-info endpoints 清单缺少 {path}（路由与展示漂移）"
+            );
+        }
     }
 
     // ========== create_router integration tests ==========

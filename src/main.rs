@@ -14,8 +14,9 @@
 
 use nebulaid::core::algorithm::AlgorithmRouter;
 use nebulaid::core::config::{resolve_startup_config, Config, Environment, StartupConfig};
+// EtcdClientWrapper 仅在 assemble_coordination 内部经局部 use 引入。
 #[cfg(feature = "etcd")]
-use nebulaid::core::coordinator::{EtcdClientWrapper, EtcdClusterHealthMonitor};
+use nebulaid::core::coordinator::{EtcdClusterHealthMonitor, WorkerIdAllocator};
 use nebulaid::core::database::{self, ApiKeyRepository};
 use nebulaid::core::types::Result;
 use nebulaid::server::audit::AuditLogger;
@@ -519,6 +520,200 @@ fn validate_tls_required_in_production(
     ))
 }
 
+/// T016 —— etcd 协调组件装配产物（仅 etcd feature）。
+///
+/// `lock` 供仓储号段分配跨进程互斥；`client` 为共享长连接 etcd 客户端，
+/// 供 T017 worker 分配与 T027 健康巡检注入复用；`None` = 未配置 etcd 的单机模式。
+#[cfg(feature = "etcd")]
+struct CoordinationComponents {
+    lock: std::sync::Arc<dyn nebulaid::core::coordinator::DistributedLock + Send + Sync>,
+    /// 共享长连接 etcd client（T017 worker 分配 / T027 健康巡检注入复用）；
+    /// `None` = 未配置 etcd 的单机模式。
+    client: Option<std::sync::Arc<dyn nebulaid::core::coordinator::EtcdClientOps>>,
+}
+
+/// T017 —— worker 租约守护（仅 etcd feature）：持有分配器与 keepalive 停机通道。
+///
+/// 续期连续失败的致命错误经独立的 oneshot 通道（`allocate_worker_id` 的
+/// `failure_tx` 入参）上报，main 的 select 接入后触发优雅停机（fail-stop）；
+/// `stop_tx` 用于正常停机时让 keepalive 任务退出。
+#[cfg(feature = "etcd")]
+struct WorkerLeaseGuard {
+    allocator: std::sync::Arc<nebulaid::core::coordinator::EtcdWorkerAllocator>,
+    worker_id: u16,
+    stop_tx: tokio::sync::watch::Sender<bool>,
+}
+
+/// T017 —— worker_id 运行时分配（Snowflake 构造前调用）。
+///
+/// 经 `EtcdWorkerAllocator::allocate()` 从 etcd 抢占 worker key（key value =
+/// 本实例 instance_id，lease 30s 绑定存活），成功后 spawn lease keepalive
+/// 任务（interval = lease_ttl/3）。任一步失败返回 `Err`，调用方拒绝启动 ——
+/// 多实例部署回退静态默认 0 必然产生重复 worker_id（数据正确性事故）。
+#[cfg(feature = "etcd")]
+async fn allocate_worker_id(
+    client: std::sync::Arc<dyn nebulaid::core::coordinator::EtcdClientOps>,
+    config: &Config,
+    failure_tx: tokio::sync::oneshot::Sender<String>,
+) -> Result<WorkerLeaseGuard> {
+    use nebulaid::core::coordinator::EtcdWorkerAllocator;
+
+    let allocator = EtcdWorkerAllocator::new(client.clone(), config.app.dc_id, config.etcd.clone())
+        .await
+        .map_err(|e| {
+            nebulaid::core::types::CoreError::ConfigurationError(format!(
+                "etcd worker allocator init failed: {}",
+                e
+            ))
+        })?;
+    let worker_id = allocator.allocate().await.map_err(|e| {
+        nebulaid::core::types::CoreError::ConfigurationError(format!(
+            "etcd worker_id allocation failed: {}",
+            e
+        ))
+    })?;
+    if worker_id > u8::MAX as u16 {
+        return Err(nebulaid::core::types::CoreError::ConfigurationError(
+            format!(
+                "etcd allocated worker_id {} exceeds config.worker_id u8 range",
+                worker_id
+            ),
+        ));
+    }
+
+    let lease_id = allocator.current_lease_id();
+    let allocator = std::sync::Arc::new(allocator);
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(EtcdWorkerAllocator::run_lease_keepalive_loop(
+        client,
+        lease_id,
+        EtcdWorkerAllocator::keepalive_interval(),
+        EtcdWorkerAllocator::KEEPALIVE_MAX_CONSECUTIVE_FAILURES,
+        stop_rx,
+        failure_tx,
+    ));
+    info!(
+        "{}",
+        t!(
+            "log.main.worker_id_allocated_from_etcd",
+            worker_id = worker_id,
+            lease_id = lease_id
+        )
+    );
+    Ok(WorkerLeaseGuard {
+        allocator,
+        worker_id,
+        stop_tx,
+    })
+}
+
+/// T016 —— etcd 协调组件装配（fail-closed）。
+///
+/// 规则：
+/// - 未配置 etcd endpoints → 单机部署合法，返回 `LocalDistributedLock`
+///   （`client` 为 `None`），不拒绝启动；
+/// - 配置了 endpoints → 建立长连接 client 并 ping 探活（`etcd_client::Client`
+///   的 connect 是 lazy 的，构造成功不代表可达），再构造 `EtcdDistributedLock`；
+///   任一步失败返回 `Err`，调用方打印本地化 error 并以非零码退出 —— 多实例
+///   部署静默回退进程内锁必然产生重复 ID（数据正确性事故），禁止降级。
+#[cfg(feature = "etcd")]
+async fn assemble_coordination(config: &Config) -> Result<CoordinationComponents> {
+    use nebulaid::core::coordinator::{
+        EtcdClientWrapper, EtcdDistributedLock, LocalDistributedLock, SEGMENT_LOCK_PATH_PREFIX,
+    };
+
+    if config.etcd.endpoints.is_empty() {
+        warn!("Etcd endpoints not configured, using LocalDistributedLock (single-process only)");
+        return Ok(CoordinationComponents {
+            lock: std::sync::Arc::new(LocalDistributedLock::new()),
+            client: None,
+        });
+    }
+
+    // fail-closed：配置显式含 etcd endpoints，装配任一步失败 → Err（拒绝启动）。
+    let wrapper = EtcdClientWrapper::new(config.etcd.endpoints.clone())
+        .await
+        .map_err(|e| {
+            nebulaid::core::types::CoreError::ConfigurationError(format!(
+                "etcd client connect failed for endpoints {:?}: {}",
+                config.etcd.endpoints, e
+            ))
+        })?;
+    let client: std::sync::Arc<dyn nebulaid::core::coordinator::EtcdClientOps> =
+        std::sync::Arc::new(wrapper);
+
+    // lazy connect 探活：ping 不通 = etcd 实际不可用，与连接失败同口径 fail-closed。
+    let probe_timeout = std::time::Duration::from_millis(config.etcd.connect_timeout_ms.max(1));
+    match tokio::time::timeout(probe_timeout, client.ping()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            return Err(nebulaid::core::types::CoreError::ConfigurationError(
+                format!(
+                    "etcd ping failed for endpoints {:?}: {}",
+                    config.etcd.endpoints, e
+                ),
+            ));
+        }
+        Err(_) => {
+            return Err(nebulaid::core::types::CoreError::ConfigurationError(
+                format!(
+                    "etcd ping timed out after {}ms for endpoints {:?}",
+                    config.etcd.connect_timeout_ms, config.etcd.endpoints
+                ),
+            ));
+        }
+    }
+
+    let etcd_lock = EtcdDistributedLock::new(client.clone(), SEGMENT_LOCK_PATH_PREFIX.to_string())
+        .await
+        .map_err(|e| {
+            nebulaid::core::types::CoreError::ConfigurationError(format!(
+                "failed to create EtcdDistributedLock: {}",
+                e
+            ))
+        })?;
+
+    Ok(CoordinationComponents {
+        lock: std::sync::Arc::new(etcd_lock),
+        client: Some(client),
+    })
+}
+
+/// T018 —— 无 etcd 路径默认 worker 标识风险判定（纯判定，便于单测）。
+///
+/// 未配置 etcd（无运行时 worker 分配）且 worker_id / dc_id 任一仍为默认值 0
+/// 时返回 true：此时 Snowflake 直接以配置值作为机器标识，多实例部署若不显式
+/// 配置 `WORKER_ID` / `DC_ID`（或写进配置文件），两实例拿到同一 (dc_id,
+/// worker_id) 组合必然产生重复 ID。仅告警不拦截 —— 单实例部署取默认值合法。
+fn should_warn_default_worker_identity(
+    etcd_endpoints_configured: bool,
+    worker_id: u8,
+    dc_id: u8,
+) -> bool {
+    !etcd_endpoints_configured && (worker_id == 0 || dc_id == 0)
+}
+
+/// T035 —— 进程默认 locale 解析（纯函数，便于单测）。
+///
+/// 优先级：环境变量 `NEBULA_LOCALE` > 配置 `app.locale` > 内置默认 "en"。
+/// 仅支持 `SUPPORTED_LOCALES` 中的取值；env/config 值非法时回退 "en" 并
+/// 返回 `was_invalid = true`（调用方输出本地化 warn）。
+fn resolve_locale(nebula_locale_env: Option<&str>, config_locale: &str) -> (String, bool) {
+    const SUPPORTED_LOCALES: [&str; 2] = ["en", "zh-CN"];
+
+    // 空串视同未设置（环境变量覆盖惯例：存在但无值不视为显式选择）
+    let candidate = match nebula_locale_env {
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => config_locale.to_string(),
+    };
+
+    if SUPPORTED_LOCALES.contains(&candidate.as_str()) {
+        (candidate, false)
+    } else {
+        ("en".to_string(), true)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // 日志初始化由 inklog 接管（替换原手写的 tracing_subscriber::fmt() 链）。
@@ -536,7 +731,8 @@ async fn main() -> Result<()> {
             .await?,
     );
 
-    // Phase 8 ICU i18n — initialize default locale before any t!() lookup.
+    // Phase 8 ICU i18n — 先以内置默认 en 初始化，覆盖配置加载前的极早期日志；
+    // 配置与 NEBULA_LOCALE 解析完成后按生效 locale 重新初始化（T035）。
     nebulaid::core::i18n::init_i18n("en");
 
     info!("{}", t!("log.main.starting_service"));
@@ -597,6 +793,41 @@ async fn main() -> Result<()> {
         ))
     })?);
     info!("{}", t!("log.main.config_loaded"));
+
+    // T035 —— 进程默认 locale 配置化：NEBULA_LOCALE > config.app.locale > "en"，
+    // 非法值回退 "en" 并告警。此后所有 t!() 输出按生效 locale 渲染。
+    let nebula_locale_env = env::var("NEBULA_LOCALE").ok();
+    let (locale, invalid_locale) = resolve_locale(nebula_locale_env.as_deref(), &config.app.locale);
+    if invalid_locale {
+        let invalid_value = nebula_locale_env.unwrap_or_else(|| config.app.locale.clone());
+        warn!(
+            "{}",
+            t!(
+                "log.main.invalid_locale_falling_back",
+                locale = invalid_value.as_str()
+            )
+        );
+    }
+    info!("{}", t!("log.main.locale_initialized", locale = &locale));
+    nebulaid::core::i18n::init_i18n(&locale);
+
+    // T018 —— 无 etcd 时默认 worker 标识多实例风险告警：etcd 未配置意味着
+    // 没有 worker_id 运行时分配兜底，worker_id/dc_id 任一为默认 0 时显性
+    // 提醒（多实例必须显式配置，否则 Snowflake 会重复）。
+    if should_warn_default_worker_identity(
+        !config.etcd.endpoints.is_empty(),
+        config.app.worker_id,
+        config.app.dc_id,
+    ) {
+        warn!(
+            "{}",
+            t!(
+                "log.main.default_worker_id_warning",
+                worker_id = config.app.worker_id,
+                dc_id = config.app.dc_id
+            )
+        );
+    }
 
     // T008 —— 生产环境强制 TLS（fail-fast）。环境判定经 Environment::from_env()
     //（含 T007 反向默认：NEBULA_ENV 缺失/未知值按生产执行，缺失时此处顺带
@@ -664,54 +895,29 @@ async fn main() -> Result<()> {
         }
     };
 
-    let repository: Option<Arc<database::SeaOrmRepository>> = if let Some(conn) = db_connection {
-        // 修复：注入分布式锁，避免 allocate_segment 在无锁降级时产生重复 ID。
-        // 默认构建（无 etcd feature）使用 LocalDistributedLock（进程内互斥）。
-        #[cfg(not(feature = "etcd"))]
-        let lock: std::sync::Arc<
-            dyn nebulaid::core::coordinator::DistributedLock + Send + Sync,
-        > = std::sync::Arc::new(nebulaid::core::coordinator::LocalDistributedLock::new());
-        // etcd feature 构建下，若 etcd 端点已配置，先创建 EtcdClientWrapper，
-        // 再用它构造 EtcdDistributedLock；任一步失败回退到 LocalDistributedLock。
-        #[cfg(feature = "etcd")]
-        let lock: std::sync::Arc<
-            dyn nebulaid::core::coordinator::DistributedLock + Send + Sync,
-        > = if !config.etcd.endpoints.is_empty() {
-            match nebulaid::core::coordinator::EtcdClientWrapper::new(config.etcd.endpoints.clone())
-                .await
-            {
-                Ok(client) => {
-                    let client: std::sync::Arc<dyn nebulaid::core::coordinator::EtcdClientOps> =
-                        std::sync::Arc::new(client);
-                    match nebulaid::core::coordinator::EtcdDistributedLock::new(
-                        client,
-                        nebulaid::core::coordinator::SEGMENT_LOCK_PATH_PREFIX.to_string(),
-                    )
-                    .await
-                    {
-                        Ok(etcd_lock) => std::sync::Arc::new(etcd_lock),
-                        Err(_) => {
-                            warn!("Failed to create EtcdDistributedLock, falling back to LocalDistributedLock");
-                            std::sync::Arc::new(
-                                nebulaid::core::coordinator::LocalDistributedLock::new(),
-                            )
-                        }
-                    }
-                }
-                Err(_) => {
-                    warn!(
-                        "Failed to create EtcdClientWrapper, falling back to LocalDistributedLock"
-                    );
-                    std::sync::Arc::new(nebulaid::core::coordinator::LocalDistributedLock::new())
-                }
-            }
-        } else {
-            warn!(
-                "Etcd endpoints not configured, using LocalDistributedLock (single-process only)"
+    // T016 —— 分布式锁装配（fail-closed），提前到仓储构造之前：
+    // 配置显式含 etcd endpoints 时，etcd 不可用直接拒绝启动（多实例场景
+    // 静默回退进程内锁必然重复 ID）；未配置 endpoints 才允许单机本地锁。
+    #[cfg(not(feature = "etcd"))]
+    let lock: std::sync::Arc<dyn nebulaid::core::coordinator::DistributedLock + Send + Sync> =
+        std::sync::Arc::new(nebulaid::core::coordinator::LocalDistributedLock::new());
+    #[cfg(feature = "etcd")]
+    let coordination = match assemble_coordination(&config).await {
+        Ok(components) => components,
+        Err(e) => {
+            error!(
+                "{}",
+                t!("error.main.etcd_required_but_unavailable", error = e)
             );
-            std::sync::Arc::new(nebulaid::core::coordinator::LocalDistributedLock::new())
-        };
+            error!("{}", t!("log.main.shutting_down"));
+            std::process::exit(1);
+        }
+    };
+    #[cfg(feature = "etcd")]
+    let lock: std::sync::Arc<dyn nebulaid::core::coordinator::DistributedLock + Send + Sync> =
+        coordination.lock.clone();
 
+    let repository: Option<Arc<database::SeaOrmRepository>> = if let Some(conn) = db_connection {
         // tiangang C1 修复：生产环境强制校验 api_key_salt 非空且非弱默认值。
         // 规则 12（失败必须显性化）：校验失败时 panic，禁止弱 pepper 静默放行。
         if nebulaid::core::config::is_production() {
@@ -825,43 +1031,74 @@ async fn main() -> Result<()> {
     #[cfg(feature = "etcd")]
     {
         info!("{}", t!("log.main.initializing_etcd_health_monitor"));
-        let etcd_cache_path = format!("./data/etcd_cache_{}.json", config.app.dc_id);
+        // T027 —— 缓存文件名追加 pid 段：同机多副本共用 dc_id 时
+        // `./data/etcd_cache_{dc_id}.json` 会互相踩踏覆盖。
+        let etcd_cache_path = format!(
+            "./data/etcd_cache_{}_{}.json",
+            config.app.dc_id,
+            std::process::id()
+        );
 
-        // F-01 修复：生产路径注入 EtcdClientWrapper，让 check_etcd_health 走 trait 抽象层。
-        // 尝试建立长连接 client；失败则回退到 new()（每次检查新建 client 的 fallback 路径）。
-        let etcd_health_monitor = if !config.etcd.endpoints.is_empty() {
-            match EtcdClientWrapper::new(config.etcd.endpoints.clone()).await {
-                Ok(client) => {
-                    info!("{}", t!("log.main.etcd_client_wrapper_initialized"));
-                    Arc::new(EtcdClusterHealthMonitor::new_with_client(
-                        config.etcd.clone(),
-                        etcd_cache_path,
-                        Arc::new(client),
-                    ))
-                }
-                Err(e) => {
-                    warn!(
-                        "{}",
-                        t!("log.main.etcd_client_wrapper_init_failed", error = e)
-                    );
-                    Arc::new(EtcdClusterHealthMonitor::new(
-                        config.etcd.clone(),
-                        etcd_cache_path,
-                    ))
-                }
+        // T027 —— 健康巡检统一走注入的长连接 client：复用 T016 协调装配
+        // 的 EtcdClientWrapper（fail-closed 已 ping 探活）。原实现此处再建
+        // 一个 client 且 fallback 路径每次检查新建 client —— etcd connect
+        // 是 lazy 的，构造成功不代表可达，Failed 判定几乎永不触发。
+        let etcd_health_monitor = match &coordination.client {
+            Some(client) => {
+                info!("{}", t!("log.main.etcd_client_wrapper_initialized"));
+                Arc::new(EtcdClusterHealthMonitor::new_with_client(
+                    config.etcd.clone(),
+                    etcd_cache_path,
+                    client.clone(),
+                ))
             }
-        } else {
-            Arc::new(EtcdClusterHealthMonitor::new(
+            None => Arc::new(EtcdClusterHealthMonitor::new(
                 config.etcd.clone(),
                 etcd_cache_path,
-            ))
+            )),
         };
 
         if let Err(e) = etcd_health_monitor.load_local_cache().await {
             warn!("{}", t!("log.main.etcd_local_cache_load_failed", error = e));
         }
 
+        // T027 —— 巡检与缓存持久化接线：健康状态周期刷新（真实 ping 判定
+        // Degraded/Failed 并驱动降级），本地缓存周期落盘（etcd 故障时
+        // 供重启后的实例读取）。未配置 etcd（单机）时同样不启动巡检意义
+        // 不大，但保持一致行为无副作用（check 走 no_endpoints early-return）。
+        etcd_health_monitor
+            .start_health_check(std::time::Duration::from_secs(30))
+            .await;
+        etcd_health_monitor
+            .start_cache_persistence(std::time::Duration::from_secs(300))
+            .await;
+
         info!("{}", t!("log.main.etcd_health_monitor_initialized"));
+
+        // T017 —— worker_id 运行时分配：etcd 已配置（coordination.client 为
+        // Some）时于 Snowflake 构造前分配并覆盖静态配置值；分配失败 fail-closed
+        // （多实例回退静态默认 0 必然重复 ID）。
+        let (lease_failure_tx, lease_failure_rx) = tokio::sync::oneshot::channel::<String>();
+        let worker_lease: Option<WorkerLeaseGuard> = match &coordination.client {
+            Some(client) => {
+                match allocate_worker_id(client.clone(), &config, lease_failure_tx).await {
+                    Ok(guard) => Some(guard),
+                    Err(e) => {
+                        error!(
+                            "{}",
+                            t!("error.main.worker_id_allocation_failed", error = e)
+                        );
+                        error!("{}", t!("log.main.shutting_down"));
+                        std::process::exit(1);
+                    }
+                }
+            }
+            None => None,
+        };
+        if let Some(guard) = &worker_lease {
+            // 分配器 MAX_WORKER_ID=255，覆盖值必在 config.worker_id 的 u8 值域内
+            config.app.worker_id = guard.worker_id as u8;
+        }
 
         let id_generator = create_id_generator(
             &config,
@@ -994,10 +1231,56 @@ async fn main() -> Result<()> {
                 info!("{}", t!("log.main.shutdown_signal_received"));
                 Ok(())
             }
+            // T017 —— lease 续期连续失败 fail-stop：etcd 不可达使 lease 失效后，
+            // 该 worker_id 可能已被其他实例接管，继续发号会重复 ID → 触发优雅停机。
+            // 未配置 etcd（worker_lease 为 None）时该臂永不触发。
+            lease_reason = async {
+                if worker_lease.is_some() {
+                    lease_failure_rx
+                        .await
+                        .unwrap_or_else(|_| "lease keepalive task dropped".to_string())
+                } else {
+                    std::future::pending::<String>().await
+                }
+            } => {
+                error!(
+                    "{}",
+                    t!("error.main.worker_lease_renewal_failed", reason = lease_reason)
+                );
+                error!("{}", t!("log.main.shutting_down"));
+                Err(nebulaid::core::types::CoreError::InternalError(format!(
+                    "worker lease renewal failed: {}",
+                    lease_reason
+                )))
+            }
         };
 
         degradation_manager.stop_background_check().await;
         rate_limit_cleanup.abort();
+
+        // T017 —— 停机收尾：停 keepalive 任务，并经归属校验释放 worker_id
+        //（best-effort：失败仅告警，lease TTL 到期后 etcd 会自动回收 key）。
+        if let Some(guard) = &worker_lease {
+            let _ = guard.stop_tx.send(true);
+            if let Err(e) = guard.allocator.release(guard.worker_id).await {
+                warn!(
+                    "{}",
+                    t!(
+                        "log.main.worker_id_release_on_shutdown_failed",
+                        worker_id = guard.worker_id,
+                        error = e
+                    )
+                );
+            } else {
+                info!(
+                    "{}",
+                    t!(
+                        "log.main.worker_id_released_on_shutdown",
+                        worker_id = guard.worker_id
+                    )
+                );
+            }
+        }
 
         server_result
     }
@@ -1524,5 +1807,148 @@ mod tests {
         assert!(result.is_err());
         let result = validate_tls_required_in_production(Environment::Production, false, Some(""));
         assert!(result.is_err());
+    }
+
+    // ==================== T016: 分布式锁装配 fail-closed ====================
+
+    /// T016 —— 配置显式含 etcd endpoints + 不可达端点 → 装配必须失败（fail-closed）。
+    ///
+    /// `etcd_client::Client::connect` 是 lazy 的，`EtcdClientWrapper::new` 对不可达
+    /// endpoint 也返回 Ok；`assemble_coordination` 因此在构造后 ping 探活，把
+    /// "配置要求 etcd 但实际不可用" 确定性地转为 Err（main 据此打印本地化错误
+    /// 并以非零码退出），不再静默回退 LocalDistributedLock。
+    #[cfg(feature = "etcd")]
+    #[tokio::test]
+    async fn test_assemble_coordination_fail_closed_on_unreachable_etcd() {
+        let mut config = Config::default();
+        config.etcd.endpoints = vec!["http://127.0.0.1:1".to_string()];
+        config.etcd.connect_timeout_ms = 300;
+
+        let result = assemble_coordination(&config).await;
+        let err_msg = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("配置显式含 etcd endpoints 但端点不可达时必须拒绝装配（fail-closed）"),
+        };
+        assert!(
+            err_msg.contains("127.0.0.1:1") || err_msg.contains("ping"),
+            "错误信息应指向不可达端点或 ping 探活，实际: {err_msg}"
+        );
+    }
+
+    /// T016 —— 未配置 endpoints → 单机本地锁放行（合法），共享 client 为 None。
+    #[cfg(feature = "etcd")]
+    #[tokio::test]
+    async fn test_assemble_coordination_local_lock_when_no_endpoints() {
+        let mut config = Config::default();
+        config.etcd.endpoints = vec![];
+
+        let components = assemble_coordination(&config)
+            .await
+            .expect("未配置 etcd 时装配必须放行（单机合法）");
+        assert!(
+            components.client.is_none(),
+            "未配置 etcd 时不应产出共享 client"
+        );
+        assert!(
+            components.lock.is_healthy(),
+            "LocalDistributedLock 应恒健康"
+        );
+
+        // 本地锁应可正常 acquire/release（号段分配互斥在单机内仍生效）
+        let guard = components
+            .lock
+            .acquire("t016-local-key", 5)
+            .await
+            .expect("本地锁 acquire 必须成功");
+        guard.release().await.expect("本地锁 release 必须成功");
+    }
+
+    /// T016 verify 钉（bin 侧可达性）—— `DbSegmentLoader` 经 mod.rs re-export
+    /// 后可从 bin crate 构造（`SegmentAlgorithm::new(dc).with_segment_loader(...)`
+    /// 装配契约的 bin 侧入口）。注意：服务端 Segment 实例由
+    /// `AlgorithmRouter::initialize` 经 `SegmentFactory` 内部构建，bin 侧
+    /// 注入缝（router/traits 增设）不在本 lane 文件所有权内。
+    #[test]
+    fn test_db_segment_loader_assembly_api_reachable_from_bin() {
+        use dbnexus::sea_orm::{DatabaseBackend, MockDatabase};
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let repo = Arc::new(database::SeaOrmRepository::new(db, "test_salt".to_string()));
+        // 构造成功即证明 re-export 与泛型约束（SeaOrmRepository: SegmentRepository）
+        // 在 bin 侧可用；字段与步长断言归 lib 侧单测（segment.rs）所有。
+        let _loader = nebulaid::core::algorithm::DbSegmentLoader::new(repo);
+    }
+
+    // ==================== T018: 无 etcd 默认 worker 标识告警 ====================
+
+    /// T018 —— 未配置 etcd + worker_id/dc_id 默认 0 → 必须告警。
+    #[test]
+    fn test_warn_default_worker_identity_triggers_on_defaults() {
+        assert!(should_warn_default_worker_identity(false, 0, 0));
+        assert!(should_warn_default_worker_identity(false, 0, 3));
+        assert!(should_warn_default_worker_identity(false, 5, 0));
+    }
+
+    /// T018 —— 已配置 etcd（有运行时分配兜底）→ 不告警，即使值为默认 0。
+    #[test]
+    fn test_warn_default_worker_identity_skipped_when_etcd_configured() {
+        assert!(!should_warn_default_worker_identity(true, 0, 0));
+        assert!(!should_warn_default_worker_identity(true, 0, 3));
+    }
+
+    /// T018 —— 未配置 etcd 但标识均已显式配置（非 0）→ 不告警。
+    #[test]
+    fn test_warn_default_worker_identity_skipped_when_explicitly_configured() {
+        assert!(!should_warn_default_worker_identity(false, 1, 1));
+        assert!(!should_warn_default_worker_identity(false, 255, 31));
+    }
+
+    // ==================== T035: 默认 locale 配置化 ====================
+
+    /// T035 —— 环境变量 NEBULA_LOCALE 优先于配置值。
+    #[test]
+    fn test_resolve_locale_env_overrides_config() {
+        let (locale, invalid) = resolve_locale(Some("zh-CN"), "en");
+        assert_eq!(locale, "zh-CN");
+        assert!(!invalid);
+    }
+
+    /// T035 —— 环境变量缺失时使用配置值。
+    #[test]
+    fn test_resolve_locale_falls_back_to_config() {
+        let (locale, invalid) = resolve_locale(None, "zh-CN");
+        assert_eq!(locale, "zh-CN");
+        assert!(!invalid);
+
+        let (locale, invalid) = resolve_locale(None, "en");
+        assert_eq!(locale, "en");
+        assert!(!invalid);
+    }
+
+    /// T035 —— 环境变量为空串视同未设置（沿环境变量覆盖惯例）。
+    #[test]
+    fn test_resolve_locale_empty_env_treated_as_unset() {
+        let (locale, invalid) = resolve_locale(Some(""), "zh-CN");
+        assert_eq!(locale, "zh-CN");
+        assert!(!invalid);
+    }
+
+    /// T035 —— 非法值（env 与 config 两侧）回退 en 并标记 invalid。
+    #[test]
+    fn test_resolve_locale_invalid_values_fall_back_to_en() {
+        // env 非法
+        let (locale, invalid) = resolve_locale(Some("fr"), "en");
+        assert_eq!(locale, "en", "非法 env 值必须回退 en");
+        assert!(invalid, "非法值必须被标记，供调用方告警");
+
+        // config 非法
+        let (locale, invalid) = resolve_locale(None, "es-ES");
+        assert_eq!(locale, "en", "非法 config 值必须回退 en");
+        assert!(invalid);
+
+        // 大小写敏感：非规范取值按非法处理（不做隐式归一化）
+        let (locale, invalid) = resolve_locale(Some("ZH-cn"), "en");
+        assert_eq!(locale, "en");
+        assert!(invalid);
     }
 }

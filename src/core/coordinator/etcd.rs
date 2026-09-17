@@ -68,6 +68,12 @@ pub trait EtcdClientOps: Send + Sync {
 
     /// 健康检查 ping：执行一个轻量级 etcd 操作验证连通性。
     async fn ping(&self) -> std::result::Result<(), EtcdError>;
+
+    /// T017 —— lease 续期一次：对 `lease_id` 发送 keep-alive 并等待一次响应。
+    ///
+    /// 每次调用独立建立 keep-alive 流（语义等价一次续期；etcd 允许多个并发
+    /// keep-alive 流），收到非零 granted TTL 的响应即视为续期成功。
+    async fn lease_keep_alive_once(&self, lease_id: i64) -> std::result::Result<(), EtcdError>;
 }
 
 /// etcd 操作错误类型。
@@ -182,20 +188,49 @@ impl EtcdClientOps for EtcdClientWrapper {
             .map_err(|e| EtcdError::Network(e.to_string()))?;
         Ok(())
     }
+
+    async fn lease_keep_alive_once(&self, lease_id: i64) -> std::result::Result<(), EtcdError> {
+        let mut client = self.inner.lock().await;
+        let (mut keeper, mut stream) = client
+            .lease_keep_alive(lease_id)
+            .await
+            .map_err(|e| EtcdError::LeaseInvalid(e.to_string()))?;
+        keeper
+            .keep_alive()
+            .await
+            .map_err(|e| EtcdError::LeaseInvalid(e.to_string()))?;
+        match stream.message().await {
+            // ttl == 0 表示 lease 已过期（etcd 语义），续期失败。
+            Ok(Some(resp)) if resp.ttl() > 0 => Ok(()),
+            Ok(Some(_)) => Err(EtcdError::LeaseInvalid(format!(
+                "lease {lease_id} expired (ttl=0)"
+            ))),
+            Ok(None) => Err(EtcdError::LeaseInvalid(format!(
+                "keep-alive stream closed for lease {lease_id}"
+            ))),
+            Err(e) => Err(EtcdError::LeaseInvalid(e.to_string())),
+        }
+    }
 }
 
 /// etcd 集群健康监控器。
+///
+/// T027 —— 状态字段（status/failure_count/consecutive_failures/is_using_cache）
+/// 以 `Arc<Atomic*>` 持有：`clone()` 后所有句柄读写**同一**状态。原手写 Clone
+/// 为各原子新建快照，导致后台巡检任务与外部观察者状态隔离——巡检任务内部的
+/// 降级/恢复，外部经 clone 句柄永远看不到。
 pub struct EtcdClusterHealthMonitor {
     config: EtcdConfig,
-    status: AtomicU8,
+    status: Arc<AtomicU8>,
     last_success: Arc<tokio::sync::Mutex<Instant>>,
-    failure_count: AtomicU64,
-    consecutive_failures: AtomicU64,
+    failure_count: Arc<AtomicU64>,
+    consecutive_failures: Arc<AtomicU64>,
     local_cache: Arc<RwLock<HashMap<String, LocalCacheEntry>>>,
     cache_file_path: String,
-    is_using_cache: AtomicBool,
+    is_using_cache: Arc<AtomicBool>,
     /// 可选注入的 etcd 客户端：`Some` 时 `check_etcd_health` 走可 mock 路径，
-    /// `None` 时每次健康检查新建 `etcd_client::Client`（生产默认）。
+    /// `None` 时每次健康检查新建 `etcd_client::Client`（lazy connect，Failed
+    /// 判定几乎不触发——生产装配必须注入长连接 client，见 main.rs T027）。
     client: Option<Arc<dyn EtcdClientOps>>,
 }
 
@@ -203,13 +238,13 @@ impl EtcdClusterHealthMonitor {
     pub fn new(config: EtcdConfig, cache_file_path: String) -> Self {
         Self {
             config,
-            status: AtomicU8::new(EtcdClusterStatus::Healthy as u8),
+            status: Arc::new(AtomicU8::new(EtcdClusterStatus::Healthy as u8)),
             last_success: Arc::new(tokio::sync::Mutex::new(Instant::now())),
-            failure_count: AtomicU64::new(0),
-            consecutive_failures: AtomicU64::new(0),
+            failure_count: Arc::new(AtomicU64::new(0)),
+            consecutive_failures: Arc::new(AtomicU64::new(0)),
             local_cache: Arc::new(RwLock::new(HashMap::new())),
             cache_file_path,
-            is_using_cache: AtomicBool::new(false),
+            is_using_cache: Arc::new(AtomicBool::new(false)),
             client: None,
         }
     }
@@ -222,13 +257,13 @@ impl EtcdClusterHealthMonitor {
     ) -> Self {
         Self {
             config,
-            status: AtomicU8::new(EtcdClusterStatus::Healthy as u8),
+            status: Arc::new(AtomicU8::new(EtcdClusterStatus::Healthy as u8)),
             last_success: Arc::new(tokio::sync::Mutex::new(Instant::now())),
-            failure_count: AtomicU64::new(0),
-            consecutive_failures: AtomicU64::new(0),
+            failure_count: Arc::new(AtomicU64::new(0)),
+            consecutive_failures: Arc::new(AtomicU64::new(0)),
             local_cache: Arc::new(RwLock::new(HashMap::new())),
             cache_file_path,
-            is_using_cache: AtomicBool::new(false),
+            is_using_cache: Arc::new(AtomicBool::new(false)),
             client: Some(client),
         }
     }
@@ -479,17 +514,20 @@ impl EtcdClusterHealthMonitor {
     }
 }
 
+// T027 —— Clone 语义修正：状态字段以 `Arc<Atomic*>` 共享，clone 出的句柄
+// 与原句柄读写同一状态（原实现逐原子快照复制，后台巡检任务 clone self 后
+// 的降级/恢复状态外部不可见，状态隔离）。
 impl Clone for EtcdClusterHealthMonitor {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
-            status: AtomicU8::new(self.status.load(Ordering::Relaxed)),
+            status: self.status.clone(),
             last_success: self.last_success.clone(),
-            failure_count: AtomicU64::new(self.failure_count.load(Ordering::Relaxed)),
-            consecutive_failures: AtomicU64::new(self.consecutive_failures.load(Ordering::Relaxed)),
+            failure_count: self.failure_count.clone(),
+            consecutive_failures: self.consecutive_failures.clone(),
             local_cache: self.local_cache.clone(),
             cache_file_path: self.cache_file_path.clone(),
-            is_using_cache: AtomicBool::new(self.is_using_cache.load(Ordering::Relaxed)),
+            is_using_cache: self.is_using_cache.clone(),
             client: self.client.clone(),
         }
     }
@@ -503,6 +541,12 @@ pub struct EtcdWorkerAllocator {
     lease_id: AtomicI64,
     health_status: AtomicU8,
     config: EtcdConfig,
+    /// T017 —— 本实例身份标识（allocate 时作为 worker key 的 value 写入）；
+    /// `release()` 据此校验 key 归属，防止误删其他实例接管的 key。
+    instance_id: String,
+    /// T017 —— 最近一次 allocate 实际写入的 value（`None` = 未持有）。
+    /// Arc 共享：clone 后所有句柄读写同一归属记录。
+    allocated_value: Arc<RwLock<Option<String>>>,
 }
 
 impl Clone for EtcdWorkerAllocator {
@@ -514,6 +558,8 @@ impl Clone for EtcdWorkerAllocator {
             lease_id: AtomicI64::new(self.lease_id.load(Ordering::SeqCst)),
             health_status: AtomicU8::new(self.health_status.load(Ordering::SeqCst)),
             config: self.config.clone(),
+            instance_id: self.instance_id.clone(),
+            allocated_value: self.allocated_value.clone(),
         }
     }
 }
@@ -521,6 +567,125 @@ impl Clone for EtcdWorkerAllocator {
 impl EtcdWorkerAllocator {
     const MAX_WORKER_ID: u16 = 255;
     const WORKER_PATH_PREFIX: &'static str = "/idgen/workers";
+
+    /// T017 —— lease TTL（秒），`grant_lease` 与 keepalive 周期的单一来源。
+    /// （bin 装配处引用，故 `pub` 而非 `pub(crate)`。）
+    pub const LEASE_TTL_SECS: i64 = 30;
+
+    /// T017 —— 续期连续失败阈值：达到即 fail-stop（上报致命错误触发优雅停机）。
+    pub const KEEPALIVE_MAX_CONSECUTIVE_FAILURES: u32 = 3;
+
+    /// T017 —— keepalive 周期 = lease_ttl / 3（默认 10s，TTL 的三分之一，
+    /// 保证单次失败仍有两窗口内补救的机会）。
+    pub fn keepalive_interval() -> Duration {
+        Duration::from_secs((Self::LEASE_TTL_SECS / 3).max(1) as u64)
+    }
+
+    /// 本实例身份标识：hostname 尽量参与、必带 pid + 启动纳秒时戳，
+    /// 保证同机多副本与快速重启的进程互不相同。
+    fn make_instance_id(datacenter_id: u8) -> String {
+        let hostname = std::fs::read_to_string("/etc/hostname")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "unknown-host".to_string());
+        let boot_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!(
+            "host={};dc={};pid={};boot_ns={}",
+            hostname,
+            datacenter_id,
+            std::process::id(),
+            boot_ns
+        )
+    }
+
+    /// 当前持有的 lease id（0 = 未持有）。
+    pub fn current_lease_id(&self) -> i64 {
+        self.lease_id.load(Ordering::SeqCst)
+    }
+
+    /// T017 —— 续期一次（经 [`EtcdClientOps`] 抽象，可 mock）。
+    pub async fn keep_alive_once(&self) -> std::result::Result<(), WorkerAllocatorError> {
+        let lease_id = self.current_lease_id();
+        if lease_id == 0 {
+            return Err(WorkerAllocatorError::LeaseRenewalFailed(
+                "no active lease to keep alive".to_string(),
+            ));
+        }
+        self.client
+            .lease_keep_alive_once(lease_id)
+            .await
+            .map_err(|e| WorkerAllocatorError::LeaseRenewalFailed(e.to_string()))
+    }
+
+    /// T017 —— lease 续期调度核心（fail-stop）。
+    ///
+    /// 每 `interval` 调一次 `lease_keep_alive_once`：
+    /// - 成功 → 连续失败计数清零；
+    /// - 连续失败达 `max_consecutive_failures` → 经 `failure_tx` 上报致命错误
+    ///   并退出（调用方接入优雅停机——lease 失效后继续用同一 worker_id 发号，
+    ///   会与接管该 id 的新实例产生重复 ID）；
+    /// - `stop_rx` 收到信号 → 优雅退出，不上报。
+    pub async fn run_lease_keepalive_loop(
+        client: Arc<dyn EtcdClientOps>,
+        lease_id: i64,
+        interval: Duration,
+        max_consecutive_failures: u32,
+        mut stop_rx: tokio::sync::watch::Receiver<bool>,
+        failure_tx: tokio::sync::oneshot::Sender<String>,
+    ) {
+        let mut consecutive_failures: u32 = 0;
+        loop {
+            tokio::select! {
+                _ = stop_rx.changed() => {
+                    info!(
+                        "{}",
+                        t!("log.core.coordinator.etcd.lease_keepalive_stopped")
+                    );
+                    return;
+                }
+                _ = sleep(interval) => {}
+            }
+            match client.lease_keep_alive_once(lease_id).await {
+                Ok(()) => {
+                    consecutive_failures = 0;
+                    debug!(
+                        "{}",
+                        t!(
+                            "log.core.coordinator.etcd.lease_keepalive_renewed",
+                            lease_id = lease_id
+                        )
+                    );
+                }
+                Err(e) => {
+                    consecutive_failures += 1;
+                    warn!(
+                        "{}",
+                        t!(
+                            "log.core.coordinator.etcd.lease_keepalive_failed",
+                            consecutive = consecutive_failures,
+                            max = max_consecutive_failures,
+                            error = e
+                        )
+                    );
+                    if consecutive_failures >= max_consecutive_failures {
+                        error!(
+                            "{}",
+                            t!(
+                                "log.core.coordinator.etcd.lease_keepalive_fail_stop",
+                                consecutive = consecutive_failures
+                            )
+                        );
+                        let _ = failure_tx.send(e.to_string());
+                        return;
+                    }
+                }
+            }
+        }
+    }
 
     /// 用注入的 etcd 客户端构造分配器。调用方负责创建 `EtcdClientOps` 实例
     /// （生产环境用 `EtcdClientWrapper`，测试用 `MockEtcdClientOps`）。
@@ -536,6 +701,8 @@ impl EtcdWorkerAllocator {
             lease_id: AtomicI64::new(0),
             health_status: AtomicU8::new(0),
             config,
+            instance_id: Self::make_instance_id(datacenter_id),
+            allocated_value: Arc::new(RwLock::new(None)),
         };
 
         info!(
@@ -560,7 +727,7 @@ impl EtcdWorkerAllocator {
     async fn grant_lease(&self) -> std::result::Result<i64, WorkerAllocatorError> {
         let lease_id = self
             .client
-            .lease_grant(30)
+            .lease_grant(Self::LEASE_TTL_SECS)
             .await
             .map_err(|e| WorkerAllocatorError::LeaseRenewalFailed(e.to_string()))?;
 
@@ -581,12 +748,8 @@ impl EtcdWorkerAllocator {
         lease_id: i64,
     ) -> std::result::Result<bool, WorkerAllocatorError> {
         let path = self.worker_path(worker_id);
-        let value = format!(
-            "dc={},pid={},ts={}",
-            self.datacenter_id,
-            std::process::id(),
-            chrono::Utc::now().timestamp()
-        );
+        // T017 —— key value 即本实例 instance_id，release 归属校验的依据。
+        let value = self.instance_id.clone();
 
         // 预检查：key 已存在则跳过。kv_get 错误容错（继续尝试下一个 id）。
         match self.client.kv_get(&path).await {
@@ -624,6 +787,7 @@ impl EtcdWorkerAllocator {
             match self.try_allocate_id(worker_id, lease_id).await {
                 Ok(true) => {
                     self.allocated_id.store(worker_id, Ordering::SeqCst);
+                    *self.allocated_value.write() = Some(self.instance_id.clone());
                     info!(
                         "{}",
                         t!(
@@ -660,6 +824,33 @@ impl WorkerIdAllocator for EtcdWorkerAllocator {
 
     async fn release(&self, worker_id: u16) -> std::result::Result<(), WorkerAllocatorError> {
         let path = self.worker_path(worker_id);
+
+        // T017 —— 归属校验（防误删）：key 仍存在但 value 不是本实例的
+        // instance_id 时，说明 lease 过期后该 id 已被其他实例接管，拒绝删除。
+        // key 不存在（lease 过期被 etcd 回收）→ 幂等释放，无需删除。
+        match self.client.kv_get(&path).await {
+            Ok(Some(existing)) => {
+                let owned_value = self.allocated_value.read().clone();
+                if owned_value.as_deref() != Some(String::from_utf8_lossy(&existing).as_ref()) {
+                    warn!(
+                        "{}",
+                        t!(
+                            "log.core.coordinator.etcd.release_refused_key_owned_by_other",
+                            path = path,
+                            value = String::from_utf8_lossy(&existing)
+                        )
+                    );
+                    return Err(WorkerAllocatorError::EtcdError(format!(
+                        "worker key {path} is owned by another instance; release refused"
+                    )));
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return Err(WorkerAllocatorError::EtcdError(e.to_string()));
+            }
+        }
+
         if let Err(e) = self.client.kv_delete(&path).await {
             error!(
                 "{}",
@@ -673,6 +864,7 @@ impl WorkerIdAllocator for EtcdWorkerAllocator {
         }
         self.allocated_id.store(0, Ordering::SeqCst);
         self.lease_id.store(0, Ordering::SeqCst);
+        *self.allocated_value.write() = None;
         info!(
             "{}",
             t!(
@@ -963,6 +1155,7 @@ mod tests {
             async fn lease_revoke(&self, lease_id: i64) -> std::result::Result<(), crate::core::coordinator::EtcdError>;
             async fn txn_check_create_rev_and_put(&self, key: &str, value: Vec<u8>, lease_id: i64) -> std::result::Result<bool, crate::core::coordinator::EtcdError>;
             async fn ping(&self) -> std::result::Result<(), crate::core::coordinator::EtcdError>;
+            async fn lease_keep_alive_once(&self, lease_id: i64) -> std::result::Result<(), crate::core::coordinator::EtcdError>;
         }
     }
 
@@ -1003,6 +1196,12 @@ mod tests {
         }
         async fn ping(&self) -> std::result::Result<(), EtcdError> {
             std::future::pending().await
+        }
+        async fn lease_keep_alive_once(
+            &self,
+            _lease_id: i64,
+        ) -> std::result::Result<(), EtcdError> {
+            Ok(())
         }
     }
 
@@ -2509,5 +2708,364 @@ mod tests {
             "kv_delete 失败时 release 应返回 Err, 实际: {:?}",
             release_result
         );
+    }
+
+    // ==================== T017: worker 归属校验与 lease keepalive ====================
+
+    /// T017 测试共享 —— 有状态 KV mock：txn 写入对 kv_get 可见（模拟 etcd KV），
+    /// kv_delete 真删除。返回 (mock, store)。
+    fn stateful_store_mock() -> (
+        MockEtcdClientOps,
+        Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>,
+    ) {
+        let store: Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>> =
+            Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let mut mock = MockEtcdClientOps::new();
+        {
+            let store = store.clone();
+            mock.expect_kv_get()
+                .returning(move |k| Ok(store.lock().unwrap().get(k).cloned()));
+        }
+        {
+            let store = store.clone();
+            mock.expect_txn_check_create_rev_and_put()
+                .returning(move |k, v, _| {
+                    store.lock().unwrap().insert(k.to_string(), v);
+                    Ok(true)
+                });
+        }
+        {
+            let store = store.clone();
+            mock.expect_kv_delete().returning(move |k| {
+                store.lock().unwrap().remove(k);
+                Ok(())
+            });
+        }
+        mock.expect_lease_grant().returning(|_| Ok(42));
+        (mock, store)
+    }
+
+    /// T017 —— release 归属校验：worker key 被其他实例接管（value 不匹配）时
+    /// 必须拒绝删除并返回 Err，且不得触碰 kv_delete、不得重置已分配状态。
+    #[tokio::test]
+    async fn test_allocator_release_refused_when_key_owned_by_other() {
+        let (mut mock, store) = stateful_store_mock();
+        // 归属校验拒绝路径不得触达 kv_delete：错误调用即 panic（times(0)）
+        mock.expect_kv_delete().times(0).returning(|_| Ok(()));
+
+        let allocator = EtcdWorkerAllocator::new(mock_into_client(mock), 1, EtcdConfig::default())
+            .await
+            .unwrap();
+        let worker_id = allocator.allocate().await.unwrap();
+        let path = format!("/idgen/workers/1/{worker_id}");
+
+        // 模拟 lease 过期后其他实例接管同一 worker key
+        store
+            .lock()
+            .unwrap()
+            .insert(path.clone(), b"host=other;dc=1;pid=999;boot_ns=1".to_vec());
+
+        let release_result = allocator.release(worker_id).await;
+        assert!(
+            matches!(release_result, Err(WorkerAllocatorError::EtcdError(_))),
+            "key 被其他实例接管时 release 必须拒绝, 实际: {:?}",
+            release_result
+        );
+        assert_eq!(
+            allocator.get_allocated_id(),
+            Some(worker_id),
+            "release 被拒绝时已分配状态不得重置"
+        );
+        assert!(
+            store.lock().unwrap().contains_key(&path),
+            "被接管的 key 不得被删除"
+        );
+    }
+
+    /// T017 —— release 归属校验正向路径：value 为本实例 instance_id 时正常删除；
+    /// key 已不存在（lease 过期被 etcd 回收）时幂等释放成功。
+    #[tokio::test]
+    async fn test_allocator_release_succeeds_with_ownership_check() {
+        let (mock, store) = stateful_store_mock();
+        let allocator = EtcdWorkerAllocator::new(mock_into_client(mock), 1, EtcdConfig::default())
+            .await
+            .unwrap();
+        let worker_id = allocator.allocate().await.unwrap();
+        let path = format!("/idgen/workers/1/{worker_id}");
+
+        // 写入的 value 必须是本实例 instance_id（allocator 状态中记录的同一值）
+        assert_eq!(
+            store
+                .lock()
+                .unwrap()
+                .get(&path)
+                .map(|v| String::from_utf8_lossy(v).into_owned()),
+            allocator.allocated_value.read().clone(),
+            "worker key value 必须为 allocator 记录的 instance value"
+        );
+
+        allocator
+            .release(worker_id)
+            .await
+            .expect("归属匹配时 release 必须成功");
+        assert!(
+            !store.lock().unwrap().contains_key(&path),
+            "release 后 worker key 必须被删除"
+        );
+        assert_eq!(allocator.get_allocated_id(), None);
+    }
+
+    /// T017 —— keep_alive_once 在未持有 lease（lease_id==0）时显性报错。
+    #[tokio::test]
+    async fn test_keep_alive_once_without_lease_errors() {
+        let client = mock_into_client(MockEtcdClientOps::new());
+        let allocator = EtcdWorkerAllocator::new(client, 1, EtcdConfig::default())
+            .await
+            .unwrap();
+
+        let result = allocator.keep_alive_once().await;
+        assert!(
+            matches!(result, Err(WorkerAllocatorError::LeaseRenewalFailed(_))),
+            "未持有 lease 时续期必须报 LeaseRenewalFailed, 实际: {:?}",
+            result
+        );
+    }
+
+    /// T017 —— keep_alive_once 以 allocate 授予的 lease id 委托 client 续期。
+    #[tokio::test]
+    async fn test_keep_alive_once_delegates_with_allocated_lease_id() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_kv_get().returning(|_| Ok(None));
+        mock.expect_lease_grant().returning(|_| Ok(77));
+        mock.expect_txn_check_create_rev_and_put()
+            .returning(|_, _, _| Ok(true));
+        mock.expect_lease_keep_alive_once()
+            .times(1)
+            .withf(|lease_id| *lease_id == 77)
+            .returning(|_| Ok(()));
+
+        let allocator = EtcdWorkerAllocator::new(mock_into_client(mock), 1, EtcdConfig::default())
+            .await
+            .unwrap();
+        allocator.allocate().await.unwrap();
+        assert_eq!(allocator.current_lease_id(), 77);
+
+        allocator
+            .keep_alive_once()
+            .await
+            .expect("lease id 匹配时续期必须成功");
+    }
+
+    /// T017 —— 续期调度：周期续期 + stop 信号优雅退出，不上报致命错误。
+    #[tokio::test]
+    async fn test_keepalive_loop_renews_periodically_and_stops() {
+        let mut mock = MockEtcdClientOps::new();
+        let counter = Arc::new(AtomicU64::new(0));
+        {
+            let counter = counter.clone();
+            mock.expect_lease_keep_alive_once().returning(move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            });
+        }
+
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let (failure_tx, mut failure_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(EtcdWorkerAllocator::run_lease_keepalive_loop(
+            mock_into_client(mock),
+            7,
+            Duration::from_millis(10),
+            EtcdWorkerAllocator::KEEPALIVE_MAX_CONSECUTIVE_FAILURES,
+            stop_rx,
+            failure_tx,
+        ));
+
+        // 60ms / 10ms 间隔 → 至少数次续期
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        stop_tx.send(true).expect("stop 信号发送必须成功");
+        task.await.expect("keepalive 任务必须正常退出");
+
+        assert!(
+            counter.load(Ordering::SeqCst) >= 2,
+            "keepalive 应已周期续期多次, 实际: {}",
+            counter.load(Ordering::SeqCst)
+        );
+        assert!(
+            failure_rx.try_recv().is_err(),
+            "无失败路径不得触发致命错误上报"
+        );
+    }
+
+    /// T017 —— fail-stop：连续失败达阈值 → failure_tx 上报致命错误并退出。
+    #[tokio::test]
+    async fn test_keepalive_loop_fail_stops_after_consecutive_failures() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_lease_keep_alive_once()
+            .returning(|_| Err(EtcdError::Network("etcd down".into())));
+
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let (failure_tx, mut failure_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(EtcdWorkerAllocator::run_lease_keepalive_loop(
+            mock_into_client(mock),
+            7,
+            Duration::from_millis(5),
+            3,
+            stop_rx,
+            failure_tx,
+        ));
+
+        let reason = tokio::time::timeout(Duration::from_secs(2), failure_rx)
+            .await
+            .expect("连续 3 次失败后必须上报致命错误")
+            .expect("failure channel 必须有值");
+        assert!(
+            reason.contains("etcd down"),
+            "上报原因应为最后一次续期错误, 实际: {reason}"
+        );
+        task.await.expect("fail-stop 后任务必须退出");
+    }
+
+    /// T017 —— 间歇性失败被成功重置：不触发 fail-stop。
+    #[tokio::test]
+    async fn test_keepalive_loop_resets_counter_on_intermittent_success() {
+        let mut mock = MockEtcdClientOps::new();
+        let call_count = Arc::new(AtomicU64::new(0));
+        {
+            let call_count = call_count.clone();
+            mock.expect_lease_keep_alive_once().returning(move |_| {
+                let n = call_count.fetch_add(1, Ordering::SeqCst);
+                // 偶数次失败、奇数次成功 → 连续失败最多 1 次
+                if n % 2 == 0 {
+                    Err(EtcdError::Network("flaky".into()))
+                } else {
+                    Ok(())
+                }
+            });
+        }
+
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let (failure_tx, mut failure_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(EtcdWorkerAllocator::run_lease_keepalive_loop(
+            mock_into_client(mock),
+            7,
+            Duration::from_millis(5),
+            3,
+            stop_rx,
+            failure_tx,
+        ));
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        stop_tx.send(true).expect("stop 信号发送必须成功");
+        task.await.expect("keepalive 任务必须正常退出");
+
+        assert!(
+            failure_rx.try_recv().is_err(),
+            "间歇性失败（连续 < 3）不得触发 fail-stop"
+        );
+    }
+
+    /// T017 —— 真实 etcd 路径（integration-tests 门控 + #[ignore]）：
+    /// 分配 → 续期一次 → 归属校验 release 全链路。
+    /// 运行：`ETCD_TEST_ENDPOINTS=http://127.0.0.1:2379 cargo test
+    ///  --features etcd,integration-tests -- --ignored`
+    #[cfg(feature = "integration-tests")]
+    #[tokio::test]
+    #[ignore = "需要真实 etcd：设置 ETCD_TEST_ENDPOINTS 后以 --ignored 运行"]
+    async fn integration_worker_allocator_allocate_keepalive_release_real_etcd() {
+        let endpoints = std::env::var("ETCD_TEST_ENDPOINTS")
+            .unwrap_or_else(|_| "http://127.0.0.1:2379".to_string());
+        let wrapper = EtcdClientWrapper::new(vec![endpoints])
+            .await
+            .expect("连接 etcd 失败（请检查 ETCD_TEST_ENDPOINTS）");
+        let client: Arc<dyn EtcdClientOps> = Arc::new(wrapper);
+        client
+            .ping()
+            .await
+            .expect("etcd 必须可达（ETCD_TEST_ENDPOINTS）");
+
+        let allocator = EtcdWorkerAllocator::new(client.clone(), 1, EtcdConfig::default())
+            .await
+            .unwrap();
+        let worker_id = allocator.allocate().await.expect("allocate 必须成功");
+        assert!((1..=255).contains(&worker_id));
+
+        allocator
+            .keep_alive_once()
+            .await
+            .expect("lease 续期必须成功");
+        allocator
+            .release(worker_id)
+            .await
+            .expect("归属校验 release 必须成功");
+        assert_eq!(allocator.get_allocated_id(), None);
+    }
+
+    // ==================== T027: Clone 状态共享与巡检接线 ====================
+
+    /// T027 —— clone 后两句柄状态互通：一个句柄上的降级/恢复必须对另一句柄
+    /// 立即可见（原手写 Clone 逐原子快照复制导致状态隔离，后台巡检任务 clone
+    /// self 后外部观察者读到的永远是旧状态）。
+    #[tokio::test]
+    async fn test_monitor_clone_handles_share_state() {
+        let config = EtcdConfig::default();
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
+        let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
+
+        let observer = monitor.clone();
+        assert_eq!(observer.get_status(), EtcdClusterStatus::Healthy);
+
+        // 原句柄降级 → clone 句柄立即可见
+        monitor.record_failure();
+        monitor.record_failure();
+        monitor.record_failure();
+        assert_eq!(
+            observer.get_status(),
+            EtcdClusterStatus::Degraded,
+            "clone 句柄必须读到原句柄触发的降级状态"
+        );
+
+        // 原/clone 句柄均可继续驱动同一状态：恢复对双方可见
+        observer.record_success().await;
+        assert_eq!(monitor.get_status(), EtcdClusterStatus::Healthy);
+        assert!(!monitor.is_using_cache());
+        assert_eq!(observer.get_status(), EtcdClusterStatus::Healthy);
+
+        // clone 之后再降级到 Failed + using_cache，原句柄同样可见
+        for _ in 0..5 {
+            observer.record_failure();
+        }
+        assert_eq!(monitor.get_status(), EtcdClusterStatus::Failed);
+        assert!(monitor.is_using_cache(), "is_using_cache 也必须跨句柄共享");
+    }
+
+    /// T027 —— 巡检接线后的生产形态：注入长连接 client（真实
+    /// `EtcdClientWrapper`，lazy connect 对不可达端点返回 Ok），ping 探活
+    /// 连续失败能把监控器带入 `Failed` 状态（此前生产路径每次检查新建
+    /// client，lazy connect 恒 Ok，Failed 判定几乎不触发）。
+    #[tokio::test]
+    async fn test_monitor_injected_real_client_reaches_failed_on_unreachable_etcd() {
+        let wrapper = EtcdClientWrapper::new(vec!["http://127.0.0.1:1".to_string()])
+            .await
+            .expect("lazy connect 对不可达端点也可能返回 Ok（Windows/兼容路径）");
+        let config = EtcdConfig {
+            connect_timeout_ms: 300,
+            ..Default::default()
+        };
+        let cache_file = NamedTempFile::new().expect("Failed to create temp file");
+        let cache_path = cache_file.path().to_string_lossy().to_string();
+        let monitor =
+            EtcdClusterHealthMonitor::new_with_client(config, cache_path, Arc::new(wrapper));
+
+        // 连续 5 次真实 ping 失败（连接拒绝）→ Failed + 启用本地缓存降级
+        for _ in 0..5 {
+            monitor.check_etcd_health().await;
+        }
+        assert_eq!(
+            monitor.get_status(),
+            EtcdClusterStatus::Failed,
+            "不可达端点连续巡检失败必须转入 Failed 状态"
+        );
+        assert!(monitor.is_using_cache());
     }
 }

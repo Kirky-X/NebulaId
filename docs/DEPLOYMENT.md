@@ -160,29 +160,35 @@ docker run -d \
 | `RUST_LOG` | info | 日志级别 (trace/debug/info/warn/error) |
 | `RUST_BACKTRACE` | 0 | 错误堆栈 (0/1/full) |
 | `DATABASE_URL` | - | 完整数据库 URL（覆盖其他配置） |
-| `LOCALE` | `en` | 进程默认 locale（v0.2.0 新增）。可选值：`en`、`zh-CN`。仅用于设置 `rust-i18n` 全局 locale 影响启动日志与未走 `Accept-Language` 中间件的路径；`/api/v1/*` 路由的运行时响应语言由请求 `Accept-Language` 头协商，不受此变量影响。 |
+| `NEBULA_LOCALE` | 取 `app.locale`（默认 `en`） | 进程默认 locale（T035 起生效，原 `LOCALE` 为文档虚构变量）。可选值：`en`、`zh-CN`，非法值回退 `en`。仅用于设置 `rust-i18n` 全局 locale 影响启动日志与未走 `Accept-Language` 中间件的路径；`/api/v1/*` 路由的运行时响应语言由请求 `Accept-Language` 头协商，不受此变量影响。 |
 
-### 4.3 LOCALE 环境变量详解（v0.2.0 新增）
+### 4.3 NEBULA_LOCALE 与 locale 配置详解
 
-`LOCALE` 控制服务进程的全局默认 locale，主要影响以下场景：
+进程默认 locale 的解析优先级（T035）：**`NEBULA_LOCALE` 环境变量 > 配置文件 `app.locale` > 内置默认 `en`**；取值非法（不在 `en`/`zh-CN` 中）时回退 `en` 并输出告警。
 
-- **启动日志**：服务启动期间的 `tracing::{info,warn,error}!` 输出会按 `LOCALE` 翻译（参见 `src/main.rs` 中 `i18n::init_i18n(&locale)`）。
-- **非 `/api/v1/*` 路径的日志**：`/health`、`/ready`、`/metrics` 等不经过 `locale_middleware` 的路径，其日志消息使用 `LOCALE` 设置的全局 locale。
-- **未携带 `Accept-Language` 头的请求**：`locale_middleware` 协商失败时回退到 `Locale::DEFAULT`（即 `en`），**不**回退到 `LOCALE`。这是有意设计 — 全局 locale 与请求级 locale 解耦，避免请求间互相污染。
+生效的 locale 控制服务进程的全局默认语言，主要影响以下场景：
+
+- **启动日志**：服务启动期间的 `tracing::{info,warn,error}!` 输出会按生效 locale 翻译（参见 `src/main.rs` 中 `i18n::init_i18n(&locale)`）。配置加载前的极早期日志固定为 `en`。
+- **非 `/api/v1/*` 路径的日志**：`/health`、`/ready`、`/metrics` 等不经过 `locale_middleware` 的路径，其日志消息使用全局 locale。
+- **未携带 `Accept-Language` 头的请求**：`locale_middleware` 协商失败时回退到 `Locale::DEFAULT`（即 `en`），**不**回退到全局 locale。这是有意设计 — 全局 locale 与请求级 locale 解耦，避免请求间互相污染。
 
 **配置示例：**
 
 ```bash
-# 启动时使用中文 locale（启动日志将为中文）
-export LOCALE=zh-CN
+# 方式一：环境变量覆盖（优先级最高）
+export NEBULA_LOCALE=zh-CN
 ./target/release/nebula-id
+
+# 方式二：配置文件 config/config.toml 的 [app] 段
+#   [app]
+#   locale = "zh-CN"
 
 # 或在 docker-compose 中配置
 # docker/.env:
-#   LOCALE=zh-CN
+#   NEBULA_LOCALE=zh-CN
 ```
 
-> **注意**：`LOCALE` 仅影响日志输出语言，**不**影响 `/api/v1/*` 路由的 HTTP 错误响应语言。HTTP 响应语言由每个请求的 `Accept-Language` 头独立协商，详见 [API 参考 - Accept-Language](API_REFERENCE.md#accept-language-请求头)。
+> **注意**：全局 locale 仅影响日志输出语言，**不**影响 `/api/v1/*` 路由的 HTTP 错误响应语言。HTTP 响应语言由每个请求的 `Accept-Language` 头独立协商，详见 [API 参考 - Accept-Language](API_REFERENCE.md#accept-language-请求头)。
 
 ## 5. 健康检查与监控
 

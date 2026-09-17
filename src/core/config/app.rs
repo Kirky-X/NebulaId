@@ -71,16 +71,36 @@ pub struct AppConfig {
     /// gRPC server port
     pub grpc_port: u16,
     /// Datacenter ID (0-31)
+    ///
+    /// 多实例约束：未配置 etcd（无 worker_id 运行时分配）时，本值与
+    /// [`AppConfig::worker_id`] 共同构成 Snowflake 的机器标识；多实例部署
+    /// 必须显式配置（环境变量 `DC_ID` 或配置文件），默认值 0 会使多实例
+    /// 生成重复 ID（启动时进程会输出 warn 提醒，见 main.rs T018）。
     pub dc_id: u8,
     /// Worker ID (0-255)
+    ///
+    /// 多实例约束：配置了 etcd endpoints 时本值会被运行时分配的 worker_id
+    /// 覆盖（T017）；未配置 etcd 时即为 Snowflake 的最终机器标识，多实例
+    /// 部署必须显式配置（环境变量 `WORKER_ID` 或配置文件），默认值 0 会使
+    /// 多实例生成重复 ID（启动时进程会输出 warn 提醒，见 main.rs T018）。
     pub worker_id: u8,
     /// Graceful shutdown timeout (seconds)
     #[serde(default = "default_shutdown_timeout_seconds")]
     pub shutdown_timeout_seconds: u64,
+    /// Process default locale (T035). Supported values: "en", "zh-CN";
+    /// invalid values fall back to "en" at startup (see main.rs
+    /// `resolve_locale`). Environment variable `NEBULA_LOCALE` takes
+    /// precedence over this field.
+    #[serde(default = "default_locale")]
+    pub locale: String,
 }
 
 fn default_shutdown_timeout_seconds() -> u64 {
     30
+}
+
+fn default_locale() -> String {
+    "en".to_string()
 }
 
 impl Default for AppConfig {
@@ -93,6 +113,7 @@ impl Default for AppConfig {
             dc_id: 0,
             worker_id: 0,
             shutdown_timeout_seconds: default_shutdown_timeout_seconds(),
+            locale: default_locale(),
         }
     }
 }
@@ -469,6 +490,48 @@ mod tests {
         assert_eq!(cfg.endpoints, vec!["etcd:2379".to_string()]);
         assert_eq!(cfg.connect_timeout_ms, 5000);
         assert_eq!(cfg.watch_timeout_ms, 5000);
+    }
+
+    // ----- T035: AppConfig.locale -----
+
+    #[test]
+    fn test_app_config_locale_default_is_en() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.locale, "en");
+    }
+
+    #[test]
+    fn test_app_config_locale_missing_in_toml_defaults_to_en() {
+        // 既有部署的 [app] 段没有 locale 键 → serde default 兜底 "en"
+        let cfg: AppConfig = toml::from_str(
+            r#"
+name = "nebula-id"
+host = "0.0.0.0"
+http_port = 8080
+grpc_port = 9091
+dc_id = 0
+worker_id = 0
+"#,
+        )
+        .expect("[app] 段缺 locale 键必须可解析");
+        assert_eq!(cfg.locale, "en");
+    }
+
+    #[test]
+    fn test_app_config_locale_explicit_value_roundtrips() {
+        let cfg: AppConfig = toml::from_str(
+            r#"
+name = "nebula-id"
+host = "0.0.0.0"
+http_port = 8080
+grpc_port = 9091
+dc_id = 0
+worker_id = 0
+locale = "zh-CN"
+"#,
+        )
+        .expect("显式 locale 必须可解析");
+        assert_eq!(cfg.locale, "zh-CN");
     }
 
     // ----- DatabaseConfig::default 在测试模式下应进入 sqlite 分支 -----

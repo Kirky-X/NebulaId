@@ -33,5 +33,11 @@ pub use degradation_manager::{CircuitBreakerState, DegradationManager};
 // Re-export CpuMonitor for CPU monitoring
 pub use segment::CpuMonitor;
 
+// T016 —— Segment 号段装配面：`DbSegmentLoader`（真连 DB 号段）与
+// `SegmentLoader`/`SegmentAlgorithm` 经此 re-export 后，装配方（main.rs /
+// 嵌入式 SDK）可执行 `SegmentAlgorithm::new(dc).with_segment_loader(
+// Arc::new(DbSegmentLoader::new(repo)))` 完成生产注入。
+pub use segment::{DbSegmentLoader, SegmentAlgorithm, SegmentLoader};
+
 // Snowflake 位布局解析的唯一权威类型
 pub use snowflake::{ParsedSnowflakeId, SnowflakeLayoutInfo};

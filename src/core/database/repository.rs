@@ -501,7 +501,12 @@ impl SeaOrmRepository {
             .filter(ApiKeyColumn::KeyId.eq(key_id))
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         if let Some(model) = key_model {
             // 同一次请求只用一个 `now`：key 有效期判定与宽限期窗口判定共享同一时刻，
@@ -617,12 +622,12 @@ impl SeaOrmRepository {
             )
         };
 
-        if let Some(row) = self
-            .db
-            .query_one_raw(update_stmt())
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?
-        {
+        if let Some(row) = self.db.query_one_raw(update_stmt()).await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })? {
             debug!(
                 workspace_id,
                 biz_tag, dc_id, "segment allocated via atomic UPDATE RETURNING"
@@ -646,27 +651,32 @@ impl SeaOrmRepository {
                 dc_id.into(),
             ],
         );
-        self.db
-            .execute_raw(insert_stmt)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        self.db.execute_raw(insert_stmt).await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         info!(
             workspace_id,
             biz_tag, dc_id, start_id, "segment row lazily created, retrying atomic allocation"
         );
 
-        match self
-            .db
-            .query_one_raw(update_stmt())
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?
-        {
+        match self.db.query_one_raw(update_stmt()).await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })? {
             Some(row) => segment_info_from_returning_row(&row, workspace_id, biz_tag),
-            None => Err(crate::core::CoreError::DatabaseError(format!(
-                "segment allocation failed after insert-on-conflict retry for \
-                 {workspace_id}/{biz_tag}/dc{dc_id}"
-            ))),
+            None => Err(crate::core::CoreError::DatabaseError(
+                format!(
+                    "segment allocation failed after insert-on-conflict retry for \
+                     {workspace_id}/{biz_tag}/dc{dc_id}"
+                ),
+                None,
+            )),
         }
     }
 }
@@ -685,10 +695,12 @@ impl WorkspaceRepository for SeaOrmRepository {
             updated_at: Set(chrono::Utc::now().naive_utc()),
         };
 
-        let inserted = new_workspace
-            .insert(&self.db)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        let inserted = new_workspace.insert(&self.db).await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         Ok(inserted.into())
     }
@@ -697,7 +709,12 @@ impl WorkspaceRepository for SeaOrmRepository {
         let result = WorkspaceEntity::find_by_id(id)
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         Ok(result.map(|m| m.into()))
     }
@@ -707,7 +724,12 @@ impl WorkspaceRepository for SeaOrmRepository {
             .filter(WorkspaceColumn::Name.eq(name))
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         Ok(result.map(|m| m.into()))
     }
@@ -720,7 +742,12 @@ impl WorkspaceRepository for SeaOrmRepository {
         let existing = WorkspaceEntity::find_by_id(id)
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         // 使用ok_or_else替代is_none+unwrap模式，避免冗余和潜在panic风险
         let existing = existing.ok_or_else(|| {
@@ -742,10 +769,12 @@ impl WorkspaceRepository for SeaOrmRepository {
             ..Default::default()
         };
 
-        let result = updated
-            .update(&self.db)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        let result = updated.update(&self.db).await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         Ok(result.into())
     }
@@ -754,7 +783,12 @@ impl WorkspaceRepository for SeaOrmRepository {
         let result = WorkspaceEntity::delete_by_id(id)
             .exec(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         if result.rows_affected == 0 {
             return Err(crate::core::CoreError::NotFound(format!(
@@ -781,10 +815,12 @@ impl WorkspaceRepository for SeaOrmRepository {
             query = query.offset(offset as u64);
         }
 
-        let results = query
-            .all(&self.db)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        let results = query.all(&self.db).await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         Ok(results.into_iter().map(|m| m.into()).collect())
     }
@@ -793,7 +829,12 @@ impl WorkspaceRepository for SeaOrmRepository {
         let workspace_entity = WorkspaceEntity::find_by_id(id)
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         // 使用if let Some模式，避免冗余unwrap
         if let Some(ws) = workspace_entity {
@@ -803,7 +844,12 @@ impl WorkspaceRepository for SeaOrmRepository {
                 .filter(GroupColumn::WorkspaceId.eq(id))
                 .all(&self.db)
                 .await
-                .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+                .map_err(|e| {
+                    crate::core::CoreError::DatabaseError(
+                        e.to_string(),
+                        Some(crate::core::types::ErrorSource::new(e)),
+                    )
+                })?;
 
             let groups: Vec<Group> = groups.into_iter().map(|g| g.into()).collect();
 
@@ -822,7 +868,12 @@ impl WorkspaceRepository for SeaOrmRepository {
             .find_also_related(GroupEntity)
             .all(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         if workspace_with_relations.is_empty() {
             return Ok(None);
@@ -844,7 +895,12 @@ impl WorkspaceRepository for SeaOrmRepository {
                 .filter(BizTagColumn::GroupId.is_in(group_ids))
                 .all(&self.db)
                 .await
-                .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+                .map_err(|e| {
+                    crate::core::CoreError::DatabaseError(
+                        e.to_string(),
+                        Some(crate::core::types::ErrorSource::new(e)),
+                    )
+                })?;
 
         // 按 group_id 组织 biz_tags
         let mut biz_tags_by_group: std::collections::HashMap<Uuid, Vec<BizTag>> =
@@ -879,7 +935,12 @@ impl GroupRepository for SeaOrmRepository {
         let workspace_exists = WorkspaceEntity::find_by_id(group.workspace_id)
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?
             .is_some();
 
         if !workspace_exists {
@@ -899,10 +960,12 @@ impl GroupRepository for SeaOrmRepository {
             updated_at: Set(chrono::Utc::now().naive_utc()),
         };
 
-        let inserted = new_group
-            .insert(&self.db)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        let inserted = new_group.insert(&self.db).await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         Ok(inserted.into())
     }
@@ -911,7 +974,12 @@ impl GroupRepository for SeaOrmRepository {
         let result = GroupEntity::find_by_id(id)
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         Ok(result.map(|m| m.into()))
     }
@@ -926,7 +994,12 @@ impl GroupRepository for SeaOrmRepository {
             .filter(GroupColumn::Name.eq(name))
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         Ok(result.map(|m| m.into()))
     }
@@ -935,7 +1008,12 @@ impl GroupRepository for SeaOrmRepository {
         let existing = GroupEntity::find_by_id(id)
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         // 使用ok_or_else替代is_none+unwrap模式
         let existing = existing
@@ -950,10 +1028,12 @@ impl GroupRepository for SeaOrmRepository {
             ..Default::default()
         };
 
-        let result = updated
-            .update(&self.db)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        let result = updated.update(&self.db).await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         Ok(result.into())
     }
@@ -962,7 +1042,12 @@ impl GroupRepository for SeaOrmRepository {
         let result = GroupEntity::delete_by_id(id)
             .exec(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         if result.rows_affected == 0 {
             return Err(crate::core::CoreError::NotFound(format!(
@@ -990,10 +1075,12 @@ impl GroupRepository for SeaOrmRepository {
             query = query.offset(offset as u64);
         }
 
-        let results = query
-            .all(&self.db)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        let results = query.all(&self.db).await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         Ok(results.into_iter().map(|m| m.into()).collect())
     }
@@ -1002,7 +1089,12 @@ impl GroupRepository for SeaOrmRepository {
         let group_entity = GroupEntity::find_by_id(id)
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         // 使用if let Some模式，避免冗余unwrap
         if let Some(g) = group_entity {
@@ -1012,7 +1104,12 @@ impl GroupRepository for SeaOrmRepository {
                 .filter(BizTagColumn::GroupId.eq(id))
                 .all(&self.db)
                 .await
-                .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+                .map_err(|e| {
+                    crate::core::CoreError::DatabaseError(
+                        e.to_string(),
+                        Some(crate::core::types::ErrorSource::new(e)),
+                    )
+                })?;
 
             let biz_tags: Vec<BizTag> = biz_tags.into_iter().map(|b| b.into()).collect();
 
@@ -1023,33 +1120,52 @@ impl GroupRepository for SeaOrmRepository {
     }
 
     async fn delete_group_with_biz_tags(&self, id: Uuid) -> Result<()> {
-        let txn = self
-            .db
-            .begin()
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        let txn = self.db.begin().await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         let biz_tags = BizTagEntity::find()
             .filter(BizTagColumn::GroupId.eq(id))
             .all(&txn)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         for biz_tag in biz_tags {
             BizTagEntity::delete_by_id(biz_tag.id)
                 .exec(&txn)
                 .await
-                .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+                .map_err(|e| {
+                    crate::core::CoreError::DatabaseError(
+                        e.to_string(),
+                        Some(crate::core::types::ErrorSource::new(e)),
+                    )
+                })?;
         }
 
         GroupEntity::delete_by_id(id)
             .exec(&txn)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
-        txn.commit()
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        txn.commit().await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         Ok(())
     }
@@ -1062,7 +1178,12 @@ impl BizTagRepository for SeaOrmRepository {
         let workspace_exists = WorkspaceEntity::find_by_id(biz_tag.workspace_id)
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?
             .is_some();
 
         if !workspace_exists {
@@ -1075,7 +1196,12 @@ impl BizTagRepository for SeaOrmRepository {
         let group_exists = GroupEntity::find_by_id(biz_tag.group_id)
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?
             .is_some();
 
         if !group_exists {
@@ -1111,10 +1237,12 @@ impl BizTagRepository for SeaOrmRepository {
             updated_at: Set(chrono::Utc::now().naive_utc()),
         };
 
-        let inserted = new_biz_tag
-            .insert(&self.db)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        let inserted = new_biz_tag.insert(&self.db).await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         Ok(inserted.into())
     }
@@ -1123,7 +1251,12 @@ impl BizTagRepository for SeaOrmRepository {
         let result = BizTagEntity::find_by_id(id)
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         Ok(result.map(|m| m.into()))
     }
@@ -1140,7 +1273,12 @@ impl BizTagRepository for SeaOrmRepository {
             .filter(BizTagColumn::Name.eq(name))
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         Ok(result.map(|m| m.into()))
     }
@@ -1149,7 +1287,12 @@ impl BizTagRepository for SeaOrmRepository {
         let existing = BizTagEntity::find_by_id(id)
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         // 使用ok_or_else替代is_none+unwrap模式
         let existing = existing
@@ -1179,10 +1322,12 @@ impl BizTagRepository for SeaOrmRepository {
             ..Default::default()
         };
 
-        let result = updated
-            .update(&self.db)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        let result = updated.update(&self.db).await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         Ok(result.into())
     }
@@ -1191,7 +1336,12 @@ impl BizTagRepository for SeaOrmRepository {
         let result = BizTagEntity::delete_by_id(id)
             .exec(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         if result.rows_affected == 0 {
             return Err(crate::core::CoreError::NotFound(format!(
@@ -1224,10 +1374,12 @@ impl BizTagRepository for SeaOrmRepository {
             query = query.offset(offset as u64);
         }
 
-        let results = query
-            .all(&self.db)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        let results = query.all(&self.db).await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         Ok(results.into_iter().map(|m| m.into()).collect())
     }
@@ -1242,7 +1394,12 @@ impl BizTagRepository for SeaOrmRepository {
             .filter(BizTagColumn::GroupId.eq(group_id))
             .all(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         Ok(results.into_iter().map(|m| m.into()).collect())
     }
@@ -1252,7 +1409,12 @@ impl BizTagRepository for SeaOrmRepository {
             .filter(BizTagColumn::GroupId.eq(group_id))
             .count(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         Ok(count)
     }
@@ -1264,10 +1426,12 @@ impl BizTagRepository for SeaOrmRepository {
             query = query.filter(BizTagColumn::GroupId.eq(group_id));
         }
 
-        let count = query
-            .count(&self.db)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        let count = query.count(&self.db).await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         Ok(count)
     }
@@ -1349,10 +1513,12 @@ impl ApiKeyRepository for SeaOrmRepository {
             updated_at: Set(now.naive_utc()),
         };
 
-        let inserted = new_key
-            .insert(&self.db)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        let inserted = new_key.insert(&self.db).await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         let response = ApiKeyWithSecret {
             // 复用 `impl From<Model> for ApiKeyResponse`（api_key_entity.rs），不手抄字段表
@@ -1370,7 +1536,12 @@ impl ApiKeyRepository for SeaOrmRepository {
             .filter(ApiKeyColumn::KeyId.eq(key_id))
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         Ok(result.map(|m| m.into()))
     }
@@ -1409,10 +1580,12 @@ impl ApiKeyRepository for SeaOrmRepository {
             query = query.offset(offset as u64);
         }
 
-        let results = query
-            .all(&self.db)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        let results = query.all(&self.db).await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         Ok(results.into_iter().map(|m| m.into()).collect())
     }
@@ -1421,7 +1594,12 @@ impl ApiKeyRepository for SeaOrmRepository {
         let result = ApiKeyEntity::delete_by_id(id)
             .exec(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         if result.rows_affected == 0 {
             return Err(crate::core::CoreError::NotFound(format!(
@@ -1437,7 +1615,12 @@ impl ApiKeyRepository for SeaOrmRepository {
         let existing = ApiKeyEntity::find_by_id(id)
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         let key_id = if let Some(model) = existing {
             model.id
@@ -1455,10 +1638,12 @@ impl ApiKeyRepository for SeaOrmRepository {
             ..Default::default()
         };
 
-        updated
-            .update(&self.db)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        updated.update(&self.db).await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         Ok(())
     }
@@ -1483,7 +1668,12 @@ impl ApiKeyRepository for SeaOrmRepository {
             })
             .exec(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         Ok(())
     }
@@ -1496,7 +1686,12 @@ impl ApiKeyRepository for SeaOrmRepository {
             .filter(ApiKeyColumn::KeyPrefix.eq("niad_"))
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         Ok(result.filter(|m| m.enabled).map(|m| m.into()))
     }
@@ -1506,7 +1701,12 @@ impl ApiKeyRepository for SeaOrmRepository {
             .filter(ApiKeyColumn::WorkspaceId.eq(workspace_id))
             .count(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         Ok(count)
     }
@@ -1515,7 +1715,12 @@ impl ApiKeyRepository for SeaOrmRepository {
         let result = Self::select_api_key_by_row_id(id)
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         Ok(result.map(|m| m.into()))
     }
@@ -1524,7 +1729,12 @@ impl ApiKeyRepository for SeaOrmRepository {
         let count = Self::select_enabled_admin_keys()
             .count(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         Ok(count)
     }
@@ -1540,7 +1750,12 @@ impl ApiKeyRepository for SeaOrmRepository {
             .filter(ApiKeyColumn::KeyId.eq(key_id))
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?
             .ok_or_else(|| {
                 crate::core::CoreError::NotFound(format!("API key not found: {}", key_id))
             })?;
@@ -1565,7 +1780,12 @@ impl ApiKeyRepository for SeaOrmRepository {
         )
         .update(&self.db)
         .await
-        .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        .map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         // 返回新密钥
         Ok(ApiKeyWithSecret {
@@ -1587,7 +1807,12 @@ impl ApiKeyRepository for SeaOrmRepository {
             .filter(ApiKeyColumn::Enabled.eq(true))
             .all(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         Ok(keys.into_iter().map(|m| m.into()).collect())
     }
@@ -1604,28 +1829,53 @@ fn segment_info_from_returning_row(
     workspace_id: &str,
     biz_tag: &str,
 ) -> Result<SegmentInfo> {
-    let id = row
-        .try_get::<i64>("", "id")
-        .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
-    let start_id = row
-        .try_get::<i64>("", "start_id")
-        .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
-    let max_id = row
-        .try_get::<i64>("", "max_id")
-        .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
-    let step = row
-        .try_get::<i32>("", "step")
-        .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
-    let delta = row
-        .try_get::<i32>("", "delta")
-        .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+    let id = row.try_get::<i64>("", "id").map_err(|e| {
+        crate::core::CoreError::DatabaseError(
+            e.to_string(),
+            Some(crate::core::types::ErrorSource::new(e)),
+        )
+    })?;
+    let start_id = row.try_get::<i64>("", "start_id").map_err(|e| {
+        crate::core::CoreError::DatabaseError(
+            e.to_string(),
+            Some(crate::core::types::ErrorSource::new(e)),
+        )
+    })?;
+    let max_id = row.try_get::<i64>("", "max_id").map_err(|e| {
+        crate::core::CoreError::DatabaseError(
+            e.to_string(),
+            Some(crate::core::types::ErrorSource::new(e)),
+        )
+    })?;
+    let step = row.try_get::<i32>("", "step").map_err(|e| {
+        crate::core::CoreError::DatabaseError(
+            e.to_string(),
+            Some(crate::core::types::ErrorSource::new(e)),
+        )
+    })?;
+    let delta = row.try_get::<i32>("", "delta").map_err(|e| {
+        crate::core::CoreError::DatabaseError(
+            e.to_string(),
+            Some(crate::core::types::ErrorSource::new(e)),
+        )
+    })?;
     let created_at: DateTime<Utc> = naive_to_utc(
         row.try_get::<Option<NaiveDateTime>>("", "created_at")
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?,
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?,
     );
     let updated_at: DateTime<Utc> = naive_to_utc(
         row.try_get::<Option<NaiveDateTime>>("", "updated_at")
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?,
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?,
     );
 
     Ok(SegmentInfo {
@@ -1649,7 +1899,12 @@ impl SegmentRepository for SeaOrmRepository {
             .filter(SegmentColumn::BizTag.eq(biz_tag))
             .one(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         Ok(result.map(|m| SegmentInfo {
             id: m.id,
@@ -1721,7 +1976,12 @@ impl SegmentRepository for SeaOrmRepository {
             })
             .exec(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         if result.rows_affected == 0 {
             return Err(crate::core::CoreError::NotFound(format!(
@@ -1754,10 +2014,12 @@ impl SegmentRepository for SeaOrmRepository {
             ..Default::default()
         };
 
-        let inserted = new_segment
-            .insert(&self.db)
-            .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+        let inserted = new_segment.insert(&self.db).await.map_err(|e| {
+            crate::core::CoreError::DatabaseError(
+                e.to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            )
+        })?;
 
         Ok(SegmentInfo {
             id: inserted.id,
@@ -1777,7 +2039,12 @@ impl SegmentRepository for SeaOrmRepository {
             .filter(SegmentColumn::WorkspaceId.eq(workspace_id))
             .all(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         Ok(results
             .into_iter()
@@ -1801,7 +2068,12 @@ impl SegmentRepository for SeaOrmRepository {
             .filter(SegmentColumn::BizTag.eq(biz_tag))
             .exec(&self.db)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+            .map_err(|e| {
+                crate::core::CoreError::DatabaseError(
+                    e.to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
+                )
+            })?;
 
         if result.rows_affected == 0 {
             return Err(crate::core::CoreError::NotFound(format!(
@@ -2338,7 +2610,7 @@ mod mock_tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            matches!(err, crate::core::CoreError::DatabaseError(_)),
+            matches!(err, crate::core::CoreError::DatabaseError(_, _)),
             "expected DatabaseError, got {:?}",
             err
         );
@@ -2384,7 +2656,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "DbErr must map to DatabaseError"
         );
@@ -4162,7 +4434,7 @@ mod mock_tests {
 
         let err = repo.count_admin_keys().await.unwrap_err();
         assert!(
-            matches!(err, crate::core::CoreError::DatabaseError(ref m) if m.contains("connection reset")),
+            matches!(err, crate::core::CoreError::DatabaseError(ref m, _) if m.contains("connection reset")),
             "count error must surface as DatabaseError, got {err:?}"
         );
     }
@@ -4668,7 +4940,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "segment allocate update error must propagate as DatabaseError"
         );
@@ -4688,7 +4960,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "segment allocate insert error must propagate as DatabaseError"
         );
@@ -4712,7 +4984,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "segment allocate retry update error must propagate as DatabaseError"
         );
@@ -4733,7 +5005,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(ref m) if m.contains("retry")
+                crate::core::CoreError::DatabaseError(ref m, _) if m.contains("retry")
             ),
             "retry miss must fail loudly as DatabaseError"
         );
@@ -4751,7 +5023,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "segment allocate_with_dc update error must propagate as DatabaseError"
         );
@@ -4770,7 +5042,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "segment allocate_with_dc insert error must propagate as DatabaseError"
         );
@@ -4829,7 +5101,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "find_by_id error must map to DatabaseError"
         );
@@ -4863,7 +5135,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "update error must map to DatabaseError"
         );
@@ -4882,7 +5154,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "workspace find error must propagate"
         );
@@ -4904,7 +5176,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "groups find error must propagate"
         );
@@ -4938,7 +5210,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "find_also_related error must propagate"
         );
@@ -4982,7 +5254,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "biz_tags find error must propagate"
         );
@@ -5032,7 +5304,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "workspace find error must propagate"
         );
@@ -5061,7 +5333,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "insert error must propagate"
         );
@@ -5089,7 +5361,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "find error must propagate"
         );
@@ -5120,7 +5392,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "update error must propagate"
         );
@@ -5199,7 +5471,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "biz_tags find error must propagate"
         );
@@ -5223,7 +5495,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "biz_tag delete error must propagate"
         );
@@ -5245,7 +5517,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "group delete error must propagate"
         );
@@ -5279,7 +5551,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "workspace find error must propagate"
         );
@@ -5315,7 +5587,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "insert error must propagate"
         );
@@ -5348,7 +5620,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "find error must propagate"
         );
@@ -5385,7 +5657,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "update error must propagate"
         );
@@ -5404,7 +5676,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "list error must propagate"
         );
@@ -5425,7 +5697,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "list by group error must propagate"
         );
@@ -5445,7 +5717,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "count error must propagate"
         );
@@ -5464,7 +5736,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "count error must propagate"
         );
@@ -5498,7 +5770,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "insert error must propagate as DatabaseError"
         );
@@ -5517,7 +5789,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "find error must propagate as DatabaseError"
         );
@@ -5536,7 +5808,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "validate find error must propagate as DatabaseError"
         );
@@ -5555,7 +5827,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "list error must propagate as DatabaseError"
         );
@@ -5574,7 +5846,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "delete exec error must propagate as DatabaseError"
         );
@@ -5593,7 +5865,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "revoke find error must propagate as DatabaseError"
         );
@@ -5615,7 +5887,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "revoke update error must propagate as DatabaseError"
         );
@@ -5632,7 +5904,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "update_last_used error must propagate as DatabaseError"
         );
@@ -5651,7 +5923,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "get_admin find error must propagate as DatabaseError"
         );
@@ -5670,7 +5942,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "count error must propagate as DatabaseError"
         );
@@ -5690,7 +5962,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "rotate get error must propagate as DatabaseError"
         );
@@ -5712,7 +5984,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "rotate update error must propagate as DatabaseError"
         );
@@ -5731,7 +6003,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "get_keys_older_than error must propagate as DatabaseError"
         );
@@ -5752,7 +6024,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "segment get error must propagate as DatabaseError"
         );
@@ -5771,7 +6043,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "segment list error must propagate as DatabaseError"
         );
@@ -5791,7 +6063,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "segment create insert error must propagate as DatabaseError"
         );
@@ -5810,7 +6082,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "segment update exec error must propagate as DatabaseError"
         );
@@ -5829,7 +6101,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "segment delete exec error must propagate as DatabaseError"
         );
@@ -5885,7 +6157,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "find error must propagate as DatabaseError"
         );
@@ -5904,7 +6176,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "delete exec error must propagate as DatabaseError"
         );
@@ -5923,7 +6195,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "list find error must propagate as DatabaseError"
         );
@@ -5978,7 +6250,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "find error must propagate as DatabaseError"
         );
@@ -5999,7 +6271,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "find error must propagate as DatabaseError"
         );
@@ -6018,7 +6290,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "delete exec error must propagate as DatabaseError"
         );
@@ -6037,7 +6309,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "list find error must propagate as DatabaseError"
         );
@@ -6056,7 +6328,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "group find error in get_group_with_biz_tags must propagate"
         );
@@ -6078,7 +6350,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "biz_tags find error must propagate"
         );
@@ -6099,7 +6371,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "find error must propagate as DatabaseError"
         );
@@ -6120,7 +6392,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "find error must propagate as DatabaseError"
         );
@@ -6139,7 +6411,7 @@ mod mock_tests {
         assert!(
             matches!(
                 result.unwrap_err(),
-                crate::core::CoreError::DatabaseError(_)
+                crate::core::CoreError::DatabaseError(_, _)
             ),
             "delete exec error must propagate as DatabaseError"
         );

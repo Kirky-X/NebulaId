@@ -438,9 +438,12 @@ mod tests {
     #[tokio::test]
     async fn test_create_workspace_db_error() {
         let mut mock_config = MockWorkspaceTestService::new();
-        mock_config
-            .expect_create_workspace()
-            .return_once(|_| Err(CoreError::DatabaseError("connection refused".to_string())));
+        mock_config.expect_create_workspace().return_once(|_| {
+            Err(CoreError::DatabaseError(
+                "connection refused".to_string(),
+                None,
+            ))
+        });
         // No repo expectations — should never be called.
         let mock_repo = MockWorkspaceTestRepo::new();
         let handlers = make_handlers_with_repo(mock_config, mock_repo);
@@ -448,7 +451,7 @@ mod tests {
         let result = handlers.create_workspace(make_create_workspace_req()).await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            CoreError::DatabaseError(msg) => assert!(msg.contains("connection refused")),
+            CoreError::DatabaseError(msg, _) => assert!(msg.contains("connection refused")),
             other => panic!("Expected DatabaseError, got {:?}", other),
         }
     }
@@ -487,6 +490,7 @@ mod tests {
         mock_repo.expect_create_api_key().return_once(|_| {
             Err(CoreError::DatabaseError(
                 "api key insert failed".to_string(),
+                None,
             ))
         });
 
@@ -494,7 +498,7 @@ mod tests {
         let result = handlers.create_workspace(make_create_workspace_req()).await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            CoreError::DatabaseError(msg) => assert!(msg.contains("api key insert failed")),
+            CoreError::DatabaseError(msg, _) => assert!(msg.contains("api key insert failed")),
             other => panic!("Expected DatabaseError, got {:?}", other),
         }
     }
@@ -585,12 +589,12 @@ mod tests {
         let mut mock_repo = MockWorkspaceTestRepo::new();
         mock_repo
             .expect_list_api_keys()
-            .return_once(|_, _, _| Err(CoreError::DatabaseError("list failed".to_string())));
+            .return_once(|_, _, _| Err(CoreError::DatabaseError("list failed".to_string(), None)));
 
         let handlers = make_handlers_with_repo(mock_config, mock_repo);
         let result = handlers.regenerate_user_api_key("test-workspace").await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), CoreError::DatabaseError(_)));
+        assert!(matches!(result.unwrap_err(), CoreError::DatabaseError(..)));
     }
 
     #[tokio::test]
@@ -608,12 +612,12 @@ mod tests {
             .return_once(|_, _, _| Ok(Vec::new()));
         mock_repo
             .expect_create_api_key()
-            .return_once(|_| Err(CoreError::DatabaseError("create failed".to_string())));
+            .return_once(|_| Err(CoreError::DatabaseError("create failed".to_string(), None)));
 
         let handlers = make_handlers_with_repo(mock_config, mock_repo);
         let result = handlers.regenerate_user_api_key("test-workspace").await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), CoreError::DatabaseError(_)));
+        assert!(matches!(result.unwrap_err(), CoreError::DatabaseError(..)));
     }
 
     #[tokio::test]
@@ -667,12 +671,12 @@ mod tests {
             .return_once(move |_, _, _| Ok(vec![user_key]));
         mock_repo
             .expect_delete_api_key()
-            .return_once(|_| Err(CoreError::DatabaseError("delete failed".to_string())));
+            .return_once(|_| Err(CoreError::DatabaseError("delete failed".to_string(), None)));
 
         let handlers = make_handlers_with_repo(mock_config, mock_repo);
         let result = handlers.regenerate_user_api_key("test-workspace").await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), CoreError::DatabaseError(_)));
+        assert!(matches!(result.unwrap_err(), CoreError::DatabaseError(..)));
     }
 
     // ===== list_workspaces =====

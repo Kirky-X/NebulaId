@@ -44,7 +44,9 @@ pub(crate) fn redact_db_url(url: &str) -> String {
 
 impl From<DbErr> for CoreError {
     fn from(e: DbErr) -> Self {
-        CoreError::DatabaseError(e.to_string())
+        // T038 —— 第一层文案与改前逐字节一致(e.to_string()),底层 DbErr
+        // 经 ErrorSource 保链(source() 非空;错误链仅进服务端日志)。
+        CoreError::DatabaseError(e.to_string(), Some(crate::core::types::ErrorSource::new(e)))
     }
 }
 
@@ -221,6 +223,7 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
             tracing::error!(event = "db_create_enum_type_failed", error = %e, "enum type creation failed");
             return Err(CoreError::DatabaseError(
                 "Failed to create enum type (see server logs for details)".to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
             ));
         }
     }
@@ -362,6 +365,7 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
                     );
                     return Err(CoreError::DatabaseError(
                         "Failed to create table (see server logs for details)".to_string(),
+                        Some(crate::core::types::ErrorSource::new(e)),
                     ));
                 }
             }
@@ -394,6 +398,7 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
                 );
                 return Err(CoreError::DatabaseError(
                     "Failed to alter table (see server logs for details)".to_string(),
+                    Some(crate::core::types::ErrorSource::new(e)),
                 ));
             }
         }
@@ -514,10 +519,16 @@ mod tests {
         let db_err = DbErr::Query(RuntimeErr::Internal("query blew up".to_string()));
         let core_err: CoreError = db_err.into();
         match core_err {
-            CoreError::DatabaseError(msg) => {
+            CoreError::DatabaseError(msg, source) => {
                 assert!(
                     msg.contains("query blew up"),
                     "DatabaseError should embed original DbErr text, got: {msg}"
+                );
+                // T038 —— 底层 DbErr 必须经 source() 保链(错误链仅进服务端日志)
+                let source = source.expect("From<DbErr> must preserve the source error");
+                assert!(
+                    source.to_string().contains("query blew up"),
+                    "source chain must carry the DbErr text, got: {source}"
                 );
             }
             other => panic!("expected CoreError::DatabaseError, got {other:?}"),
@@ -616,7 +627,7 @@ mod tests {
         let result = create_connection(&config).await;
         match result {
             Ok(_db) => { /* lazy pool created, success path covered */ }
-            Err(CoreError::DatabaseError(_msg)) => { /* connect failed, error path covered */ }
+            Err(CoreError::DatabaseError(_msg, _)) => { /* connect failed, error path covered */ }
             Err(other) => panic!(
                 "expected Ok or DatabaseError (validation should be skipped for full URL), got {other:?}"
             ),
@@ -730,7 +741,7 @@ mod tests {
             .into_connection();
         let result = run_migrations(&db).await;
         match result {
-            Err(CoreError::DatabaseError(msg)) => {
+            Err(CoreError::DatabaseError(msg, _)) => {
                 assert!(
                     msg.contains("Failed to create table"),
                     "should return generic message, got: {msg}"
@@ -817,7 +828,7 @@ mod tests {
 
         let err = run_migrations(&db).await.unwrap_err();
         match err {
-            CoreError::DatabaseError(msg) => {
+            CoreError::DatabaseError(msg, _) => {
                 assert!(
                     msg.contains("Failed to alter table"),
                     "should report the alteration step, got: {msg}"

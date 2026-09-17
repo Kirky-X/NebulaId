@@ -16,12 +16,75 @@
 // under `error.<variant_snake>` keys. thiserror's `#[error("{}", t!(...))]`
 // attribute generates `impl Display` that calls `t!()` for translation lookup
 // at runtime. Default locale is "en" (set in main.rs via `init_i18n("en")`).
+//
+// T038 错误链保留 —— `DatabaseError` / `EtcdError` / `IoError` 三个变体
+// 在第一层人类可读文案(`.0`,供 Display/i18n 与 HTTP 出口消毒,内容与
+// 改前逐字节一致)之外,以 `#[source] Option<ErrorSource>` 保留底层错误
+// 源:`error.source()` 非空,完整错误链只进服务端日志
+// (`core_error_to_response` 的 `error = ?e` Debug 自动带上 source),
+// 不改变任何对外文案。`Serialize`/`Deserialize` derive 随载荷类型化移除
+// (全仓无 CoreError 序列化使用点;HTTP/gRPC 出口走 `ErrorResponse` 固定
+// 结构,不受影响)。
 
 use rust_i18n::t;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use thiserror::Error;
 
-#[derive(Debug, Error, Serialize, Deserialize, Clone)]
+/// T038 —— 底层错误源的类型擦除保链容器。
+///
+/// `CoreError` 需要保持 `Clone`(id_handlers 指标路径 `e.clone()`),
+/// `std::io::Error` 等底层错误不实现 `Clone`,故以
+/// `Arc<dyn std::error::Error + Send + Sync>` 携带真实错误对象;
+/// `etcd-client` 仅在 etcd feature 下编译,`core::types` 不能依赖它,
+/// etcd 侧构造点用 [`ErrorSource::text`] 以 Display 文本保链。
+#[derive(Debug, Clone)]
+pub struct ErrorSource {
+    inner: Arc<dyn std::error::Error + Send + Sync>,
+}
+
+impl ErrorSource {
+    /// 包装真实底层错误对象(类型擦除,保留 Display/Debug/source 链)。
+    pub fn new(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self {
+            inner: Arc::new(source),
+        }
+    }
+
+    /// 仅能拿到文本的退路:以文本构造保链源(链路文字可见,但无内层
+    /// `source()`)。
+    pub fn text(message: impl Into<String>) -> Self {
+        Self {
+            inner: Arc::new(TextError(message.into())),
+        }
+    }
+}
+
+impl std::fmt::Display for ErrorSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&*self.inner, f)
+    }
+}
+
+impl std::error::Error for ErrorSource {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.inner.source()
+    }
+}
+
+/// [`ErrorSource::text`] 的内层载体。
+#[derive(Debug, Clone)]
+struct TextError(String);
+
+impl std::fmt::Display for TextError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for TextError {}
+
+#[derive(Debug, Error, Clone)]
 pub enum CoreError {
     #[error("{}", t!("error.invalid_id_format", value = _0))]
     InvalidIdFormat(String),
@@ -44,8 +107,10 @@ pub enum CoreError {
     #[error("{}", t!("error.segment_exhausted", max_id = max_id))]
     SegmentExhausted { max_id: u64 },
 
+    /// T038 —— `.0` 为第一层人类可读文案(Display/i18n 面与改前一致),
+    /// `.1` 保留底层错误源(仅进服务端日志,见 [`ErrorSource`])。
     #[error("{}", t!("error.database_error", value = _0))]
-    DatabaseError(String),
+    DatabaseError(String, #[source] Option<ErrorSource>),
 
     #[error("{}", t!("error.cache_error", value = _0))]
     CacheError(String),
@@ -77,14 +142,18 @@ pub enum CoreError {
     #[error("{}", t!("error.invalid_api_key_signature"))]
     InvalidApiKeySignature,
 
+    /// T038 —— `.0` 为第一层人类可读文案;`.1` 保链(etcd-client 仅 etcd
+    /// feature 可用,core types 以 [`ErrorSource::text`] 文本保链)。
     #[error("{}", t!("error.etcd_error", value = _0))]
-    EtcdError(String),
+    EtcdError(String, #[source] Option<ErrorSource>),
 
     #[error("{}", t!("error.parse_error", value = _0))]
     ParseError(String),
 
+    /// T038 —— `.0` 为第一层人类可读文案;`.1` 保留底层
+    /// `std::io::Error`(经 `From<std::io::Error>` 自动携带)。
     #[error("{}", t!("error.io_error", value = _0))]
-    IoError(String),
+    IoError(String, #[source] Option<ErrorSource>),
 
     #[error("{}", t!("error.timeout_error"))]
     TimeoutError,
@@ -108,7 +177,8 @@ impl From<std::num::ParseIntError> for CoreError {
 
 impl From<std::io::Error> for CoreError {
     fn from(e: std::io::Error) -> Self {
-        CoreError::IoError(e.to_string())
+        // T038 —— 第一层文案与改前一致(e.to_string()),底层错误对象保链。
+        CoreError::IoError(e.to_string(), Some(ErrorSource::new(e)))
     }
 }
 
@@ -183,7 +253,7 @@ impl CoreError {
             CoreError::ClockMovedBackward { .. } => "error.clock_moved_backward",
             CoreError::SequenceOverflow { .. } => "error.sequence_overflow",
             CoreError::SegmentExhausted { .. } => "error.segment_exhausted",
-            CoreError::DatabaseError(_) => "error.database_error",
+            CoreError::DatabaseError(_, _) => "error.database_error",
             CoreError::CacheError(_) => "error.cache_error",
             CoreError::ConfigurationError(_) => "error.configuration_error",
             CoreError::AuthenticationError(_) => "error.authentication_error",
@@ -194,9 +264,9 @@ impl CoreError {
             CoreError::ApiKeyDisabled => "error.api_key_disabled",
             CoreError::ApiKeyExpired => "error.api_key_expired",
             CoreError::InvalidApiKeySignature => "error.invalid_api_key_signature",
-            CoreError::EtcdError(_) => "error.etcd_error",
+            CoreError::EtcdError(_, _) => "error.etcd_error",
             CoreError::ParseError(_) => "error.parse_error",
-            CoreError::IoError(_) => "error.io_error",
+            CoreError::IoError(_, _) => "error.io_error",
             CoreError::TimeoutError => "error.timeout_error",
             CoreError::InternalError(_) => "error.internal_error",
             CoreError::InvalidInput(_) => "error.invalid_input",
@@ -231,7 +301,7 @@ impl CoreError {
             CoreError::SegmentExhausted { max_id } => {
                 smallvec![("max_id", Cow::Owned(max_id.to_string()))]
             }
-            CoreError::DatabaseError(s) => smallvec![("value", Cow::Borrowed(s.as_str()))],
+            CoreError::DatabaseError(s, _) => smallvec![("value", Cow::Borrowed(s.as_str()))],
             CoreError::CacheError(s) => smallvec![("value", Cow::Borrowed(s.as_str()))],
             CoreError::ConfigurationError(s) => {
                 smallvec![("value", Cow::Borrowed(s.as_str()))]
@@ -246,13 +316,54 @@ impl CoreError {
             CoreError::ApiKeyDisabled => smallvec![],
             CoreError::ApiKeyExpired => smallvec![],
             CoreError::InvalidApiKeySignature => smallvec![],
-            CoreError::EtcdError(s) => smallvec![("value", Cow::Borrowed(s.as_str()))],
+            CoreError::EtcdError(s, _) => smallvec![("value", Cow::Borrowed(s.as_str()))],
             CoreError::ParseError(s) => smallvec![("value", Cow::Borrowed(s.as_str()))],
-            CoreError::IoError(s) => smallvec![("value", Cow::Borrowed(s.as_str()))],
+            CoreError::IoError(s, _) => smallvec![("value", Cow::Borrowed(s.as_str()))],
             CoreError::TimeoutError => smallvec![],
             CoreError::InternalError(s) => smallvec![("value", Cow::Borrowed(s.as_str()))],
             CoreError::InvalidInput(s) => smallvec![("value", Cow::Borrowed(s.as_str()))],
             CoreError::Unknown => smallvec![],
+        }
+    }
+
+    /// T038 —— 第一层人类可读文案(不含 source 链)。
+    ///
+    /// 即 `i18n_args` 插值所用的那份文本(`i18n_args` 对含文案载荷的变体
+    /// 以 `Cow::Borrowed` 借用同一字段,两者结构性同源、不会漂移):
+    /// - String 载荷变体 → 载荷文本;
+    /// - `DatabaseError` / `EtcdError` / `IoError` → `.0`(与底层错误源
+    ///   `.1` 分离,源链仅经 [`std::error::Error::source`] / 服务端日志暴露);
+    /// - 数值载荷变体 → 数值文本;
+    /// - 无载荷变体 → 空串(无可插值参数)。
+    ///
+    /// HTTP/gRPC 出口消毒不变:5xx 变体对外仍只出固定文案
+    /// (`api.error.*`),本方法不进入任何对外响应体。
+    pub fn top_level_message(&self) -> String {
+        match self {
+            CoreError::InvalidIdFormat(s)
+            | CoreError::InvalidIdString(s)
+            | CoreError::InvalidAlgorithmType(s)
+            | CoreError::CacheError(s)
+            | CoreError::ConfigurationError(s)
+            | CoreError::AuthenticationError(s)
+            | CoreError::NotFound(s)
+            | CoreError::WorkspaceDisabled(s)
+            | CoreError::BizTagNotFound(s)
+            | CoreError::ParseError(s)
+            | CoreError::InternalError(s)
+            | CoreError::InvalidInput(s) => s.clone(),
+            CoreError::DatabaseError(s, _)
+            | CoreError::EtcdError(s, _)
+            | CoreError::IoError(s, _) => s.clone(),
+            CoreError::ClockMovedBackward { last_timestamp } => last_timestamp.to_string(),
+            CoreError::SequenceOverflow { timestamp } => timestamp.to_string(),
+            CoreError::SegmentExhausted { max_id } => max_id.to_string(),
+            CoreError::RateLimitExceeded
+            | CoreError::ApiKeyDisabled
+            | CoreError::ApiKeyExpired
+            | CoreError::InvalidApiKeySignature
+            | CoreError::TimeoutError
+            | CoreError::Unknown => String::new(),
         }
     }
 
@@ -314,7 +425,7 @@ mod tests {
             "Invalid algorithm type: foo"
         );
         assert_eq!(
-            CoreError::DatabaseError("conn lost".to_string()).to_string(),
+            CoreError::DatabaseError("conn lost".to_string(), None).to_string(),
             "Database error: conn lost"
         );
         assert_eq!(
@@ -342,7 +453,7 @@ mod tests {
             "Biz tag not found: tag-1"
         );
         assert_eq!(
-            CoreError::EtcdError("no quorum".to_string()).to_string(),
+            CoreError::EtcdError("no quorum".to_string(), None).to_string(),
             "Etcd error: no quorum"
         );
         assert_eq!(
@@ -350,7 +461,7 @@ mod tests {
             "Parse error: syntax"
         );
         assert_eq!(
-            CoreError::IoError("eof".to_string()).to_string(),
+            CoreError::IoError("eof".to_string(), None).to_string(),
             "I/O error: eof"
         );
         assert_eq!(
@@ -475,7 +586,7 @@ mod tests {
             "Segment exhausted, max_id: 7"
         );
         assert_eq!(
-            CoreError::DatabaseError("v".to_string()).to_localized_string("en"),
+            CoreError::DatabaseError("v".to_string(), None).to_localized_string("en"),
             "Database error: v"
         );
         assert_eq!(
@@ -519,7 +630,7 @@ mod tests {
             "Invalid API key signature"
         );
         assert_eq!(
-            CoreError::EtcdError("v".to_string()).to_localized_string("en"),
+            CoreError::EtcdError("v".to_string(), None).to_localized_string("en"),
             "Etcd error: v"
         );
         assert_eq!(
@@ -527,7 +638,7 @@ mod tests {
             "Parse error: v"
         );
         assert_eq!(
-            CoreError::IoError("v".to_string()).to_localized_string("en"),
+            CoreError::IoError("v".to_string(), None).to_localized_string("en"),
             "I/O error: v"
         );
         assert_eq!(
@@ -605,7 +716,7 @@ mod tests {
         let _g = LocaleGuard::new();
         rust_i18n::set_locale("en");
 
-        let err = CoreError::DatabaseError("db err".to_string());
+        let err = CoreError::DatabaseError("db err".to_string(), None);
         let ja_msg = err.to_localized_string("ja");
         let en_msg = err.to_localized_string("en");
         assert_eq!(ja_msg, en_msg);
@@ -650,7 +761,7 @@ mod tests {
         ));
 
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
-        assert!(matches!(CoreError::from(io_err), CoreError::IoError(_)));
+        assert!(matches!(CoreError::from(io_err), CoreError::IoError(..)));
 
         let uuid_err = "not-a-uuid".parse::<uuid::Uuid>().unwrap_err();
         assert!(matches!(
@@ -685,5 +796,69 @@ mod tests {
         );
         assert_eq!(detailed.code, 500);
         assert_eq!(detailed.details, Some(serde_json::json!({"retry": false})));
+    }
+
+    // ==================== T038: 错误链保留 ====================
+
+    /// T038 —— `From<std::io::Error>` 保留底层错误对象:`source()` 非空,
+    /// 第一层文案与 Display/i18n 面和改前逐字节一致。
+    #[test]
+    fn test_io_error_preserves_source_chain() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "config file missing");
+        let err = CoreError::from(io_err);
+        assert!(matches!(err, CoreError::IoError(..)));
+        assert_eq!(err.top_level_message(), "config file missing");
+        let source = std::error::Error::source(&err).expect("IoError must preserve source");
+        assert_eq!(source.to_string(), "config file missing");
+        assert_eq!(err.to_string(), "I/O error: config file missing");
+    }
+
+    /// T038 —— DatabaseError 构造点保留底层错误源:source() 非空且第一层
+    /// 文案不含源链(HTTP 出口消毒面不变)。`From<DbErr>` 路径由
+    /// connection.rs 的 test_from_dberr 钉住。
+    #[test]
+    fn test_database_error_preserves_source_chain() {
+        let db_err = dbnexus::sea_orm::DbErr::Custom("unique constraint violated".to_string());
+        let err = CoreError::DatabaseError(
+            "failed to insert api key".to_string(),
+            Some(ErrorSource::new(db_err)),
+        );
+        let source = std::error::Error::source(&err).expect("DatabaseError must preserve source");
+        assert!(
+            source.to_string().contains("unique constraint violated"),
+            "source chain must carry the underlying DbErr text, got: {source}"
+        );
+        assert_eq!(err.top_level_message(), "failed to insert api key");
+        assert!(
+            !err.top_level_message().contains("unique constraint"),
+            "first-level message must stay sanitized (CWE-209)"
+        );
+    }
+
+    /// T038 —— EtcdError 以 [`ErrorSource::text`] 保链(etcd-client 仅 etcd
+    /// feature 可用,core::types 不能依赖它,构造点以 Display 文本保链):
+    /// source() 非空、文案可读。
+    #[test]
+    fn test_etcd_error_preserves_source_chain_via_text() {
+        let err = CoreError::EtcdError(
+            "etcd ping failed".to_string(),
+            Some(ErrorSource::text("etcdserver: no leader")),
+        );
+        let source = std::error::Error::source(&err).expect("EtcdError must preserve source");
+        assert_eq!(source.to_string(), "etcdserver: no leader");
+        assert_eq!(err.top_level_message(), "etcd ping failed");
+        assert_eq!(err.to_string(), "Etcd error: etcd ping failed");
+    }
+
+    /// T038 —— `top_level_message` 与 i18n 渲染同源:i18n_args 插值的正是
+    /// 第一层文案(改前 = String 载荷,输出逐字节一致)。
+    #[test]
+    fn test_top_level_message_matches_i18n_rendered_args() {
+        let err = CoreError::DatabaseError("conn reset".to_string(), None);
+        assert_eq!(err.top_level_message(), "conn reset");
+        assert!(err.to_localized_string("en").contains("conn reset"));
+
+        let err = CoreError::EtcdError("lease lost".to_string(), None);
+        assert!(err.to_localized_string("zh-CN").contains("lease lost"));
     }
 }

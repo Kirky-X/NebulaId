@@ -53,8 +53,18 @@ use axum::http::StatusCode;
 use axum::Json;
 
 /// Convert database errors to `CoreError::DatabaseError`.
-pub(super) fn map_db_error<E: std::fmt::Display>(error: E) -> CoreError {
-    CoreError::DatabaseError(error.to_string())
+///
+/// T038 —— 第一层文案与改前逐字节一致(`error.to_string()`),底层错误
+/// 对象经 [`crate::core::types::ErrorSource`] 保链(source() 非空;错误链
+/// 仅进服务端日志,见 `core_error_to_response`)。
+pub(super) fn map_db_error<E>(error: E) -> CoreError
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    CoreError::DatabaseError(
+        error.to_string(),
+        Some(crate::core::types::ErrorSource::new(error)),
+    )
 }
 
 /// Convert UUID parse errors to `CoreError::InvalidInput`.
@@ -106,7 +116,7 @@ fn core_error_classification(e: &CoreError) -> (StatusCode, ApiErrorCode) {
             StatusCode::SERVICE_UNAVAILABLE,
             ApiErrorCode::ServiceUnavailable,
         ),
-        CoreError::DatabaseError(_) => (
+        CoreError::DatabaseError(_, _) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             ApiErrorCode::DatabaseError,
         ),
@@ -194,7 +204,7 @@ pub fn core_error_to_response(e: &CoreError, locale: Locale) -> (StatusCode, Jso
     // 5xx-class internal errors — log full detail server-side, return
     // generic locale-translated message to the client.
     let message = match e {
-        CoreError::DatabaseError(_) => {
+        CoreError::DatabaseError(_, _) => {
             tracing::error!(
                 event = "core_error",
                 variant = "database_error",
@@ -230,7 +240,7 @@ pub fn core_error_to_response(e: &CoreError, locale: Locale) -> (StatusCode, Jso
             );
             translate_with_locale(locale.as_str(), "api.error.configuration_error")
         }
-        CoreError::EtcdError(_) => {
+        CoreError::EtcdError(_, _) => {
             tracing::error!(
                 event = "core_error",
                 variant = "etcd_error",
@@ -239,7 +249,7 @@ pub fn core_error_to_response(e: &CoreError, locale: Locale) -> (StatusCode, Jso
             );
             translate_with_locale(locale.as_str(), "api.error.etcd_error")
         }
-        CoreError::IoError(_) => {
+        CoreError::IoError(_, _) => {
             tracing::error!(
                 event = "core_error",
                 variant = "io_error",
@@ -684,7 +694,8 @@ mod tests {
         assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
 
         // 500 — 5xx-class variants (full coverage)
-        let (s, _) = core_error_to_response(&CoreError::DatabaseError("x".to_string()), Locale::En);
+        let (s, _) =
+            core_error_to_response(&CoreError::DatabaseError("x".to_string(), None), Locale::En);
         assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
         let (s, _) = core_error_to_response(&CoreError::CacheError("x".to_string()), Locale::En);
         assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
@@ -693,9 +704,10 @@ mod tests {
         let (s, _) =
             core_error_to_response(&CoreError::ConfigurationError("x".to_string()), Locale::En);
         assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
-        let (s, _) = core_error_to_response(&CoreError::EtcdError("x".to_string()), Locale::En);
+        let (s, _) =
+            core_error_to_response(&CoreError::EtcdError("x".to_string(), None), Locale::En);
         assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
-        let (s, _) = core_error_to_response(&CoreError::IoError("x".to_string()), Locale::En);
+        let (s, _) = core_error_to_response(&CoreError::IoError("x".to_string(), None), Locale::En);
         assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
         let (s, _) = core_error_to_response(
             &CoreError::ClockMovedBackward { last_timestamp: 1 },
@@ -792,7 +804,7 @@ mod tests {
                 ApiErrorCode::ServiceUnavailable,
             ),
             (
-                CoreError::DatabaseError("x".into()),
+                CoreError::DatabaseError("x".into(), None),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ApiErrorCode::DatabaseError,
             ),
@@ -812,12 +824,12 @@ mod tests {
                 ApiErrorCode::InternalError,
             ),
             (
-                CoreError::EtcdError("x".into()),
+                CoreError::EtcdError("x".into(), None),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ApiErrorCode::InternalError,
             ),
             (
-                CoreError::IoError("x".into()),
+                CoreError::IoError("x".into(), None),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ApiErrorCode::InternalError,
             ),
@@ -945,8 +957,10 @@ mod tests {
         // A sensitive DB URL embedded in DatabaseError — typical of what
         // an upstream diesel/sqlx error would stringify to.
         let sensitive = "postgres://user:pwd@internal-host:5432/nebulaid";
-        let (status, json) =
-            core_error_to_response(&CoreError::DatabaseError(sensitive.to_string()), Locale::En);
+        let (status, json) = core_error_to_response(
+            &CoreError::DatabaseError(sensitive.to_string(), None),
+            Locale::En,
+        );
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(json.code, 500);
         assert_eq!(json.message, "Database operation failed");
@@ -965,7 +979,7 @@ mod tests {
 
         // zh-CN locale returns the translated generic message.
         let (_, json_zh) = core_error_to_response(
-            &CoreError::DatabaseError(sensitive.to_string()),
+            &CoreError::DatabaseError(sensitive.to_string(), None),
             Locale::ZhCn,
         );
         assert_eq!(json_zh.message, "数据库操作失败");
@@ -998,8 +1012,10 @@ mod tests {
 
         // EtcdError — sensitive endpoint
         let etcd_url = "http://etcd.internal:2379, token=admin-token";
-        let (_, json) =
-            core_error_to_response(&CoreError::EtcdError(etcd_url.to_string()), Locale::En);
+        let (_, json) = core_error_to_response(
+            &CoreError::EtcdError(etcd_url.to_string(), None),
+            Locale::En,
+        );
         assert_eq!(json.message, "Etcd service unavailable");
         assert!(!json.message.contains(etcd_url));
         assert!(!json.message.contains("admin-token"));
@@ -1007,7 +1023,7 @@ mod tests {
         // IoError — sensitive fs path
         let fs_path = "/var/lib/nebulaid/private/keys/0xdeadbeef.pem";
         let (_, json) =
-            core_error_to_response(&CoreError::IoError(fs_path.to_string()), Locale::En);
+            core_error_to_response(&CoreError::IoError(fs_path.to_string(), None), Locale::En);
         assert_eq!(json.message, "I/O error");
         assert!(!json.message.contains(fs_path));
 
@@ -1266,7 +1282,7 @@ mod tests {
     #[test]
     fn test_core_error_to_grpc_status_sanitizes_5xx() {
         let sensitive = "postgres://idgen:pwd@internal-host:5432/nebulaid";
-        let e = CoreError::DatabaseError(format!("Database error: {sensitive}"));
+        let e = CoreError::DatabaseError(format!("Database error: {sensitive}"), None);
         let status = core_error_to_grpc_status(&e);
         assert_eq!(status.code(), sdforge::tonic::Code::Internal);
         assert_eq!(status.message(), "internal error");

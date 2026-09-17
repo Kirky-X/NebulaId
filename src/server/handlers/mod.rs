@@ -1057,7 +1057,7 @@ pub(crate) mod mock_tests {
         let result = handlers.create_workspace(req).await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            CoreError::DatabaseError(msg) => assert!(msg.contains("DB error")),
+            CoreError::DatabaseError(msg, _) => assert!(msg.contains("DB error")),
             e => panic!("Expected DatabaseError, got {:?}", e),
         }
     }
@@ -1352,13 +1352,13 @@ pub(crate) mod mock_tests {
         let mut mock_repo = MockApiKeyRepository::new();
         mock_repo
             .expect_list_api_keys()
-            .return_once(|_, _, _| Err(CoreError::DatabaseError("DB error".to_string())));
+            .return_once(|_, _, _| Err(CoreError::DatabaseError("DB error".to_string(), None)));
         let handlers =
             create_mock_handlers_with_repo(MockConfigManagementService::new(), mock_repo);
         let result = handlers.list_api_keys(Uuid::new_v4(), None, None).await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            CoreError::DatabaseError(msg) => assert!(msg.contains("DB error")),
+            CoreError::DatabaseError(msg, _) => assert!(msg.contains("DB error")),
             e => panic!("Expected DatabaseError, got {:?}", e),
         }
     }

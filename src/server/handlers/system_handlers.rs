@@ -966,7 +966,7 @@ mod tests {
         // Repo returns error; background task should log and continue.
         mock_repo
             .expect_get_keys_older_than()
-            .returning(|_| Err(CoreError::DatabaseError("db unavailable".to_string())));
+            .returning(|_| Err(CoreError::DatabaseError("db unavailable".to_string(), None)));
 
         let handlers = create_handlers_with_mock_config_and_repo(mock_config, mock_repo);
         let handle = handlers.start_key_rotation_task(std::time::Duration::from_millis(10), 1);
@@ -1012,9 +1012,12 @@ mod tests {
             .expect_get_keys_older_than()
             .return_once(move |_| Ok(vec![old_key]));
         // Rotate fails; background task should log error and continue.
-        mock_repo
-            .expect_rotate_api_key()
-            .returning(|_, _| Err(CoreError::DatabaseError("rotation failed".to_string())));
+        mock_repo.expect_rotate_api_key().returning(|_, _| {
+            Err(CoreError::DatabaseError(
+                "rotation failed".to_string(),
+                None,
+            ))
+        });
 
         let handlers = create_handlers_with_mock_config_and_repo(mock_config, mock_repo);
         let handle = handlers.start_key_rotation_task(std::time::Duration::from_millis(10), 1);

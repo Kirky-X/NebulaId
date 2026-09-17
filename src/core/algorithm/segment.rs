@@ -1083,6 +1083,7 @@ mod tests {
         ) -> Result<SegmentData> {
             Err(CoreError::DatabaseError(
                 "segment db unreachable".to_string(),
+                None,
             ))
         }
     }
@@ -1114,6 +1115,7 @@ mod tests {
             if self.fail.load(Ordering::Relaxed) {
                 Err(CoreError::DatabaseError(
                     "transient load failure".to_string(),
+                    None,
                 ))
             } else {
                 Ok(SegmentData {
@@ -1423,13 +1425,13 @@ mod tests {
     #[tokio::test]
     async fn test_db_segment_loader_propagates_repository_error() {
         let repo = Arc::new(MockSegmentRepository::returning(Err(
-            CoreError::DatabaseError("allocate boom".to_string()),
+            CoreError::DatabaseError("allocate boom".to_string(), None),
         )));
         let loader = DbSegmentLoader::new(repo);
 
         let result = loader.load_segment(&sample_ctx(), 0).await;
         match result {
-            Err(CoreError::DatabaseError(msg)) => {
+            Err(CoreError::DatabaseError(msg, _)) => {
                 assert!(msg.contains("allocate boom"), "error must pass through");
             }
             other => panic!("expected DatabaseError passthrough, got {other:?}"),

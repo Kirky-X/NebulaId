@@ -547,9 +547,16 @@ mod grpc_auth {
         CreateApiKeyRequest,
     };
     use crate::core::types::CoreError;
+    use crate::server::handlers::mock_tests::MockConfigManagementService;
     use crate::server::middleware::api_key_auth::ApiKeyAuth;
+    use crate::server::models::WorkspaceResponse;
     use sdforge::tonic::{Code, Status};
     use uuid::Uuid;
+
+    /// 测试固定 workspace UUID：key 绑定（`AuthenticatedKey.workspace_id`）与
+    /// 目录反查（`get_workspace` 返回的 `WorkspaceResponse.id`）共用，保证
+    /// T011 资源级授权的「自身 namespace」判定能对上。
+    const WS_AUTH: Uuid = uuid::Uuid::from_u128(0x5e1f_7ea7_0001);
 
     /// 固定凭证：grpc-key / grpc-secret → workspace ws-grpc + User 角色
     #[derive(Clone)]
@@ -576,7 +583,7 @@ mod grpc_auth {
         ) -> crate::core::types::Result<Option<AuthenticatedKey>> {
             if key_id == "grpc-key" {
                 Ok(Some(AuthenticatedKey {
-                    workspace_id: Some(Uuid::new_v4()),
+                    workspace_id: Some(WS_AUTH),
                     role: ApiKeyRole::User,
                     used_previous_credential: false,
                 }))
@@ -636,18 +643,34 @@ mod grpc_auth {
         }
     }
 
-    fn auth_server(auth: ApiKeyAuth) -> GrpcServer {
-        let config = Config::default();
-        let hot_config = Arc::new(HotReloadConfig::new(
-            config.clone(),
-            "config/config.toml".to_string(),
-        ));
-        let algorithm_router = Arc::new(AlgorithmRouter::new(config, None));
-        let config_service: Arc<dyn ConfigManagementService> =
-            Arc::new(ConfigManager::new(hot_config, algorithm_router));
+    /// 构造启用认证 + workspace 目录的 handlers：目录把任意名称解析到
+    /// `WS_AUTH`（T011 资源级授权需要 namespace 反查 UUID 成功且与 key
+    /// 绑定一致，才能走通 generate 类接口的成功路径）。
+    fn workspace_aware_handlers() -> Arc<ApiHandlers> {
+        let mut mock_config = MockConfigManagementService::new();
+        mock_config.expect_get_workspace().returning(move |name| {
+            Ok(Some(WorkspaceResponse {
+                id: WS_AUTH.to_string(),
+                name: name.to_string(),
+                description: None,
+                status: "active".to_string(),
+                max_groups: 10,
+                max_biz_tags: 100,
+                created_at: chrono::Utc::now().to_rfc3339(),
+                updated_at: chrono::Utc::now().to_rfc3339(),
+                user_api_key: None,
+            }))
+        });
+        // batch_generate 校验路径读取批大小上限。
+        mock_config.expect_get_batch_max_size().returning(|| 100);
         let id_generator: Arc<dyn crate::core::algorithm::IdGenerator> =
             Arc::new(MockIdGenerator::new());
-        let handlers = Arc::new(ApiHandlers::new(id_generator, config_service));
+        let config_service: Arc<dyn ConfigManagementService> = Arc::new(mock_config);
+        Arc::new(ApiHandlers::new(id_generator, config_service))
+    }
+
+    fn auth_server(auth: ApiKeyAuth) -> GrpcServer {
+        let handlers = workspace_aware_handlers();
         GrpcServer::with_auth(handlers, Arc::new(auth))
     }
 
@@ -755,7 +778,7 @@ mod grpc_auth {
             key_id: key_id.to_string(),
             key_prefix: "nino_".to_string(),
             role: ApiKeyRole::User,
-            workspace_id: Some(Uuid::new_v4()),
+            workspace_id: Some(WS_AUTH),
             name: key_id.to_string(),
             description: None,
             rate_limit: 1000,
@@ -972,6 +995,55 @@ mod grpc_auth {
                 .await
                 .expect("活 key + 正确 secret 应通过认证");
         assert!(!ok.into_inner().id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn repeated_auth_failures_hit_resource_exhausted() {
+        // T012 — 同 peer 连续认证失败超阈值（5 分钟 10 次）后必须返回
+        // ResourceExhausted：失败桶与 HTTP 中间件同源（HTTP 对应 429），
+        // 每次拒绝都经 reject 入桶，下一次请求先查桶再解析凭证。
+        // 直连 trait 方法时 peer_ip 兜底 "unknown"，天然同一桶。
+        let server = auth_server(ApiKeyAuth::new(Arc::new(FixedKeyRepo), true));
+        let bad_request = || {
+            let mut req = Request::new(GrpcGenerateRequest {
+                namespace: "ns".to_string(),
+                tag: "tag".to_string(),
+                metadata: HashMap::new(),
+            });
+            req.metadata_mut().insert(
+                "authorization",
+                basic_header("ghost-key", "wrong-secret").parse().unwrap(),
+            );
+            req
+        };
+
+        // 前 10 次失败仍是 unauthenticated（每次都入桶）。
+        for i in 0..10 {
+            let err: Status = NebulaIdService::generate(&server, bad_request())
+                .await
+                .expect_err("无效凭证必须被拒绝");
+            assert_eq!(
+                err.code(),
+                Code::Unauthenticated,
+                "第 {} 次失败应仍是 unauthenticated，实际: {err:?}",
+                i + 1
+            );
+        }
+
+        // 第 11 次请求：失败桶达到阈值 → ResourceExhausted。
+        let err: Status = NebulaIdService::generate(&server, bad_request())
+            .await
+            .expect_err("超限后必须被拒绝");
+        assert_eq!(
+            err.code(),
+            Code::ResourceExhausted,
+            "超阈值后必须是 ResourceExhausted（HTTP 429 的 gRPC 对应），实际: {err:?}"
+        );
+        assert_eq!(
+            err.message(),
+            "Too many authentication attempts. Please try again later.",
+            "限流文案必须与 HTTP too_many_requests_response 同源"
+        );
     }
 
     #[tokio::test]
@@ -1353,10 +1425,11 @@ mod grpc_auth {
         jh.abort();
     }
 
-    /// 流式 batch 失败分支：count=0 触发批大小校验错误，流内以
-    /// `algorithm: "error: ..."` 的错误项回传而非断流。
+    /// 流式 batch 失败分支（T013 后语义）：count=0 触发批大小校验错误，
+    /// 流以 `Err(Status::InvalidArgument)` 终止 —— 不再把错误串塞进
+    /// `algorithm` 字段伪装成正常项。
     #[tokio::test]
-    async fn stream_batch_validation_error_yields_error_item() {
+    async fn stream_batch_validation_error_terminates_stream_with_status() {
         let (addr, jh) = spawn_auth_server().await;
 
         let mut client =
@@ -1380,16 +1453,310 @@ mod grpc_auth {
             .await
             .expect("调用必须建立")
             .into_inner();
-        let first = tokio_stream::StreamExt::next(&mut stream)
-            .await
-            .expect("流必须产出首项")
-            .expect("首项必须是正常响应");
-        let inner = first.id.expect("响应必须含 ID");
-        assert!(
-            inner.algorithm.starts_with("error:"),
-            "校验失败必须以 error 项回传，实际: {:?}",
-            inner.algorithm
+        match tokio_stream::StreamExt::next(&mut stream).await {
+            Some(Err(status)) => {
+                assert_eq!(
+                    status.code(),
+                    Code::InvalidArgument,
+                    "count=0 校验失败必须以 InvalidArgument 终止流，实际: {status:?}"
+                );
+                assert!(
+                    !status.message().contains("error:"),
+                    "消毒后的 Status 不得携带旧实现的 'error:' 前缀明文"
+                );
+            }
+            other => panic!("校验失败必须以 Status 终止流，实际: {other:?}"),
+        }
+
+        jh.abort();
+    }
+}
+
+// =============================================================================
+// T011 gRPC 资源级授权 —— generate 系接口跨租户隔离（HTTP 语义对齐）
+// =============================================================================
+
+mod grpc_authz {
+    use super::*;
+    use crate::core::database::{
+        ApiKeyInfo, ApiKeyRepository, ApiKeyRole, ApiKeyWithSecret, AuthenticatedKey,
+        CreateApiKeyRequest,
+    };
+    use crate::server::handlers::mock_tests::MockConfigManagementService;
+    use crate::server::middleware::api_key_auth::ApiKeyAuth;
+    use crate::server::models::WorkspaceResponse;
+    use sdforge::tonic::{Code, Status};
+    use uuid::Uuid;
+
+    /// 两个租户的固定 workspace UUID（编译期常量，key 绑定与目录反查共用）。
+    const WS_A: Uuid = uuid::Uuid::from_u128(0x7e_a0001);
+    const WS_B: Uuid = uuid::Uuid::from_u128(0x7e_b0001);
+
+    /// 三类凭证：A 租户 User、B 租户 User、全局 Admin（workspace 未绑定）。
+    struct TenantKeyRepo;
+
+    #[async_trait::async_trait]
+    impl ApiKeyRepository for TenantKeyRepo {
+        async fn create_api_key(
+            &self,
+            _request: &CreateApiKeyRequest,
+        ) -> crate::core::types::Result<ApiKeyWithSecret> {
+            Err(crate::core::types::CoreError::NotFound("noop".into()))
+        }
+        async fn get_api_key_by_id(
+            &self,
+            _key_id: &str,
+        ) -> crate::core::types::Result<Option<ApiKeyInfo>> {
+            Ok(None)
+        }
+        async fn validate_api_key(
+            &self,
+            key_id: &str,
+            _key_secret: &str,
+        ) -> crate::core::types::Result<Option<AuthenticatedKey>> {
+            let identity = |workspace: Option<Uuid>, role: ApiKeyRole| {
+                Some(AuthenticatedKey {
+                    workspace_id: workspace,
+                    role,
+                    used_previous_credential: false,
+                })
+            };
+            Ok(match key_id {
+                "user-a-key" => identity(Some(WS_A), ApiKeyRole::User),
+                "user-b-key" => identity(Some(WS_B), ApiKeyRole::User),
+                "admin-key" => identity(None, ApiKeyRole::Admin),
+                _ => None,
+            })
+        }
+        async fn list_api_keys(
+            &self,
+            _workspace_id: Uuid,
+            _limit: Option<u32>,
+            _offset: Option<u32>,
+        ) -> crate::core::types::Result<Vec<ApiKeyInfo>> {
+            Ok(vec![])
+        }
+        async fn delete_api_key(&self, _id: Uuid) -> crate::core::types::Result<()> {
+            Ok(())
+        }
+        async fn revoke_api_key(&self, _id: Uuid) -> crate::core::types::Result<()> {
+            Ok(())
+        }
+        async fn update_last_used(&self, _id: Uuid) -> crate::core::types::Result<()> {
+            Ok(())
+        }
+        async fn get_admin_api_key(
+            &self,
+            _workspace_id: Uuid,
+        ) -> crate::core::types::Result<Option<ApiKeyInfo>> {
+            Ok(None)
+        }
+        async fn count_api_keys(&self, _workspace_id: Uuid) -> crate::core::types::Result<u64> {
+            Ok(0)
+        }
+        async fn find_api_key_by_row_id(
+            &self,
+            _id: Uuid,
+        ) -> crate::core::types::Result<Option<ApiKeyInfo>> {
+            Ok(None)
+        }
+        async fn count_admin_keys(&self) -> crate::core::types::Result<u64> {
+            Ok(0)
+        }
+        async fn rotate_api_key(
+            &self,
+            _key_id: &str,
+            _grace_period_seconds: u64,
+        ) -> crate::core::types::Result<ApiKeyWithSecret> {
+            Err(crate::core::types::CoreError::NotFound("noop".into()))
+        }
+        async fn get_keys_older_than(
+            &self,
+            _age_threshold_days: i64,
+        ) -> crate::core::types::Result<Vec<ApiKeyInfo>> {
+            Ok(vec![])
+        }
+    }
+
+    /// 目录行：`WorkspaceResponse`（id 固定，其余字段任意有效值）。
+    fn workspace_row(name: &str, id: Uuid) -> WorkspaceResponse {
+        WorkspaceResponse {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: None,
+            status: "active".to_string(),
+            max_groups: 10,
+            max_biz_tags: 100,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            user_api_key: None,
+        }
+    }
+
+    /// 双租户目录：ws-a → WS_A、ws-b → WS_B，其余 NotFound；批上限 100。
+    fn tenant_dir() -> MockConfigManagementService {
+        let mut mock = MockConfigManagementService::new();
+        mock.expect_get_workspace().returning(move |name| {
+            let id = match name {
+                "ws-a" => WS_A,
+                "ws-b" => WS_B,
+                _ => return Ok(None),
+            };
+            Ok(Some(workspace_row(name, id)))
+        });
+        mock.expect_get_batch_max_size().returning(|| 100);
+        mock
+    }
+
+    fn authz_server() -> GrpcServer {
+        let id_generator: Arc<dyn crate::core::algorithm::IdGenerator> =
+            Arc::new(MockIdGenerator::new());
+        let config_service: Arc<dyn ConfigManagementService> = Arc::new(tenant_dir());
+        let handlers = Arc::new(ApiHandlers::new(id_generator, config_service));
+        GrpcServer::with_auth(
+            handlers,
+            Arc::new(ApiKeyAuth::new(Arc::new(TenantKeyRepo), true)),
+        )
+    }
+
+    /// 携带 ApiKey 凭证（仓库侧忽略 secret）的 GenerateRequest。
+    fn generate_request(key_id: &str, namespace: &str) -> Request<GrpcGenerateRequest> {
+        let mut req = Request::new(GrpcGenerateRequest {
+            namespace: namespace.to_string(),
+            tag: "tag".to_string(),
+            metadata: HashMap::new(),
+        });
+        req.metadata_mut().insert(
+            "authorization",
+            format!("ApiKey {key_id}:any-secret").parse().unwrap(),
         );
+        req
+    }
+
+    #[tokio::test]
+    async fn user_key_cross_tenant_namespace_is_permission_denied() {
+        // User key 请求他人 namespace → permission_denied（HTTP 403
+        // workspace_mismatch 同语义），generate 与 batch_generate 同一判定点。
+        let server = authz_server();
+        let err: Status =
+            NebulaIdService::generate(&server, generate_request("user-a-key", "ws-b"))
+                .await
+                .expect_err("User key 请求他人 namespace 必须被拒绝");
+        assert_eq!(
+            err.code(),
+            Code::PermissionDenied,
+            "跨租户 generate 必须是 permission_denied，实际: {err:?}"
+        );
+
+        let mut batch = Request::new(GrpcBatchGenerateRequest {
+            namespace: "ws-b".to_string(),
+            tag: "tag".to_string(),
+            count: 1,
+            metadata: HashMap::new(),
+        });
+        batch.metadata_mut().insert(
+            "authorization",
+            "ApiKey user-a-key:any-secret".parse().unwrap(),
+        );
+        let err = NebulaIdService::batch_generate(&server, batch)
+            .await
+            .expect_err("跨租户 batch_generate 必须被拒绝");
+        assert_eq!(err.code(), Code::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn admin_key_generate_is_permission_denied() {
+        // Admin key 调 generate 类接口 → permission_denied（与 HTTP
+        // verify_user_role 的 admin_cannot_perform 语义一致）。
+        let server = authz_server();
+        let err: Status = NebulaIdService::generate(&server, generate_request("admin-key", "ws-a"))
+            .await
+            .expect_err("Admin key 调 generate 必须被拒绝");
+        assert_eq!(
+            err.code(),
+            Code::PermissionDenied,
+            "Admin generate 必须是 permission_denied，实际: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn user_key_own_namespace_passes() {
+        // 自身 namespace 放行：User key + 绑定 workspace 的 namespace。
+        let server = authz_server();
+        let resp = NebulaIdService::generate(&server, generate_request("user-a-key", "ws-a"))
+            .await
+            .expect("自身 namespace 必须放行");
+        assert!(!resp.into_inner().id.is_empty());
+
+        // 另一租户的 key 访问自己的 namespace 同样放行（判定按归属而非名称）。
+        let resp = NebulaIdService::generate(&server, generate_request("user-b-key", "ws-b"))
+            .await
+            .expect("B 租户自身 namespace 必须放行");
+        assert!(!resp.into_inner().id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unknown_namespace_is_not_found() {
+        // namespace 反查不到 workspace → NotFound 语义。
+        let server = authz_server();
+        let err: Status =
+            NebulaIdService::generate(&server, generate_request("user-a-key", "ghost-ws"))
+                .await
+                .expect_err("不存在的 namespace 必须返回 NotFound");
+        assert_eq!(
+            err.code(),
+            Code::NotFound,
+            "未知 namespace 必须是 NotFound，实际: {err:?}"
+        );
+    }
+
+    /// 流式入口的逐项授权：跨租户 namespace 的首个流项以
+    /// `Err(Status::PermissionDenied)` 终止流（走真实传输）。
+    #[tokio::test]
+    async fn stream_cross_tenant_item_terminates_stream_with_permission_denied() {
+        let server_impl = authz_server();
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
+        let addr = probe.local_addr().expect("probe addr");
+        drop(probe);
+        let jh = tokio::spawn(async move {
+            use sdforge::tonic::transport::Server;
+            use v1::nebula_id_service_server::NebulaIdServiceServer;
+            let _ = Server::builder()
+                .add_service(NebulaIdServiceServer::new(server_impl))
+                .serve(addr)
+                .await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let mut client =
+            v1::nebula_id_service_client::NebulaIdServiceClient::connect(format!("http://{addr}"))
+                .await
+                .expect("client connect");
+
+        let item = v1::BatchGenerateStreamRequest {
+            namespace: "ws-b".to_string(),
+            tag: "tag".to_string(),
+            count: 1,
+            metadata: HashMap::new(),
+        };
+        let mut req = Request::new(tokio_stream::once(item));
+        req.metadata_mut().insert(
+            "authorization",
+            "ApiKey user-a-key:any-secret".parse().unwrap(),
+        );
+        let mut stream = client
+            .batch_generate_stream(req)
+            .await
+            .expect("流式调用建立（认证通过）")
+            .into_inner();
+        match tokio_stream::StreamExt::next(&mut stream).await {
+            Some(Err(status)) => assert_eq!(
+                status.code(),
+                Code::PermissionDenied,
+                "跨租户流项必须以 permission_denied 终止流，实际: {status:?}"
+            ),
+            other => panic!("跨租户流项不应产出正常项: {other:?}"),
+        }
 
         jh.abort();
     }

@@ -48,6 +48,25 @@ fail-fast（change `key-rotation-and-config-failfast`）。**含多项行为变�
 
 ### Changed（行为变更）
 
+- **HTTP workspace/group 读接口租户隔离**：`GET /api/v1/groups` 此前未做任何
+  角色校验，按客户端提供的 `?workspace=` 任意列取任意租户的 group；现收敛为
+  User-only 端点（Admin 调用返回 403），且 User key 仅可列自身 workspace
+  （他人 workspace 返回 403 `workspace_mismatch`）。`GET /api/v1/workspaces`
+  对 User key 过滤为仅自身 workspace（`total` 随之收敛），`GET
+  /api/v1/workspaces/{name}` 对 User key 仅放行自身 workspace（他人 → 403）；
+  **Admin 保持全量与跨租户读（行为不变）**。归属判定复用与 gRPC 同源的
+  `authorize_workspace_access` 单点。
+- **统一错误信封追加 `business_code`（Minor，非 Breaking）**：所有 HTTP 错误
+  响应（含限流、请求体超限、API 版本错误）统一为单一信封
+  `ErrorResponse { code, business_code, message, details, request_id,
+  timestamp }`。`business_code` 为四位数字串（如 `"4001"`），与 HTTP 状态码
+  同源于 `CoreError → (状态码, 业务码)` 单张分类表，客户端应以它做语义分支
+  而非解析 `message` 文案；`request_id`（UUID v4）与 `timestamp`（毫秒级
+  Unix 时间）在响应装配处生成，可与审计日志关联。OpenAPI 错误码表已与实际
+  映射对齐（`2002`/`2004` 标注为预留码，当前不返回）。定级理由：对既有
+  客户端 JSON 字段为**纯增量**（未知字段容忍即不受影响），且被移除的
+  `ApiErrorResponse` 从未出现在任何端点响应与 SDK 面上——仅影响直接引用
+  server `models::ApiErrorResponse` 的 Rust 代码（源码级，已由单信封承接）。
 - **HTTP TLS fail-fast**：`tls.enabled=true` 且证书缺失/解析失败时拒绝启动
   （不再静默降级明文）；仅 `enabled=false` 允许明文。
 - **gRPC 启用 API key 认证**：NebulaIdService 全 RPC（含双向流）在各入口经

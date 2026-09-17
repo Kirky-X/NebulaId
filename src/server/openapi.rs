@@ -16,14 +16,14 @@ use axum::Router;
 use sdforge::utoipa::OpenApi;
 
 use crate::server::models::{
-    ApiErrorResponse, ApiInfoResponse, ApiKeyListResponse, ApiKeyResponse,
-    ApiKeyWithSecretResponse, BatchGenerateRequest, BatchGenerateResponse, BizTagListResponse,
-    BizTagResponse, CreateApiKeyRequest, CreateBizTagRequest, CreateGroupRequest,
-    CreateWorkspaceRequest, ErrorResponse, GenerateRequest, GenerateResponse, GroupListResponse,
-    GroupResponse, HealthResponse, MetricsResponse, PaginationParams, ParseRequest, ParseResponse,
-    ReadyResponse, RevokeApiKeyResponse, SecureConfigResponse, SetAlgorithmRequest,
-    SetAlgorithmResponse, UpdateBizTagRequest, UpdateConfigResponse, UpdateLoggingRequest,
-    UpdateRateLimitRequest, WorkspaceListResponse, WorkspaceResponse,
+    ApiInfoResponse, ApiKeyListResponse, ApiKeyResponse, ApiKeyWithSecretResponse,
+    BatchGenerateRequest, BatchGenerateResponse, BizTagListResponse, BizTagResponse,
+    CreateApiKeyRequest, CreateBizTagRequest, CreateGroupRequest, CreateWorkspaceRequest,
+    ErrorResponse, GenerateRequest, GenerateResponse, GroupListResponse, GroupResponse,
+    HealthResponse, MetricsResponse, PaginationParams, ParseRequest, ParseResponse, ReadyResponse,
+    RevokeApiKeyResponse, SecureConfigResponse, SetAlgorithmRequest, SetAlgorithmResponse,
+    UpdateBizTagRequest, UpdateConfigResponse, UpdateLoggingRequest, UpdateRateLimitRequest,
+    WorkspaceListResponse, WorkspaceResponse,
 };
 
 /// OpenAPI 文档定义
@@ -31,7 +31,7 @@ use crate::server::models::{
 #[openapi(
     info(
         title = "Nebula ID API",
-        version = "1.0.0",
+        version = env!("CARGO_PKG_VERSION"),
         description = concat!(
             "# Nebula ID Service API\n\n",
             "Enterprise-grade distributed ID generation system supporting multiple algorithms:\n",
@@ -49,17 +49,21 @@ use crate::server::models::{
             "Default rate limit: 1000 requests/second per API key\n",
             "Burst size: 100 requests\n\n",
             "## Error Codes\n\n",
-            "| Code | Description |\n",
-            "|------|-------------|\n",
+            "All error responses share one envelope (`ErrorResponse`):\n",
+            "`{ code, business_code, message, details, request_id, timestamp }`.\n",
+            "`business_code` is the stable machine-readable code below (string,\n",
+            "e.g. `\"4001\"`); branch on it instead of parsing `message`.\n\n",
+            "| business_code | Description |\n",
+            "|---------------|-------------|\n",
             "| 1001 | Unauthorized - Missing or invalid API key |\n",
-            "| 1002 | Forbidden - Insufficient permissions |\n",
+            "| 1002 | Forbidden - Insufficient permissions / cross-workspace access |\n",
             "| 1003 | Invalid API Key format |\n",
             "| 1004 | API Key expired |\n",
             "| 1005 | API Key disabled |\n",
-            "| 2001 | Workspace not found |\n",
-            "| 2002 | Group not found |\n",
+            "| 2001 | Workspace not found (default for generic 404 resources) |\n",
+            "| 2002 | Group not found (reserved, not currently returned) |\n",
             "| 2003 | BizTag not found |\n",
-            "| 2004 | Resource already exists |\n",
+            "| 2004 | Resource already exists (reserved, not currently returned) |\n",
             "| 3001 | Invalid input |\n",
             "| 3002 | Validation error |\n",
             "| 3003 | Missing required field |\n",
@@ -68,7 +72,7 @@ use crate::server::models::{
             "| 5001 | Internal server error |\n",
             "| 5002 | Database error |\n",
             "| 5003 | Cache error |\n",
-            "| 5004 | Service unavailable |"
+            "| 5004 | Service unavailable (timeout) |"
         ),
         contact(
             name = "Kirky.X",
@@ -84,7 +88,6 @@ use crate::server::models::{
     ),
     components(
         schemas(
-            ApiErrorResponse,
             ApiInfoResponse,
             ApiKeyListResponse,
             ApiKeyResponse,

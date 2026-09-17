@@ -32,9 +32,12 @@ pub struct RequestBodyTooLarge;
 
 impl IntoResponse for RequestBodyTooLarge {
     fn into_response(self) -> Response {
-        use crate::server::models::{ApiErrorCode, ApiErrorResponse};
+        // T032 —— 统一错误信封（ErrorResponse，含 business_code）；
+        // 原 ApiErrorResponse 双格式已移除。
+        use crate::server::models::{ApiErrorCode, ErrorResponse};
 
-        let error_response = ApiErrorResponse::new(
+        let error_response = ErrorResponse::new(
+            StatusCode::PAYLOAD_TOO_LARGE.as_u16() as i32,
             ApiErrorCode::InvalidInput,
             "Request body too large".to_string(),
         )
@@ -65,13 +68,28 @@ mod tests {
         let _ = middleware;
     }
 
-    #[test]
-    fn test_request_body_too_large_response() {
+    #[tokio::test]
+    async fn test_request_body_too_large_response() {
         let response = RequestBodyTooLarge;
 
         // Convert to Response and check status code
         let axum_response = response.into_response();
 
         assert_eq!(axum_response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        // T032 — 统一错误信封：413 + business_code=3001（InvalidInput），
+        // 且携带装配处生成的 request_id/timestamp。
+        let bytes = axum::body::to_bytes(axum_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["code"], 413);
+        assert_eq!(json["business_code"], "3001");
+        assert_eq!(json["message"], "Request body too large");
+        assert!(
+            !json["request_id"].as_str().unwrap_or_default().is_empty(),
+            "request_id must be populated in the unified envelope"
+        );
+        assert!(json["timestamp"].as_i64().unwrap_or(0) > 0);
     }
 }

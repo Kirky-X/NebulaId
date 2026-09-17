@@ -168,14 +168,17 @@ pub enum ApiVersionErrorResponse {
 
 impl IntoResponse for ApiVersionErrorResponse {
     fn into_response(self) -> Response {
-        use crate::server::models::{ApiErrorCode, ApiErrorResponse};
+        // T032 —— 统一错误信封（ErrorResponse，含 business_code）；
+        // 原 ApiErrorResponse 双格式已移除。
+        use crate::server::models::{ApiErrorCode, ErrorResponse};
 
         match self {
             ApiVersionErrorResponse::UnsupportedVersion {
                 requested,
                 supported_versions,
             } => {
-                let error_response = ApiErrorResponse::new(
+                let error_response = ErrorResponse::new(
+                    StatusCode::BAD_REQUEST.as_u16() as i32,
                     ApiErrorCode::InvalidInput,
                     "Unsupported API version".to_string(),
                 )
@@ -234,8 +237,8 @@ mod tests {
         assert!(!ApiVersion::V2.is_supported());
     }
 
-    #[test]
-    fn test_api_version_error_response() {
+    #[tokio::test]
+    async fn test_api_version_error_response() {
         let error = ApiVersionErrorResponse::UnsupportedVersion {
             requested: "v3".to_string(),
             supported_versions: vec!["v1".to_string()],
@@ -243,6 +246,21 @@ mod tests {
 
         let response = error.into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        // T032 — 统一错误信封：400 + business_code=3001（InvalidInput），
+        // 且携带装配处生成的 request_id/timestamp。
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["code"], 400);
+        assert_eq!(json["business_code"], "3001");
+        assert_eq!(json["message"], "Unsupported API version");
+        assert!(
+            !json["request_id"].as_str().unwrap_or_default().is_empty(),
+            "request_id must be populated in the unified envelope"
+        );
+        assert!(json["timestamp"].as_i64().unwrap_or(0) > 0);
     }
 
     #[test]

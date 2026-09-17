@@ -13,8 +13,9 @@
 // limitations under the License.
 
 use crate::core::types::CoreError;
+use crate::server::handlers::helpers::{authorize_workspace_access, core_error_to_grpc_status};
 use crate::server::handlers::ApiHandlers;
-use crate::server::middleware::api_key_auth::{parse_authorization_header, ApiKeyAuth};
+use crate::server::middleware::api_key_auth::{parse_authorization_header, ApiKeyAuth, ApiKeyRole};
 use crate::server::models::{BatchGenerateRequest, GenerateRequest, ParseRequest};
 use async_trait::async_trait;
 use sdforge::tonic::{Request, Response, Status};
@@ -64,6 +65,8 @@ impl GrpcServer {
     /// —— request-init 先于流消费被校验）。失败映射（规格）
     /// - 缺失/格式无效/凭证无效 → `Status::unauthenticated`
     /// - key 存在但被禁用或已过期 → `Status::permission_denied`
+    /// - 同 peer 认证失败超阈值（5 分钟 10 次）→ `Status::resource_exhausted`
+    ///   （T012：与 HTTP 中间件共享同一失败桶，429 对应 ResourceExhausted）
     /// - `auth.enabled=false` → 放行并记 `auth_disabled_request` 审计日志
     ///   （对齐 HTTP Anonymous 语义）
     ///
@@ -71,17 +74,9 @@ impl GrpcServer {
     /// 签名而凭证校验必须异步查库（Argon2id + DB），在拦截器内 block_on 有
     /// 运行时风险，故改为各 RPC 入口一行调用本助手 —— 单点实现不变。
     ///
-    /// 偏差：HTTP 侧的「按 IP 认证失败限流」（5 分钟 10 次）尚未在
-    /// gRPC 接线。对端 IP 本身拿得到 —— tonic 0.14 的 `MakeSvc::call` 用
-    /// `ConnectInfoLayer` 把 `TcpConnectInfo`（TLS 下为
-    /// `TlsConnectInfo<TcpConnectInfo>`）注入 request extensions，
-    /// [`Request::remote_addr`] 已封装两种情况，故此处已按直连 IP 打审计
-    /// 日志。缺的是共享计数器本身：`ApiKeyAuth::check_auth_failure_rate` /
-    /// `record_auth_failure` 及其 `auth_failures` 字段是 `api_key_auth`
-    /// 模块私有，gRPC 无法复用；而 gRPC 侧另建一份计数器既违反「复用同一套
-    /// 限流」的要求，也在本任务变更范围之外（且当前 delta spec 把「gRPC 限流」
-    /// 列为 Out of Scope）。要接线需 `api_key_auth.rs` 把上述两个方法提为
-    /// `pub(crate)`（HTTP 的 429 对应 gRPC `Code::ResourceExhausted`）。
+    /// 对端 IP 取自 tonic 传输注入的 `TcpConnectInfo`（TLS 下为
+    /// `TlsConnectInfo<TcpConnectInfo>`），[`Request::remote_addr`] 已封装
+    /// 两种情况；限流桶与审计日志均按直连 IP 归因，不可被头部伪造。
     pub(crate) async fn authenticate<T>(&self, request: Request<T>) -> Result<Request<T>, Status> {
         let Some(auth) = self.auth.as_ref() else {
             return Ok(request);
@@ -104,12 +99,22 @@ impl GrpcServer {
             return Ok(request);
         }
 
+        // T012 — 与 HTTP 中间件同源：先查失败桶，超限直接拒收，
+        // 不再消耗解析/校验成本。桶体（阈值、窗口、容量阀）全部在
+        // `ApiKeyAuth` 内，两条传输线共享同一计数器。
+        if !auth.check_auth_failure_rate(&client_ip) {
+            return Err(Status::resource_exhausted(
+                "Too many authentication attempts. Please try again later.",
+            ));
+        }
+
         let Some(value) = request
             .metadata()
             .get("authorization")
             .and_then(|v| v.to_str().ok())
         else {
             return Err(reject(
+                auth,
                 &client_ip,
                 "",
                 "missing_authorization",
@@ -119,6 +124,7 @@ impl GrpcServer {
         };
         let Some((key_id, key_secret)) = parse_authorization_header(value) else {
             return Err(reject(
+                auth,
                 &client_ip,
                 "",
                 "unsupported_auth_format",
@@ -150,21 +156,130 @@ fn peer_ip<T>(request: &Request<T>) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-/// 认证拒绝的统一出口：先打一条与 HTTP 侧同 schema 的 `auth_failure` 审计
-/// 日志（`reason` 机器可读 + `client_ip` + 掩码 `key_id_prefix`），再返回
-/// 调用方给定的 Status。日志与 Status 缺一不可 —— 只返 Status 会让 gRPC
-/// 侧的暴力猜 key 行为在审计里隐身。
+/// 从请求扩展中提取资源级授权所需的身份（T011）。
+///
+/// 认证启用且校验成功时，[`GrpcServer::authenticate`] 必然注入
+/// `Option<uuid::Uuid>`（workspace_id）与 `ApiKeyRole` 两个扩展。二者缺失
+/// 意味着认证未装配（`GrpcServer::new`，内网部署）或 `auth.enabled=false`
+/// （降级放行）——两条路径都返回 `None`，由 [`authorize_namespace`] 跳过
+/// 资源级判定，维持既有 e2e 钉住的降级语义。
+fn auth_identity<T>(request: &Request<T>) -> Option<(ApiKeyRole, Option<uuid::Uuid>)> {
+    let role = request.extensions().get::<ApiKeyRole>().cloned()?;
+    let workspace_id = request.extensions().get::<Option<uuid::Uuid>>().copied()?;
+    Some((role, workspace_id))
+}
+
+/// generate 系接口的资源级授权判定（T011）。
+///
+/// 与 HTTP 侧 `verify_user_role` + `verify_user_workspace` 同源：
+///
+/// - Admin key → `Status::permission_denied`（HTTP `verify_user_role` 的
+///   `admin_cannot_perform` 403 语义；generate 类接口仅面向 User）。
+/// - User key 的 namespace 经 handlers 既有 config_service
+///   （`repository::get_workspace_by_name`，不改仓储层）反查 UUID；
+///   反查不到 → `Status::not_found`，反查基础设施失败 → `Status::internal`
+///   （固定文案，与 HTTP 侧 500 泛化消息同语义，不透出内部错误）。
+/// - 反查成功后交由共享授权函数 [`authorize_workspace_access`]（T010）做
+///   角色租户判定：跨租户 → `Status::permission_denied`。
+///
+/// 认证未装配 / 禁用（`identity = None`）时跳过判定放行：与既有
+/// `bypasses_when_auth_disabled` 等 e2e 钉住的降级语义一致。
+async fn authorize_namespace(
+    handlers: &ApiHandlers,
+    identity: Option<(ApiKeyRole, Option<uuid::Uuid>)>,
+    namespace: &str,
+) -> Result<(), Status> {
+    let Some((role, key_workspace_id)) = identity else {
+        return Ok(());
+    };
+
+    // Admin：generate 类接口仅面向 User（对齐 HTTP verify_user_role）。
+    if role == ApiKeyRole::Admin {
+        return Err(Status::permission_denied(
+            t!("api.error.admin_cannot_perform").to_string(),
+        ));
+    }
+
+    // User 角色但 key 无租户绑定：无法证明归属，fail-closed。
+    let Some(key_workspace_id) = key_workspace_id else {
+        tracing::warn!(
+            event = "authz_user_key_without_workspace",
+            "user-role key carries no workspace binding; denying generate access"
+        );
+        return Err(Status::permission_denied(
+            t!("api.error.workspace_mismatch").to_string(),
+        ));
+    };
+
+    // namespace → workspace 反查（NotFound / 基础设施失败两条出口分开处理）。
+    let workspace = match handlers.get_workspace(namespace).await {
+        Ok(Some(ws)) => ws,
+        Ok(None) => {
+            return Err(Status::not_found(
+                t!("api.error.workspace_not_found").to_string(),
+            ));
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                namespace = %namespace,
+                "workspace lookup failed during gRPC authorization"
+            );
+            // T013 同源消毒：基础设施失败收敛为 Internal + 固定文案
+            return Err(sdforge::tonic::Status::internal("internal error"));
+        }
+    };
+
+    let target_workspace_id = match uuid::Uuid::parse_str(&workspace.id) {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                workspace_id = %workspace.id,
+                "workspace row carries a non-UUID id"
+            );
+            return Err(Status::internal("internal error"));
+        }
+    };
+
+    match authorize_workspace_access(&role, key_workspace_id, target_workspace_id).await {
+        Ok(()) => Ok(()),
+        // User 请求他人 namespace → permission_denied（HTTP 403
+        // workspace_mismatch 同语义）。
+        Err(CoreError::WorkspaceDisabled(_)) => Err(Status::permission_denied(
+            t!("api.error.workspace_mismatch").to_string(),
+        )),
+        Err(e) => {
+            // 其余拒绝变体（Anonymous 等，gRPC 正常路径不会注入）按
+            // unauthenticated 处理，fail-closed。
+            tracing::warn!(error = %e, "workspace authorization denied");
+            Err(Status::unauthenticated(
+                t!("api.error.auth_required").to_string(),
+            ))
+        }
+    }
+}
+
+/// 认证拒绝的统一出口：先记入与 HTTP 中间件共享的按 IP 失败桶（T012），
+/// 再打一条与 HTTP 侧同 schema 的 `auth_failure` 审计日志（`reason` 机器
+/// 可读、`client_ip`、掩码 `key_id_prefix`），最后返回调用方给定的 Status。
+/// 三者缺一不可 —— 只返 Status 会让 gRPC 侧的暴力猜 key 行为既绕过限流、
+/// 又在审计里隐身。
 ///
 /// 日志文案复用 `log.server.middleware.api_key_auth.*` 既有键：语义完全对应
 /// （缺少 authorization / 不支持的格式 / 无效凭据），新增 grpc 专属键只会在
 /// 两个 locale 里造出同义重复条目。
 fn reject(
+    auth: &ApiKeyAuth,
     client_ip: &str,
     key_id_prefix: &str,
     reason: &str,
     log_message: &str,
     status: Status,
 ) -> Status {
+    // 与 HTTP `unauthorized_response` 同源：每次认证拒绝都入桶，
+    // 供下一次请求的 `check_auth_failure_rate` 累计判定。
+    auth.record_auth_failure(client_ip);
     tracing::warn!(
         event = "auth_failure",
         reason = reason,
@@ -190,7 +305,7 @@ enum KeyMiss {
 }
 
 impl KeyMiss {
-    fn reject(&self, client_ip: &str, key_id: &str) -> Status {
+    fn reject(&self, auth: &ApiKeyAuth, client_ip: &str, key_id: &str) -> Status {
         let (reason, status) = match self {
             // 身份可识别但被授权层拒绝 ⇒ permission_denied
             Self::Disabled => (
@@ -213,6 +328,7 @@ impl KeyMiss {
             ),
         };
         reject(
+            auth,
             client_ip,
             &key_id.chars().take(8).collect::<String>(),
             reason,
@@ -240,7 +356,7 @@ async fn classify_miss(auth: &ApiKeyAuth, key_id: &str, client_ip: &str) -> Stat
                 client_ip = %client_ip,
                 "failed to load api key state for auth failure classification"
             );
-            return KeyMiss::Unknown.reject(client_ip, key_id);
+            return KeyMiss::Unknown.reject(auth, client_ip, key_id);
         }
     };
 
@@ -259,7 +375,7 @@ async fn classify_miss(auth: &ApiKeyAuth, key_id: &str, client_ip: &str) -> Stat
             }
         }
     };
-    miss.reject(client_ip, key_id)
+    miss.reject(auth, client_ip, key_id)
 }
 
 #[async_trait]
@@ -271,6 +387,13 @@ impl NebulaIdService for GrpcServer {
         request: Request<GrpcGenerateRequest>,
     ) -> Result<Response<GrpcGenerateResponse>, Status> {
         let request = self.authenticate(request).await?;
+        // T011 资源级授权：namespace 在消息体内，into_inner 前按借用读取。
+        authorize_namespace(
+            &self.handlers,
+            auth_identity(&request),
+            &request.get_ref().namespace,
+        )
+        .await?;
         let req = request.into_inner();
         let tag = req.tag.clone();
 
@@ -292,7 +415,8 @@ impl NebulaIdService for GrpcServer {
                     algorithm: resp.algorithm,
                 }))
             }
-            Err(e) => Err(Status::internal(format!("{}", e))),
+            // T013 错误消毒：变体同源映射 + 5xx 固定文案，不再明文回传
+            Err(e) => Err(core_error_to_grpc_status(&e)),
         }
     }
 
@@ -301,6 +425,13 @@ impl NebulaIdService for GrpcServer {
         request: Request<GrpcBatchGenerateRequest>,
     ) -> Result<Response<GrpcBatchGenerateResponse>, Status> {
         let request = self.authenticate(request).await?;
+        // T011 资源级授权：与 generate 同一判定点（into_inner 前）。
+        authorize_namespace(
+            &self.handlers,
+            auth_identity(&request),
+            &request.get_ref().namespace,
+        )
+        .await?;
         let req = request.into_inner();
         let tag = req.tag.clone();
 
@@ -373,7 +504,8 @@ impl NebulaIdService for GrpcServer {
 
                 Ok(Response::new(GrpcBatchGenerateResponse { ids }))
             }
-            Err(e) => Err(Status::internal(format!("{}", e))),
+            // T013 错误消毒：变体同源映射 + 5xx 固定文案
+            Err(e) => Err(core_error_to_grpc_status(&e)),
         }
     }
 
@@ -383,6 +515,9 @@ impl NebulaIdService for GrpcServer {
     ) -> Result<Response<Self::BatchGenerateStreamStream>, Status> {
         // request-init 先于流消费被校验，流式入口同样受保护
         let request = self.authenticate(request).await?;
+        // T011 资源级授权：身份在 into_inner 前提取；namespace 是逐项字段，
+        // 逐项判定在流任务内完成，拒绝以 Status 终止流（Admin/跨租户均如此）。
+        let identity = auth_identity(&request);
         let mut stream = request.into_inner();
         let (tx, rx) = mpsc::channel(128);
 
@@ -392,6 +527,14 @@ impl NebulaIdService for GrpcServer {
             while let Some(req) = stream.next().await {
                 match req {
                     Ok(stream_req) => {
+                        // T011 资源级授权：逐项 namespace 判定，拒绝以 Status 终止流。
+                        if let Err(status) =
+                            authorize_namespace(&handlers, identity.clone(), &stream_req.namespace)
+                                .await
+                        {
+                            let _ = tx.send(Err(status)).await;
+                            break;
+                        }
                         let tag = stream_req.tag.clone();
                         let batch_req = BatchGenerateRequest {
                             workspace: stream_req.namespace,
@@ -420,33 +563,20 @@ impl NebulaIdService for GrpcServer {
                                     }
                                 }
                             }
+                            // T013 错误消毒：业务失败以 Err(Status) 终止流
+                            // （变体同源映射 + 5xx 固定文案），不再把错误串塞进
+                            // 响应 algorithm 字段伪装成正常项。
                             Err(e) => {
-                                let _ = tx
-                                    .send(Ok(BatchGenerateStreamResponse {
-                                        id: Some(GrpcGenerateResponse {
-                                            id: String::new(),
-                                            timestamp: 0,
-                                            sequence: 0,
-                                            worker_id: 0,
-                                            algorithm: format!("error: {}", e),
-                                        }),
-                                    }))
-                                    .await;
+                                let _ = tx.send(Err(core_error_to_grpc_status(&e))).await;
+                                break;
                             }
                         }
                     }
-                    Err(e) => {
-                        let _ = tx
-                            .send(Ok(BatchGenerateStreamResponse {
-                                id: Some(GrpcGenerateResponse {
-                                    id: String::new(),
-                                    timestamp: 0,
-                                    sequence: 0,
-                                    worker_id: 0,
-                                    algorithm: format!("stream error: {}", e),
-                                }),
-                            }))
-                            .await;
+                    // 传输层读流失败：Status 本就是 gRPC 原生错误形态，
+                    // 原样终止流（此前塞进 algorithm 字段的
+                    // "stream error: ..." 明文一并移除）。
+                    Err(status) => {
+                        let _ = tx.send(Err(status)).await;
                         break;
                     }
                 }
@@ -497,7 +627,9 @@ impl NebulaIdService for GrpcServer {
                     metadata,
                 }))
             }
-            Err(e) => Err(Status::invalid_argument(format!("{}", e))),
+            // T013 错误消毒：parse 的 4xx（InvalidIdString 等）走同一
+            // 变体映射表，消息截断策略与 HTTP 一致。
+            Err(e) => Err(core_error_to_grpc_status(&e)),
         }
     }
 
@@ -577,8 +709,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_generate_empty_namespace_returns_internal_error() {
+    async fn test_generate_empty_namespace_returns_invalid_argument() {
         // MockIdGenerator returns InvalidInput when workspace is empty.
+        // T013：InvalidInput 属 4xx → InvalidArgument（原误映射为 Internal）。
         let server = create_test_grpc_server();
         let req = Request::new(GrpcGenerateRequest {
             namespace: String::new(),
@@ -588,7 +721,7 @@ mod tests {
         let resp = server.generate(req).await;
         assert!(resp.is_err());
         let err = resp.unwrap_err();
-        assert_eq!(err.code(), sdforge::tonic::Code::Internal);
+        assert_eq!(err.code(), sdforge::tonic::Code::InvalidArgument);
     }
 
     #[tokio::test]
@@ -698,7 +831,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_batch_generate_empty_namespace_returns_internal_error() {
+    async fn test_batch_generate_empty_namespace_returns_invalid_argument() {
+        // T013：InvalidInput 属 4xx → InvalidArgument（原误映射为 Internal）。
         let server = create_test_grpc_server();
         let req = Request::new(GrpcBatchGenerateRequest {
             namespace: String::new(),
@@ -707,7 +841,7 @@ mod tests {
             metadata: Default::default(),
         });
         let err = server.batch_generate(req).await.unwrap_err();
-        assert_eq!(err.code(), sdforge::tonic::Code::Internal);
+        assert_eq!(err.code(), sdforge::tonic::Code::InvalidArgument);
     }
 
     #[tokio::test]

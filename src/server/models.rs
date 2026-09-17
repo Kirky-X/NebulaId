@@ -131,25 +131,41 @@ pub struct ApiMetricsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ErrorResponse {
     pub code: i32,
+    /// 结构化业务错误码（`ApiErrorCode` 的四位数字串，如 `"4001"`）。
+    ///
+    /// T032 —— 统一错误信封：与 HTTP 状态码 `code` 同源于 helpers 的
+    /// 单张分类映射表（`CoreError` → 状态码 + 业务码一次判定），客户端
+    /// 以本字段做语义分支，不再解析 `message` 文案。
+    pub business_code: String,
     pub message: String,
     pub details: Option<String>,
+    /// 请求追踪 ID（响应装配处生成的 UUID v4；与审计日志关联）。
+    pub request_id: String,
+    /// 错误发生时间（毫秒级 Unix 时间戳，响应装配处生成）。
+    pub timestamp: i64,
 }
 
 impl ErrorResponse {
-    pub fn new(code: i32, message: String) -> Self {
+    /// 构造统一错误信封。
+    ///
+    /// `business_code` 必须来自调用点的既定映射（`CoreError` 走
+    /// `core_error_classification` 单表判定；handler 构造类错误使用
+    /// 各自既定的 `ApiErrorCode`），`request_id` / `timestamp` 在装配
+    /// 处生成，保证所有错误响应携带可追踪上下文。
+    pub fn new(code: i32, business_code: ApiErrorCode, message: String) -> Self {
         Self {
             code,
+            business_code: business_code.to_string(),
             message,
             details: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
         }
     }
 
-    pub fn with_details(code: i32, message: String, details: String) -> Self {
-        Self {
-            code,
-            message,
-            details: Some(details),
-        }
+    pub fn with_details(mut self, details: String) -> Self {
+        self.details = Some(details);
+        self
     }
 }
 
@@ -273,51 +289,11 @@ impl ErrorMessage {
     }
 }
 
-///增强的 API 错误响应（包含结构化错误码）
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct ApiErrorResponse {
-    pub code: String,            // 错误码，如 "1001"
-    pub message: String,         // 用户友好的错误消息
-    pub details: Option<String>, // 详细信息（可选，生产环境隐藏）
-    pub request_id: String,      // 请求追踪 ID
-    pub timestamp: i64,          // 错误发生时间
-}
-
-impl ApiErrorResponse {
-    pub fn new(code: ApiErrorCode, message: String) -> Self {
-        Self {
-            code: code.to_string(),
-            message,
-            details: None,
-            request_id: uuid::Uuid::new_v4().to_string(),
-            timestamp: chrono::Utc::now().timestamp_millis(),
-        }
-    }
-
-    pub fn with_details(mut self, details: String) -> Self {
-        self.details = Some(details);
-        self
-    }
-}
-
-/// 从旧的 ErrorResponse 转换为新的 ApiErrorResponse
-impl From<ErrorResponse> for ApiErrorResponse {
-    fn from(err: ErrorResponse) -> Self {
-        let code = match err.code {
-            401 => ApiErrorCode::Unauthorized,
-            403 => ApiErrorCode::Forbidden,
-            404 => ApiErrorCode::WorkspaceNotFound, // 默认资源错误
-            429 => ApiErrorCode::RateLimitExceeded,
-            500 => ApiErrorCode::InternalError,
-            _ => ApiErrorCode::InternalError,
-        };
-
-        Self::new(code, err.message).with_details(
-            err.details
-                .unwrap_or_else(|| "No additional details".to_string()),
-        )
-    }
-}
+/// T032 —— 原 `ApiErrorResponse`（`code`/`message`/`details`/`request_id`/
+/// `timestamp` 双格式信封）及其 `From<ErrorResponse>` 转换已移除：
+/// 全部错误响应统一走上方 [`ErrorResponse`]（含 `business_code`）单信封，
+/// 避免两套错误 JSON 形状并存漂移。原 404→WorkspaceNotFound 等状态码
+/// 到业务码的默认映射由 helpers 的 `core_error_classification` 单表承接。
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiKeyInfo {
@@ -1009,42 +985,75 @@ mod tests {
         }
     }
 
-    // ========== ErrorResponse ==========
+    // ========== ErrorResponse（T032 统一错误信封）==========
 
     #[test]
     fn test_error_response_new_omits_details() {
-        let resp = ErrorResponse::new(404, "Not Found".to_string());
+        let resp = ErrorResponse::new(
+            404,
+            ApiErrorCode::WorkspaceNotFound,
+            "Not Found".to_string(),
+        );
         assert_eq!(resp.code, 404);
+        // T032 — business_code 是 ApiErrorCode 的四位数字串。
+        assert_eq!(resp.business_code, "2001");
         assert_eq!(resp.message, "Not Found");
         assert_eq!(resp.details, None);
+        // request_id/timestamp 在装配处生成。
+        assert!(!resp.request_id.is_empty());
+        assert!(resp.timestamp > 0);
     }
 
     #[test]
     fn test_error_response_with_details_attaches_details() {
-        let resp = ErrorResponse::with_details(500, "Internal".to_string(), "db down".to_string());
+        let resp = ErrorResponse::new(500, ApiErrorCode::InternalError, "Internal".to_string())
+            .with_details("db down".to_string());
         assert_eq!(resp.code, 500);
+        assert_eq!(resp.business_code, "5001");
         assert_eq!(resp.message, "Internal");
         assert_eq!(resp.details, Some("db down".to_string()));
     }
 
     #[test]
     fn test_error_response_serde_roundtrip_with_details() {
-        let resp = ErrorResponse::with_details(400, "Bad".to_string(), "missing field".to_string());
+        let resp = ErrorResponse::new(400, ApiErrorCode::ValidationError, "Bad".to_string())
+            .with_details("missing field".to_string());
         let json = serde_json::to_string(&resp).unwrap();
         let back: ErrorResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(back.code, 400);
+        assert_eq!(back.business_code, "3002");
         assert_eq!(back.message, "Bad");
         assert_eq!(back.details, Some("missing field".to_string()));
+        assert_eq!(back.request_id, resp.request_id);
+        assert_eq!(back.timestamp, resp.timestamp);
     }
 
     #[test]
     fn test_error_response_serde_roundtrip_without_details() {
-        let resp = ErrorResponse::new(404, "Not Found".to_string());
+        let resp = ErrorResponse::new(
+            404,
+            ApiErrorCode::WorkspaceNotFound,
+            "Not Found".to_string(),
+        );
         let json = serde_json::to_string(&resp).unwrap();
         let back: ErrorResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(back.code, 404);
+        assert_eq!(back.business_code, "2001");
         assert_eq!(back.message, "Not Found");
         assert_eq!(back.details, None);
+    }
+
+    #[test]
+    fn test_error_response_request_id_is_uuid_v4() {
+        // request_id 必须是可解析的 UUID（装配处生成，非空常量）。
+        let resp = ErrorResponse::new(
+            429,
+            ApiErrorCode::RateLimitExceeded,
+            "slow down".to_string(),
+        );
+        let parsed =
+            uuid::Uuid::parse_str(&resp.request_id).expect("request_id must be a valid UUID");
+        assert_eq!(parsed.get_version_num(), 4, "request_id must be a UUID v4");
     }
 
     // ========== ApiErrorCode::Display ==========
@@ -1071,95 +1080,12 @@ mod tests {
         assert_eq!(ApiErrorCode::ServiceUnavailable.to_string(), "5004");
     }
 
-    // ========== ApiErrorResponse ==========
-
-    #[test]
-    fn test_api_error_response_new_populates_request_id_and_timestamp() {
-        let resp = ApiErrorResponse::new(ApiErrorCode::Unauthorized, "Unauthorized".to_string());
-        assert_eq!(resp.code, "1001");
-        assert_eq!(resp.message, "Unauthorized");
-        assert_eq!(resp.details, None);
-        // request_id is a UUID string (non-empty).
-        assert!(!resp.request_id.is_empty());
-        // timestamp is millis since epoch — must be positive.
-        assert!(resp.timestamp > 0);
-    }
-
-    #[test]
-    fn test_api_error_response_with_details_chain_attaches_details() {
-        let resp = ApiErrorResponse::new(ApiErrorCode::Forbidden, "Forbidden".to_string())
-            .with_details("admin role required".to_string());
-        assert_eq!(resp.code, "1002");
-        assert_eq!(resp.details, Some("admin role required".to_string()));
-    }
-
-    #[test]
-    fn test_api_error_response_serde_roundtrip() {
-        let resp = ApiErrorResponse::new(ApiErrorCode::InvalidInput, "bad".to_string())
-            .with_details("ctx".to_string());
-        let json = serde_json::to_string(&resp).unwrap();
-        let back: ApiErrorResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.code, resp.code);
-        assert_eq!(back.message, resp.message);
-        assert_eq!(back.details, resp.details);
-        assert_eq!(back.request_id, resp.request_id);
-        assert_eq!(back.timestamp, resp.timestamp);
-    }
-
-    // ========== From<ErrorResponse> for ApiErrorResponse ==========
-
-    #[test]
-    fn test_from_error_response_maps_401_to_unauthorized() {
-        let err = ErrorResponse::new(401, "Unauthorized".to_string());
-        let api_err: ApiErrorResponse = err.into();
-        assert_eq!(api_err.code, "1001");
-        assert_eq!(api_err.message, "Unauthorized");
-        // No details on the source -> default placeholder string.
-        assert_eq!(api_err.details, Some("No additional details".to_string()));
-    }
-
-    #[test]
-    fn test_from_error_response_maps_403_to_forbidden() {
-        let err = ErrorResponse::new(403, "Forbidden".to_string());
-        let api_err: ApiErrorResponse = err.into();
-        assert_eq!(api_err.code, "1002");
-    }
-
-    #[test]
-    fn test_from_error_response_maps_404_to_workspace_not_found() {
-        let err = ErrorResponse::new(404, "Not Found".to_string());
-        let api_err: ApiErrorResponse = err.into();
-        assert_eq!(api_err.code, "2001");
-    }
-
-    #[test]
-    fn test_from_error_response_maps_429_to_rate_limit_exceeded() {
-        let err = ErrorResponse::new(429, "Too Many".to_string());
-        let api_err: ApiErrorResponse = err.into();
-        assert_eq!(api_err.code, "4001");
-    }
-
-    #[test]
-    fn test_from_error_response_maps_500_to_internal_error() {
-        let err = ErrorResponse::new(500, "Internal".to_string());
-        let api_err: ApiErrorResponse = err.into();
-        assert_eq!(api_err.code, "5001");
-    }
-
-    #[test]
-    fn test_from_error_response_maps_unknown_code_to_internal_error() {
-        let err = ErrorResponse::new(418, "Teapot".to_string());
-        let api_err: ApiErrorResponse = err.into();
-        assert_eq!(api_err.code, "5001");
-    }
-
-    #[test]
-    fn test_from_error_response_preserves_existing_details() {
-        let err =
-            ErrorResponse::with_details(401, "Unauthorized".to_string(), "key expired".to_string());
-        let api_err: ApiErrorResponse = err.into();
-        assert_eq!(api_err.details, Some("key expired".to_string()));
-    }
+    // ========== T032 —— ApiErrorResponse 双格式已移除 ==========
+    //
+    // 原 `ApiErrorResponse` 及 `From<ErrorResponse> for ApiErrorResponse`
+    // 的测试随类型一并删除；业务码映射的钉桩改由
+    // `server::handlers::helpers` 的 `core_error_classification` 单表
+    // 测试承接（见 helpers.rs `test_core_error_classification_*`）。
 
     // ========== ErrorMessage::message ==========
 

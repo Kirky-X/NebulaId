@@ -30,7 +30,7 @@
 //!   builder 缺依赖返回 ConfigurationError、health_check 返回
 //!   `Result<bool, CoreError>`
 //! - **第 2.5 节 数据库连接**（`src/core/database/connection.rs`）：
-//!   SQLite 内存连接、迁移执行、密码含 `${}` 占位符拒绝
+//!   迁移执行、密码含 `${}` 占位符拒绝
 //! - **第 3.6 节 TLS**（`src/server/config/tls.rs`）：证书/密钥不存在
 //!   返回错误、用 rcgen 自签证书验证 initialize 成功
 //!
@@ -373,31 +373,6 @@ async fn e2e_rate_limiter_cleanup_keeps_active_buckets() {
 
 // E2E-DB 组：数据库连接端到端
 // ============================================================================
-
-/// SQLite 内存连接成功。
-///
-/// 需要 `--features sqlite` 启用 SQLite 后端；否则该测试不编译。
-#[cfg(feature = "sqlite")]
-#[tokio::test]
-async fn e2e_database_sqlite_memory_connection_succeeds() {
-    let config = DatabaseConfig {
-        engine: DatabaseEngine::Sqlite,
-        url: "sqlite::memory:".to_string(),
-        host: String::new(),
-        port: 0,
-        username: String::new(),
-        password: String::new(),
-        database: "sqlite::memory:".to_string(),
-        max_connections: 10,
-        min_connections: 1,
-        acquire_timeout_seconds: 30,
-        idle_timeout_seconds: 300,
-        statement_timeout_secs: 5,
-    };
-
-    let conn = create_connection(&config).await;
-    assert!(conn.is_ok(), "SQLite 内存连接应成功: {:?}", conn.err());
-}
 
 /// run_migrations 在所有 execute 成功时返回 Ok（迁移创建表）。
 ///

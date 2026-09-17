@@ -447,28 +447,6 @@ mod tests {
     use crate::core::config::{DatabaseConfig, DatabaseEngine};
     use dbnexus::sea_orm::{DatabaseBackend, DbErr, MockDatabase, MockExecResult, RuntimeErr};
 
-    #[cfg(feature = "sqlite")]
-    #[tokio::test]
-    async fn test_sqlite_connection() {
-        let config = DatabaseConfig {
-            engine: DatabaseEngine::Sqlite,
-            url: "sqlite::memory:".to_string(),
-            host: "".to_string(),
-            port: 0,
-            username: "".to_string(),
-            password: "".to_string(),
-            database: "sqlite::memory:".to_string(),
-            max_connections: 10,
-            min_connections: 1,
-            acquire_timeout_seconds: 30,
-            idle_timeout_seconds: 300,
-            statement_timeout_secs: 5,
-        };
-
-        let conn = create_connection(&config).await;
-        assert!(conn.is_ok());
-    }
-
     // ===== redact_db_url (private helper) =====
 
     #[test]

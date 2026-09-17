@@ -298,6 +298,13 @@ mod mock_tests {
 mod tests {
     use super::*;
     use dbnexus::sea_orm::{ConnectOptions, ConnectionTrait, Database, Statement};
+    // 请求/枚举类型需显式导入：仓储按资源域拆分后这些类型不再经
+    // `use super::*` 进入本模块作用域（本模块仅 integration-tests 构建
+    // 参与编译，拆分当时未被发现）。
+    use crate::core::database::api_key_entity::{ApiKeyRole, CreateApiKeyRequest};
+    use crate::core::database::biz_tag_entity::CreateBizTagRequest;
+    use crate::core::database::group_entity::CreateGroupRequest;
+    use crate::core::database::workspace_entity::CreateWorkspaceRequest;
 
     async fn setup_test_db(db: &dbnexus::sea_orm::DatabaseConnection) {
         // 直接复用生产迁移建表（`nebula-id migrate` 的同一代码路径）。

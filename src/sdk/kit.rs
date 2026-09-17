@@ -1118,7 +1118,7 @@ mod tests {
     #[tokio::test]
     async fn test_db_backed_segment_assembly_contract() {
         use crate::core::algorithm::{
-            DbSegmentLoader, IdAlgorithm, SegmentAlgorithm, SegmentLoader,
+            DbSegmentLoader, IdAlgorithm, SegmentAlgorithm,
         };
         use crate::core::database::SegmentRepository;
         use crate::core::types::SegmentInfo;

@@ -2997,7 +2997,7 @@ mod tests {
             .returning(|_| Err(EtcdError::Network("etcd down".into())));
 
         let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-        let (failure_tx, mut failure_rx) = tokio::sync::oneshot::channel();
+        let (failure_tx, failure_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(EtcdWorkerAllocator::run_lease_keepalive_loop(
             mock_into_client(mock),
             7,

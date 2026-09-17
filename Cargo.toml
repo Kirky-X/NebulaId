@@ -19,17 +19,16 @@ name = "nebula-id"
 path = "src/main.rs"
 
 [features]
+# 特性模型（2026-09 起）：
+# - `--all-features` 可构建（= default + etcd + alerting + sdk +
+#   integration-tests + openapi）。dbnexus 的 embedded/server 互斥不再被触发：
+#   sqlite feature 已删除，dbnexus/postgres 仅由本清单的 postgresql 声明控制。
+# - `--no-default-features` 是有效的轻量编译检查目标：postgres 驱动可关，
+#   garrison 回退路径与 sdforge 镜像 feature（http/grpc/openapi）关闭路径全部
+#   参与编译（CI fmt-clippy job 钉住该组合）。该组合仅保证编译——
+#   core::database 无条件参与编译，运行时需自备 PostgreSQL。
 default = ["postgresql", "http", "grpc", "garrison-auth"]
 postgresql = ["dbnexus/postgres"]
-# sqlite: 当前不可构建（保留定义但不受支持，勿在 CI/文档中启用）。
-# 原因是必然的后端混用：default 恒含 postgresql → dbnexus/postgres 恒被启用，
-# 只要再开 sqlite 就同时命中 dbnexus/sqlite + dbnexus/postgres，
-# 触发 dbnexus/src/lib.rs 的 compile_error!("Cannot mix embedded
-# (sqlite/duckdb) and server-side (postgres/mysql) database features")。
-# 同理 --all-features 不可用：本项目可构建的最大集合是 default + etcd。
-# （limiteron 已不再传递启用 dbnexus/postgres —— 其 postgres feature 全仓
-# 零使用，依赖面已解耦；sqlite 不可构建纯因上述 default 后端混用。）
-sqlite = ["dbnexus/sqlite"]
 etcd = ["dep:etcd-client"]
 # alerting: 门控告警子系统(src/core/monitoring 的 AlertManager/AlertRule/
 # 告警状态机/通知通道/broadcast 事件流)。生产路径零引用,默认不含以缩小

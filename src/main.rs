@@ -999,7 +999,21 @@ async fn main() -> Result<()> {
     load_api_keys(&auth, &repository, &config).await;
 
     // Initialize audit logger and config (used by both etcd and non-etcd modes)
-    let audit_logger = Arc::new(AuditLogger::new(config.rate_limit.default_rps as usize));
+    // T030 —— 内存容量改用独立的 audit.memory_capacity（不再借用
+    // rate_limit.default_rps）；生产环境按 audit.file_logging_enabled（默认 true）
+    // 落盘 audit.file_logging_path（SOC2/GDPR 审计留痕）。开发环境维持内存
+    // 环形：最小意外原则 —— 不改变本地开发行为，不新增文件写入。
+    let audit_logger = Arc::new(
+        if nebulaid::core::config::is_production() && config.audit.file_logging_enabled {
+            AuditLogger::with_file_logging(
+                config.audit.memory_capacity,
+                config.audit.file_logging_path.clone(),
+            )
+            .await
+        } else {
+            AuditLogger::new(config.audit.memory_capacity)
+        },
+    );
     let hot_config = Arc::new(HotReloadConfig::new(
         config.clone(),
         "config/config.toml".to_string(),

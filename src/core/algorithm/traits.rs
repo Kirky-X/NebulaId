@@ -26,6 +26,7 @@ pub use crate::core::algorithm::DegradationManager;
 // 各算法文件（snowflake.rs / uuid_v7.rs / segment.rs），按规则 25
 // 「mod.rs/traits.rs 只放接口定义」要求。
 use crate::core::algorithm::segment::CpuMonitor;
+use crate::core::algorithm::segment::SegmentLoader;
 #[cfg(feature = "etcd")]
 use crate::core::coordinator::EtcdClusterHealthMonitor;
 
@@ -176,6 +177,12 @@ pub struct AlgorithmBuilder {
     cpu_monitor: Option<Arc<CpuMonitor>>,
     #[cfg(feature = "etcd")]
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
+    /// T016r —— Segment 号段装载器注入口（工厂构造参数透传）。
+    ///
+    /// `Some(loader)` 时 Segment 工厂以该装载器构建 `SegmentAlgorithm`
+    /// （生产装配 `DbSegmentLoader` 走此缝）；`None` 时委托原始
+    /// `SegmentFactory`，构建行为与历史完全一致。
+    segment_loader: Option<Arc<dyn SegmentLoader + Send + Sync>>,
     // 修复：非 etcd 版本不再持有 `etcd_health_monitor: Option<()>` 占位字段。
     // 原 `Option<()>` 既无意义也误导调用方。`with_etcd_health_monitor` builder
     // 方法仅在 etcd feature 下存在；非 etcd 版本调用方不会触碰该字段。
@@ -188,7 +195,23 @@ impl AlgorithmBuilder {
             cpu_monitor: None,
             #[cfg(feature = "etcd")]
             etcd_health_monitor: None,
+            segment_loader: None,
         }
+    }
+
+    /// 注入 Segment 号段装载器（仅对 `AlgorithmType::Segment` 生效）。
+    ///
+    /// 生产装配方经 [`crate::core::algorithm::AlgorithmRouter::with_segment_repository`]
+    /// 传入仓储后，router 在 `initialize` 阶段以此方法把
+    /// `DbSegmentLoader` 透传给工厂；测试可注入内存造段器。
+    pub fn with_segment_loader(mut self, loader: Arc<dyn SegmentLoader + Send + Sync>) -> Self {
+        self.segment_loader = Some(loader);
+        self
+    }
+
+    /// 暴露 `segment_loader` 给工厂 impl（pub(crate)）。
+    pub(crate) fn segment_loader(&self) -> &Option<Arc<dyn SegmentLoader + Send + Sync>> {
+        &self.segment_loader
     }
 
     pub fn with_cpu_monitor(mut self, monitor: Arc<CpuMonitor>) -> Self {
@@ -272,6 +295,45 @@ pub struct SnowflakeFactory;
 pub struct UuidV8Factory;
 pub struct SegmentFactory;
 
+/// T016r —— Segment 工厂的 DbSegmentLoader 装配包装（E lane 移交残余）。
+///
+/// 注册表中 Segment 项指向本工厂而非裸 [`SegmentFactory`]：
+/// - `AlgorithmBuilder` 携带 `with_segment_loader` 注入的装载器时，按
+///   `SegmentFactory` 的同构逻辑构建 `SegmentAlgorithm` 并替换其号段
+///   装载器（生产装配：`DbSegmentLoader` 真连数据库号段）；
+/// - 未注入时整段委托 [`SegmentFactory::build`]，默认（生产 =
+///   `UnconfiguredSegmentLoader` 显性报错 / 测试 = 内存造段器）行为
+///   与历史逐字节一致。
+struct DbAwareSegmentFactory;
+
+#[async_trait]
+impl AlgorithmFactory for DbAwareSegmentFactory {
+    async fn build(
+        &self,
+        builder: &AlgorithmBuilder,
+        config: &Config,
+    ) -> Result<Box<dyn IdAlgorithm>> {
+        match builder.segment_loader() {
+            Some(loader) => {
+                // 与 segment.rs 的 `SegmentFactory` 构建逻辑同构（monitor 接线
+                // + initialize），仅多了 `with_segment_loader` 注入一步。
+                let mut algo = crate::core::algorithm::SegmentAlgorithm::new(config.app.dc_id);
+                #[cfg(feature = "etcd")]
+                if let Some(ref monitor) = builder.etcd_health_monitor() {
+                    algo = algo.with_etcd_cluster_health_monitor(monitor.clone());
+                }
+                if let Some(ref cpu_monitor) = builder.cpu_monitor() {
+                    algo = algo.with_cpu_monitor(cpu_monitor.clone());
+                }
+                algo = algo.with_segment_loader(loader.clone());
+                algo.initialize(config).await?;
+                Ok(Box::new(algo))
+            }
+            None => SegmentFactory.build(builder, config).await,
+        }
+    }
+}
+
 /// 算法工厂注册表（懒加载，进程级单例）。
 ///
 /// 函数 `pub`，外部测试可读取注册表验证完整性。
@@ -281,7 +343,9 @@ pub fn algorithm_factories() -> &'static HashMap<AlgorithmType, Arc<dyn Algorith
         let mut m: HashMap<AlgorithmType, Arc<dyn AlgorithmFactory>> = HashMap::new();
         m.insert(AlgorithmType::Snowflake, Arc::new(SnowflakeFactory));
         m.insert(AlgorithmType::UuidV8, Arc::new(UuidV8Factory));
-        m.insert(AlgorithmType::Segment, Arc::new(SegmentFactory));
+        // T016r：Segment 经 DbAwareSegmentFactory 代理，支持工厂路径注入
+        // DbSegmentLoader（未注入时委托 SegmentFactory，行为不变）。
+        m.insert(AlgorithmType::Segment, Arc::new(DbAwareSegmentFactory));
         m
     })
 }

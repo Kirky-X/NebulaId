@@ -35,11 +35,35 @@ use limiteron::limiters::{
     TokenBucketLimiter,
 };
 use parking_lot::RwLock;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::interval;
 use tracing::debug;
+
+/// 限流表分片数（2 的幂）。按 key 哈希分摊读写热点：单把全局
+/// `RwLock<HashMap>` 在多核高 QPS 下会让所有 check 在同一写锁上串行
+/// （去热点 T025）。依赖选型：`dashmap` 不在 Cargo.toml（本任务禁改
+/// 依赖），采用 `parking_lot::RwLock<HashMap>` 分片等价实现。
+const LIMITER_SHARDS: usize = 16;
+
+/// `last_accessed` 的时钟精度（Unix 纳秒，u64 可容纳至 2554 年）。原子量
+/// 替代 `Arc<RwLock<Instant>>`（每次 touch 一次写锁 → 一次 store，清理路径
+/// 读 last_accessed 也不再进锁）。
+///
+/// 选 `SystemTime` 而非 `Instant`：原子量只能存整数，`Instant` 无稳定
+/// 基准可换算；墙钟回拨在极端情况下最多让空闲桶多存活一个回拨窗口，
+/// 对分钟级 max_idle 的清理语义无实际影响。纳秒精度保住原 `Instant`
+/// 实现的亚毫秒差判定（`cleanup(Duration::ZERO)` 立即清除刚建桶）。
+fn unix_nanos() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
 
 /// Rate limit result containing the decision and metadata
 #[derive(Debug, Clone)]
@@ -71,7 +95,9 @@ struct InternalRateLimiter {
     limiter: Arc<TokenBucketLimiter>,
     rate: u32,
     capacity: u32,
-    last_accessed: Arc<RwLock<Instant>>,
+    /// 最后访问时刻（Unix 纳秒，原子量）。语义与原 `Arc<RwLock<Instant>>`
+    /// 一致：仅用于空闲清理判定。
+    last_accessed: Arc<AtomicU64>,
 }
 
 impl InternalRateLimiter {
@@ -85,18 +111,18 @@ impl InternalRateLimiter {
             limiter: Arc::new(TokenBucketLimiter::new(capacity as u64, rate as u64)),
             rate,
             capacity,
-            last_accessed: Arc::new(RwLock::new(Instant::now())),
+            last_accessed: Arc::new(AtomicU64::new(unix_nanos())),
         }
     }
 
     /// Update the last accessed time
     fn touch(&self) {
-        *self.last_accessed.write() = Instant::now();
+        self.last_accessed.store(unix_nanos(), Ordering::Relaxed);
     }
 
-    /// Get the last accessed time
-    fn last_accessed(&self) -> Instant {
-        *self.last_accessed.read()
+    /// Get the last accessed time (Unix 纳秒)
+    fn last_accessed_nanos(&self) -> u64 {
+        self.last_accessed.load(Ordering::Relaxed)
     }
 
     /// Check if a request is allowed and consume a token
@@ -125,13 +151,47 @@ impl InternalRateLimiter {
     }
 }
 
+/// 分片限流表：`LIMITER_SHARDS` 个 `RwLock<HashMap>` 按 key 哈希分布，
+/// 语义与原单把 `RwLock<HashMap<String, InternalRateLimiter>>` 等价
+/// （get-or-insert / get / len / 逐出 / 整表换新），仅锁粒度按分片细化。
+struct ShardedLimiters {
+    shards: Vec<RwLock<HashMap<String, InternalRateLimiter>>>,
+}
+
+impl ShardedLimiters {
+    fn new() -> Self {
+        Self {
+            shards: (0..LIMITER_SHARDS)
+                .map(|_| RwLock::new(HashMap::new()))
+                .collect(),
+        }
+    }
+
+    /// 定位 key 所属分片。`DefaultHasher` 每次 new() 种子固定（std 实现），
+    /// 进程内分布稳定即可，无需跨进程稳定。
+    fn shard_for(&self, key: &str) -> &RwLock<HashMap<String, InternalRateLimiter>> {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        let idx = (hasher.finish() % LIMITER_SHARDS as u64) as usize;
+        &self.shards[idx]
+    }
+
+    /// 遍历所有分片执行 `f`，收集各分片返回值。
+    fn for_each_shard<T>(
+        &self,
+        f: impl FnMut(&RwLock<HashMap<String, InternalRateLimiter>>) -> T,
+    ) -> Vec<T> {
+        self.shards.iter().map(f).collect()
+    }
+}
+
 /// Main rate limiter for the application.
 ///
 /// Uses limiteron's TokenBucketLimiter for smooth, accurate rate limiting
 /// with per-key tracking.
 #[derive(Clone)]
 pub struct RateLimiter {
-    limiters: Arc<RwLock<HashMap<String, InternalRateLimiter>>>,
+    limiters: Arc<ShardedLimiters>,
     defaults: Arc<RwLock<(u32, u32)>>,
     cleanup_interval: Arc<RwLock<Duration>>,
 }
@@ -150,7 +210,7 @@ impl RateLimiter {
     /// ```
     pub fn new(default_rps: u32, default_burst: u32) -> Self {
         Self {
-            limiters: Arc::new(RwLock::new(HashMap::new())),
+            limiters: Arc::new(ShardedLimiters::new()),
             defaults: Arc::new(RwLock::new((default_rps, default_burst))),
             cleanup_interval: Arc::new(RwLock::new(Duration::from_secs(300))), // 5 minutes default
         }
@@ -176,31 +236,41 @@ impl RateLimiter {
         *self.cleanup_interval.write() = cleanup_interval;
 
         let limiters = self.limiters.clone();
+        let max_idle_nanos = max_idle.as_nanos() as u64;
 
         tokio::spawn(async move {
             let mut interval_timer = interval(cleanup_interval);
             loop {
                 interval_timer.tick().await;
 
-                let now = Instant::now();
-                // 锁内只做「收集 key + 从 map 摘除」：摘下的桶（内含
-                // TokenBucketLimiter 与 last_accessed 锁）先移出写锁作用域，
-                // 统一在锁外释放，避免 drop 成本随待删桶数量线性放大独占写锁。
+                let now_nanos = unix_nanos();
+                // 锁内只做「收集 key + 从分片摘除」：摘下的桶（内含
+                // TokenBucketLimiter 状态）先移出各分片锁作用域，统一在锁外
+                // 释放，避免 drop 成本随待删桶数量线性放大分片写锁。
                 let (removed_count, removed_buckets) = {
-                    let mut limiters_guard = limiters.write();
-                    let keys_to_remove: Vec<String> = limiters_guard
-                        .iter()
-                        .filter(|(_, limiter)| {
-                            now.duration_since(limiter.last_accessed()) > max_idle
-                        })
-                        .map(|(key, _)| key.clone())
-                        .collect();
+                    let per_shard = limiters.for_each_shard(|shard| {
+                        let mut shard_guard = shard.write();
+                        let keys_to_remove: Vec<String> = shard_guard
+                            .iter()
+                            .filter(|(_, limiter)| {
+                                now_nanos.saturating_sub(limiter.last_accessed_nanos())
+                                    > max_idle_nanos
+                            })
+                            .map(|(key, _)| key.clone())
+                            .collect();
 
-                    let buckets = keys_to_remove
+                        let buckets = keys_to_remove
+                            .into_iter()
+                            .filter_map(|key| shard_guard.remove(&key))
+                            .collect::<Vec<_>>();
+                        (buckets.len(), buckets)
+                    });
+                    let count: usize = per_shard.iter().map(|(n, _)| *n).sum();
+                    let buckets = per_shard
                         .into_iter()
-                        .filter_map(|key| limiters_guard.remove(&key))
+                        .flat_map(|(_, buckets)| buckets)
                         .collect::<Vec<_>>();
-                    (buckets.len(), buckets)
+                    (count, buckets)
                 };
 
                 if removed_count > 0 {
@@ -247,10 +317,10 @@ impl RateLimiter {
             (default_rps, default_burst)
         };
 
-        // Get or create the limiter for this key
+        // Get or create the limiter for this key（T025：写锁粒度=key 所属分片）
         let limiter = {
-            let mut limiters = self.limiters.write();
-            limiters
+            let mut shard = self.limiters.shard_for(key).write();
+            shard
                 .entry(key.to_string())
                 .or_insert_with(|| InternalRateLimiter::new(rate, capacity))
                 .clone()
@@ -277,8 +347,8 @@ impl RateLimiter {
 
     /// Get the current rate limit status for a key.
     pub fn get_usage(&self, key: &str) -> Option<RateLimitStatus> {
-        let limiters = self.limiters.read();
-        limiters.get(key).map(|entry| RateLimitStatus {
+        let shard = self.limiters.shard_for(key).read();
+        shard.get(key).map(|entry| RateLimitStatus {
             remaining: entry.limiter.tokens(),
             limit: entry.capacity,
             rate: entry.rate,
@@ -287,7 +357,10 @@ impl RateLimiter {
 
     /// Get the current number of rate limit buckets.
     pub fn bucket_count(&self) -> usize {
-        self.limiters.read().len()
+        self.limiters
+            .for_each_shard(|shard| shard.read().len())
+            .into_iter()
+            .sum()
     }
 
     /// Cleanup expired rate limit entries.
@@ -301,24 +374,29 @@ impl RateLimiter {
     /// # Returns
     /// Number of limiters removed
     pub fn cleanup(&self, max_idle: Duration) -> usize {
-        let now = Instant::now();
+        let now_nanos = unix_nanos();
+        let max_idle_nanos = max_idle.as_nanos() as u64;
 
-        // 锁内只做「收集 key + 从 map 摘除」；摘下的桶带出写锁作用域后才释放，
-        // 使独占写锁的持有时长与 drop 成本解耦（与后台清理循环同一边界）。
-        let (removed_count, removed_buckets) = {
-            let mut limiters = self.limiters.write();
-            let keys_to_remove: Vec<String> = limiters
+        // 锁内只做「收集 key + 从分片摘除」；摘下的桶带出各分片锁作用域后才
+        // 释放，使分片写锁的持有时长与 drop 成本解耦（与后台清理循环同一边界）。
+        let per_shard = self.limiters.for_each_shard(|shard| {
+            let mut shard_guard = shard.write();
+            let keys_to_remove: Vec<String> = shard_guard
                 .iter()
-                .filter(|(_, limiter)| now.duration_since(limiter.last_accessed()) > max_idle)
+                .filter(|(_, limiter)| {
+                    now_nanos.saturating_sub(limiter.last_accessed_nanos()) > max_idle_nanos
+                })
                 .map(|(key, _)| key.clone())
                 .collect();
 
             let buckets = keys_to_remove
                 .into_iter()
-                .filter_map(|key| limiters.remove(&key))
+                .filter_map(|key| shard_guard.remove(&key))
                 .collect::<Vec<_>>();
             (buckets.len(), buckets)
-        };
+        });
+
+        let removed_count: usize = per_shard.iter().map(|(n, _)| *n).sum();
 
         if removed_count > 0 {
             debug!(
@@ -332,20 +410,32 @@ impl RateLimiter {
             );
         }
 
+        // 桶在所有分片锁外释放
+        let removed_buckets: Vec<InternalRateLimiter> = per_shard
+            .into_iter()
+            .flat_map(|(_, buckets)| buckets)
+            .collect();
         drop(removed_buckets);
         removed_count
     }
 
     /// Get the current number of active rate limiters.
     pub fn active_limiters_count(&self) -> usize {
-        self.limiters.read().len()
+        self.limiters
+            .for_each_shard(|shard| shard.read().len())
+            .into_iter()
+            .sum()
     }
 
     /// Get memory usage statistics for monitoring.
     pub fn memory_stats(&self) -> RateLimiterMemoryStats {
-        let limiters = self.limiters.read();
+        let active_limiters = self
+            .limiters
+            .for_each_shard(|shard| shard.read().len())
+            .into_iter()
+            .sum();
         RateLimiterMemoryStats {
-            active_limiters: limiters.len(),
+            active_limiters,
             default_rps: self.defaults.read().0,
             default_burst: self.defaults.read().1,
         }
@@ -368,13 +458,15 @@ impl RateLimiter {
     pub fn update_config(&self, default_rps: u32, default_burst: u32) {
         self.update_defaults(default_rps, default_burst);
 
-        // 写锁内只做一次 O(1) 换表；旧表连同其全部桶（TokenBucketLimiter 状态、
-        // last_accessed 锁）在锁外释放。此前用 `write().clear()`，逐个 drop
-        // 发生在持锁期间，锁持有时间随桶数量线性放大。
-        let old_buckets = {
-            let mut limiters = self.limiters.write();
-            std::mem::take(&mut *limiters)
-        };
+        // 各分片锁内只做一次 O(1) 换表；旧表连同其全部桶（TokenBucketLimiter
+        // 状态、last_accessed 原子量）在所有分片锁外释放。此前用
+        // `write().clear()`，逐个 drop 发生在持锁期间，锁持有时间随桶数量
+        // 线性放大。
+        let old_buckets: Vec<HashMap<String, InternalRateLimiter>> =
+            self.limiters.for_each_shard(|shard| {
+                let mut shard_guard = shard.write();
+                std::mem::take(&mut *shard_guard)
+            });
 
         drop(old_buckets);
     }
@@ -711,5 +803,50 @@ mod tests {
         assert_eq!(stats.default_burst, 15);
 
         drop(RateLimiter::get_concurrency_limiter(4));
+    }
+
+    /// T025 分片表语义回归：大量 distinct key 并发 check（跨所有分片）
+    /// 不 panic，桶计数与 key 总数一致，清理语义逐 key 正确。
+    #[tokio::test]
+    async fn test_sharded_table_many_concurrent_keys_no_panic() {
+        use futures_util::future::join_all;
+        use tokio::task;
+
+        let limiter = Arc::new(RateLimiter::new(1000, 1000));
+        let num_tasks = 8usize;
+        let keys_per_task = 200usize;
+
+        let handles: Vec<_> = (0..num_tasks)
+            .map(|i| {
+                let limiter = limiter.clone();
+                task::spawn(async move {
+                    for j in 0..keys_per_task {
+                        let key = format!("task-{i}-key-{j}");
+                        let result = limiter.check_rate_limit(&key, None, None).await;
+                        assert!(result.allowed, "burst capacity must allow first hit");
+                    }
+                })
+            })
+            .collect();
+
+        for handle in join_all(handles).await {
+            handle.expect("concurrent task must not panic");
+        }
+
+        // 分片表 len 之和 == 桶总数
+        let total = num_tasks * keys_per_task;
+        assert_eq!(limiter.bucket_count(), total);
+        assert_eq!(limiter.active_limiters_count(), total);
+        assert_eq!(limiter.memory_stats().active_limiters, total);
+
+        // 逐 key get_usage 命中（分片定位正确）
+        let probe = "task-0-key-0".to_string();
+        let usage = limiter.get_usage(&probe).expect("probe key must exist");
+        assert_eq!(usage.limit, 1000);
+
+        // 整表清理语义不变
+        let removed = limiter.cleanup(Duration::ZERO);
+        assert_eq!(removed, total);
+        assert_eq!(limiter.bucket_count(), 0);
     }
 }

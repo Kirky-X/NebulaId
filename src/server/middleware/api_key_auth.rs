@@ -125,10 +125,24 @@ impl ApiKeyAuth {
         if failures_map.len() > MAX_TRACKED_AUTH_FAILURE_IPS {
             failures_map.retain(|_, v| !v.is_empty());
             if failures_map.len() > MAX_TRACKED_AUTH_FAILURE_IPS {
-                // Still over capacity — clear the map entirely. This
-                // is a last-resort safety valve; under normal load the
-                // per-IP 5-minute window keeps the map small.
-                failures_map.clear();
+                // T025 —— 仍超上限时按「每 IP 最早失败时间」淘汰最旧条目，
+                // 替代一次性 `clear()`：清空会把正在活跃攻击的 IP 的失败
+                // 计数一并抹掉，攻击者立即获得全新的 10 次失败预算（等于
+                // 自解除封禁）。按最旧淘汰保留活跃失败者的计数，与
+                // 「优先保留活跃失败 IP」的原语义一致。
+                let excess = failures_map.len() - MAX_TRACKED_AUTH_FAILURE_IPS;
+                let mut oldest_per_ip: Vec<(String, Instant)> = failures_map
+                    .iter()
+                    .map(|(ip, failures)| {
+                        // 失败按时间顺序 push，首元素即最旧；桶经上方 retain
+                        // 后保证非空。
+                        (ip.clone(), failures.first().copied().unwrap_or(now))
+                    })
+                    .collect();
+                oldest_per_ip.sort_by_key(|(_, oldest)| *oldest);
+                for (ip, _) in oldest_per_ip.into_iter().take(excess) {
+                    failures_map.remove(&ip);
+                }
             }
         }
 
@@ -1162,17 +1176,55 @@ mod tests {
         }
     }
 
+    /// T025 —— 超上限改为「淘汰最旧条目」而非整体清空：
+    /// 1. 表规模回到上限内（10_000）；
+    /// 2. 被淘汰的是每 IP 最早失败时间最旧的条目；
+    /// 3. 活跃攻击 IP（失败时间最新）的计数保留——攻击者不因容量阀值
+    ///    获得全新失败预算（旧 clear() 语义下会整体清零、自解除封禁）。
     #[test]
-    fn test_auth_failure_map_capacity_valve_clears_on_overflow() {
+    fn test_auth_failure_map_capacity_valve_evicts_oldest_entries() {
         let auth = ApiKeyAuth::new(Arc::new(make_mock_repo()), true);
-        for i in 0..=10_000 {
+
+        // 灌注 10_001 个 IP（"10.9.0.0" 最先记录 → 最早失败时间全局最旧）。
+        // 阀值入口要求被检 IP 窗口内有失败（空桶提前返回、≥10 次走拒绝路径，
+        // 都不进容量阀），因此用只有 1 次失败的 "10.9.0.1" 触发。
+        for i in 0..10_001 {
             auth.record_auth_failure(&format!("10.9.{}.{}", i / 256, i % 256));
         }
-        auth.record_auth_failure("192.0.2.1");
-        assert!(auth.check_auth_failure_rate("192.0.2.1"));
+
+        // 攻击者：12 次失败，失败时间最新（不会被最旧淘汰选中）。
+        for _ in 0..12 {
+            auth.record_auth_failure("203.0.113.7");
+        }
+
+        // 触发容量阀：表 10_002 条 > 10_000，淘汰 excess=2 个最旧条目。
+        assert!(auth.check_auth_failure_rate("10.9.0.1"));
+
+        {
+            let failures_map = auth.auth_failures.read();
+            assert_eq!(
+                failures_map.len(),
+                MAX_TRACKED_AUTH_FAILURE_IPS,
+                "容量阀必须把表压回上限内"
+            );
+            assert!(
+                !failures_map.contains_key("10.9.0.0"),
+                "最早灌注（最早失败时间）的 IP 应第一个被淘汰"
+            );
+            assert!(
+                failures_map.contains_key("10.9.0.2"),
+                "未被淘汰名额覆盖的条目应保留"
+            );
+            assert!(
+                failures_map.contains_key("203.0.113.7"),
+                "活跃攻击 IP（失败时间最新）不得被容量阀淘汰"
+            );
+        }
+
+        // 关键语义回归：攻击者的失败计数未被清空 → 仍处于拒绝状态。
         assert!(
-            auth.auth_failures.read().is_empty(),
-            "overflow must trigger the capacity safety valve"
+            !auth.check_auth_failure_rate("203.0.113.7"),
+            "容量阀不得重置活跃攻击 IP 的失败预算（旧 clear() 语义会）"
         );
     }
 

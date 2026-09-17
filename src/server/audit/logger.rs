@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tracing::info;
@@ -156,14 +157,19 @@ impl AuditEvent {
 /// sync_all 文件并回复，使调用方可以确定性等待持久化完成（替代 sleep）。
 enum AuditCommand {
     /// 写入一条审计事件到文件
-    Event(Box<AuditEvent>),
+    Event(Arc<AuditEvent>),
     /// Flush：sync_all 确保所有已写入数据落盘，完成后回复 oneshot
     Flush(tokio::sync::oneshot::Sender<()>),
 }
 
+/// writer task 周期 flush 间隔（T025：常开 `BufWriter<File>` 按行写，
+/// 缓冲行靠本定时器定期落盘；50ms 保证既有「sleep 后读文件」用例语义
+/// 不变，同时把每事件一次 open/close 的系统调用摊薄为每周期一次 flush）。
+const AUDIT_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
+
 #[derive(Clone)]
 pub struct AuditLogger {
-    events: Arc<Mutex<VecDeque<AuditEvent>>>,
+    events: Arc<Mutex<VecDeque<Arc<AuditEvent>>>>,
     max_events: usize,
     total_logged: Arc<AtomicU64>,
     total_errors: Arc<AtomicU64>,
@@ -178,10 +184,11 @@ pub struct AuditLogger {
 
 /// `VecDeque` 预分配条数上限。
 ///
-/// `max_events` 由调用方传入，其中一个来源是配置值
-/// （`src/main.rs:746` 传的是 `rate_limit.default_rps`，而该字段只在限流开启时才有上界
-/// 校验）—— 直接按它预分配等于让一个配置数字决定进程启动时的内存申请量。`with_capacity`
-/// 只是容量提示，钳制它不改变"最多保留 `max_events` 条"的淘汰语义。
+/// `max_events` 由调用方传入，当前唯一生产来源是配置值
+/// （T030 起 `src/main.rs` 传 `audit.memory_capacity`，不再借用
+/// `rate_limit.default_rps`）——直接按它预分配等于让一个配置数字决定
+/// 进程启动时的内存申请量。`with_capacity` 只是容量提示，钳制它不改变
+/// "最多保留 `max_events` 条"的淘汰语义。
 const MAX_AUDIT_PREALLOC: usize = 1024;
 
 fn prealloc_capacity(max_events: usize) -> usize {
@@ -233,28 +240,69 @@ impl AuditLogger {
         let path_clone = log_file_path.clone();
 
         let handle = tokio::spawn(async move {
-            while let Some(cmd) = rx.recv().await {
-                match cmd {
-                    AuditCommand::Event(event) => {
-                        if let Err(e) = Self::write_event_to_file(&event, &path_clone).await {
-                            errors_clone.fetch_add(1, Ordering::SeqCst);
-                            tracing::error!(
-                                "{}",
-                                t!("log.server.audit.logger.persist_failed", error = e)
-                            );
-                        }
+            use std::io::Write;
+            // T025 —— writer 常开一个 `BufWriter<File>`（append），按行写 +
+            // 周期 flush，替代原「每事件一次 OpenOptions::open」；系统调用
+            // 从 O(事件数) 摊薄到 O(缓冲满 + flush 周期数)。
+            // 打开失败或写失败进入 broken 模式（句柄置 None）：后续事件逐条
+            // 计入 total_errors，不反复重试打开文件。
+            let mut writer: Option<std::io::BufWriter<std::fs::File>> =
+                match std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path_clone)
+                {
+                    Ok(file) => Some(std::io::BufWriter::new(file)),
+                    Err(e) => {
+                        // 打开失败只记日志不进 total_errors：total_errors 的
+                        // 口径是「审计事件持久化失败次数」，此时尚无事件丢失；
+                        // 后续每个事件的写入失败（broken 模式）逐条计数。
+                        tracing::error!(
+                            path = %path_clone,
+                            error = %e,
+                            "{}",
+                            t!("log.server.audit.logger.persist_failed", error = e)
+                        );
+                        None
                     }
-                    AuditCommand::Flush(ack) => {
-                        // 处理完所有排队 Event 后 sync_all 确保数据落盘。
-                        // 这替代了每事件 sync_all 的性能开销，仅按需 flush。
-                        if let Err(e) = Self::sync_file(&path_clone).await {
-                            errors_clone.fetch_add(1, Ordering::SeqCst);
-                            tracing::error!(
-                                "{}",
-                                t!("log.server.audit.logger.persist_failed", error = e)
-                            );
+                };
+
+            let mut flush_timer = tokio::time::interval(AUDIT_FLUSH_INTERVAL);
+            flush_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            loop {
+                tokio::select! {
+                    cmd = rx.recv() => match cmd {
+                        Some(AuditCommand::Event(event)) => {
+                            if let Err(e) = Self::append_event(&mut writer, &event) {
+                                errors_clone.fetch_add(1, Ordering::SeqCst);
+                                tracing::error!(
+                                    "{}",
+                                    t!("log.server.audit.logger.persist_failed", error = e)
+                                );
+                            }
                         }
-                        let _ = ack.send(());
+                        Some(AuditCommand::Flush(ack)) => {
+                            // 处理完所有排队 Event 后 flush + sync_all 确保落盘。
+                            if let Err(e) = Self::flush_writer(&mut writer) {
+                                errors_clone.fetch_add(1, Ordering::SeqCst);
+                                tracing::error!(
+                                    "{}",
+                                    t!("log.server.audit.logger.persist_failed", error = e)
+                                );
+                            }
+                            let _ = ack.send(());
+                        }
+                        // 全部 sender drop：退出前冲刷缓冲。
+                        None => {
+                            let _ = Self::flush_writer(&mut writer);
+                            break;
+                        }
+                    },
+                    _ = flush_timer.tick() => {
+                        if let Some(w) = writer.as_mut() {
+                            let _ = w.flush();
+                        }
                     }
                 }
             }
@@ -307,7 +355,29 @@ impl AuditLogger {
         Ok(())
     }
 
-    pub async fn log(&self, event: AuditEvent) {
+    /// 记录一条审计事件。
+    ///
+    /// T025 —— 入参收 `impl Into<Arc<AuditEvent>>`：内存环形与文件 writer
+    /// 共享同一 `Arc` 实例，消除原实现的两次深拷贝（push_back 一次深拷贝
+    /// 加 Box::new 一次深拷贝）。调用方传 owned 事件（历史路径零改动）或
+    /// 已构造的 `Arc<AuditEvent>`（多写场景免拷贝）皆可。
+    pub async fn log(&self, event: impl Into<Arc<AuditEvent>>) {
+        self.log_shared(event.into()).await;
+    }
+
+    /// `log` 的执行体（inherent async，无 async_trait 反序列化，
+    /// `#[instrument]` 属性覆盖可靠）。T023 热路径观测：span 字段仅事件
+    /// 类型/workspace/结果，不含事件明细与任何凭据。
+    #[tracing::instrument(
+        name = "audit.log",
+        skip_all,
+        fields(
+            event_type = ?event.event_type,
+            workspace = ?event.workspace_id,
+            result = ?event.result
+        )
+    )]
+    async fn log_shared(&self, event: Arc<AuditEvent>) {
         // 锁内只做内存操作（push/pop），快速释放锁
         {
             let mut events = self.events.lock().await;
@@ -339,12 +409,9 @@ impl AuditLogger {
             self.total_logged.fetch_add(1, Ordering::SeqCst);
         }
 
-        // 锁外异步发送到文件 writer channel（非阻塞）
+        // 锁外异步发送到文件 writer channel（非阻塞）；Arc 共享，无深拷贝
         if let Some(ref tx) = self.file_tx {
-            if tx
-                .send(AuditCommand::Event(Box::new(event.clone())))
-                .is_err()
-            {
+            if tx.send(AuditCommand::Event(event.clone())).is_err() {
                 // channel 关闭（writer task panic 或退出）
                 self.total_errors.fetch_add(1, Ordering::SeqCst);
                 tracing::error!(
@@ -383,6 +450,20 @@ impl AuditLogger {
     /// 10k QPS 场景下减少约 1-2 万次/秒的 String 堆分配（注：`json!` 宏
     /// 仍会克隆 `redacted_client_ip` / `redacted_user_agent`，所以实际
     /// 节省的是其余字段的深拷贝，量级为 1-2 万次/秒）。
+    ///
+    /// T023 热路径观测：span 字段仅事件类型/workspace，事件体与路径不进 span。
+    ///
+    /// T025 起 writer task 走常开 `BufWriter`（`append_event`），本函数仅剩
+    /// 单测直写用途（作为逐字节一致的对照实现），故 cfg(test)。
+    #[cfg(test)]
+    #[tracing::instrument(
+        name = "audit.write_event_to_file",
+        skip_all,
+        fields(
+            event_type = ?event.event_type,
+            workspace = ?event.workspace_id
+        )
+    )]
     async fn write_event_to_file(event: &AuditEvent, path: &str) -> std::io::Result<()> {
         // 使用同步 std::fs 而非 tokio::fs：writer task 是专用串行消费者，
         // 阻塞 I/O 可接受。同步 I/O 消除 tokio::fs::File 异步 drop 与后续
@@ -393,6 +474,17 @@ impl AuditLogger {
             .append(true)
             .open(path)?;
 
+        let line = Self::serialize_event_line(event)?;
+        file.write_all(&line)?;
+        // 不在此处 sync_all：每事件 fsync 在高 QPS 场景下会成为 I/O 瓶颈。
+        // 数据持久化由调用方按需调用 `flush()` 触发（writer task 执行 sync_all）。
+        Ok(())
+    }
+
+    /// 审计事件 → 单行 JSON 字节（含换行）。文件持久化的唯一序列化实现：
+    /// 直写辅助 [`Self::write_event_to_file`] 与 writer task 的常开
+    /// `BufWriter`（T025）共用，保证两条写入路径逐字节一致。
+    fn serialize_event_line(event: &AuditEvent) -> std::io::Result<Vec<u8>> {
         // 仅对需要脱敏的 client_ip / user_agent 做转换，其余字段引用序列化。
         let redacted_client_ip = event.client_ip.as_deref().map(AuditEvent::redact_ip);
         let redacted_user_agent = event
@@ -420,19 +512,44 @@ impl AuditLogger {
         serde_json::to_writer(&mut buf, &log_line)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         buf.push(b'\n');
-        file.write_all(&buf)?;
-        // 不在此处 sync_all：每事件 fsync 在高 QPS 场景下会成为 I/O 瓶颈。
-        // 数据持久化由调用方按需调用 `flush()` 触发（writer task 执行 sync_all）。
-        Ok(())
+        Ok(buf)
     }
 
-    /// 对日志文件执行 sync_all，确保所有已写入数据落盘。
-    /// 由 writer task 在处理 `AuditCommand::Flush` 时调用。
-    async fn sync_file(path: &str) -> std::io::Result<()> {
-        // 同步 I/O：writer task 专用，阻塞可接受
-        let file = std::fs::OpenOptions::new().write(true).open(path)?;
-        file.sync_all()?;
-        Ok(())
+    /// T025 —— writer task 写入路径：向常开 `BufWriter` 追加一行。
+    /// 句柄为 `None`（broken 模式：初始打开或写入失败后）时返回错误，
+    /// 由调用方计入 total_errors。
+    fn append_event(
+        writer: &mut Option<std::io::BufWriter<std::fs::File>>,
+        event: &AuditEvent,
+    ) -> std::io::Result<()> {
+        use std::io::Write;
+        let line = Self::serialize_event_line(event)?;
+        match writer.as_mut() {
+            Some(w) => {
+                w.write_all(&line)?;
+                Ok(())
+            }
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "audit file writer unavailable (previous open/write failed)",
+            )),
+        }
+    }
+
+    /// T025 —— 冲刷常开 `BufWriter` 并 sync_all 落盘（`Flush` 命令路径）。
+    fn flush_writer(writer: &mut Option<std::io::BufWriter<std::fs::File>>) -> std::io::Result<()> {
+        use std::io::Write;
+        match writer.as_mut() {
+            Some(w) => {
+                w.flush()?;
+                w.get_ref().sync_all()?;
+                Ok(())
+            }
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "audit file writer unavailable (previous open/write failed)",
+            )),
+        }
     }
 
     /// 显式 flush：等待 writer task 处理完所有已发送事件并 sync_all 落盘。
@@ -898,7 +1015,12 @@ impl AuditLogger {
 
     pub async fn get_recent_events(&self, limit: usize) -> Vec<AuditEvent> {
         let events = self.events.lock().await;
-        events.iter().rev().take(limit).cloned().collect()
+        events
+            .iter()
+            .rev()
+            .take(limit)
+            .map(|e| (**e).clone())
+            .collect()
     }
 
     pub async fn get_events_by_workspace(&self, workspace_id: &str) -> Vec<AuditEvent> {
@@ -906,7 +1028,7 @@ impl AuditLogger {
         events
             .iter()
             .filter(|e| e.workspace_id.as_deref() == Some(workspace_id))
-            .cloned()
+            .map(|e| (**e).clone())
             .collect()
     }
 
@@ -915,7 +1037,7 @@ impl AuditLogger {
         events
             .iter()
             .filter(|e| e.event_type == event_type)
-            .cloned()
+            .map(|e| (**e).clone())
             .collect()
     }
 
@@ -2576,5 +2698,48 @@ mod tests {
         let logger = AuditLogger::with_file_logging(10, "../evil.log".to_string()).await;
         logger.log(sample_event()).await;
         assert_eq!(logger.total_logged(), 1);
+    }
+
+    // ========== T030 AuditConfig 贯通 ==========
+
+    /// AuditConfig 的容量与路径贯通 AuditLogger：以配置值构造文件 logger，
+    /// 写事件后文件存在对应行。内存环形容量 = audit.memory_capacity（第 4 条
+    /// 淘汰最旧），文件持久化不受内存容量影响（4 行全在）——容量语义只在
+    /// 内存回查面，与审计留痕面解耦。
+    #[tokio::test]
+    async fn test_audit_config_capacity_and_path_thread_through_logger() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("audit.log").to_str().unwrap().to_string();
+
+        let audit_config = crate::core::config::AuditConfig {
+            file_logging_enabled: true,
+            file_logging_path: path.clone(),
+            memory_capacity: 3,
+        };
+
+        let logger = AuditLogger::with_file_logging(
+            audit_config.memory_capacity,
+            audit_config.file_logging_path.clone(),
+        )
+        .await;
+        for i in 0..4 {
+            let mut event = sample_event();
+            event.action = format!("act-{i}");
+            logger.log(event).await;
+        }
+        logger.flush().await;
+
+        assert_eq!(
+            logger.get_recent_events(10).await.len(),
+            3,
+            "内存环形容量 = audit.memory_capacity = 3"
+        );
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = content.trim().lines().collect();
+        assert_eq!(lines.len(), 4, "文件持久化不受内存容量影响");
+        assert!(
+            content.contains("act-0") && content.contains("act-3"),
+            "文件必须含全部事件行，实际: {content}"
+        );
     }
 }

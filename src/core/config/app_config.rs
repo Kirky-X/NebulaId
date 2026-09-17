@@ -14,6 +14,7 @@
 
 //! Top-level Config aggregation and loading.
 
+use super::audit::AuditConfig;
 use super::{
     AlgorithmConfig, AppConfig, AuthConfig, BatchGenerateConfig, ConfigError, ConfigResult,
     DatabaseConfig, EtcdConfig, LogLevel, LoggingConfig, MonitoringConfig, RateLimitConfig,
@@ -54,6 +55,9 @@ pub struct Config {
     pub logging: LoggingConfig,
     /// Rate limiting settings
     pub rate_limit: RateLimitConfig,
+    /// 审计持久化设置（T030：内存容量独立配置，生产默认文件持久化）
+    #[serde(default)]
+    pub audit: AuditConfig,
     /// 热更新设置（auto_watch_enabled 默认 false，缺省时零行为变化）
     #[serde(default)]
     pub hot_reload: HotReloadSettings,

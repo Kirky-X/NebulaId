@@ -184,10 +184,11 @@ pub struct AuditLogger {
 
 /// `VecDeque` 预分配条数上限。
 ///
-/// `max_events` 由调用方传入，其中一个来源是配置值
-/// （`src/main.rs:746` 传的是 `rate_limit.default_rps`，而该字段只在限流开启时才有上界
-/// 校验）—— 直接按它预分配等于让一个配置数字决定进程启动时的内存申请量。`with_capacity`
-/// 只是容量提示，钳制它不改变"最多保留 `max_events` 条"的淘汰语义。
+/// `max_events` 由调用方传入，当前唯一生产来源是配置值
+/// （T030 起 `src/main.rs` 传 `audit.memory_capacity`，不再借用
+/// `rate_limit.default_rps`）——直接按它预分配等于让一个配置数字决定
+/// 进程启动时的内存申请量。`with_capacity` 只是容量提示，钳制它不改变
+/// "最多保留 `max_events` 条"的淘汰语义。
 const MAX_AUDIT_PREALLOC: usize = 1024;
 
 fn prealloc_capacity(max_events: usize) -> usize {
@@ -2697,5 +2698,48 @@ mod tests {
         let logger = AuditLogger::with_file_logging(10, "../evil.log".to_string()).await;
         logger.log(sample_event()).await;
         assert_eq!(logger.total_logged(), 1);
+    }
+
+    // ========== T030 AuditConfig 贯通 ==========
+
+    /// AuditConfig 的容量与路径贯通 AuditLogger：以配置值构造文件 logger，
+    /// 写事件后文件存在对应行。内存环形容量 = audit.memory_capacity（第 4 条
+    /// 淘汰最旧），文件持久化不受内存容量影响（4 行全在）——容量语义只在
+    /// 内存回查面，与审计留痕面解耦。
+    #[tokio::test]
+    async fn test_audit_config_capacity_and_path_thread_through_logger() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("audit.log").to_str().unwrap().to_string();
+
+        let audit_config = crate::core::config::AuditConfig {
+            file_logging_enabled: true,
+            file_logging_path: path.clone(),
+            memory_capacity: 3,
+        };
+
+        let logger = AuditLogger::with_file_logging(
+            audit_config.memory_capacity,
+            audit_config.file_logging_path.clone(),
+        )
+        .await;
+        for i in 0..4 {
+            let mut event = sample_event();
+            event.action = format!("act-{i}");
+            logger.log(event).await;
+        }
+        logger.flush().await;
+
+        assert_eq!(
+            logger.get_recent_events(10).await.len(),
+            3,
+            "内存环形容量 = audit.memory_capacity = 3"
+        );
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = content.trim().lines().collect();
+        assert_eq!(lines.len(), 4, "文件持久化不受内存容量影响");
+        assert!(
+            content.contains("act-0") && content.contains("act-3"),
+            "文件必须含全部事件行，实际: {content}"
+        );
     }
 }

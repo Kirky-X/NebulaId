@@ -307,6 +307,17 @@ impl AuditLogger {
         Ok(())
     }
 
+    /// 记录一条审计事件（T023 热路径观测：span 字段仅事件类型/workspace/
+    /// 结果，不含事件明细与任何凭据）。
+    #[tracing::instrument(
+        name = "audit.log",
+        skip_all,
+        fields(
+            event_type = ?event.event_type,
+            workspace = ?event.workspace_id,
+            result = ?event.result
+        )
+    )]
     pub async fn log(&self, event: AuditEvent) {
         // 锁内只做内存操作（push/pop），快速释放锁
         {
@@ -383,6 +394,16 @@ impl AuditLogger {
     /// 10k QPS 场景下减少约 1-2 万次/秒的 String 堆分配（注：`json!` 宏
     /// 仍会克隆 `redacted_client_ip` / `redacted_user_agent`，所以实际
     /// 节省的是其余字段的深拷贝，量级为 1-2 万次/秒）。
+    ///
+    /// T023 热路径观测：span 字段仅事件类型/workspace，事件体与路径不进 span。
+    #[tracing::instrument(
+        name = "audit.write_event_to_file",
+        skip_all,
+        fields(
+            event_type = ?event.event_type,
+            workspace = ?event.workspace_id
+        )
+    )]
     async fn write_event_to_file(event: &AuditEvent, path: &str) -> std::io::Result<()> {
         // 使用同步 std::fs 而非 tokio::fs：writer task 是专用串行消费者，
         // 阻塞 I/O 可接受。同步 I/O 消除 tokio::fs::File 异步 drop 与后续

@@ -308,7 +308,11 @@ struct DbAwareSegmentFactory;
 
 #[async_trait]
 impl AlgorithmFactory for DbAwareSegmentFactory {
-    async fn build(&self, builder: &AlgorithmBuilder, config: &Config) -> Result<Box<dyn IdAlgorithm>> {
+    async fn build(
+        &self,
+        builder: &AlgorithmBuilder,
+        config: &Config,
+    ) -> Result<Box<dyn IdAlgorithm>> {
         match builder.segment_loader() {
             Some(loader) => {
                 // 与 segment.rs 的 `SegmentFactory` 构建逻辑同构（monitor 接线

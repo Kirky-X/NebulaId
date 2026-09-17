@@ -17,9 +17,9 @@ use crate::core::algorithm::{
     GenerateContext, HealthStatus, IdAlgorithm, IdGenerator,
 };
 use crate::core::config::Config;
-use crate::core::database::SegmentRepository;
 #[cfg(feature = "etcd")]
 use crate::core::coordinator::EtcdClusterHealthMonitor;
+use crate::core::database::SegmentRepository;
 use crate::core::types::{AlgorithmType, CoreError, GlobalMetrics, Id, IdBatch, Result};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -439,9 +439,8 @@ impl AlgorithmRouter {
         use crate::core::algorithm::{DbSegmentLoader, SegmentLoader};
         use crate::core::database::SeaOrmRepository;
 
-        static PROVISIONED: tokio::sync::OnceCell<
-            Option<Arc<dyn SegmentLoader + Send + Sync>>,
-        > = tokio::sync::OnceCell::const_new();
+        static PROVISIONED: tokio::sync::OnceCell<Option<Arc<dyn SegmentLoader + Send + Sync>>> =
+            tokio::sync::OnceCell::const_new();
 
         PROVISIONED
             .get_or_init(|| async {
@@ -618,6 +617,18 @@ impl AlgorithmRouter {
         self.global_metrics.clone()
     }
 
+    /// 路由层单条生成漏斗：HTTP / gRPC / SDK 三条入口的单条生成最终都经此。
+    /// T023 热路径观测：span 字段仅 workspace/group/biz_tag/algorithm。
+    #[tracing::instrument(
+        name = "router.generate",
+        skip_all,
+        fields(
+            workspace = %ctx.workspace_id,
+            group = %ctx.group_id,
+            biz_tag = %ctx.biz_tag,
+            algorithm = ?algorithm
+        )
+    )]
     async fn generate_with_algorithm_internal(
         &self,
         algorithm: AlgorithmType,
@@ -706,6 +717,18 @@ impl AlgorithmRouter {
         }
     }
 
+    /// 路由层批量生成漏斗（观测口径同 [`Self::generate_with_algorithm_internal`]）。
+    #[tracing::instrument(
+        name = "router.batch_generate",
+        skip_all,
+        fields(
+            workspace = %ctx.workspace_id,
+            group = %ctx.group_id,
+            biz_tag = %ctx.biz_tag,
+            algorithm = ?algorithm,
+            size = size
+        )
+    )]
     async fn batch_generate_with_algorithm_internal(
         &self,
         algorithm: AlgorithmType,
@@ -2145,10 +2168,10 @@ mod tests {
         ) -> Result<crate::core::types::SegmentInfo> {
             self.last_step
                 .store(step, std::sync::atomic::Ordering::SeqCst);
-            let start =
-                self.counter
-                    .fetch_add(step as i64, std::sync::atomic::Ordering::SeqCst)
-                    + 1;
+            let start = self
+                .counter
+                .fetch_add(step as i64, std::sync::atomic::Ordering::SeqCst)
+                + 1;
             Ok(fake_segment_info(workspace_id, biz_tag, start, step))
         }
         async fn allocate_segment_with_dc(
@@ -2211,8 +2234,7 @@ mod tests {
         assert_eq!(id1.as_u128(), 1, "首个 ID 应取自 DB 分配区间起始值");
         assert_eq!(id2.as_u128(), 2, "第二个 ID 应在区间内顺序步进");
         assert_eq!(
-            repo.last_step
-                .load(std::sync::atomic::Ordering::SeqCst),
+            repo.last_step.load(std::sync::atomic::Ordering::SeqCst),
             100,
             "工厂注入的步长必须透传到 allocate_segment"
         );

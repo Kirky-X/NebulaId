@@ -23,7 +23,7 @@ use rand::{Rng, RngExt};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, info};
+use tracing::{debug, info, Instrument};
 use uuid::Uuid;
 
 use argon2::password_hash::phc::PasswordHash;
@@ -451,6 +451,70 @@ impl SeaOrmRepository {
         Argon2::default()
             .verify_password(password.as_bytes(), &parsed)
             .is_ok()
+    }
+
+    /// `validate_api_key` 的执行体（T023：抽出到 inherent 方法，使 trait
+    /// 方法处能以手工 span + `Instrument` 包住真实执行范围——async_trait
+    /// 反序列化会让 `#[instrument]` 属性的覆盖语义不可靠）。
+    async fn validate_api_key_inner(
+        &self,
+        key_id: &str,
+        key_secret: &str,
+    ) -> Result<Option<AuthenticatedKey>> {
+        let key_model = ApiKeyEntity::find()
+            .filter(ApiKeyColumn::KeyId.eq(key_id))
+            .one(&self.db)
+            .await
+            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
+
+        if let Some(model) = key_model {
+            // 同一次请求只用一个 `now`：key 有效期判定与宽限期窗口判定共享同一时刻，
+            // 否则可能出现"按两个时钟一个通过一个拒绝"的自相矛盾结论。
+            let now = chrono::Utc::now().naive_utc();
+
+            if !model.enabled {
+                return Ok(None);
+            }
+
+            if let Some(expires_at) = model.expires_at {
+                if expires_at < now {
+                    return Ok(None);
+                }
+            }
+
+            // Argon2 verify_key 内部使用 constant-time 比较，等价于 subtle::ConstantTimeEq
+            for (stored_hash, used_previous_credential) in Self::credential_candidates(&model, now)
+            {
+                if !self.verify_key(key_id, key_secret, &stored_hash) {
+                    continue;
+                }
+
+                // 冷路径读已经是单 SELECT（行内自带启用状态/角色/过期时间/哈希，
+                // 无需二次查询）。last_used 写按 key 节流：60 秒内的重复验证
+                // 不再触发第二次 UPDATE，把认证冷路径的 DB 往返从
+                // 「SELECT + find_by_id + UPDATE + 回读刷新」压到 1 读 + 最多 1 写。
+                if self.should_touch_last_used(key_id) {
+                    let _ = self.update_last_used(model.id).await;
+                }
+                let role: ApiKeyRole = model.role.clone().into();
+                tracing::debug!(
+                    event = "validate_api_key",
+                    key_id = %key_id,
+                    db_role = %model.role,
+                    converted_role = ?role,
+                    used_previous_credential,
+                    "{}",
+                    t!("log.core.database.repository.api_key_role_conversion")
+                );
+                return Ok(Some(AuthenticatedKey {
+                    workspace_id: model.workspace_id,
+                    role,
+                    used_previous_credential,
+                }));
+            }
+        }
+
+        Ok(None)
     }
 
     /// 设置分布式锁
@@ -1280,60 +1344,13 @@ impl ApiKeyRepository for SeaOrmRepository {
         key_id: &str,
         key_secret: &str,
     ) -> Result<Option<AuthenticatedKey>> {
-        let key_model = ApiKeyEntity::find()
-            .filter(ApiKeyColumn::KeyId.eq(key_id))
-            .one(&self.db)
+        // T023 热路径观测：手工建 span 并显式 instrument 执行体（async_trait
+        // 反序列化后 `#[instrument]` 属性覆盖语义不可靠）。span 只携带
+        // key_id 长度，绝不携带 key/secret/凭据。
+        let span = tracing::info_span!("db.validate_api_key", key_id_len = key_id.len());
+        self.validate_api_key_inner(key_id, key_secret)
+            .instrument(span)
             .await
-            .map_err(|e| crate::core::CoreError::DatabaseError(e.to_string()))?;
-
-        if let Some(model) = key_model {
-            // 同一次请求只用一个 `now`：key 有效期判定与宽限期窗口判定共享同一时刻，
-            // 否则可能出现"按两个时钟一个通过一个拒绝"的自相矛盾结论。
-            let now = chrono::Utc::now().naive_utc();
-
-            if !model.enabled {
-                return Ok(None);
-            }
-
-            if let Some(expires_at) = model.expires_at {
-                if expires_at < now {
-                    return Ok(None);
-                }
-            }
-
-            // Argon2 verify_key 内部使用 constant-time 比较，等价于 subtle::ConstantTimeEq
-            for (stored_hash, used_previous_credential) in Self::credential_candidates(&model, now)
-            {
-                if !self.verify_key(key_id, key_secret, &stored_hash) {
-                    continue;
-                }
-
-                // 冷路径读已经是单 SELECT（行内自带启用状态/角色/过期时间/哈希，
-                // 无需二次查询）。last_used 写按 key 节流：60 秒内的重复验证
-                // 不再触发第二次 UPDATE，把认证冷路径的 DB 往返从
-                // 「SELECT + find_by_id + UPDATE + 回读刷新」压到 1 读 + 最多 1 写。
-                if self.should_touch_last_used(key_id) {
-                    let _ = self.update_last_used(model.id).await;
-                }
-                let role: ApiKeyRole = model.role.clone().into();
-                tracing::debug!(
-                    event = "validate_api_key",
-                    key_id = %key_id,
-                    db_role = %model.role,
-                    converted_role = ?role,
-                    used_previous_credential,
-                    "{}",
-                    t!("log.core.database.repository.api_key_role_conversion")
-                );
-                return Ok(Some(AuthenticatedKey {
-                    workspace_id: model.workspace_id,
-                    role,
-                    used_previous_credential,
-                }));
-            }
-        }
-
-        Ok(None)
     }
 
     async fn list_api_keys(
@@ -1615,7 +1632,15 @@ impl SegmentRepository for SeaOrmRepository {
     ) -> Result<SegmentInfo> {
         // 非 dc 变体即 dc_id = 0 的号段（实体列默认值 0），与 dc 变体共用同一
         // 原子分配路径，保证两种调用形态读写同一套行、互不越界。
+        // T023 热路径观测：span 字段仅 workspace/biz_tag/step，无敏感数据。
+        let span = tracing::info_span!(
+            "db.allocate_segment",
+            workspace = workspace_id,
+            biz_tag = biz_tag,
+            step = step
+        );
         self.allocate_segment_in_dc(workspace_id, biz_tag, step, 0)
+            .instrument(span)
             .await
     }
 

@@ -65,6 +65,8 @@ impl GrpcServer {
     /// —— request-init 先于流消费被校验）。失败映射（规格）
     /// - 缺失/格式无效/凭证无效 → `Status::unauthenticated`
     /// - key 存在但被禁用或已过期 → `Status::permission_denied`
+    /// - 同 peer 认证失败超阈值（5 分钟 10 次）→ `Status::resource_exhausted`
+    ///   （T012：与 HTTP 中间件共享同一失败桶，429 对应 ResourceExhausted）
     /// - `auth.enabled=false` → 放行并记 `auth_disabled_request` 审计日志
     ///   （对齐 HTTP Anonymous 语义）
     ///
@@ -72,17 +74,9 @@ impl GrpcServer {
     /// 签名而凭证校验必须异步查库（Argon2id + DB），在拦截器内 block_on 有
     /// 运行时风险，故改为各 RPC 入口一行调用本助手 —— 单点实现不变。
     ///
-    /// 偏差：HTTP 侧的「按 IP 认证失败限流」（5 分钟 10 次）尚未在
-    /// gRPC 接线。对端 IP 本身拿得到 —— tonic 0.14 的 `MakeSvc::call` 用
-    /// `ConnectInfoLayer` 把 `TcpConnectInfo`（TLS 下为
-    /// `TlsConnectInfo<TcpConnectInfo>`）注入 request extensions，
-    /// [`Request::remote_addr`] 已封装两种情况，故此处已按直连 IP 打审计
-    /// 日志。缺的是共享计数器本身：`ApiKeyAuth::check_auth_failure_rate` /
-    /// `record_auth_failure` 及其 `auth_failures` 字段是 `api_key_auth`
-    /// 模块私有，gRPC 无法复用；而 gRPC 侧另建一份计数器既违反「复用同一套
-    /// 限流」的要求，也在本任务变更范围之外（且当前 delta spec 把「gRPC 限流」
-    /// 列为 Out of Scope）。要接线需 `api_key_auth.rs` 把上述两个方法提为
-    /// `pub(crate)`（HTTP 的 429 对应 gRPC `Code::ResourceExhausted`）。
+    /// 对端 IP 取自 tonic 传输注入的 `TcpConnectInfo`（TLS 下为
+    /// `TlsConnectInfo<TcpConnectInfo>`），[`Request::remote_addr`] 已封装
+    /// 两种情况；限流桶与审计日志均按直连 IP 归因，不可被头部伪造。
     pub(crate) async fn authenticate<T>(&self, request: Request<T>) -> Result<Request<T>, Status> {
         let Some(auth) = self.auth.as_ref() else {
             return Ok(request);
@@ -105,12 +99,22 @@ impl GrpcServer {
             return Ok(request);
         }
 
+        // T012 — 与 HTTP 中间件同源：先查失败桶，超限直接拒收，
+        // 不再消耗解析/校验成本。桶体（阈值、窗口、容量阀）全部在
+        // `ApiKeyAuth` 内，两条传输线共享同一计数器。
+        if !auth.check_auth_failure_rate(&client_ip) {
+            return Err(Status::resource_exhausted(
+                "Too many authentication attempts. Please try again later.",
+            ));
+        }
+
         let Some(value) = request
             .metadata()
             .get("authorization")
             .and_then(|v| v.to_str().ok())
         else {
             return Err(reject(
+                auth,
                 &client_ip,
                 "",
                 "missing_authorization",
@@ -120,6 +124,7 @@ impl GrpcServer {
         };
         let Some((key_id, key_secret)) = parse_authorization_header(value) else {
             return Err(reject(
+                auth,
                 &client_ip,
                 "",
                 "unsupported_auth_format",
@@ -254,21 +259,26 @@ async fn authorize_namespace(
     }
 }
 
-/// 认证拒绝的统一出口：先打一条与 HTTP 侧同 schema 的 `auth_failure` 审计
-/// 日志（`reason` 机器可读 + `client_ip` + 掩码 `key_id_prefix`），再返回
-/// 调用方给定的 Status。日志与 Status 缺一不可 —— 只返 Status 会让 gRPC
-/// 侧的暴力猜 key 行为在审计里隐身。
+/// 认证拒绝的统一出口：先记入与 HTTP 中间件共享的按 IP 失败桶（T012），
+/// 再打一条与 HTTP 侧同 schema 的 `auth_failure` 审计日志（`reason` 机器
+/// 可读、`client_ip`、掩码 `key_id_prefix`），最后返回调用方给定的 Status。
+/// 三者缺一不可 —— 只返 Status 会让 gRPC 侧的暴力猜 key 行为既绕过限流、
+/// 又在审计里隐身。
 ///
 /// 日志文案复用 `log.server.middleware.api_key_auth.*` 既有键：语义完全对应
 /// （缺少 authorization / 不支持的格式 / 无效凭据），新增 grpc 专属键只会在
 /// 两个 locale 里造出同义重复条目。
 fn reject(
+    auth: &ApiKeyAuth,
     client_ip: &str,
     key_id_prefix: &str,
     reason: &str,
     log_message: &str,
     status: Status,
 ) -> Status {
+    // 与 HTTP `unauthorized_response` 同源：每次认证拒绝都入桶，
+    // 供下一次请求的 `check_auth_failure_rate` 累计判定。
+    auth.record_auth_failure(client_ip);
     tracing::warn!(
         event = "auth_failure",
         reason = reason,
@@ -294,7 +304,7 @@ enum KeyMiss {
 }
 
 impl KeyMiss {
-    fn reject(&self, client_ip: &str, key_id: &str) -> Status {
+    fn reject(&self, auth: &ApiKeyAuth, client_ip: &str, key_id: &str) -> Status {
         let (reason, status) = match self {
             // 身份可识别但被授权层拒绝 ⇒ permission_denied
             Self::Disabled => (
@@ -317,6 +327,7 @@ impl KeyMiss {
             ),
         };
         reject(
+            auth,
             client_ip,
             &key_id.chars().take(8).collect::<String>(),
             reason,
@@ -344,7 +355,7 @@ async fn classify_miss(auth: &ApiKeyAuth, key_id: &str, client_ip: &str) -> Stat
                 client_ip = %client_ip,
                 "failed to load api key state for auth failure classification"
             );
-            return KeyMiss::Unknown.reject(client_ip, key_id);
+            return KeyMiss::Unknown.reject(auth, client_ip, key_id);
         }
     };
 
@@ -363,7 +374,7 @@ async fn classify_miss(auth: &ApiKeyAuth, key_id: &str, client_ip: &str) -> Stat
             }
         }
     };
-    miss.reject(client_ip, key_id)
+    miss.reject(auth, client_ip, key_id)
 }
 
 #[async_trait]

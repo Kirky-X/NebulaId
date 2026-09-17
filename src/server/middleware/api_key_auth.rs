@@ -85,7 +85,12 @@ impl ApiKeyAuth {
         self
     }
 
-    fn check_auth_failure_rate(&self, client_ip: &str) -> bool {
+    /// 认证失败速率检查：同一客户端 IP 在 5 分钟窗口内失败 ≥ 10 次则拒绝。
+    ///
+    /// T012 — 提为 `pub(crate)`：gRPC 认证失败路径复用同一失败桶
+    /// （HTTP 429 对应 gRPC `Code::ResourceExhausted`），两条传输线
+    /// 共享同一阈值与窗口，不另建第二份计数器。
+    pub(crate) fn check_auth_failure_rate(&self, client_ip: &str) -> bool {
         let now = Instant::now();
         let mut failures_map = self.auth_failures.write();
         let failures = failures_map.entry(client_ip.to_string()).or_default();
@@ -130,7 +135,11 @@ impl ApiKeyAuth {
         true
     }
 
-    fn record_auth_failure(&self, client_ip: &str) {
+    /// 记录一次认证失败（按客户端 IP 入桶）。
+    ///
+    /// T012 — 提为 `pub(crate)`：gRPC 认证拒绝出口与 HTTP 中间件
+    /// 共享同一失败桶（见 [`Self::check_auth_failure_rate`]）。
+    pub(crate) fn record_auth_failure(&self, client_ip: &str) {
         let now = Instant::now();
         let mut failures_map = self.auth_failures.write();
         let failures = failures_map.entry(client_ip.to_string()).or_default();

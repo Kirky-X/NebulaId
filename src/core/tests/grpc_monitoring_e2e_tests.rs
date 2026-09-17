@@ -998,6 +998,55 @@ mod grpc_auth {
     }
 
     #[tokio::test]
+    async fn repeated_auth_failures_hit_resource_exhausted() {
+        // T012 — 同 peer 连续认证失败超阈值（5 分钟 10 次）后必须返回
+        // ResourceExhausted：失败桶与 HTTP 中间件同源（HTTP 对应 429），
+        // 每次拒绝都经 reject 入桶，下一次请求先查桶再解析凭证。
+        // 直连 trait 方法时 peer_ip 兜底 "unknown"，天然同一桶。
+        let server = auth_server(ApiKeyAuth::new(Arc::new(FixedKeyRepo), true));
+        let bad_request = || {
+            let mut req = Request::new(GrpcGenerateRequest {
+                namespace: "ns".to_string(),
+                tag: "tag".to_string(),
+                metadata: HashMap::new(),
+            });
+            req.metadata_mut().insert(
+                "authorization",
+                basic_header("ghost-key", "wrong-secret").parse().unwrap(),
+            );
+            req
+        };
+
+        // 前 10 次失败仍是 unauthenticated（每次都入桶）。
+        for i in 0..10 {
+            let err: Status = NebulaIdService::generate(&server, bad_request())
+                .await
+                .expect_err("无效凭证必须被拒绝");
+            assert_eq!(
+                err.code(),
+                Code::Unauthenticated,
+                "第 {} 次失败应仍是 unauthenticated，实际: {err:?}",
+                i + 1
+            );
+        }
+
+        // 第 11 次请求：失败桶达到阈值 → ResourceExhausted。
+        let err: Status = NebulaIdService::generate(&server, bad_request())
+            .await
+            .expect_err("超限后必须被拒绝");
+        assert_eq!(
+            err.code(),
+            Code::ResourceExhausted,
+            "超阈值后必须是 ResourceExhausted（HTTP 429 的 gRPC 对应），实际: {err:?}"
+        );
+        assert_eq!(
+            err.message(),
+            "Too many authentication attempts. Please try again later.",
+            "限流文案必须与 HTTP too_many_requests_response 同源"
+        );
+    }
+
+    #[tokio::test]
     async fn health_check_enforces_auth_and_passes_valid_key() {
         // 清理 health_check 死绑定的回归：认证副作用与错误传播都不能丢，
         // 且判因映射在 health_check 入口同样生效

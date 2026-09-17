@@ -79,6 +79,9 @@ pub async fn sdforge_health() -> Result<serde_json::Value, sdforge::prelude::Api
 mod tests {
     use super::*;
 
+    // 该断言依赖 `#[forge]` 展开期 emit 的 `#[cfg(feature = "http")]` 注册块：
+    // no-default 轻量构建下 http 镜像 feature 关闭，inventory 为空是预期行为。
+    #[cfg(feature = "http")]
     #[test]
     fn test_init_sdforge_returns_plugin_counts() {
         let counts = init_sdforge();

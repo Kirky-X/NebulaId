@@ -606,6 +606,11 @@ async fn handle_set_algorithm(
 /// 本表：`test_api_info_endpoints_cover_v1_routes` 断言 api-info 的
 /// endpoints 清单覆盖全部前缀，漏登会在测试面显性失败而非静默漂移。
 /// （守卫按子串匹配，条目文字（方法/描述）改动不会误报。）
+///
+/// T031 起标注 `#[cfg(test)]`：本表唯一消费方是 tests 模块的 parity
+/// 守卫测试，非测试构建下为死代码（HEAD 处 `cargo clippy --features
+/// etcd -- -D warnings` 既有失败点，此处一并修复）。
+#[cfg(test)]
 const API_V1_ROUTE_PREFIXES: &[&str] = &[
     "/generate",
     "/generate/batch",
@@ -855,27 +860,114 @@ async fn handle_create_workspace(
 
 async fn handle_list_workspaces(
     State(state): State<AppState>,
+    extensions: axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
 ) -> Result<Json<WorkspaceListResponse>, (StatusCode, Json<ErrorResponse>)> {
     // Phase 8 (MEDIUM fix) — surface errors via
     // `core_error_to_response` instead of silently returning an empty
     // list, so 5xx internal errors are logged server-side and the
     // client sees a generic locale-translated message.
+    // T031（CWE-862 / CWE-639）—— 跨租户读面收敛。先做角色门禁
+    // （未授权角色不产生仓储查询），再拉取列表并按角色过滤：
+    // - Admin：保持全量列表（跨租户管理语义，行为不变）。
+    // - User：仅保留自身 workspace（逐条经共享授权函数
+    //   `authorize_workspace_access` 判定，语义与写面一致），
+    //   `total` 随过滤结果收敛，避免泄露其他租户的存在性。
+    // - Anonymous：无业务权限，fail-closed 401（正常流量下
+    //   `anonymous_block_middleware` 已先行拒绝，此处兜底）。
+    let key_workspace_id = match extensions_role.0 {
+        crate::server::middleware::ApiKeyRole::Admin => None,
+        crate::server::middleware::ApiKeyRole::User => {
+            Some(extensions.0.ok_or_else(|| auth_required_response(locale))?)
+        }
+        crate::server::middleware::ApiKeyRole::Anonymous => {
+            return Err(auth_required_response(locale))
+        }
+    };
+
     let response = state
         .handlers
         .list_workspaces()
         .await
         .map_err(|e| core_error_to_response(&e, locale))?;
-    Ok(Json(response))
+
+    let filtered = match key_workspace_id {
+        // Admin（无租户绑定）→ 全量。
+        None => response,
+        Some(key_workspace_id) => {
+            let mut workspaces = Vec::new();
+            for ws in response.workspaces {
+                let Ok(ws_id) = uuid::Uuid::parse_str(&ws.id) else {
+                    continue;
+                };
+                if crate::server::handlers::helpers::authorize_workspace_access(
+                    &crate::server::middleware::ApiKeyRole::User,
+                    key_workspace_id,
+                    ws_id,
+                )
+                .await
+                .is_ok()
+                {
+                    workspaces.push(ws);
+                }
+            }
+            let total = workspaces.len() as u64;
+            WorkspaceListResponse { workspaces, total }
+        }
+    };
+    Ok(Json(filtered))
+}
+
+/// T031 —— workspace 单查读面的角色-租户收敛（`handle_get_workspace` 专用）。
+///
+/// - Admin：跨租户放行（行为不变）。
+/// - User：经共享授权函数
+///   [`crate::server::handlers::helpers::authorize_workspace_access`] 判定，
+///   仅自身 workspace；他人 workspace → 403 workspace_mismatch（与写面
+///   `verify_workspace_id_match` 的错误装配同口径）。
+/// - Anonymous：无业务权限，401。`key_workspace_id = None` 的 User 组合在
+///   正常流量下不可能出现（认证禁用时角色为 Anonymous），按 biz_tags 读面
+///   同一口径 fail-closed 401。
+async fn enforce_workspace_read_access(
+    role: &crate::server::middleware::ApiKeyRole,
+    key_workspace_id: Option<uuid::Uuid>,
+    workspace: &WorkspaceResponse,
+    locale: Locale,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    match role {
+        crate::server::middleware::ApiKeyRole::Admin => Ok(()),
+        crate::server::middleware::ApiKeyRole::User => {
+            let key_workspace_id =
+                key_workspace_id.ok_or_else(|| auth_required_response(locale))?;
+            let workspace_id = uuid::Uuid::parse_str(&workspace.id)
+                .map_err(|_| invalid_workspace_id_response(locale))?;
+            crate::server::handlers::helpers::authorize_workspace_access(
+                &crate::server::middleware::ApiKeyRole::User,
+                key_workspace_id,
+                workspace_id,
+            )
+            .await
+            .map_err(|_| workspace_mismatch_response(locale))
+        }
+        crate::server::middleware::ApiKeyRole::Anonymous => Err(auth_required_response(locale)),
+    }
 }
 
 async fn handle_get_workspace(
     State(state): State<AppState>,
+    extensions: axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
     Path(name): Path<String>,
 ) -> Result<Json<WorkspaceResponse>, (StatusCode, Json<ErrorResponse>)> {
     match state.handlers.get_workspace(&name).await {
-        Ok(Some(ws)) => Ok(Json(ws)),
+        Ok(Some(ws)) => {
+            // T031（CWE-639）—— User key 仅可查看自身 workspace；Admin
+            // 跨租户放行（行为不变）；判定经共享授权函数。
+            enforce_workspace_read_access(&extensions_role.0, extensions.0, &ws, locale).await?;
+            Ok(Json(ws))
+        }
         Ok(None) => Err(workspace_not_found_response(locale)),
         Err(e) => Err(core_error_to_response(&e, locale)),
     }
@@ -922,6 +1014,8 @@ async fn handle_regenerate_user_key(
 
 async fn handle_list_groups(
     State(state): State<AppState>,
+    extensions: axum::Extension<Option<uuid::Uuid>>,
+    extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
     Query(params): Query<GroupListParams>,
 ) -> Result<Json<GroupListResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -930,6 +1024,18 @@ async fn handle_list_groups(
     // on `page_size`. The `Extension<Locale>` parameter ensures the
     // locale-translated message is used.
     validate_request(&params, locale)?;
+
+    // T031（CWE-862）—— 角色收敛：list_groups 与 create_group 同为
+    // User-only 端点。此前该 handler 未调用任何角色校验，任何认证主体
+    // （含 Admin/Anonymous）都能按客户端提供的 `?workspace=` 任意列取
+    // group。Admin 需要列 group 时应走管理面而非数据面。
+    verify_user_role(extensions_role.0, locale)?;
+
+    // T031（CWE-639）—— workspace 归属校验：User key 仅可列自身
+    // workspace 的 group。按 workspace 名反查 UUID 后经共享授权函数
+    // `helpers::authorize_workspace_access`（与 create_group/gRPC 同源）
+    // 判定；他人 workspace → 403 workspace_mismatch。
+    verify_user_workspace(&params.workspace, &extensions.0, &state.handlers, locale).await?;
 
     let workspace = params.workspace.clone();
 
@@ -2508,7 +2614,14 @@ mod tests {
     #[tokio::test]
     async fn test_handle_list_workspaces_without_repository_returns_error() {
         let state = create_test_app_state();
-        let result = handle_list_workspaces(State(state), Extension(Locale::En)).await;
+        // T031 — Admin 角色保持全量列表语义，仓库缺失时仍为 500。
+        let result = handle_list_workspaces(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::Admin),
+            Extension(Locale::En),
+        )
+        .await;
         assert!(result.is_err());
         let (status, _) = result.unwrap_err();
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
@@ -2519,8 +2632,11 @@ mod tests {
     #[tokio::test]
     async fn test_handle_get_workspace_without_repository_returns_internal_error() {
         let state = create_test_app_state();
+        // T031 — Admin 角色跨租户放行，仓库缺失时仍为 500。
         let result = handle_get_workspace(
             State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::Admin),
             Extension(Locale::En),
             Path("any-name".to_string()),
         )
@@ -2648,7 +2764,15 @@ mod tests {
             page: 1,
             page_size: 0, // below min=1
         };
-        let result = handle_list_groups(State(state), Extension(Locale::En), Query(params)).await;
+        // T031 — 校验先于角色/归属校验，故任意角色均可观察到 400。
+        let result = handle_list_groups(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Query(params),
+        )
+        .await;
         assert!(result.is_err());
         let (status, _) = result.unwrap_err();
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -2662,7 +2786,14 @@ mod tests {
             page: 1,
             page_size: 101, // above max=100
         };
-        let result = handle_list_groups(State(state), Extension(Locale::En), Query(params)).await;
+        let result = handle_list_groups(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Query(params),
+        )
+        .await;
         assert!(result.is_err());
         let (status, _) = result.unwrap_err();
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -2676,11 +2807,299 @@ mod tests {
             page: 1,
             page_size: 20,
         };
-        let result = handle_list_groups(State(state), Extension(Locale::En), Query(params)).await;
+        let result = handle_list_groups(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Query(params),
+        )
+        .await;
         assert!(result.is_err());
         let (status, _) = result.unwrap_err();
-        // Without repository, list_groups returns Err.
-        assert!(status == StatusCode::INTERNAL_SERVER_ERROR || status == StatusCode::NOT_FOUND);
+        // T031 — 角色校验通过后进入 workspace 归属校验；无仓库时
+        // workspace 反查返回 InternalError → 500。
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ========== T031 —— workspace/group 读面租户隔离 ==========
+
+    fn make_workspace_response(id: uuid::Uuid, name: &str) -> WorkspaceResponse {
+        WorkspaceResponse {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: None,
+            status: "active".to_string(),
+            max_groups: 10,
+            max_biz_tags: 100,
+            created_at: String::new(),
+            updated_at: String::new(),
+            user_api_key: None,
+        }
+    }
+
+    fn app_state_with_mock(
+        mock_config: crate::server::handlers::mock_tests::MockConfigManagementService,
+    ) -> AppState {
+        use crate::server::handlers::mock_generator::MockIdGenerator;
+
+        let handlers = Arc::new(ApiHandlers::new(
+            Arc::new(MockIdGenerator::new()),
+            Arc::new(mock_config),
+        ));
+        let auth = create_test_auth();
+        let config_service = handlers.get_config_service();
+        AppState {
+            handlers,
+            auth,
+            config_service,
+        }
+    }
+
+    #[tokio::test]
+    async fn t031_list_groups_user_cross_workspace_returns_forbidden() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let ws_a = uuid::Uuid::new_v4();
+        let mut mock = MockConfigManagementService::new();
+        // workspace 反查命中他人 workspace A；list_groups 不设期望 ——
+        // 若授权短路失败而触达 mock，mockall 会 panic 使测试显性失败。
+        mock.expect_get_workspace()
+            .returning(move |_| Ok(Some(make_workspace_response(ws_a, "ws-a"))));
+        let state = app_state_with_mock(mock);
+
+        let params = GroupListParams {
+            workspace: "ws-a".to_string(),
+            page: 1,
+            page_size: 20,
+        };
+        let result = handle_list_groups(
+            State(state),
+            Extension(Some(uuid::Uuid::new_v4())), // 他人 workspace 绑定
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Query(params),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, json) = result.unwrap_err();
+        // 403 / PermissionDenied 类响应（共享授权 → WorkspaceDisabled → 403）。
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json.code, 403);
+    }
+
+    #[tokio::test]
+    async fn t031_list_groups_user_own_workspace_proceeds_to_listing() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let ws_a = uuid::Uuid::new_v4();
+        let mut mock = MockConfigManagementService::new();
+        mock.expect_get_workspace()
+            .returning(move |_| Ok(Some(make_workspace_response(ws_a, "ws-a"))));
+        mock.expect_list_groups().returning(|_| {
+            Ok(GroupListResponse {
+                groups: vec![],
+                total: 0,
+            })
+        });
+        let state = app_state_with_mock(mock);
+
+        let params = GroupListParams {
+            workspace: "ws-a".to_string(),
+            page: 1,
+            page_size: 20,
+        };
+        let result = handle_list_groups(
+            State(state),
+            Extension(Some(ws_a)), // 自身 workspace 绑定
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Query(params),
+        )
+        .await;
+        assert!(result.is_ok(), "自身 workspace 列 group 必须放行");
+    }
+
+    #[tokio::test]
+    async fn t031_list_groups_admin_rejected_and_anonymous_unauthorized() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let state = app_state_with_mock(MockConfigManagementService::new());
+        let params = GroupListParams {
+            workspace: "ws".to_string(),
+            page: 1,
+            page_size: 20,
+        };
+
+        // Admin → 403 admin_cannot_perform（list_groups 收敛为 User-only）。
+        let result = handle_list_groups(
+            State(state.clone()),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::Admin),
+            Extension(Locale::En),
+            Query(params.clone()),
+        )
+        .await;
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // Anonymous → 401（兜底；正常流量下 anonymous_block_middleware 已拦）。
+        let result = handle_list_groups(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::Anonymous),
+            Extension(Locale::En),
+            Query(params),
+        )
+        .await;
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn t031_list_workspaces_user_sees_only_own_workspace() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let ws_a = uuid::Uuid::new_v4();
+        let ws_b = uuid::Uuid::new_v4();
+        let ws_c = uuid::Uuid::new_v4();
+        let mut mock = MockConfigManagementService::new();
+        mock.expect_list_workspaces().returning(move || {
+            Ok(WorkspaceListResponse {
+                workspaces: vec![
+                    make_workspace_response(ws_a, "ws-a"),
+                    make_workspace_response(ws_b, "ws-b"),
+                    make_workspace_response(ws_c, "ws-c"),
+                ],
+                total: 3,
+            })
+        });
+        let state = app_state_with_mock(mock);
+
+        let result = handle_list_workspaces(
+            State(state),
+            Extension(Some(ws_b)), // 绑定 ws-b 的 User key
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+        )
+        .await;
+        let resp = result.expect("User 列 workspace 应成功（过滤而非拒绝）");
+        assert_eq!(resp.0.workspaces.len(), 1, "只能看到自身 workspace");
+        assert_eq!(resp.0.workspaces[0].id, ws_b.to_string());
+        assert_eq!(resp.0.total, 1, "total 必须随过滤结果收敛");
+    }
+
+    #[tokio::test]
+    async fn t031_list_workspaces_admin_keeps_full_cross_tenant_list() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let ws_a = uuid::Uuid::new_v4();
+        let ws_b = uuid::Uuid::new_v4();
+        let mut mock = MockConfigManagementService::new();
+        mock.expect_list_workspaces().returning(move || {
+            Ok(WorkspaceListResponse {
+                workspaces: vec![
+                    make_workspace_response(ws_a, "ws-a"),
+                    make_workspace_response(ws_b, "ws-b"),
+                ],
+                total: 2,
+            })
+        });
+        let state = app_state_with_mock(mock);
+
+        // Admin 行为不变：全量跨租户列表。
+        let result = handle_list_workspaces(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::Admin),
+            Extension(Locale::En),
+        )
+        .await;
+        let resp = result.expect("Admin 列 workspace 必须保持全量");
+        assert_eq!(resp.0.workspaces.len(), 2);
+        assert_eq!(resp.0.total, 2);
+    }
+
+    #[tokio::test]
+    async fn t031_list_workspaces_user_without_binding_and_anonymous_fail_closed() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let state = app_state_with_mock(MockConfigManagementService::new());
+
+        // User + 无 workspace 绑定（正常流量下不出现）→ fail-closed 401。
+        let result = handle_list_workspaces(
+            State(state.clone()),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+        )
+        .await;
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Anonymous → 401。
+        let result = handle_list_workspaces(
+            State(state),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::Anonymous),
+            Extension(Locale::En),
+        )
+        .await;
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn t031_get_workspace_user_own_ok_other_forbidden_admin_cross_tenant_ok() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let ws_a = uuid::Uuid::new_v4();
+        let ws_b = uuid::Uuid::new_v4();
+
+        // User 查自身 workspace → 放行。
+        let mut own = MockConfigManagementService::new();
+        own.expect_get_workspace()
+            .returning(move |_| Ok(Some(make_workspace_response(ws_a, "ws-a"))));
+        let result = handle_get_workspace(
+            State(app_state_with_mock(own)),
+            Extension(Some(ws_a)),
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Path("ws-a".to_string()),
+        )
+        .await;
+        assert!(result.is_ok(), "User 查看自身 workspace 必须放行");
+
+        // User 查他人 workspace → 403。
+        let mut other = MockConfigManagementService::new();
+        other
+            .expect_get_workspace()
+            .returning(move |_| Ok(Some(make_workspace_response(ws_b, "ws-b"))));
+        let result = handle_get_workspace(
+            State(app_state_with_mock(other)),
+            Extension(Some(ws_a)),
+            Extension(crate::server::middleware::ApiKeyRole::User),
+            Extension(Locale::En),
+            Path("ws-b".to_string()),
+        )
+        .await;
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // Admin 跨租户查看 → 放行（行为不变）。
+        let mut admin_view = MockConfigManagementService::new();
+        admin_view
+            .expect_get_workspace()
+            .returning(move |_| Ok(Some(make_workspace_response(ws_b, "ws-b"))));
+        let result = handle_get_workspace(
+            State(app_state_with_mock(admin_view)),
+            Extension(None),
+            Extension(crate::server::middleware::ApiKeyRole::Admin),
+            Extension(Locale::En),
+            Path("ws-b".to_string()),
+        )
+        .await;
+        assert!(result.is_ok(), "Admin 跨租户查看必须保持放行");
     }
 
     // ========== handle_create_api_key tests ==========

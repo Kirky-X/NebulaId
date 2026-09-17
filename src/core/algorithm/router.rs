@@ -447,7 +447,11 @@ impl AlgorithmRouter {
                 match crate::core::database::create_connection(&config.database).await {
                     Ok(conn) => {
                         let repository: Arc<dyn SegmentRepository> = Arc::new(
-                            SeaOrmRepository::new(conn, config.auth.api_key_salt.clone()),
+                            SeaOrmRepository::new(conn, config.auth.api_key_salt.clone())
+                                // T043 —— 自举仓储同样接线语句超时（默认 5s）。
+                                .with_statement_timeout(std::time::Duration::from_secs(
+                                    config.database.statement_timeout_secs,
+                                )),
                         );
                         // 步长取 Segment 配置的 base_step（与动态步长基准一致）。
                         let loader: Arc<dyn SegmentLoader + Send + Sync> = Arc::new(

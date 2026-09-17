@@ -638,7 +638,11 @@ async fn assemble_coordination(config: &Config) -> Result<CoordinationComponents
                 "etcd client connect failed for endpoints {:?}: {}",
                 config.etcd.endpoints, e
             ))
-        })?;
+        })?
+        // T043 —— operation_timeout_secs 自配置接线（默认 3s）。
+        .with_operation_timeout(std::time::Duration::from_secs(
+            config.etcd.operation_timeout_secs,
+        ));
     let client: std::sync::Arc<dyn nebulaid::core::coordinator::EtcdClientOps> =
         std::sync::Arc::new(wrapper);
 
@@ -930,7 +934,11 @@ async fn init_repository(config: &Config) -> Result<RepositoryStack> {
 
         let repo = Arc::new(
             database::SeaOrmRepository::new(conn, config.auth.api_key_salt.clone())
-                .with_distributed_lock(lock),
+                .with_distributed_lock(lock)
+                // T043 —— statement_timeout_secs 自配置接线（默认 5s）。
+                .with_statement_timeout(std::time::Duration::from_secs(
+                    config.database.statement_timeout_secs,
+                )),
         );
         info!("{}", t!("log.main.database_repository_initialized"));
         Some(repo)

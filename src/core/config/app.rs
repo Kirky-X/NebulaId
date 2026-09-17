@@ -171,6 +171,16 @@ pub struct DatabaseConfig {
     pub acquire_timeout_seconds: u64,
     /// Idle connection timeout (seconds)
     pub idle_timeout_seconds: u64,
+    /// 单语句执行超时（秒，T028）。仓储热查询（validate_api_key /
+    /// allocate_segment 等）经 `tokio::time::timeout` 包裹，防止 DB 挂起
+    /// 拖死生成与认证热路径。默认 5 秒。
+    #[serde(default = "default_statement_timeout_secs")]
+    pub statement_timeout_secs: u64,
+}
+
+/// T028 —— `statement_timeout_secs` 的 serde 默认值（与仓储内置默认一致）。
+fn default_statement_timeout_secs() -> u64 {
+    5
 }
 
 /// 手写 `Debug`：`password` 是明文口令，`url` 可能以
@@ -191,6 +201,7 @@ impl std::fmt::Debug for DatabaseConfig {
             .field("min_connections", &self.min_connections)
             .field("acquire_timeout_seconds", &self.acquire_timeout_seconds)
             .field("idle_timeout_seconds", &self.idle_timeout_seconds)
+            .field("statement_timeout_secs", &self.statement_timeout_secs)
             .finish()
     }
 }
@@ -224,6 +235,7 @@ impl Default for DatabaseConfig {
                 min_connections: 10,
                 acquire_timeout_seconds: 30,
                 idle_timeout_seconds: 300,
+                statement_timeout_secs: default_statement_timeout_secs(),
             };
         }
 
@@ -242,6 +254,7 @@ impl Default for DatabaseConfig {
                 min_connections: 1,
                 acquire_timeout_seconds: 30,
                 idle_timeout_seconds: 300,
+                statement_timeout_secs: default_statement_timeout_secs(),
             };
         }
 
@@ -274,6 +287,7 @@ impl Default for DatabaseConfig {
             min_connections: 10,
             acquire_timeout_seconds: 30,
             idle_timeout_seconds: 300,
+            statement_timeout_secs: default_statement_timeout_secs(),
         }
     }
 }
@@ -288,6 +302,15 @@ pub struct EtcdConfig {
     pub connect_timeout_ms: u64,
     /// Watch timeout (milliseconds)
     pub watch_timeout_ms: u64,
+    /// 单次 etcd 操作超时（秒，T028）。`EtcdClientWrapper` 的各操作经
+    /// `tokio::time::timeout` 包裹，防止 etcd 挂起阻塞协调路径。默认 3 秒。
+    #[serde(default = "default_operation_timeout_secs")]
+    pub operation_timeout_secs: u64,
+}
+
+/// T028 —— `operation_timeout_secs` 的 serde 默认值（与客户端内置默认一致）。
+fn default_operation_timeout_secs() -> u64 {
+    3
 }
 
 impl Default for EtcdConfig {
@@ -296,6 +319,7 @@ impl Default for EtcdConfig {
             endpoints: vec!["etcd:2379".to_string()],
             connect_timeout_ms: 5000,
             watch_timeout_ms: 5000,
+            operation_timeout_secs: default_operation_timeout_secs(),
         }
     }
 }

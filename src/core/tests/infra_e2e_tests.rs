@@ -392,6 +392,7 @@ async fn e2e_database_sqlite_memory_connection_succeeds() {
         min_connections: 1,
         acquire_timeout_seconds: 30,
         idle_timeout_seconds: 300,
+        statement_timeout_secs: 5,
     };
 
     let conn = create_connection(&config).await;
@@ -443,6 +444,7 @@ async fn e2e_database_password_with_env_var_rejected() {
         min_connections: 1,
         acquire_timeout_seconds: 5,
         idle_timeout_seconds: 300,
+        statement_timeout_secs: 5,
     };
 
     let result = create_connection(&config).await;

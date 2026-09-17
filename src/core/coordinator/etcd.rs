@@ -92,6 +92,30 @@ pub enum EtcdError {
     Internal(String),
 }
 
+/// T028 —— etcd 操作超时默认值（秒）。与 `EtcdConfig::operation_timeout_secs`
+/// 的 serde 默认一致；wrapper 未经 `with_operation_timeout` 接线配置时按此兜底。
+const DEFAULT_OPERATION_TIMEOUT_SECS: u64 = 3;
+
+/// T028 —— 集中式操作超时 helper：etcd 操作经 `tokio::time::timeout` 包裹，
+/// 防止 etcd 挂起阻塞协调路径（worker 分配 / 锁 / 健康检查）。
+///
+/// 超时映射选择 `EtcdError::Network`（消息显式含 "timed out"）而非新增变体：
+/// 网络层停滞本就是操作超时的成因归类，且不扩大既有错误枚举的匹配面。
+async fn with_operation_timeout<T, F>(
+    timeout: Duration,
+    fut: F,
+) -> std::result::Result<T, EtcdError>
+where
+    F: std::future::Future<Output = std::result::Result<T, EtcdError>>,
+{
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(result) => result,
+        Err(_elapsed) => Err(EtcdError::Network(format!(
+            "etcd operation timed out after {timeout:?}"
+        ))),
+    }
+}
+
 /// 生产环境 etcd 客户端封装。
 ///
 /// `etcd_client::Client` 的所有方法接收 `&mut self`，无法直接满足 `EtcdClientOps`
@@ -99,6 +123,10 @@ pub enum EtcdError {
 /// mutability，使生产客户端可通过 `Arc<dyn EtcdClientOps>` 注入业务结构。
 pub struct EtcdClientWrapper {
     inner: tokio::sync::Mutex<etcd_client::Client>,
+    /// T028 —— 单次操作超时。各 `EtcdClientOps` 操作经
+    /// [`with_operation_timeout`] 包裹；默认 [`DEFAULT_OPERATION_TIMEOUT_SECS`]，
+    /// 可经 [`Self::with_operation_timeout`] 接线 `EtcdConfig::operation_timeout_secs`。
+    operation_timeout: Duration,
 }
 
 impl EtcdClientWrapper {
@@ -109,50 +137,76 @@ impl EtcdClientWrapper {
             .map_err(|e| EtcdError::Network(e.to_string()))?;
         Ok(Self {
             inner: tokio::sync::Mutex::new(client),
+            operation_timeout: Duration::from_secs(DEFAULT_OPERATION_TIMEOUT_SECS),
         })
+    }
+
+    /// T028 —— 接线单次操作超时（来自 `EtcdConfig::operation_timeout_secs`）。
+    ///
+    /// ```ignore
+    /// EtcdClientWrapper::new(config.etcd.endpoints.clone())
+    ///     .await?
+    ///     .with_operation_timeout(Duration::from_secs(config.etcd.operation_timeout_secs))
+    /// ```
+    pub fn with_operation_timeout(mut self, timeout: Duration) -> Self {
+        self.operation_timeout = timeout;
+        self
     }
 }
 
 #[async_trait]
 impl EtcdClientOps for EtcdClientWrapper {
     async fn kv_get(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, EtcdError> {
-        let mut client = self.inner.lock().await;
-        let resp = client
-            .get(key, None)
-            .await
-            .map_err(|e| EtcdError::Network(e.to_string()))?;
-        if resp.kvs().is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(resp.kvs()[0].value().to_vec()))
-        }
+        // T028：各操作统一经集中式超时 helper 包裹（下同）。
+        with_operation_timeout(self.operation_timeout, async {
+            let mut client = self.inner.lock().await;
+            let resp = client
+                .get(key, None)
+                .await
+                .map_err(|e| EtcdError::Network(e.to_string()))?;
+            if resp.kvs().is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(resp.kvs()[0].value().to_vec()))
+            }
+        })
+        .await
     }
 
     async fn kv_delete(&self, key: &str) -> std::result::Result<(), EtcdError> {
-        let mut client = self.inner.lock().await;
-        client
-            .delete(key, None)
-            .await
-            .map_err(|e| EtcdError::Network(e.to_string()))?;
-        Ok(())
+        with_operation_timeout(self.operation_timeout, async {
+            let mut client = self.inner.lock().await;
+            client
+                .delete(key, None)
+                .await
+                .map_err(|e| EtcdError::Network(e.to_string()))?;
+            Ok(())
+        })
+        .await
     }
 
     async fn lease_grant(&self, ttl: i64) -> std::result::Result<i64, EtcdError> {
-        let mut client = self.inner.lock().await;
-        let resp = client
-            .lease_grant(ttl, None)
-            .await
-            .map_err(|e| EtcdError::LeaseInvalid(e.to_string()))?;
-        Ok(resp.id())
+        with_operation_timeout(self.operation_timeout, async {
+            let mut client = self.inner.lock().await;
+            let resp = client
+                .lease_grant(ttl, None)
+                .await
+                .map_err(|e| EtcdError::LeaseInvalid(e.to_string()))?;
+            Ok(resp.id())
+        })
+        .await
     }
 
     async fn lease_revoke(&self, lease_id: i64) -> std::result::Result<(), EtcdError> {
-        let mut client = self.inner.lock().await;
-        client
-            .lease_revoke(lease_id)
-            .await
-            .map_err(|e| EtcdError::LeaseInvalid(e.to_string()))?;
-        Ok(())
+        with_operation_timeout(self.operation_timeout, async {
+            let mut client = self.inner.lock().await;
+            client
+                .lease_revoke(lease_id)
+                .await
+                .map_err(|e| EtcdError::LeaseInvalid(e.to_string()))?;
+            Ok(())
+        })
+        .await
     }
 
     async fn txn_check_create_rev_and_put(
@@ -172,44 +226,53 @@ impl EtcdClientOps for EtcdClientWrapper {
             )])
             .or_else(vec![TxnOp::get(key, None)]);
 
-        let mut client = self.inner.lock().await;
-        let resp = client
-            .txn(txn)
-            .await
-            .map_err(|e| EtcdError::Network(e.to_string()))?;
-        Ok(resp.succeeded())
+        with_operation_timeout(self.operation_timeout, async {
+            let mut client = self.inner.lock().await;
+            let resp = client
+                .txn(txn)
+                .await
+                .map_err(|e| EtcdError::Network(e.to_string()))?;
+            Ok(resp.succeeded())
+        })
+        .await
     }
 
     async fn ping(&self) -> std::result::Result<(), EtcdError> {
-        let mut client = self.inner.lock().await;
-        client
-            .get("", None)
-            .await
-            .map_err(|e| EtcdError::Network(e.to_string()))?;
-        Ok(())
+        with_operation_timeout(self.operation_timeout, async {
+            let mut client = self.inner.lock().await;
+            client
+                .get("", None)
+                .await
+                .map_err(|e| EtcdError::Network(e.to_string()))?;
+            Ok(())
+        })
+        .await
     }
 
     async fn lease_keep_alive_once(&self, lease_id: i64) -> std::result::Result<(), EtcdError> {
-        let mut client = self.inner.lock().await;
-        let (mut keeper, mut stream) = client
-            .lease_keep_alive(lease_id)
-            .await
-            .map_err(|e| EtcdError::LeaseInvalid(e.to_string()))?;
-        keeper
-            .keep_alive()
-            .await
-            .map_err(|e| EtcdError::LeaseInvalid(e.to_string()))?;
-        match stream.message().await {
-            // ttl == 0 表示 lease 已过期（etcd 语义），续期失败。
-            Ok(Some(resp)) if resp.ttl() > 0 => Ok(()),
-            Ok(Some(_)) => Err(EtcdError::LeaseInvalid(format!(
-                "lease {lease_id} expired (ttl=0)"
-            ))),
-            Ok(None) => Err(EtcdError::LeaseInvalid(format!(
-                "keep-alive stream closed for lease {lease_id}"
-            ))),
-            Err(e) => Err(EtcdError::LeaseInvalid(e.to_string())),
-        }
+        with_operation_timeout(self.operation_timeout, async {
+            let mut client = self.inner.lock().await;
+            let (mut keeper, mut stream) = client
+                .lease_keep_alive(lease_id)
+                .await
+                .map_err(|e| EtcdError::LeaseInvalid(e.to_string()))?;
+            keeper
+                .keep_alive()
+                .await
+                .map_err(|e| EtcdError::LeaseInvalid(e.to_string()))?;
+            match stream.message().await {
+                // ttl == 0 表示 lease 已过期（etcd 语义），续期失败。
+                Ok(Some(resp)) if resp.ttl() > 0 => Ok(()),
+                Ok(Some(_)) => Err(EtcdError::LeaseInvalid(format!(
+                    "lease {lease_id} expired (ttl=0)"
+                ))),
+                Ok(None) => Err(EtcdError::LeaseInvalid(format!(
+                    "keep-alive stream closed for lease {lease_id}"
+                ))),
+                Err(e) => Err(EtcdError::LeaseInvalid(e.to_string())),
+            }
+        })
+        .await
     }
 }
 
@@ -1144,6 +1207,36 @@ mod tests {
     use super::*;
     use crate::core::config::EtcdConfig;
     use tempfile::NamedTempFile;
+
+    // ============== T028 操作超时 ==============
+
+    /// 慢 future 超时 → 映射为消息含 "timed out" 的 `EtcdError::Network`。
+    #[tokio::test]
+    async fn test_operation_timeout_maps_slow_future_to_network_error() {
+        let result: std::result::Result<(), EtcdError> =
+            with_operation_timeout(Duration::from_millis(20), async {
+                sleep(Duration::from_millis(200)).await;
+                Ok(())
+            })
+            .await;
+        match result {
+            Err(EtcdError::Network(msg)) => {
+                assert!(
+                    msg.contains("timed out"),
+                    "超时消息必须显式标注 timed out，实际: {msg}"
+                );
+            }
+            other => panic!("期望 EtcdError::Network 超时，实际 {other:?}"),
+        }
+    }
+
+    /// 快 future 不受超时影响，原样透传结果。
+    #[tokio::test]
+    async fn test_operation_timeout_passes_through_fast_future() {
+        let result: std::result::Result<u8, EtcdError> =
+            with_operation_timeout(Duration::from_secs(5), async { Ok(9) }).await;
+        assert_eq!(result.unwrap(), 9);
+    }
 
     mockall::mock! {
         pub EtcdClientOps {}

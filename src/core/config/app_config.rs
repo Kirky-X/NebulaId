@@ -227,6 +227,14 @@ impl Config {
             ));
         }
 
+        // T028 —— 0 会经 `Duration::from_secs(0)` 传给 `tokio::time::timeout`，
+        // 热查询立即超时，等价于数据库全拒。与 `acquire_timeout_seconds` 同口径拒绝。
+        if self.database.statement_timeout_secs == 0 {
+            return Err(ConfigError::InvalidValue(
+                "Database statement_timeout_secs must be greater than 0".to_string(),
+            ));
+        }
+
         if self.rate_limit.enabled {
             if self.rate_limit.default_rps == 0 {
                 return Err(ConfigError::InvalidValue(
@@ -1267,6 +1275,17 @@ mod tests {
         assert_invalid_value(
             config.validate(),
             "Database acquire_timeout_seconds must be greater than 0",
+        );
+    }
+
+    /// T028 —— database.statement_timeout_secs=0 时校验失败
+    #[test]
+    fn validate_statement_timeout_zero_fails() {
+        let mut config = Config::default();
+        config.database.statement_timeout_secs = 0;
+        assert_invalid_value(
+            config.validate(),
+            "Database statement_timeout_secs must be greater than 0",
         );
     }
 

@@ -62,6 +62,26 @@ const LAST_USED_THROTTLE_WINDOW: Duration = Duration::from_secs(60);
 /// 保证恶意扫描大量伪造 key_id 也不会让节流表无界增长。
 const MAX_TRACKED_LAST_USED_KEYS: usize = 10_000;
 
+/// T028 —— 语句超时默认值（秒）。与 `DatabaseConfig::statement_timeout_secs`
+/// 的 serde 默认一致；仓储未经 `with_statement_timeout` 接线配置时按此兜底。
+const DEFAULT_STATEMENT_TIMEOUT_SECS: u64 = 5;
+
+/// T028 —— 集中式语句超时 helper：热查询经 `tokio::time::timeout` 包裹，
+/// 防止 DB 挂起拖死生成/认证热路径。
+///
+/// 超时错误映射选择既有 [`crate::core::CoreError::TimeoutError`]（而非
+/// `DatabaseError(String)`）：语义精确（调用方可匹配区分"慢"与"坏"），
+/// 且避免把超时伪装成 DB 故障误导告警。
+async fn with_statement_timeout<T, F>(timeout: Duration, fut: F) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(result) => result,
+        Err(_elapsed) => Err(crate::core::CoreError::TimeoutError),
+    }
+}
+
 #[async_trait]
 pub trait SegmentRepository: Send + Sync {
     async fn get_segment(&self, workspace_id: &str, biz_tag: &str) -> Result<Option<SegmentInfo>>;
@@ -251,6 +271,10 @@ pub struct SeaOrmRepository {
     /// 是刻意的 —— `SeaOrmRepository` 按 `Clone` 传播（SDK Kit 化克隆连接池），
     /// 各克隆必须共享同一份节流状态，否则节流形同虚设。
     last_used_writes: Arc<Mutex<HashMap<String, Instant>>>,
+    /// T028 —— 单语句执行超时。热查询经 `with_statement_timeout` 包裹；
+    /// 构造默认 [`DEFAULT_STATEMENT_TIMEOUT_SECS`]，可经
+    /// [`Self::with_statement_timeout`] 接线 `DatabaseConfig::statement_timeout_secs`。
+    statement_timeout: Duration,
 }
 
 impl SeaOrmRepository {
@@ -260,7 +284,19 @@ impl SeaOrmRepository {
             salt,
             distributed_lock: None,
             last_used_writes: Arc::new(Mutex::new(HashMap::new())),
+            statement_timeout: Duration::from_secs(DEFAULT_STATEMENT_TIMEOUT_SECS),
         }
+    }
+
+    /// T028 —— 接线语句超时（来自 `DatabaseConfig::statement_timeout_secs`）。
+    ///
+    /// ```ignore
+    /// SeaOrmRepository::new(conn, salt)
+    ///     .with_statement_timeout(Duration::from_secs(config.database.statement_timeout_secs))
+    /// ```
+    pub fn with_statement_timeout(mut self, timeout: Duration) -> Self {
+        self.statement_timeout = timeout;
+        self
     }
 
     /// 冷路径 last_used 写节流判定：该 key 当前**是否允许**触发一次
@@ -1347,10 +1383,14 @@ impl ApiKeyRepository for SeaOrmRepository {
         // T023 热路径观测：手工建 span 并显式 instrument 执行体（async_trait
         // 反序列化后 `#[instrument]` 属性覆盖语义不可靠）。span 只携带
         // key_id 长度，绝不携带 key/secret/凭据。
+        // T028：执行体再经集中式语句超时包裹（span 覆盖含超时等待的全程）。
         let span = tracing::info_span!("db.validate_api_key", key_id_len = key_id.len());
-        self.validate_api_key_inner(key_id, key_secret)
-            .instrument(span)
-            .await
+        with_statement_timeout(
+            self.statement_timeout,
+            self.validate_api_key_inner(key_id, key_secret),
+        )
+        .instrument(span)
+        .await
     }
 
     async fn list_api_keys(
@@ -1633,15 +1673,20 @@ impl SegmentRepository for SeaOrmRepository {
         // 非 dc 变体即 dc_id = 0 的号段（实体列默认值 0），与 dc 变体共用同一
         // 原子分配路径，保证两种调用形态读写同一套行、互不越界。
         // T023 热路径观测：span 字段仅 workspace/biz_tag/step，无敏感数据。
+        // T028：生成热路径经集中式语句超时包裹，DB 挂起时显性返回
+        // TimeoutError（由 Segment 降级链接管），而非无限悬挂。
         let span = tracing::info_span!(
             "db.allocate_segment",
             workspace = workspace_id,
             biz_tag = biz_tag,
             step = step
         );
-        self.allocate_segment_in_dc(workspace_id, biz_tag, step, 0)
-            .instrument(span)
-            .await
+        with_statement_timeout(
+            self.statement_timeout,
+            self.allocate_segment_in_dc(workspace_id, biz_tag, step, 0),
+        )
+        .instrument(span)
+        .await
     }
 
     async fn allocate_segment_with_dc(
@@ -1651,8 +1696,12 @@ impl SegmentRepository for SeaOrmRepository {
         step: i32,
         dc_id: i32,
     ) -> Result<SegmentInfo> {
-        self.allocate_segment_in_dc(workspace_id, biz_tag, step, dc_id)
-            .await
+        // T028：与 `allocate_segment` 同一超时口径（dc 变体同为生成热路径）。
+        with_statement_timeout(
+            self.statement_timeout,
+            self.allocate_segment_in_dc(workspace_id, biz_tag, step, dc_id),
+        )
+        .await
     }
 
     async fn update_segment(
@@ -1931,6 +1980,44 @@ mod mock_tests {
 
     fn fixed_uuid(n: u8) -> Uuid {
         Uuid::from_bytes([n; 16])
+    }
+
+    // ============== T028 语句超时 ==============
+
+    /// 慢 future 超时 → 必须映射为可匹配的 `CoreError::TimeoutError`。
+    #[tokio::test]
+    async fn test_statement_timeout_maps_slow_future_to_timeout_error() {
+        let result: Result<()> = with_statement_timeout(Duration::from_millis(20), async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            Ok(())
+        })
+        .await;
+        assert!(
+            matches!(result, Err(crate::core::CoreError::TimeoutError)),
+            "超时必须映射为 CoreError::TimeoutError，实际 {result:?}"
+        );
+    }
+
+    /// 快 future 不受超时影响，原样透传结果。
+    #[tokio::test]
+    async fn test_statement_timeout_passes_through_fast_future() {
+        let result: Result<u8> =
+            with_statement_timeout(Duration::from_secs(5), async { Ok(7) }).await;
+        assert_eq!(result.unwrap(), 7);
+    }
+
+    /// 仓储构造默认 5 秒，`with_statement_timeout` builder 可覆盖。
+    #[test]
+    fn test_seaorm_repository_statement_timeout_default_and_builder() {
+        let repo = SeaOrmRepository::new(empty_pg_connection(), "salt".to_string());
+        assert_eq!(
+            repo.statement_timeout,
+            Duration::from_secs(DEFAULT_STATEMENT_TIMEOUT_SECS),
+            "构造默认必须与 DatabaseConfig::statement_timeout_secs 的 serde 默认一致"
+        );
+
+        let repo = repo.with_statement_timeout(Duration::from_secs(2));
+        assert_eq!(repo.statement_timeout, Duration::from_secs(2));
     }
 
     fn fixed_datetime(secs: i64) -> NaiveDateTime {

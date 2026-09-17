@@ -457,6 +457,7 @@ mod tests {
             min_connections: 1,
             acquire_timeout_seconds: 30,
             idle_timeout_seconds: 300,
+            statement_timeout_secs: 5,
         };
 
         let conn = create_connection(&config).await;
@@ -538,6 +539,7 @@ mod tests {
             min_connections: 1,
             acquire_timeout_seconds: 5,
             idle_timeout_seconds: 300,
+            statement_timeout_secs: 5,
         }
     }
 
@@ -609,6 +611,7 @@ mod tests {
             min_connections: 0,
             acquire_timeout_seconds: 1,
             idle_timeout_seconds: 1,
+            statement_timeout_secs: 5,
         };
         let result = create_connection(&config).await;
         match result {

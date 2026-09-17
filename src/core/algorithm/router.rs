@@ -17,6 +17,7 @@ use crate::core::algorithm::{
     GenerateContext, HealthStatus, IdAlgorithm, IdGenerator,
 };
 use crate::core::config::Config;
+use crate::core::database::SegmentRepository;
 #[cfg(feature = "etcd")]
 use crate::core::coordinator::EtcdClusterHealthMonitor;
 use crate::core::types::{AlgorithmType, CoreError, GlobalMetrics, Id, IdBatch, Result};
@@ -171,6 +172,13 @@ pub struct AlgorithmRouter {
     cpu_monitor: Option<Arc<crate::core::algorithm::segment::CpuMonitor>>,
     #[cfg(feature = "etcd")]
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
+    /// T016r —— Segment 号段生产装配的仓储句柄（可选）。
+    ///
+    /// `Some` 时 `initialize` 以其构建 `DbSegmentLoader` 经工厂注入
+    /// `SegmentAlgorithm`；`None` 时生产构建（非 cfg(test)）在 Segment
+    /// 为默认算法的前提下按 `config.database` 自举仓储（进程级共享），
+    /// 测试构建维持 `SegmentAlgorithm::new` 的内存造段器默认值。
+    segment_repository: Option<Arc<dyn SegmentRepository>>,
     // 修复：非 etcd 版本不再持有 `etcd_health_monitor: Option<()>`
     // 占位字段（类型误导）。`with_etcd_health_monitor` builder 方法也仅在
     // etcd feature 下存在；非 etcd 版本调用方（main.rs）根本不会调用它。
@@ -181,6 +189,76 @@ pub struct AlgorithmRouter {
 // Option<Arc<CpuMonitor>> / Option<Arc<EtcdClusterHealthMonitor>>）
 // 均为 Send + Sync，编译器会自动推导。原 `unsafe impl` 是历史遗留，
 // 掩盖了潜在的非线程安全字段，应删除让编译器做严格检查。
+
+/// T016r —— `Arc<dyn SegmentRepository>` 的 Sized 委托适配器。
+///
+/// `DbSegmentLoader<R: SegmentRepository>`（segment.rs，本 lane 不可改）
+/// 隐式要求 `R: Sized`，无法直接以 trait 对象实例化；本 newtype 以 7 个
+/// 透传方法桥接，使 router 的对象安全仓储句柄可进入工厂装配路径。
+struct DynSegmentRepository(Arc<dyn SegmentRepository>);
+
+#[async_trait]
+impl SegmentRepository for DynSegmentRepository {
+    async fn get_segment(
+        &self,
+        workspace_id: &str,
+        biz_tag: &str,
+    ) -> Result<Option<crate::core::types::SegmentInfo>> {
+        self.0.get_segment(workspace_id, biz_tag).await
+    }
+    async fn allocate_segment(
+        &self,
+        workspace_id: &str,
+        biz_tag: &str,
+        step: i32,
+    ) -> Result<crate::core::types::SegmentInfo> {
+        self.0.allocate_segment(workspace_id, biz_tag, step).await
+    }
+    async fn allocate_segment_with_dc(
+        &self,
+        workspace_id: &str,
+        biz_tag: &str,
+        step: i32,
+        dc_id: i32,
+    ) -> Result<crate::core::types::SegmentInfo> {
+        self.0
+            .allocate_segment_with_dc(workspace_id, biz_tag, step, dc_id)
+            .await
+    }
+    async fn update_segment(
+        &self,
+        workspace_id: &str,
+        biz_tag: &str,
+        current_id: i64,
+        max_id: i64,
+    ) -> Result<()> {
+        self.0
+            .update_segment(workspace_id, biz_tag, current_id, max_id)
+            .await
+    }
+    async fn create_segment(
+        &self,
+        workspace_id: &str,
+        biz_tag: &str,
+        start_id: i64,
+        max_id: i64,
+        step: i32,
+        delta: i32,
+    ) -> Result<crate::core::types::SegmentInfo> {
+        self.0
+            .create_segment(workspace_id, biz_tag, start_id, max_id, step, delta)
+            .await
+    }
+    async fn list_segments(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<crate::core::types::SegmentInfo>> {
+        self.0.list_segments(workspace_id).await
+    }
+    async fn delete_segment(&self, workspace_id: &str, biz_tag: &str) -> Result<()> {
+        self.0.delete_segment(workspace_id, biz_tag).await
+    }
+}
 
 impl AlgorithmRouter {
     pub fn new(config: Config, audit_logger: Option<DynAuditLogger>) -> Self {
@@ -213,7 +291,18 @@ impl AlgorithmRouter {
             cpu_monitor: None,
             #[cfg(feature = "etcd")]
             etcd_health_monitor: None,
+            segment_repository: None,
         }
+    }
+
+    /// 注入 Segment 号段仓储（T016r 生产装配入口）。
+    ///
+    /// 调用方持有现成 `SeaOrmRepository` 时传入可复用同一连接池；未传入时
+    /// 生产构建在 Segment 为默认算法的前提下按 `config.database` 自举
+    /// （见 [`Self::initialize`]）。
+    pub fn with_segment_repository(mut self, repository: Arc<dyn SegmentRepository>) -> Self {
+        self.segment_repository = Some(repository);
+        self
     }
 
     pub fn with_cpu_monitor(
@@ -249,6 +338,14 @@ impl AlgorithmRouter {
             }
             if let Some(ref cpu_monitor) = self.cpu_monitor {
                 builder = builder.with_cpu_monitor(cpu_monitor.clone());
+            }
+            // T016r：Segment 生产装配——把 DbSegmentLoader 经工厂构造参数
+            // 透传给 SegmentFactory（测试构建无仓储可解析时为 None，工厂
+            // 委托原始路径，SegmentAlgorithm::new 维持测试默认内存造段器）。
+            if alg_type == AlgorithmType::Segment {
+                if let Some(loader) = self.resolve_segment_loader().await {
+                    builder = builder.with_segment_loader(loader);
+                }
             }
 
             match builder.build(&self.config).await {
@@ -293,6 +390,90 @@ impl AlgorithmRouter {
         }
 
         Ok(())
+    }
+
+    /// T016r —— 解析 Segment 号段装载器（`initialize` 构建 Segment 时调用）。
+    ///
+    /// 优先级：
+    /// 1. [`Self::with_segment_repository`] 显式注入的仓储 → `DbSegmentLoader`；
+    /// 2. 生产构建（非 cfg(test)）且 Segment 为默认算法 → 按 `config.database`
+    ///    自举仓储（进程级只建一次，多个 router/嵌入场景共享同一连接池）；
+    /// 3. 其余（测试构建 / 零 DB 嵌入 / 自举失败）→ `None`，工厂委托原始
+    ///    路径，生成期由 `UnconfiguredSegmentLoader` 显性报错。
+    async fn resolve_segment_loader(
+        &self,
+    ) -> Option<Arc<dyn crate::core::algorithm::SegmentLoader + Send + Sync>> {
+        if let Some(ref repo) = self.segment_repository {
+            // DbSegmentLoader<R> 要求 R: Sized，trait 对象经 newtype 委托适配。
+            return Some(Arc::new(crate::core::algorithm::DbSegmentLoader::new(
+                Arc::new(DynSegmentRepository(repo.clone())),
+            )));
+        }
+
+        if self.config.algorithm.get_default_algorithm() != AlgorithmType::Segment {
+            // Segment 不在服务路径（默认算法非 Segment，且 fallback 链从不
+            // 含 Segment）时不建库连接，避免 Snowflake/UUID 部署多开连接池。
+            return None;
+        }
+
+        #[cfg(not(test))]
+        {
+            Self::self_provisioned_segment_loader(&self.config).await
+        }
+        #[cfg(test)]
+        {
+            None
+        }
+    }
+
+    /// 生产构建自举：按 `config.database` 建仓储并包装为 `DbSegmentLoader`。
+    ///
+    /// 进程级 `OnceCell` 缓存：main 与嵌入 SDK 同进程多次 `initialize` 复用
+    /// 同一结果（成功复用连接池；失败也只尝试一次，避免每次生成路径重试建连）。
+    /// 失败仅 `warn` 不阻断启动——与「零 DB 也能构建 router 模块」的嵌入语义
+    /// 兼容，Segment 生成期显性报错兜底。
+    #[cfg(not(test))]
+    async fn self_provisioned_segment_loader(
+        config: &Config,
+    ) -> Option<Arc<dyn crate::core::algorithm::SegmentLoader + Send + Sync>> {
+        use crate::core::algorithm::{DbSegmentLoader, SegmentLoader};
+        use crate::core::database::SeaOrmRepository;
+
+        static PROVISIONED: tokio::sync::OnceCell<
+            Option<Arc<dyn SegmentLoader + Send + Sync>>,
+        > = tokio::sync::OnceCell::const_new();
+
+        PROVISIONED
+            .get_or_init(|| async {
+                match crate::core::database::create_connection(&config.database).await {
+                    Ok(conn) => {
+                        let repository: Arc<dyn SegmentRepository> = Arc::new(
+                            SeaOrmRepository::new(conn, config.auth.api_key_salt.clone()),
+                        );
+                        // 步长取 Segment 配置的 base_step（与动态步长基准一致）。
+                        let loader: Arc<dyn SegmentLoader + Send + Sync> = Arc::new(
+                            DbSegmentLoader::with_step(
+                                Arc::new(DynSegmentRepository(repository)),
+                                config.algorithm.segment.base_step as i32,
+                            ),
+                        );
+                        info!(
+                            step = config.algorithm.segment.base_step as i64,
+                            "segment DbSegmentLoader provisioned from config.database"
+                        );
+                        Some(loader)
+                    }
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            "segment DbSegmentLoader provisioning failed; Segment generate will fail explicitly until a repository is injected"
+                        );
+                        None
+                    }
+                }
+            })
+            .await
+            .clone()
     }
 
     pub async fn generate(&self, ctx: &GenerateContext) -> Result<Id> {
@@ -1907,6 +2088,149 @@ mod tests {
             .expect("init with cpu monitor must succeed");
         let layout = router.snowflake_layout().expect("layout available");
         assert_eq!(layout.sequence_bits, 10);
+        router.shutdown().await;
+    }
+
+    // ============== T016r 装配契约测试 ==============
+
+    /// 最小 SegmentRepository mock：`allocate_segment` 顺序发号并记录步长，
+    /// 其余方法按「不参与本用例」语义返回空/缺省。
+    struct MockSegmentRepo {
+        counter: std::sync::atomic::AtomicI64,
+        last_step: std::sync::atomic::AtomicI32,
+    }
+
+    impl MockSegmentRepo {
+        fn new() -> Self {
+            Self {
+                counter: std::sync::atomic::AtomicI64::new(0),
+                last_step: std::sync::atomic::AtomicI32::new(0),
+            }
+        }
+    }
+
+    fn fake_segment_info(
+        workspace_id: &str,
+        biz_tag: &str,
+        start: i64,
+        step: i32,
+    ) -> crate::core::types::SegmentInfo {
+        crate::core::types::SegmentInfo {
+            id: 1,
+            workspace_id: workspace_id.to_string(),
+            biz_tag: biz_tag.to_string(),
+            current_id: start,
+            max_id: start + step as i64 - 1,
+            step: step as u32,
+            delta: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[async_trait]
+    impl crate::core::database::SegmentRepository for MockSegmentRepo {
+        async fn get_segment(
+            &self,
+            _workspace_id: &str,
+            _biz_tag: &str,
+        ) -> Result<Option<crate::core::types::SegmentInfo>> {
+            Ok(None)
+        }
+        async fn allocate_segment(
+            &self,
+            workspace_id: &str,
+            biz_tag: &str,
+            step: i32,
+        ) -> Result<crate::core::types::SegmentInfo> {
+            self.last_step
+                .store(step, std::sync::atomic::Ordering::SeqCst);
+            let start =
+                self.counter
+                    .fetch_add(step as i64, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
+            Ok(fake_segment_info(workspace_id, biz_tag, start, step))
+        }
+        async fn allocate_segment_with_dc(
+            &self,
+            workspace_id: &str,
+            biz_tag: &str,
+            step: i32,
+            _dc_id: i32,
+        ) -> Result<crate::core::types::SegmentInfo> {
+            self.allocate_segment(workspace_id, biz_tag, step).await
+        }
+        async fn update_segment(
+            &self,
+            _workspace_id: &str,
+            _biz_tag: &str,
+            _current_id: i64,
+            _max_id: i64,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn create_segment(
+            &self,
+            workspace_id: &str,
+            biz_tag: &str,
+            start_id: i64,
+            max_id: i64,
+            step: i32,
+            _delta: i32,
+        ) -> Result<crate::core::types::SegmentInfo> {
+            let mut info = fake_segment_info(workspace_id, biz_tag, start_id, step);
+            info.max_id = max_id;
+            Ok(info)
+        }
+        async fn list_segments(
+            &self,
+            _workspace_id: &str,
+        ) -> Result<Vec<crate::core::types::SegmentInfo>> {
+            Ok(Vec::new())
+        }
+        async fn delete_segment(&self, _workspace_id: &str, _biz_tag: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 工厂装配契约：`AlgorithmBuilder` 携带 `DbSegmentLoader` 构建的
+    /// Segment 算法，generate 必须消费 `allocate_segment` 返回的区间，
+    /// 且注入步长透传到位。
+    #[tokio::test]
+    async fn test_segment_factory_injects_db_loader_and_consumes_allocation() {
+        let repo = Arc::new(MockSegmentRepo::new());
+        let builder = AlgorithmBuilder::new(AlgorithmType::Segment).with_segment_loader(Arc::new(
+            crate::core::algorithm::DbSegmentLoader::with_step(repo.clone(), 100),
+        ));
+
+        let algo = builder.build(&Config::default()).await.unwrap();
+        let ctx = make_ctx("bt");
+
+        let id1 = algo.generate(&ctx).await.unwrap();
+        let id2 = algo.generate(&ctx).await.unwrap();
+        assert_eq!(id1.as_u128(), 1, "首个 ID 应取自 DB 分配区间起始值");
+        assert_eq!(id2.as_u128(), 2, "第二个 ID 应在区间内顺序步进");
+        assert_eq!(
+            repo.last_step
+                .load(std::sync::atomic::Ordering::SeqCst),
+            100,
+            "工厂注入的步长必须透传到 allocate_segment"
+        );
+    }
+
+    /// router 装配契约：`with_segment_repository` 注入仓储后，`initialize`
+    /// 经工厂路径为 Segment 装上 `DbSegmentLoader`，generate 真消费 mock
+    /// 仓储的分配区间。
+    #[tokio::test]
+    async fn test_router_with_segment_repository_serves_db_backed_ids() {
+        let repo = Arc::new(MockSegmentRepo::new());
+        let router = AlgorithmRouter::new(Config::default(), None).with_segment_repository(repo);
+        router.initialize().await.unwrap();
+
+        let id1 = router.generate(&make_ctx("bt")).await.unwrap();
+        let id2 = router.generate(&make_ctx("bt")).await.unwrap();
+        assert_eq!(id1.as_u128(), 1);
+        assert_eq!(id2.as_u128(), 2);
         router.shutdown().await;
     }
 }

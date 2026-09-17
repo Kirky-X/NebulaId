@@ -16,7 +16,8 @@
 
 use crate::core::{CoreError, Result};
 use crate::server::models::{
-    naive_to_rfc3339, BizTagListResponse, BizTagResponse, CreateBizTagRequest, UpdateBizTagRequest,
+    naive_to_rfc3339, BizTagListResponse, BizTagResponse, CreateBizTagRequest, ErrorResponse,
+    UpdateBizTagRequest,
 };
 
 impl super::ApiHandlers {
@@ -245,6 +246,123 @@ impl super::ApiHandlers {
         Ok((responses, total))
     }
 }
+
+// ========== OpenAPI path 注解（T033）==========
+//
+// 实际的 axum handler 函数位于 `src/server/router.rs`（本 lane 不可修改），
+// 此处以「注解载体函数」承载 `#[utoipa::path]`，仅供 `openapi.rs` 的
+// `paths(...)` 注册；路由信息（路径/方法）以 router.rs 注册处为准。
+// 错误响应统一引用 `ErrorResponse`（T032 信封）。
+
+/// OpenAPI 注解载体：`POST /api/v1/biz-tags`（实际 handler：`router::handle_create_biz_tag`，User-only）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    post,
+    path = "/api/v1/biz-tags",
+    operation_id = "handle_create_biz_tag",
+    tag = "biz-tags",
+    request_body = CreateBizTagRequest,
+    responses(
+        (status = 200, description = "创建成功", body = BizTagResponse),
+        (status = 400, description = "请求参数校验失败", body = ErrorResponse),
+        (status = 401, description = "缺失/无效 API Key 或角色不是 User", body = ErrorResponse),
+        (status = 403, description = "workspace_id 与调用者不一致", body = ErrorResponse),
+        (status = 429, description = "触发限流", body = ErrorResponse),
+        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+    )
+)]
+pub fn create_biz_tag_docs() {}
+
+/// OpenAPI 注解载体：`GET /api/v1/biz-tags`（实际 handler：`router::handle_list_biz_tags`）。
+/// User 强制绑定自身 workspace；Admin 必须显式传 `workspace_id`。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    get,
+    path = "/api/v1/biz-tags",
+    operation_id = "handle_list_biz_tags",
+    tag = "biz-tags",
+    params(
+        ("workspace_id" = Option<String>, Query, description = "按 workspace UUID 过滤（Admin 必填；User 忽略，强制取认证身份）"),
+        ("page" = Option<u64>, Query, description = "页码，默认 1"),
+        ("page_size" = Option<u64>, Query, description = "每页数量，默认 20，上限 100"),
+    ),
+    responses(
+        (status = 200, description = "biz-tag 分页列表", body = BizTagListResponse),
+        (status = 400, description = "请求参数校验失败 / workspace_id 非法 UUID", body = ErrorResponse),
+        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
+        (status = 403, description = "Admin 未显式指定 workspace_id", body = ErrorResponse),
+        (status = 429, description = "触发限流", body = ErrorResponse),
+        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+    )
+)]
+pub fn list_biz_tags_docs() {}
+
+/// OpenAPI 注解载体：`GET /api/v1/biz-tags/{id}`（实际 handler：`router::handle_get_biz_tag`，User-only + IDOR 防护）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    get,
+    path = "/api/v1/biz-tags/{id}",
+    operation_id = "handle_get_biz_tag",
+    tag = "biz-tags",
+    params(
+        ("id" = String, Path, description = "biz-tag 行 ID（UUID）"),
+    ),
+    responses(
+        (status = 200, description = "biz-tag 详情", body = BizTagResponse),
+        (status = 400, description = "id 不是合法 UUID", body = ErrorResponse),
+        (status = 401, description = "缺失/无效 API Key 或角色不是 User", body = ErrorResponse),
+        (status = 403, description = "跨 workspace 访问被拒绝", body = ErrorResponse),
+        (status = 404, description = "biz-tag 不存在", body = ErrorResponse),
+        (status = 429, description = "触发限流", body = ErrorResponse),
+        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+    )
+)]
+pub fn get_biz_tag_docs() {}
+
+/// OpenAPI 注解载体：`PUT /api/v1/biz-tags/{id}`（实际 handler：`router::handle_update_biz_tag`，User-only + IDOR 防护）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    put,
+    path = "/api/v1/biz-tags/{id}",
+    operation_id = "handle_update_biz_tag",
+    tag = "biz-tags",
+    params(
+        ("id" = String, Path, description = "biz-tag 行 ID（UUID）"),
+    ),
+    request_body = UpdateBizTagRequest,
+    responses(
+        (status = 200, description = "更新成功", body = BizTagResponse),
+        (status = 400, description = "id 不是合法 UUID 或请求参数校验失败", body = ErrorResponse),
+        (status = 401, description = "缺失/无效 API Key 或角色不是 User", body = ErrorResponse),
+        (status = 403, description = "跨 workspace 访问被拒绝", body = ErrorResponse),
+        (status = 404, description = "biz-tag 不存在", body = ErrorResponse),
+        (status = 429, description = "触发限流", body = ErrorResponse),
+        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+    )
+)]
+pub fn update_biz_tag_docs() {}
+
+/// OpenAPI 注解载体：`DELETE /api/v1/biz-tags/{id}`（实际 handler：`router::handle_delete_biz_tag`，User-only + IDOR 防护）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    delete,
+    path = "/api/v1/biz-tags/{id}",
+    operation_id = "handle_delete_biz_tag",
+    tag = "biz-tags",
+    params(
+        ("id" = String, Path, description = "biz-tag 行 ID（UUID）"),
+    ),
+    responses(
+        (status = 204, description = "删除成功（无响应体）"),
+        (status = 400, description = "id 不是合法 UUID", body = ErrorResponse),
+        (status = 401, description = "缺失/无效 API Key 或角色不是 User", body = ErrorResponse),
+        (status = 403, description = "跨 workspace 访问被拒绝", body = ErrorResponse),
+        (status = 404, description = "biz-tag 不存在", body = ErrorResponse),
+        (status = 429, description = "触发限流", body = ErrorResponse),
+        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+    )
+)]
+pub fn delete_biz_tag_docs() {}
 
 #[cfg(test)]
 mod tests {

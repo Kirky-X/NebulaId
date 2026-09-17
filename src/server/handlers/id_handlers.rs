@@ -16,7 +16,7 @@
 
 use crate::core::{CoreError, Id, Result};
 use crate::server::models::{
-    BatchGenerateRequest, BatchGenerateResponse, GenerateRequest, GenerateResponse,
+    BatchGenerateRequest, BatchGenerateResponse, ErrorResponse, GenerateRequest, GenerateResponse,
     IdMetadataResponse, ParseRequest, ParseResponse,
 };
 use std::sync::atomic::Ordering;
@@ -274,6 +274,75 @@ impl super::ApiHandlers {
         }
     }
 }
+
+// ========== OpenAPI path 注解（T033）==========
+//
+// 实际的 axum handler 函数（`handle_generate` 等）位于 `src/server/router.rs`
+// （本 lane 不可修改），故此处以「注解载体函数」承载 `#[utoipa::path]`：
+// 载体函数不参与运行时路由，仅供 `openapi.rs` 的 `paths(...)` 注册。
+// 路由信息（路径/方法）以 router.rs 注册处为准；错误响应统一引用
+// `ErrorResponse`（T032 信封，business_code 见 openapi.rs 错误码表）。
+
+/// OpenAPI 注解载体：`POST /api/v1/generate`（实际 handler：`router::handle_generate`）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    post,
+    path = "/api/v1/generate",
+    operation_id = "handle_generate",
+    tag = "ids",
+    request_body = GenerateRequest,
+    responses(
+        (status = 200, description = "ID 生成成功", body = GenerateResponse),
+        (status = 400, description = "请求参数校验失败", body = ErrorResponse),
+        (status = 401, description = "缺失/无效 API Key 或角色不是 User", body = ErrorResponse),
+        (status = 403, description = "跨 workspace 访问被拒绝", body = ErrorResponse),
+        (status = 404, description = "workspace 不存在", body = ErrorResponse),
+        (status = 429, description = "触发限流", body = ErrorResponse),
+        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+        (status = 503, description = "下游依赖超时", body = ErrorResponse),
+    )
+)]
+pub fn generate_docs() {}
+
+/// OpenAPI 注解载体：`POST /api/v1/generate/batch`（实际 handler：`router::handle_batch_generate`）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    post,
+    path = "/api/v1/generate/batch",
+    operation_id = "handle_batch_generate",
+    tag = "ids",
+    request_body = BatchGenerateRequest,
+    responses(
+        (status = 200, description = "批量生成成功（size 缺省 10，上限 batch_generate.max_batch_size）", body = BatchGenerateResponse),
+        (status = 400, description = "请求参数校验失败（含 size 超出配置上限）", body = ErrorResponse),
+        (status = 401, description = "缺失/无效 API Key 或角色不是 User", body = ErrorResponse),
+        (status = 403, description = "跨 workspace 访问被拒绝", body = ErrorResponse),
+        (status = 404, description = "workspace 不存在", body = ErrorResponse),
+        (status = 429, description = "触发限流", body = ErrorResponse),
+        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+        (status = 503, description = "下游依赖超时", body = ErrorResponse),
+    )
+)]
+pub fn batch_generate_docs() {}
+
+/// OpenAPI 注解载体：`POST /api/v1/parse`（实际 handler：`router::handle_parse`）。
+#[allow(dead_code)]
+#[sdforge::utoipa::path(
+    post,
+    path = "/api/v1/parse",
+    operation_id = "handle_parse",
+    tag = "ids",
+    request_body = ParseRequest,
+    responses(
+        (status = 200, description = "ID 解析成功", body = ParseResponse),
+        (status = 400, description = "ID 格式或请求参数非法", body = ErrorResponse),
+        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
+        (status = 429, description = "触发限流", body = ErrorResponse),
+        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+        (status = 503, description = "下游依赖超时", body = ErrorResponse),
+    )
+)]
+pub fn parse_docs() {}
 
 #[cfg(test)]
 mod tests {

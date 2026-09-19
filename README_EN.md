@@ -380,7 +380,7 @@ CI (`ci.yml` / `release.yml` / `health-check.yml`) calls the same entry point, k
 
 ### 🎯 Test Strategy
 
-Testing is layered: inline unit tests in `src/` (`#[cfg(test)]`), E2E modules under `src/core/tests/` organized by layer (algorithms, auth, cache, degradation, gRPC monitoring, infrastructure, server layer, and more — 13 files), the end-to-end i18n test in `tests/i18n_e2e.rs`, shell end-to-end scripts in `tests/*.sh` (API, degradation, distributed, database concurrency), and Criterion benchmarks (`benches/i18n.rs`). For the per-domain scenario matrix and file mapping, see the [test scenario doc](docs/TEST_SCENARIOS.md).
+Testing is layered: inline unit tests in `src/` (`#[cfg(test)]`), E2E modules under `src/core/tests/` organized by layer (algorithms, auth, cache, degradation, gRPC monitoring, infrastructure, server layer, and more — 13 files), the end-to-end i18n test in `tests/i18n_e2e.rs`, shell end-to-end scripts in `tests/*.sh` (API, degradation, distributed, database concurrency), and Criterion benchmarks (`benches/i18n.rs`, `benches/algorithms.rs`). For the per-domain scenario matrix and file mapping, see the [test scenario doc](docs/TEST_SCENARIOS.md).
 
 ### ▶️ Commands (matching CI)
 
@@ -402,6 +402,7 @@ cargo check --package nebulaid --no-default-features --lib --bins
 
 # Benchmarks
 cargo bench --bench i18n
+cargo bench --bench algorithms
 
 # Shell end-to-end scripts
 ./scripts/run.sh api-test
@@ -409,13 +410,13 @@ cargo bench --bench i18n
 
 ### 📊 Test Scale
 
-As of the v0.2.x workspace: about 1780 Rust test functions (inline in `src/` plus the `src/core/tests/` E2E modules plus `tests/i18n_e2e.rs`), 4 shell end-to-end scripts, and 1 Criterion benchmark group (i18n hot paths, 4 benchmark functions). The CI coverage gate requires at least 95% line coverage, and the pre-push hook enforces a local 80% gate; actual line coverage at the v0.2.0 release was 89.91%. For per-module counts and methodology, see the [test scenario doc · statistics](docs/TEST_SCENARIOS.md#统计汇总).
+As of the v0.2.x workspace: about 1780 Rust test functions (inline in `src/` plus the `src/core/tests/` E2E modules plus `tests/i18n_e2e.rs`), 4 shell end-to-end scripts, and 2 Criterion benchmark groups (i18n hot paths with 4 benchmark functions plus ID-generation / rate-limit / auth-cache hot paths with 7 benchmark functions). The CI coverage gate requires at least 95% line coverage, and the pre-push hook enforces a local 80% gate; actual line coverage at the v0.2.0 release was 89.91%. For per-module counts and methodology, see the [test scenario doc · statistics](docs/TEST_SCENARIOS.md#统计汇总).
 
 ---
 
 ## 📊 Performance
 
-The only Criterion benchmark declared in this repository covers the i18n hot paths (`benches/i18n.rs`, reproduce with `cargo bench --bench i18n`): translation lookups, argumented translation, error localization, and Accept-Language parsing. No public ID-generation throughput numbers are published (no such benchmark harness exists yet; measure under your own workload before release). Design-level hot-path highlights — Segment double buffering with a dynamic step, Snowflake serialized timestamp migration, the ring-buffer p50/p99/p999 percentiles, and the release profile (thin LTO + `panic = "abort"`) — are covered in the [Performance Guide](docs/PERFORMANCE.md).
+Two Criterion benchmarks are declared in this repository: the i18n hot paths (`benches/i18n.rs`, covering translation lookups, argumented translation, error localization, and Accept-Language parsing) and the ID-generation / rate-limit / auth-cache hot paths (`benches/algorithms.rs`, covering Snowflake single and batch generation, the routing chain, the token bucket, and auth-cache hits). Reproduce with `cargo bench --bench i18n` and `cargo bench --bench algorithms`; baseline medians live in the [Performance Guide · Recorded baselines](docs/PERFORMANCE.md#已记录基线). Design-level hot-path highlights — Segment double buffering with a dynamic step, the Snowflake lock-free CAS state word, the ring-buffer p50/p99/p999 percentiles, and the release profile (thin LTO + `panic = "abort"`) — are covered in the same guide.
 
 ---
 
@@ -444,7 +445,7 @@ Please do not report security vulnerabilities through public issues. Use the pri
 <tr><td align="center">✅</td><td>Observability and i18n</td><td>Per-algorithm p50/p99/p999 metrics, health checks, OTLP tracing, en / zh-CN i18n</td></tr>
 <tr><td align="center">✅</td><td>Quality gates</td><td>Five-stage CI gate, coverage ≥ 95%, cargo-deny / cargo-audit / CodeQL, ~1780 tests</td></tr>
 <tr><td align="center">🚧</td><td>SDK and distributed coordination</td><td>Continued hardening of the <code>sdk</code> facade (trait-kit assembly); production validation of <code>etcd</code> coordination (feature off by default)</td></tr>
-<tr><td align="center">📋</td><td>Performance engineering</td><td>ID-generation throughput benchmark harness (criterion), release baseline recording, batch generation tuning</td></tr>
+<tr><td align="center">🚧</td><td>Performance engineering</td><td>Batch generation tuning, Segment routing benchmark integration (the ID-generation throughput benchmark harness and release baselines have landed — see the [Performance Guide](docs/PERFORMANCE.md))</td></tr>
 <tr><td align="center">📋</td><td>Cloud native and DR</td><td>Kubernetes operator, multi-datacenter with automatic failover, dynamic algorithm switching</td></tr>
 </table>
 

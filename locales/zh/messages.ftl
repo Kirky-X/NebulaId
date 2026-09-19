@@ -1,0 +1,447 @@
+# zh message catalog (Fluent FTL) — mechanically migrated
+# from locales/zh-CN.yml by the unify-rust-i18n T013 script.
+# Lookup convention: dotted source key `a.b.c_d` <-> FTL id `a-b-c_d`
+# (dotted keys cannot be FTL ids; the catalog replaces '.' with '-').
+# Phase 8 ICU i18n — 简体中文 locale
+# Populated by T038 (CoreError Display) + T039 (tracing logs) + T040-T041 (API)
+#
+# Key 命名空间约定 (LOW-002):
+# - error.* : CoreError Display 字符串（由 CoreError::to_localized_string 使用）
+#             定义在 src/core/types/error.rs::i18n_key()
+# - api.error.* : API 响应错误消息（由 src/server/handlers/helpers.rs 使用）
+#                 用于非 CoreError 派生的 handler 构造错误
+#                 （UUID 解析失败、验证失败、workspace 不匹配等）
+#                 也用于通用 5xx 消息（database_error、internal_error 等），
+#                 由 `core_error_to_response` 在底层 CoreError String 可能含
+#                 敏感数据时返回——客户端只看到通用消息。
+# - log.* : tracing 日志消息（由 t!() 宏使用，全局 locale）
+#           注意：T041 之后，新增 tracing 日志应改为结构化字段而非 t!()
+#           （见 LOW L-5 修复）。已有 log.* 键保留以兼容旧行为，不应再新增。
+
+# API error response messages (T041)
+# Used by src/server/handlers/helpers.rs to translate handler error responses
+# based on the negotiated Locale from locale_middleware (Accept-Language header).
+api-error-invalid_uuid_format = 无效的 UUID 格式
+api-error-validation_error = 验证错误：{ $error }
+api-error-validation_error_field = 字段验证错误：{ $field }（{ $rule }）
+api-error-admin_cannot_perform = Admin API key 无法执行此操作
+api-error-auth_required = 需要认证：请启用认证并提供有效的 API key
+api-error-workspace_mismatch = 访问被拒绝：工作空间不匹配
+api-error-workspace_name_not_found = 工作空间 '{ $name }' 未找到
+api-error-workspace_not_found = 工作空间未找到
+api-error-invalid_workspace_id = 无效的工作空间 ID
+api-error-workspace_id_required = 用户密钥需要 workspace_id
+
+# Phase 4 v0.2.0-final-polish — handler 构造的错误/成功消息国际化。
+# 由 src/server/handlers/*.rs 中的 t!() 宏使用，对 CoreError 变体的
+# 内部 String（或成功响应消息）进行本地化。这些消息随后会经过
+# `core_error_to_response` 派发（后者只翻译变体模板，不翻译内部 String）。
+# 命名规范：
+# api.error.handlers.<handler_name>.<error_type>
+# api.success.handlers.<handler_name>.<message_type>
+api-error-handlers-id_handlers-batch_size_zero = 批量大小不能为零
+api-error-handlers-id_handlers-batch_size_exceeds_max = 批量大小 { $size } 超过最大允许值 { $max }
+api-error-handlers-id_handlers-parse_id_failed = 解析 ID 失败：{ $error }
+api-error-handlers-biz_tag_handlers-not_found = 业务标签未找到：{ $id }
+api-error-handlers-workspace_handlers-api_key_repo_not_configured = API 密钥仓库未配置
+api-error-handlers-workspace_handlers-not_found = 工作空间 '{ $name }' 未找到
+api-error-handlers-api_key_handlers-invalid_role = 无效的角色：{ $role }
+api-error-handlers-api_key_handlers-user_key_already_exists = 工作空间 { $workspace_id } 的用户 API 密钥已存在
+api-success-handlers-api_key_handlers-revoked = API 密钥 { $id } 已成功吊销
+api-error-handlers-helpers-invalid_uuid = 无效的 UUID：{ $error }
+# Phase 8 v0.2.0-final-polish —— 此前为硬编码英文字符串的 handler 错误/成功消息。
+api-error-handlers-api_key_handlers-admin_key_already_exists = 已存在管理员 API 密钥；禁止创建额外的管理员密钥
+api-error-handlers-api_key_handlers-invalid_expires_at_format = 无效的 expires_at 格式
+api-error-handlers-api_key_handlers-cannot_revoke_last_admin = 无法吊销最后一个管理员密钥
+api-error-handlers-api_key_handlers-key_id_empty = key_id 不能为空
+api-error-handlers-biz_tag_handlers-workspace_id_required_list = 列出 biz tags 时必须提供 workspace_id
+api-error-handlers-biz_tag_handlers-pagination_limit_zero = 分页 limit 不能为零
+api-success-system_handlers-ready = 已准备好处理流量
+api-error-system_handlers-not_ready = 未就绪：数据库或缓存不可用
+
+# Phase 8 T041（CRITICAL C-1 / HIGH H-1 修复）—— 5xx 通用错误文案。
+# 由 `helpers::core_error_to_response` 用于内部错误响应：底层 `CoreError`
+# 的 String 可能含敏感信息（数据库连接串、文件路径等），仅服务端
+# 通过 `tracing::error!` 记录完整错误，客户端只看到下面的通用文案。
+api-error-internal_error = 内部服务器错误
+api-error-database_error = 数据库操作失败
+api-error-cache_error = 缓存服务不可用
+api-error-configuration_error = 配置错误
+api-error-algorithm_error = ID 生成算法错误
+api-error-etcd_error = Etcd 服务不可用
+api-error-io_error = I/O 错误
+# Phase 9 T045 (F-04) — `api.error.parse_error` 已删除：死键，
+# src/ 中无 `t!("api.error.parse_error")` 调用方。CoreError 的
+# ParseError 变体走 `error.parse_error`（Display 命名空间）。
+
+# CoreError Display strings (T038)
+error-invalid_id_format = 无效的 ID 格式：{ $value }
+error-invalid_id_string = 无效的 ID 字符串：{ $value }
+error-invalid_algorithm_type = 无效的算法类型：{ $value }
+error-clock_moved_backward = 时钟回拨，最后时间戳：{ $last_timestamp }
+error-sequence_overflow = 序列号溢出，时间戳：{ $timestamp }
+error-segment_exhausted = 号段耗尽，max_id：{ $max_id }
+error-database_error = 数据库错误：{ $value }
+error-cache_error = 缓存错误：{ $value }
+error-configuration_error = 配置错误：{ $value }
+error-authentication_error = 认证错误：{ $value }
+error-rate_limit_exceeded = 速率限制超出
+error-not_found = 资源未找到：{ $value }
+error-workspace_disabled = 工作空间已禁用：{ $value }
+error-biz_tag_not_found = 业务标签未找到：{ $value }
+error-api_key_disabled = API 密钥已禁用
+error-api_key_expired = API 密钥已过期
+error-invalid_api_key_signature = 无效的 API 密钥签名
+error-etcd_error = Etcd 错误：{ $value }
+error-parse_error = 解析错误：{ $value }
+error-io_error = I/O 错误：{ $value }
+error-timeout_error = 超时错误
+error-internal_error = 内部错误：{ $value }
+error-invalid_input = 无效输入：{ $value }
+error-unknown = 未知错误
+
+# tracing log messages (T039)
+# src/core/algorithm/circuit_breaker.rs
+log-core-algorithm-circuit_breaker-closed_service_recovered = 熔断器已关闭，服务已恢复
+log-core-algorithm-circuit_breaker-opened_next_attempt = 熔断器已打开，下次尝试已排程
+log-core-algorithm-circuit_breaker-transitioned_to_half_open = 熔断器已切换到半开状态
+
+# src/core/algorithm/snowflake.rs
+log-core-algorithm-snowflake-initialized = Snowflake 算法已初始化，datacenter_id={ $datacenter_id }，worker_id={ $worker_id }
+
+# src/core/algorithm/segment.rs
+log-core-algorithm-segment-cpu_monitoring_not_supported = 当前平台不支持 CPU 监控，使用默认值
+log-core-algorithm-segment-dc_recovered = DC { $dc_id } 已恢复到健康状态
+log-core-algorithm-segment-dc_marked_failed = DC { $dc_id } 连续失败 { $consecutive } 次后标记为失败
+log-core-algorithm-segment-dc_marked_degraded = DC { $dc_id } 连续失败 { $consecutive } 次后标记为降级
+log-core-algorithm-segment-health_check_shutdown_signal = 健康检查任务收到关闭信号
+log-core-algorithm-segment-attempting_recovery = 尝试恢复 DC { $dc_id }
+log-core-algorithm-segment-starting_cpu_monitoring = 启动 CPU 监控任务
+log-core-algorithm-segment-loading_segment = 正在为 { $biz_tag } 加载号段，动态步长：{ $step }（QPS：{ $qps }）
+
+# src/core/algorithm/degradation_manager.rs
+log-core-algorithm-degradation_manager-circuit_breaker_opened = 熔断器已打开
+log-core-algorithm-degradation_manager-circuit_breaker_half_opened = 熔断器已切换到半开状态
+log-core-algorithm-degradation_manager-circuit_breaker_closed = 熔断器已关闭
+log-core-algorithm-degradation_manager-algorithm_registered = 已注册算法进行健康监控
+log-core-algorithm-degradation_manager-primary_algorithm_set = 主算法已设置
+log-core-algorithm-degradation_manager-fallback_chain_configured = 已配置降级链
+log-core-algorithm-degradation_manager-algorithm_degraded = 算法因连续失败（{ $failure_count } 次）已降级
+log-core-algorithm-degradation_manager-degradation_state_changed = 降级状态已变更
+log-core-algorithm-degradation_manager-algorithm_recovered = 算法连续成功 { $success_count } 次后已恢复
+log-core-algorithm-degradation_manager-restored_to_primary = 已恢复到主算法
+log-core-algorithm-degradation_manager-circuit_breaker_timeout_half_open = 熔断器超时，尝试切换到半开状态
+log-core-algorithm-degradation_manager-circuit_breaker_closed_after_successes = 熔断器连续成功 { $successes } 次后已关闭
+log-core-algorithm-degradation_manager-circuit_breaker_reopened = 熔断器已重新打开
+log-core-algorithm-degradation_manager-circuit_breaker_opened_unhealthy = 不健康算法的熔断器已打开
+log-core-algorithm-degradation_manager-algorithm_unhealthy = 算法报告为不健康：{ $reason }
+log-core-algorithm-degradation_manager-algorithm_health_degraded = 算法已降级：{ $reason }
+log-core-algorithm-degradation_manager-manual_degradation_triggered = 已手动触发算法降级
+log-core-algorithm-degradation_manager-manual_recovery_triggered = 已手动触发算法恢复
+log-core-algorithm-degradation_manager-degradation_config_updated = 降级配置已更新：enabled={ $enabled }
+log-core-algorithm-degradation_manager-background_check_already_running = 后台健康检查已在运行
+log-core-algorithm-degradation_manager-starting_background_check = 正在启动后台健康检查
+log-core-algorithm-degradation_manager-background_check_started = 后台健康检查已启动
+log-core-algorithm-degradation_manager-background_check_stopped = 后台健康检查已停止
+log-core-algorithm-degradation_manager-background_check_shutdown_sent = 已发送后台健康检查关闭信号
+log-core-algorithm-degradation_manager-background_check_shutdown_received = 收到后台健康检查关闭信号，正在退出 task
+
+# src/core/algorithm/router.rs（活跃模块——main.rs 使用的 AlgorithmRouter）
+# 命名空间：log.core.algorithm.router.*（注意点分隔的 `algorithm.router`）
+log-core-algorithm-router-algorithm_init_failed = 初始化算法失败：{ $error }
+log-core-algorithm-router-algorithm_initialized = 算法初始化成功
+log-core-algorithm-router-algorithm_build_failed = 构建算法失败：{ $error }
+log-core-algorithm-router-generate_with_algorithm_called = AlgorithmRouter::generate_with_algorithm 被调用：workspace={ $workspace }，group={ $group }，biz_tag={ $biz_tag }
+log-core-algorithm-router-generate_internal_called = generate_with_algorithm_internal：biz_tag={ $biz_tag }
+log-core-algorithm-router-algorithm_found = 找到算法，尝试生成 ID
+log-core-algorithm-router-id_generated = 成功生成 ID
+log-core-algorithm-router-algorithm_failed = 算法 { $algorithm } 失败
+log-core-algorithm-router-algorithm_failed_fallback = 算法失败，切换到降级链
+log-core-algorithm-router-fell_back_to_algorithm = 已切换到降级算法并成功生成 ID
+log-core-algorithm-router-algorithm_not_found = 在算法映射中未找到算法，切换到降级链
+log-core-algorithm-router-algorithm_batch_failed = 算法 { $algorithm } 批量生成失败
+log-core-algorithm-router-shutdown_error = 关闭算法时出错：{ $error }
+
+# src/core/algorithm_router.rs（遗留/死模块——保留作历史参考）
+# 命名空间：log.core.algorithm_router.*（注意下划线 `algorithm_router`）
+# 不要在此添加新 key；新内容请使用 log.core.algorithm.router.*。
+log-core-algorithm_router-algorithm_initialized = 算法 { $alg_type } 初始化成功
+log-core-algorithm_router-algorithm_build_failed = 构建算法 { $alg_type } 失败：{ $error }
+log-core-algorithm_router-generating_id = 正在为 biz_tag='{ $biz_tag }' 生成 ID，使用算法='{ $algorithm }'
+log-core-algorithm_router-setting_algorithm = 将 biz_tag='{ $biz_tag }' 的算法设置为 '{ $algorithm }'
+log-core-algorithm_router-attempting_generate = 尝试使用算法='{ $algorithm }' 为 biz_tag='{ $biz_tag }' 生成 ID
+log-core-algorithm_router-found_algorithm_impl = 找到 '{ $algorithm }' 的算法实现
+log-core-algorithm_router-id_generated_with_value = 使用 '{ $algorithm }' 成功生成 ID：{ $id }
+log-core-algorithm_router-algorithm_failed = 算法 { $algorithm } 失败：{ $error }
+log-core-algorithm_router-algorithm_batch_failed = 算法 { $algorithm } 批量生成失败：{ $error }
+log-core-algorithm_router-shutdown_error = 关闭算法 { $algorithm } 时出错：{ $error }
+
+# src/core/auth/manager.rs
+log-core-auth-manager-salt_not_set_critical = NEBULA_API_KEY_SALT 环境变量未设置。这是严重的安全问题。
+log-core-auth-manager-salt_not_set_dev = NEBULA_API_KEY_SALT 未设置。开发环境使用随机盐值。重启后所有 API 密钥将失效。
+log-core-auth-manager-salt_generation_failed = 生成安全随机盐值失败（{ $error }）。使用兜底盐值。生产环境不应出现此情况。
+
+# src/core/config/app.rs
+log-core-config-app-weak_database_password_detected = 检测到弱密码或空密码。请通过 NEBULA_DATABASE_PASSWORD 环境变量设置强密码。
+
+# src/core/config/environment.rs
+log-core-config-environment-missing_nebula_env_treated_as_production = 未设置 NEBULA_ENV，将按生产环境校验执行。如需开发模式，请显式设置 NEBULA_ENV=development。
+log-core-config-environment-unknown_nebula_env_treated_as_production = NEBULA_ENV 取值无法识别：'{ $value }'，将按生产环境处理。请显式设置 NEBULA_ENV=development 或 NEBULA_ENV=production。
+
+# src/core/config/app_config.rs
+log-core-config-app_config-config_expanded = 配置已展开
+log-core-config-app_config-toml_parsed = 原始解析的 auth enabled
+log-core-config-app_config-config_loaded = 认证配置已加载
+
+# src/core/database/connection.rs
+log-core-database-connection-connecting = 正在连接 { $engine } 数据库，URL：{ $url }
+log-core-database-connection-established_successfully = 数据库连接建立成功
+log-core-database-connection-running_migrations = 正在运行数据库迁移...
+log-core-database-connection-schema_created_verified = Schema '{ $schema }' 已创建/验证
+log-core-database-connection-schema_create_failed = 无法创建 schema（可能不是 PostgreSQL）：{ $error }
+log-core-database-connection-table_created_verified = 表已创建/验证：{ $table_name }
+log-core-database-connection-table_already_exists = 表已存在，跳过创建
+log-core-database-connection-migrations_completed = 数据库迁移已成功完成
+
+# src/core/database/repository.rs
+log-core-database-repository-api_key_role_conversion = API 密钥角色转换
+log-core-database-repository-segment_updated = 已更新 { $workspace_id }/{ $biz_tag } 的号段：current_id={ $current_id }，max_id={ $max_id }
+log-core-database-repository-segment_created = 已为 { $workspace_id }/{ $biz_tag } 创建新号段：start_id={ $start_id }，max_id={ $max_id }
+log-core-database-repository-segment_updated_with_dc = 已更新 { $workspace_id }/{ $biz_tag }/dc{ $dc_id } 的号段：current_id={ $current_id }，max_id={ $max_id }
+log-core-database-repository-segment_created_with_dc = 已为 { $workspace_id }/{ $biz_tag }/dc{ $dc_id } 创建新号段：start_id={ $start_id }，max_id={ $max_id }
+
+# src/core/coordinator/local.rs
+log-core-coordinator-local-allocator_initialized = LocalWorkerAllocator 已为 DC { $datacenter_id } 初始化，worker_id 为 { $worker_id }
+log-core-coordinator-local-worker_allocated = 已为 DC { $datacenter_id } 分配本地 worker_id：{ $worker_id }
+log-core-coordinator-local-worker_released = 已释放本地 worker_id：{ $worker_id }
+
+# src/core/coordinator/etcd.rs
+log-core-coordinator-etcd-cluster_recovered = Etcd 集群已恢复到健康状态
+log-core-coordinator-etcd-switched_back_to_etcd = 已从本地缓存切换回 etcd 集群
+log-core-coordinator-etcd-cluster_failed = Etcd 集群连续失败 { $consecutive } 次后标记为失败，使用本地缓存
+log-core-coordinator-etcd-cluster_degraded = Etcd 集群连续失败 { $consecutive } 次后标记为降级
+log-core-coordinator-etcd-cache_file_not_found = 在 { $path } 未找到本地缓存文件，将在首次写入时创建
+log-core-coordinator-etcd-loaded_cache_entries = 已从本地缓存加载 { $count } 条记录
+log-core-coordinator-etcd-saved_cache_entries = 已保存 { $count } 条记录到本地缓存
+log-core-coordinator-etcd-health_check_passed_injected = Etcd 集群健康检查通过（通过注入的客户端）
+log-core-coordinator-etcd-health_check_failed = Etcd 集群健康检查失败：{ $error }
+log-core-coordinator-etcd-health_check_timeout_injected = Etcd 集群健康检查在 { $timeout_ms }ms 后超时（通过注入的客户端）
+log-core-coordinator-etcd-no_endpoints_configured = 未配置 etcd 端点
+log-core-coordinator-etcd-health_check_passed = Etcd 集群健康检查通过
+log-core-coordinator-etcd-health_check_timeout_default = Etcd 集群健康检查超时
+log-core-coordinator-etcd-persist_cache_failed = 持久化本地缓存失败：{ $error }
+log-core-coordinator-etcd-allocator_initialized = EtcdWorkerAllocator 已为 DC { $datacenter_id } 初始化
+log-core-coordinator-etcd-lease_granted = 已授予租约：{ $lease_id }
+log-core-coordinator-etcd-kv_get_failed = kv_get 失败 { $path }：{ $error }，尝试下一个 id
+log-core-coordinator-etcd-worker_id_allocated = 成功分配 worker_id：{ $worker_id }
+log-core-coordinator-etcd-worker_id_allocate_failed = 分配 worker_id { $worker_id } 失败：{ $error }
+log-core-coordinator-etcd-worker_id_release_failed = 释放 worker_id { $worker_id } 失败：{ $error }
+log-core-coordinator-etcd-worker_id_released = 已释放 worker_id：{ $worker_id }
+log-core-coordinator-etcd-lock_initialized = EtcdDistributedLock 已初始化，前缀：{ $prefix }
+log-core-coordinator-etcd-lock_acquired = 已获取 key '{ $key }' 的分布式锁（lease：{ $lease_id }，尝试次数：{ $attempt }）
+log-core-coordinator-etcd-lock_already_held_retry = key '{ $key }' 的锁已被占用，{ $retry_delay_ms }ms 后重试（第 { $attempt } 次）
+log-core-coordinator-etcd-lock_released = 已释放分布式锁
+log-core-coordinator-etcd-lock_drop_released = Drop 时通过后台 task 自动释放分布式锁
+log-core-coordinator-etcd-lock_drop_release_failed = Drop 时自动释放分布式锁失败（lease 将按 TTL 自动过期）：{ $error }
+log-core-coordinator-etcd-lock_drop_no_runtime = Drop 时无可用 tokio runtime；锁将按 lease TTL 自动过期
+log-core-coordinator-etcd-lease_keepalive_renewed = Etcd 租约 { $lease_id } 续期成功
+log-core-coordinator-etcd-lease_keepalive_failed = Etcd 租约续期失败（连续第 { $consecutive }/{ $max } 次）：{ $error }
+log-core-coordinator-etcd-lease_keepalive_fail_stop = Etcd 租约已连续 { $consecutive } 次续期失败；触发 fail-stop 优雅停机
+log-core-coordinator-etcd-lease_keepalive_stopped = Etcd 租约续期任务已停止（优雅停机）
+log-core-coordinator-etcd-release_refused_key_owned_by_other = 拒绝释放 worker key { $path }：value 已归属其他实例（{ $value }）
+
+# src/core/monitoring/core.rs
+log-core-monitoring-core-unknown_alert_expression = 未知的告警表达式：{ $expression }
+log-core-monitoring-core-alert_critical = { $rule_name }：{ $severity } - { $message }
+log-core-monitoring-core-alert_warning = { $rule_name }：{ $severity } - { $message }
+log-core-monitoring-core-alert_info = { $rule_name }：{ $severity } - { $message }
+log-core-monitoring-core-alert_debug = { $rule_name }：{ $severity } - { $message }
+log-core-monitoring-core-alert_log = 告警
+log-core-monitoring-core-would_send_notification = 将为告警 { $rule_name } 发送 { $channel_type } 通知
+log-core-monitoring-core-webhook_sent = Webhook 已成功发送到 { $url }
+log-core-monitoring-core-webhook_status_error = Webhook 返回状态码：{ $status }
+log-core-monitoring-core-webhook_failed = 发送 Webhook 到 { $url } 失败：{ $error }
+log-core-monitoring-core-alert_manager_already_running = AlertManager 已在运行
+log-core-monitoring-core-alert_manager_starting = AlertManager 正在启动...
+log-core-monitoring-core-alert_manager_started = AlertManager 已启动
+log-core-monitoring-core-alert_manager_shutdown_signal = AlertManager 评估循环收到关闭信号
+log-core-monitoring-core-send_alert_failed = 发送告警失败：{ $error }
+log-core-monitoring-core-send_resolved_alert_failed = 发送已恢复告警失败：{ $error }
+log-core-monitoring-core-alert_manager_shutting_down = AlertManager 正在关闭...
+log-core-monitoring-core-alert_manager_shutdown_complete = AlertManager 已关闭
+
+# src/server/audit/logger.rs
+log-server-audit-logger-persist_failed = 持久化审计日志失败：{ $error }
+log-server-audit-logger-path_invalid = 无效的审计日志路径：{ $error }
+log-server-audit-logger-audit_event_recorded = 审计事件已记录
+log-server-audit-logger-event_dropped_no_persistence = 审计事件从内存缓冲区丢弃（max_events={ $max_events }）。请配置 audit_log_path 将事件持久化到文件（SOC2/GDPR 合规要求）。
+
+# src/server/audit/middleware.rs
+log-server-audit-middleware-request_recorded = 请求审计已记录
+
+# src/server/config/cors.rs
+log-server-config-cors-allowed_origins_required_in_production = 在生产环境中必须配置 ALLOWED_ORIGINS
+log-server-config-cors-allowed_origins_security_required = 安全要求：必须设置 ALLOWED_ORIGINS 环境变量
+log-server-config-cors-allowed_origins_example = 示例：ALLOWED_ORIGINS=https://example.com,https://app.example.com
+log-server-config-cors-allowed_origins_dev_default = 开发环境未配置 ALLOWED_ORIGINS，使用默认的 localhost 源
+
+# src/server/config/hot_reload.rs
+log-server-config-hot_reload-write_lock_failed_callbacks = 获取 reload callbacks 的写锁失败：{ $error }
+log-server-config-hot_reload-read_config_failed = 读取配置文件失败：{ $error }
+log-server-config-hot_reload-parse_config_failed = 解析或校验配置文件失败：{ $error }
+log-server-config-hot_reload-read_lock_failed_callbacks = 获取 reload callbacks 的读锁失败：{ $error }
+log-server-config-hot_reload-config_hot_reloaded = 配置已从 { $config_path } 热加载
+log-server-config-hot_reload-reload_error = 配置热加载出错：{ $error }
+log-server-config-hot_reload-config_updated_programmatically = 配置已通过编程方式更新
+log-server-config-hot_reload-write_lock_failed_algorithm_map = 获取 algorithm map 的写锁失败：{ $error }
+log-server-config-hot_reload-algorithm_set = 已设置 biz_tag '{ $biz_tag }' 的算法
+log-server-config-hot_reload-read_lock_failed_algorithm_map = 获取 algorithm map 的读锁失败：{ $error }
+
+# src/server/config/tls.rs
+log-server-config-tls-tls12_min_configured = 已配置 TLS 1.2 最低版本 - 兼容性可接受
+log-server-config-tls-tls13_min_configured = 已配置 TLS 1.3 最低版本 - 推荐用于生产环境
+log-server-config-tls-tls_initialized = TLS 配置已初始化
+
+# src/server/grpc.rs
+log-server-grpc-batch_generate_received = 收到 gRPC batch_generate 请求，count：{ $count }
+log-server-grpc-batch_size_validation_failed_zero = 批量大小校验失败：count 为 0
+log-server-grpc-batch_size_validation_failed_exceeds_max = 批量大小校验失败：count { $count } 超过最大值 { $max }
+log-server-grpc-batch_size_validation_passed = 批量大小校验通过：{ $count }
+
+# src/server/handlers/api_key_handlers.rs
+log-server-handlers-api_key_handlers-creating_additional_admin_key = 正在创建额外的管理员密钥
+
+# src/server/handlers/id_handlers.rs
+log-server-handlers-id_handlers-generate_request = generate 请求：workspace={ $workspace }，group={ $group }，biz_tag={ $biz_tag }
+
+# src/server/handlers/system_handlers.rs
+log-server-handlers-system_handlers-cannot_start_key_rotation = 无法启动密钥轮换任务：未配置 API 密钥仓库
+log-server-handlers-system_handlers-running_key_rotation_check = 正在运行密钥轮换检查...
+log-server-handlers-system_handlers-key_rotation_shutting_down = 密钥轮换任务正在关闭...
+
+# src/server/middleware/api_key_auth.rs
+log-server-middleware-api_key_auth-too_many_auth_failures = 认证失败次数过多
+log-server-middleware-api_key_auth-auth_middleware_called = 认证中间件被调用
+log-server-middleware-api_key_auth-auth_disabled_request = 认证已禁用 - 允许请求通过不校验（已记录审计日志）
+log-server-middleware-api_key_auth-request_processed_without_auth = 请求已在不认证的情况下处理
+log-server-middleware-api_key_auth-invalid_basic_format = 无效的 Basic 认证格式：缺少冒号分隔符
+log-server-middleware-api_key_auth-invalid_base64_encoding = 认证头中的 Base64 编码无效
+log-server-middleware-api_key_auth-base64_decode_failed = 解码 Base64 认证头失败
+log-server-middleware-api_key_auth-invalid_apikey_format = 无效的 ApiKey 格式：缺少冒号分隔符
+log-server-middleware-api_key_auth-unsupported_auth_format = 不支持的认证格式
+log-server-middleware-api_key_auth-empty_credentials = key_id 或 key_secret 为空
+log-server-middleware-api_key_auth-authentication_successful = 认证成功
+log-server-middleware-api_key_auth-invalid_credentials = 无效的 API 密钥凭据
+log-server-middleware-api_key_auth-missing_auth_header = 缺少 authorization 头
+log-server-middleware-api_key_auth-checking_admin_role = 正在检查管理员角色
+log-server-middleware-api_key_auth-no_api_key_role_extension = 请求中未找到 ApiKeyRole 扩展
+
+# src/server/rate_limit/limiter.rs
+log-server-rate_limit-limiter-cleaned_up_expired_limiters = 已清理 { $removed_count } 个过期的限流器
+log-server-rate_limit-limiter-rate_limit_check_error = 限流检查出错
+log-server-rate_limit-limiter-manually_cleaned_up_expired_limiters = 已手动清理 { $removed_count } 个过期的限流器
+
+# src/server/router.rs
+log-server-router-batch_generate_request = HTTP batch_generate 请求：workspace={ $workspace }，group={ $group }
+log-server-router-batch_generation_failed = HTTP 批量生成失败：{ $message }
+log-server-router-batch_generation_error = HTTP 批量生成出错：{ $error }
+
+# src/main.rs
+log-main-loading_api_keys = 正在加载 API 密钥...
+log-main-creating_admin_api_key_from_env = 正在从环境变量创建管理员 API 密钥
+log-main-admin_api_key_created = 管理员 API 密钥已创建：{ $key_id }
+log-main-admin_api_key_create_failed = 创建管理员 API 密钥失败：{ $error }
+log-main-creating_api_key_from_config = 正在从配置创建 API 密钥
+log-main-api_key_created_from_config = 已从配置创建 API 密钥：{ $key_id }（角色：{ $role }）
+log-main-api_key_create_from_config_failed = 从配置创建 API 密钥失败：{ $error }
+log-main-existing_admin_api_key_found = 找到已存在的管理员 API 密钥
+log-main-admin_api_key_created_no_workspace = 管理员 API 密钥已创建：{ $key_id }（工作空间：None）
+log-main-admin_api_key_secret_printed = 管理员 API 密钥已打印到控制台 - 请确保安全保存
+log-main-admin_api_key_generated_no_print = 管理员 API 密钥已生成。生产环境中不会打印密钥。
+log-main-admin_api_key_check_failed = 检查管理员 API 密钥失败：{ $error }
+log-main-test_admin_api_key_created = 已创建测试管理员 API 密钥：{ $key_id }
+log-main-test_api_key_create_failed = 创建测试 API 密钥失败：{ $error }
+log-main-no_database_connection = 无数据库连接，API 密钥无法持久化存储
+log-main-id_generators_initializing = 正在初始化 ID 生成器...
+log-main-id_generators_initialized = ID 生成器初始化成功
+log-main-id_generators_initializing_etcd_disabled = 正在初始化 ID 生成器（etcd 已禁用）...
+log-main-starting_http_server = 正在 { $addr } 上启动 HTTP 服务器
+log-main-shutting_down_http_server = 正在关闭 HTTP 服务器...
+log-main-starting_grpc_server = 正在 { $addr } 上启动 gRPC 服务器
+log-main-configured_grpc_port = 已配置的 gRPC 端口：{ $port }
+log-main-shutting_down_grpc_server = 正在关闭 gRPC 服务器...
+log-main-grpc_tls_enabled = gRPC TLS 已启用，使用安全连接
+log-main-starting_service = 正在启动 Nebula ID 生成服务
+log-main-version = 版本：{ $version }
+log-main-sdforge_plugins_initialized = sdforge 插件已初始化
+log-main-loading_config = 正在从以下路径加载配置：{ $path }
+log-main-config_defaults_because_missing = 未指定 --config 且配置文件“{ $path }”不存在，正在使用内置默认配置启动
+log-main-config_loaded = 配置加载成功
+log-main-starting_server_on_ports = 正在启动 Nebula ID 服务器，端口：HTTP={ $http_port }，gRPC={ $grpc_port }
+log-main-connecting_to_database = 正在连接数据库...
+log-main-database_connected = 数据库连接成功
+log-main-migrations_failed = 运行数据库迁移失败：{ $error }。应用在缺少必要表的情况下无法启动。
+log-main-shutting_down = 正在关闭...
+log-main-database_connect_failed = 连接数据库失败：{ $error }。
+log-main-check_database_url = 请检查 DATABASE_URL 环境变量或数据库配置。
+log-main-database_repository_initialized = 数据库仓库已初始化
+log-main-auth_enabled = 认证已启用：{ $enabled }
+log-main-fatal_api_key_auth_requires_database = 严重错误：API 密钥认证需要数据库连接。{ "\u000A" }Nebula ID 需要数据库来存储和校验 API 密钥。{ "\u000A" }请确保配置中包含有效的数据库设置：{ "\u000A" }  - database.url 或 database.engine/host/port/database/username/password{ "\u000A" }  - database.max_connections 应大于 0{ "\u000A" }正在关闭...
+log-main-initializing_etcd_health_monitor = 正在初始化 etcd 集群健康监控...
+log-main-etcd_local_cache_load_failed = 加载 etcd 本地缓存失败：{ $error }
+log-main-etcd_health_monitor_initialized = Etcd 集群健康监控已初始化
+log-main-etcd_client_wrapper_initialized = Etcd 客户端封装已初始化（走 trait 注入的健康检查路径）
+log-main-etcd_client_wrapper_init_failed = Etcd 客户端封装初始化失败，回退到每次检查新建连接：{ $error }
+log-main-tls_init_failed = 初始化 TLS 管理器失败：{ $error }
+log-main-tls_disabled = TLS 将被禁用
+log-main-starting_degradation_check = 正在启动降级管理器健康检查任务...
+log-main-server_initialized_starting = 服务器已初始化，正在启动 HTTP 和 gRPC 服务器...
+log-main-hot_reload_watcher_started = 热更新自动监视已启动（轮询配置文件 mtime）
+log-main-http_server_stopped = HTTP 服务器已停止
+log-main-http_server_error = HTTP 服务器错误：{ $error }
+log-main-http_server_panic = HTTP 服务器任务 panic：{ $error }
+log-main-grpc_server_stopped = gRPC 服务器已停止
+log-main-grpc_server_error = gRPC 服务器错误：{ $error }
+log-main-grpc_server_panic = gRPC 服务器任务 panic：{ $error }
+log-main-shutdown_signal_received = 收到关闭信号
+log-main-etcd_disabled = etcd 特性已禁用，在不使用 etcd 集群健康监控的情况下初始化
+log-main-tls_insecure_escape_hatch_active = 生产模式下 TLS 未启用；因已设置 NEBULA_ALLOW_INSECURE_TLS=1 继续启动（仅限内网评估）
+error-main-tls_required_in_production = 生产环境必须启用 TLS（tls.enabled = false）；设置 NEBULA_ALLOW_INSECURE_TLS=1 可显式豁免（仅限内网评估）
+error-main-invalid_api_key_salt_production = 生产环境 API Key Salt 配置无效（为空/过短/为测试默认值）。请设置环境变量 { $env } 为长度 ≥ 16 的随机字符串
+error-main-etcd_required_but_unavailable = 已配置 etcd endpoints 但 etcd 协调服务不可用：{ $error }。拒绝回退进程内锁（多实例部署必然产生重复 ID），正在关闭...
+error-main-worker_id_allocation_failed = 经 etcd 分配 worker_id 失败：{ $error }。多实例部署不得回退静态默认 worker_id（必然重复 ID），正在关闭...
+error-main-worker_lease_renewal_failed = worker 租约连续续期失败：{ $reason }。为避免已被接管的 worker_id 产生重复 ID，快速失败停机，正在关闭...
+log-main-worker_id_allocated_from_etcd = 已从 etcd 分配 worker_id { $worker_id }（lease { $lease_id }），覆盖静态配置
+log-main-worker_id_released_on_shutdown = 停机时已通过 etcd 释放 worker_id { $worker_id }
+log-main-worker_id_release_on_shutdown_failed = 停机时释放 worker_id { $worker_id } 失败：{ $error }（key 将随 lease TTL 到期自动回收）
+log-main-default_worker_id_warning = 未配置 etcd 且 worker_id/dc_id 为默认值（worker_id={ $worker_id }，dc_id={ $dc_id }）。多实例部署必须显式配置 WORKER_ID/DC_ID，否则 Snowflake 会产生重复 ID
+log-main-locale_initialized = 进程默认 locale 已设置为：{ $locale }
+log-main-invalid_locale_falling_back = 不支持的 locale 取值“{ $locale }”（支持：en、zh-CN），回退为 en
+
+# T013 (unify-rust-i18n) —— 此前为硬编码英文 format! 载荷的动态错误详情串
+# （src/main.rs、src/core/database/*_repository.rs、
+# src/server/handlers/helpers.rs 中 CoreError::ConfigurationError /
+# InternalError / NotFound / WorkspaceDisabled 的内层 String）。
+# 模板入 FTL，详情在构造点经 t! 以变量传入。
+error-main-config_load_failed = 从 '{ $path }' 加载配置失败：{ $reason }
+error-main-config_env_load_failed = 从环境变量加载配置失败：{ $reason }
+error-main-tls_config_error = TLS 配置错误：{ $reason }
+error-main-tls_configuration_error = TLS 配置错误：{ $reason }
+error-main-grpc_server_error = gRPC 服务器错误：{ $reason }
+error-main-http_server_panic = HTTP 服务器 panic：{ $reason }
+error-main-grpc_server_panic = gRPC 服务器 panic：{ $reason }
+error-main-http_bind_address_invalid = config.app 中的 HTTP 绑定地址无效（host={ $host }，port={ $port }）：{ $reason }
+error-main-ctrl_c_handler_install_failed = 安装 Ctrl+C 信号处理器失败
+error-main-terminate_handler_install_failed = 安装信号处理器失败
+error-detail-workspace_not_found = 工作空间未找到：{ $id }
+error-detail-segment_not_found = 号段未找到：{ $workspace_id }/{ $biz_tag }
+error-detail-workspace_not_owned = 工作空间 { $workspace_id } 不属于调用者
+error-main-etcd_allocator_init_failed = etcd worker allocator 初始化失败：{ $reason }
+error-main-etcd_worker_id_allocation_failed = etcd worker_id 分配失败：{ $reason }
+error-main-etcd_worker_id_range_exceeded = etcd 分配的 worker_id { $worker_id } 超出 config.worker_id 的 u8 取值范围
+error-main-etcd_client_connect_failed = etcd 客户端连接 endpoints { $endpoints } 失败：{ $reason }
+error-main-etcd_ping_failed = etcd ping endpoints { $endpoints } 失败：{ $reason }
+error-main-etcd_ping_timed_out = etcd ping 在 { $timeout_ms }ms 后超时，endpoints：{ $endpoints }
+error-main-etcd_lock_create_failed = 创建 EtcdDistributedLock 失败：{ $reason }
+error-detail-group_not_found = 组未找到：{ $id }
+error-detail-biz_tag_not_found = 业务标签未找到：{ $id }

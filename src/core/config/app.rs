@@ -1,16 +1,5 @@
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 
 //! Application, database, and etcd configuration.
 
@@ -61,7 +50,7 @@ impl From<String> for DatabaseEngine {
 /// Application configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct AppConfig {
+pub struct NebulaIdConfig {
     /// Application name
     pub name: String,
     /// Server listen address
@@ -73,7 +62,7 @@ pub struct AppConfig {
     /// Datacenter ID (0-7)
     ///
     /// 多实例约束：未配置 etcd（无 worker_id 运行时分配）时，本值与
-    /// [`AppConfig::worker_id`] 共同构成 Snowflake 的机器标识；多实例部署
+    /// [`NebulaIdConfig::worker_id`] 共同构成 Snowflake 的机器标识；多实例部署
     /// 必须显式配置（环境变量 `DC_ID` 或配置文件），默认值 0 会使多实例
     /// 生成重复 ID（启动时进程会输出 warn 提醒，见 main.rs T018）。
     pub dc_id: u8,
@@ -87,10 +76,11 @@ pub struct AppConfig {
     /// Graceful shutdown timeout (seconds)
     #[serde(default = "default_shutdown_timeout_seconds")]
     pub shutdown_timeout_seconds: u64,
-    /// Process default locale (T035). Supported values: "en", "zh-CN";
-    /// invalid values fall back to "en" at startup (see main.rs
-    /// `resolve_locale`). Environment variable `NEBULA_LOCALE` takes
-    /// precedence over this field.
+    /// Process default locale (T035/T013)。空串(auto,serde 默认)= 未显式
+    /// 表达语言偏好,跟随系统语言检测链(NEBULA_LOCALE → 本字段 → LC_ALL/
+    /// LC_MESSAGES/LANG → sys-locale → en,见 main.rs `resolve_locale`);
+    /// 显式写入规范值 "en"/"zh-CN" 则钉死进程语言,**用户配置优先于系统
+    /// 语言**。非法值在启动时告警并继续走链(链尾落 en)。
     #[serde(default = "default_locale")]
     pub locale: String,
 }
@@ -100,10 +90,13 @@ fn default_shutdown_timeout_seconds() -> u64 {
 }
 
 fn default_locale() -> String {
-    "en".to_string()
+    // T013(unify-rust-i18n):默认空串 = auto(跟随系统语言检测链,链尾 en)。
+    // 若默认 "en",config.app.locale 会在检测链中恒短路,统一基线要求的
+    // 系统语言自动检测在默认部署下不可达(设计决策,见 T013 实施记录)。
+    String::new()
 }
 
-impl Default for AppConfig {
+impl Default for NebulaIdConfig {
     fn default() -> Self {
         Self {
             name: "nebula-id".to_string(),
@@ -118,7 +111,7 @@ impl Default for AppConfig {
     }
 }
 
-impl AppConfig {
+impl NebulaIdConfig {
     pub fn http_addr(&self) -> Result<SocketAddr, Box<dyn std::error::Error + Send + Sync>> {
         format!("{}:{}", self.host, self.http_port)
             .parse()
@@ -417,11 +410,11 @@ mod tests {
         assert_eq!(e, DatabaseEngine::Postgresql);
     }
 
-    // ----- AppConfig Default + http_addr / grpc_addr -----
+    // ----- NebulaIdConfig Default + http_addr / grpc_addr -----
 
     #[test]
     fn test_app_config_default_values() {
-        let cfg = AppConfig::default();
+        let cfg = NebulaIdConfig::default();
         assert_eq!(cfg.name, "nebula-id");
         assert_eq!(cfg.host, "0.0.0.0");
         assert_eq!(cfg.http_port, 8080);
@@ -432,7 +425,7 @@ mod tests {
 
     #[test]
     fn test_app_config_http_addr_success() {
-        let cfg = AppConfig::default();
+        let cfg = NebulaIdConfig::default();
         let addr = cfg.http_addr().expect("default http_addr should parse");
         assert_eq!(addr.port(), 8080);
         assert_eq!(addr.ip().to_string(), "0.0.0.0");
@@ -440,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_app_config_grpc_addr_success() {
-        let cfg = AppConfig::default();
+        let cfg = NebulaIdConfig::default();
         let addr = cfg.grpc_addr().expect("default grpc_addr should parse");
         assert_eq!(addr.port(), 9091);
         assert_eq!(addr.ip().to_string(), "0.0.0.0");
@@ -449,7 +442,7 @@ mod tests {
     #[test]
     fn test_app_config_http_addr_invalid_host_returns_error() {
         // 不合法的 host（带空格）→ 解析失败
-        let cfg = AppConfig {
+        let cfg = NebulaIdConfig {
             host: "not a valid host".to_string(),
             ..Default::default()
         };
@@ -466,7 +459,7 @@ mod tests {
 
     #[test]
     fn test_app_config_grpc_addr_invalid_host_returns_error() {
-        let cfg = AppConfig {
+        let cfg = NebulaIdConfig {
             host: "not a valid host".to_string(),
             ..Default::default()
         };
@@ -484,7 +477,7 @@ mod tests {
     #[test]
     fn test_app_config_http_addr_custom_port() {
         // 自定义端口应正确解析
-        let cfg = AppConfig {
+        let cfg = NebulaIdConfig {
             host: "127.0.0.1".to_string(),
             http_port: 12345,
             ..Default::default()
@@ -496,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_app_config_grpc_addr_custom_port() {
-        let cfg = AppConfig {
+        let cfg = NebulaIdConfig {
             host: "127.0.0.1".to_string(),
             grpc_port: 54321,
             ..Default::default()
@@ -516,18 +509,21 @@ mod tests {
         assert_eq!(cfg.watch_timeout_ms, 5000);
     }
 
-    // ----- T035: AppConfig.locale -----
+    // ----- T035: NebulaIdConfig.locale -----
 
     #[test]
-    fn test_app_config_locale_default_is_en() {
-        let cfg = AppConfig::default();
-        assert_eq!(cfg.locale, "en");
+    fn test_app_config_locale_default_is_auto_empty() {
+        let cfg = NebulaIdConfig::default();
+        assert_eq!(
+            cfg.locale, "",
+            "默认 locale 必须为空串(auto:跟随系统检测链)"
+        );
     }
 
     #[test]
-    fn test_app_config_locale_missing_in_toml_defaults_to_en() {
-        // 既有部署的 [app] 段没有 locale 键 → serde default 兜底 "en"
-        let cfg: AppConfig = toml::from_str(
+    fn test_app_config_locale_missing_in_toml_defaults_to_auto() {
+        // 既有部署的 [app] 段没有 locale 键 → serde default 兜底空串(auto)
+        let cfg: NebulaIdConfig = toml::from_str(
             r#"
 name = "nebula-id"
 host = "0.0.0.0"
@@ -538,12 +534,12 @@ worker_id = 0
 "#,
         )
         .expect("[app] 段缺 locale 键必须可解析");
-        assert_eq!(cfg.locale, "en");
+        assert_eq!(cfg.locale, "");
     }
 
     #[test]
     fn test_app_config_locale_explicit_value_roundtrips() {
-        let cfg: AppConfig = toml::from_str(
+        let cfg: NebulaIdConfig = toml::from_str(
             r#"
 name = "nebula-id"
 host = "0.0.0.0"

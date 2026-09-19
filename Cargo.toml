@@ -2,7 +2,7 @@
 name = "nebulaid"
 version = "0.2.0"
 description = "Enterprise-grade distributed ID generation system"
-authors = ["Kirky.X"]
+authors = ["Kirky-X <Kirky-X@outlook.com>"]
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Kirky-X/NebulaId"
@@ -90,7 +90,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # 异步运行时
-tokio = { version = "1.53", features = ["full"] }
+tokio = { version = "1.53", features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = "0.1"
 futures-util = "0.3"
 
@@ -142,13 +142,11 @@ subtle = "2.6"
 # Argon2id 用于 API key 密钥哈希（CWE-916 修复）；0.6 起 std 废弃，salt 的
 # OsRng 由 getrandom feature 提供
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "password-hash", "getrandom"] }
-regex = "1.13"
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 validator = { version = "0.21", features = ["derive"] }
 serde_with = "3.23"
 
 # 错误处理
-anyhow = "1.0"
 
 # 加密
 rustls = "0.23"
@@ -167,14 +165,23 @@ url = "2.5"
 # optional dbnexus 的开关）。
 limiteron = { path = "../base/limiteron", version = "0.3.0-rc.4", default-features = false }
 
-# 国际化（default-features = false 禁用 accept-language，项目自带更严格的 RFC 7231 解析）
-rust-i18n = { version = "4.2", default-features = false }
+# 国际化（统一基线 unify-rust-i18n：Fluent/ICU 栈，替换 rust-i18n YAML 后端）。
+# - fluent-bundle 0.16 concurrent：Send+Sync 的 FluentBundle 双束（en/zh）可入
+#   static，FTL 资源 locales/{en,zh}/messages.ftl 经 include_str! 编译期内嵌；
+# - unic-langid：Fluent 束的语言标识解析；
+# - sys-locale：系统语言自动探测（检测链见 main.rs resolve_locale：
+#   NEBULA_LOCALE → config.app.locale → LC_ALL/LC_MESSAGES/LANG → sys-locale → en）。
+# - icu 按需不引入：本项目消息均为纯文本插值（t!/translate_with_locale），
+#   无数字/日期/复数/排序格式化需求（见 design.md Non-Goals）。
+fluent-bundle = "0.16"
+unic-langid = "0.9"
+sys-locale = "0.3"
 
 [dev-dependencies]
 mockall = "0.15"
 sea-orm = { version = "2.0", default-features = false, features = ["mock"] }
 tempfile = "3.27"
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 criterion = { version = "0.8", default-features = false }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
 # toml 仅用于测试中序列化 Config 为 TOML 字符串（confers 不提供序列化功能）

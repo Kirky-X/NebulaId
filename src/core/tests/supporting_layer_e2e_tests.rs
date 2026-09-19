@@ -1,16 +1,5 @@
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 
 //! 核心支撑层端到端测试
 //!
@@ -523,7 +512,7 @@ fn e2e_algorithm_config_get_default_algorithm_invalid_falls_back_to_segment() {
 // CoreError i18n 端到端
 // =============================================================================
 
-/// 串行化所有调用 `rust_i18n::set_locale` 的测试，避免并行 set_locale 竞态。
+/// 串行化相邻的环境变量/locale 敏感测试(与 core::i18n::test_support 同一意图),避免并行竞态。
 static E2E_LOCALE_LOCK: Mutex<()> = Mutex::new(());
 
 /// E2E-I18N-001: 算法生成路径触发的 CoreError 通过 to_localized_string 翻译为用户可读消息。

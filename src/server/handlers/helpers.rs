@@ -1,16 +1,5 @@
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 
 //! Internal error-mapping helpers shared across handler sub-modules.
 //!
@@ -349,9 +338,9 @@ pub(crate) async fn authorize_workspace_access(
         ApiKeyRole::Admin => Ok(()),
         // User：仅自身 workspace。
         ApiKeyRole::User if key_workspace_id == target_workspace_id => Ok(()),
-        ApiKeyRole::User => Err(CoreError::WorkspaceDisabled(format!(
-            "workspace {} is not owned by the caller",
-            target_workspace_id
+        ApiKeyRole::User => Err(CoreError::WorkspaceDisabled(t!(
+            "error.detail.workspace_not_owned",
+            workspace_id = target_workspace_id
         ))),
         // Anonymous（认证禁用时注入）：无业务权限，fail-closed。
         ApiKeyRole::Anonymous => Err(CoreError::AuthenticationError(
@@ -592,29 +581,32 @@ mod tests {
     use crate::core::types::error::CoreError;
     use validator::Validate;
 
-    /// Save and restore the global locale around tests.
+    /// Save and restore the global locale around tests(与 i18n.rs /
+    /// error.rs 共用 test_support 锁串行化)。
     struct LocaleGuard {
         saved: String,
+        _lock: std::sync::MutexGuard<'static, ()>,
     }
 
     impl LocaleGuard {
         fn new() -> Self {
             Self {
-                saved: rust_i18n::locale().to_string(),
+                saved: crate::core::i18n::current_locale(),
+                _lock: crate::core::i18n::test_support::lock(),
             }
         }
     }
 
     impl Drop for LocaleGuard {
         fn drop(&mut self) {
-            rust_i18n::set_locale(&self.saved);
+            crate::core::i18n::init_i18n(&self.saved);
         }
     }
 
     #[test]
     fn test_core_error_to_response_en() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
 
         let (status, json) =
             core_error_to_response(&CoreError::InvalidInput("negative".to_string()), Locale::En);
@@ -626,7 +618,7 @@ mod tests {
     #[test]
     fn test_core_error_to_response_zh_cn() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
 
         let (status, json) = core_error_to_response(
             &CoreError::InvalidInput("negative".to_string()),
@@ -637,13 +629,13 @@ mod tests {
         assert_eq!(json.message, "无效输入：negative");
 
         // Global locale must remain "en"
-        assert_eq!(&*rust_i18n::locale(), "en");
+        assert_eq!(crate::core::i18n::current_locale(), "en");
     }
 
     #[test]
     fn test_core_error_to_response_status_codes() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
 
         // 400
         let (s, _) = core_error_to_response(&CoreError::InvalidInput("x".to_string()), Locale::En);
@@ -869,7 +861,7 @@ mod tests {
     #[test]
     fn test_error_envelope_business_codes_for_required_classes() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
 
         // 限流：RateLimitExceeded → "4001"。
         let (_, json) = core_error_to_response(&CoreError::RateLimitExceeded, Locale::En);
@@ -909,7 +901,7 @@ mod tests {
     #[test]
     fn test_error_envelope_business_codes_for_handler_constructed() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
 
         let (_, json) = invalid_uuid_response(Locale::En);
         assert_eq!(json.business_code, "3004");
@@ -935,7 +927,7 @@ mod tests {
     #[test]
     fn test_core_error_to_response_envelope_tracks_request() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
 
         let (_, json) =
             core_error_to_response(&CoreError::InvalidInput("x".to_string()), Locale::En);
@@ -952,7 +944,7 @@ mod tests {
     #[test]
     fn test_core_error_to_response_5xx_does_not_leak_internal_string() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
 
         // A sensitive DB URL embedded in DatabaseError — typical of what
         // an upstream diesel/sqlx error would stringify to.
@@ -1066,7 +1058,7 @@ mod tests {
     #[test]
     fn test_core_error_to_response_4xx_sanitizes_long_message() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
 
         // 301-byte payload — exceeds the 200-byte cap.
         let big = "x".repeat(300);
@@ -1130,7 +1122,7 @@ mod tests {
     #[test]
     fn test_core_error_to_response_4xx_no_inner_string_verbatim() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
 
         let (_, json) = core_error_to_response(&CoreError::RateLimitExceeded, Locale::En);
         assert_eq!(json.message, "Rate limit exceeded");
@@ -1349,7 +1341,7 @@ mod tests {
     #[test]
     fn test_invalid_uuid_response() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
         let (status, json) = invalid_uuid_response(Locale::En);
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(json.message, "Invalid UUID format");
@@ -1362,7 +1354,7 @@ mod tests {
     #[test]
     fn test_admin_cannot_perform_response() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
         let (status, json) = admin_cannot_perform_response(Locale::En);
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(json.message, "Admin API key cannot perform this operation");
@@ -1375,7 +1367,7 @@ mod tests {
     #[test]
     fn test_workspace_name_not_found_response() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
         let (status, json) = workspace_name_not_found_response("my-ws", Locale::En);
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(json.message, "Workspace 'my-ws' not found");
@@ -1391,7 +1383,7 @@ mod tests {
     #[test]
     fn test_workspace_name_not_found_response_truncates_long_name() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
 
         // 200-byte ASCII name — well over the 64-byte cap.
         let long_name = "a".repeat(200);
@@ -1460,7 +1452,7 @@ mod tests {
     #[test]
     fn test_workspace_id_required_response() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
         let (status, json) = workspace_id_required_response(Locale::En);
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(json.message.contains("workspace_id"));
@@ -1477,7 +1469,7 @@ mod tests {
     #[test]
     fn test_validation_error_response_en() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
 
         // Construct a struct with `#[validate(length(min = 1, max = 64))]`
         // and trigger a validation failure by setting the field to "".
@@ -1527,7 +1519,7 @@ mod tests {
     #[test]
     fn test_validation_error_response_zh_cn() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
 
         #[derive(validator::Validate)]
         struct SampleReq {
@@ -1556,7 +1548,7 @@ mod tests {
     #[test]
     fn test_validation_error_response_does_not_leak_constraints() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
 
         #[derive(validator::Validate)]
         struct RangeReq {
@@ -1608,7 +1600,7 @@ mod tests {
     #[test]
     fn test_validation_error_response_multiple_fields_joined() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
 
         #[derive(validator::Validate)]
         struct MultiReq {
@@ -1638,7 +1630,7 @@ mod tests {
     #[test]
     fn test_workspace_not_found_and_invalid_id_responses() {
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        crate::core::i18n::init_i18n("en");
 
         let (status, json) = workspace_not_found_response(Locale::En);
         assert_eq!(status, StatusCode::NOT_FOUND);

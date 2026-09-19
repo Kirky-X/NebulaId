@@ -381,7 +381,7 @@ CI（`ci.yml` / `release.yml` / `health-check.yml`）也通过同一入口调用
 
 ### 🎯 测试策略
 
-测试分层覆盖：`src/` 内联单元测试（`#[cfg(test)]`）、`src/core/tests/` 下按层组织的 E2E 模块（算法、认证、缓存、降级、gRPC 监控、基础设施、服务层等 13 个文件）、`tests/i18n_e2e.rs` 端到端 i18n 测试、`tests/*.sh` shell 端到端脚本（API、降级、分布式、数据库并发）与 Criterion 基准（`benches/i18n.rs`）。逐域场景矩阵与文件映射见 [🧪 测试场景文档](docs/TEST_SCENARIOS.md)。
+测试分层覆盖：`src/` 内联单元测试（`#[cfg(test)]`）、`src/core/tests/` 下按层组织的 E2E 模块（算法、认证、缓存、降级、gRPC 监控、基础设施、服务层等 13 个文件）、`tests/i18n_e2e.rs` 端到端 i18n 测试、`tests/*.sh` shell 端到端脚本（API、降级、分布式、数据库并发）与 Criterion 基准（`benches/i18n.rs`、`benches/algorithms.rs`）。逐域场景矩阵与文件映射见 [🧪 测试场景文档](docs/TEST_SCENARIOS.md)。
 
 ### ▶️ 运行命令（与 CI 一致）
 
@@ -402,6 +402,7 @@ cargo check --package nebulaid --no-default-features --lib --bins
 
 # 基准测试
 cargo bench --bench i18n
+cargo bench --bench algorithms
 
 # shell 端到端脚本
 ./scripts/run.sh api-test
@@ -409,13 +410,13 @@ cargo bench --bench i18n
 
 ### 📊 测试规模
 
-截至 v0.2.x 工作区：约 1780 个 Rust 测试函数（`src/` 内联 + `src/core/tests/` E2E 模块 + `tests/i18n_e2e.rs`）、4 个 shell 端到端脚本、1 组 Criterion 基准（i18n 热路径，4 个基准函数）。CI 覆盖率门禁为行覆盖率 ≥ 95%，pre-push 钩子另执行 ≥ 80% 的本地门禁；v0.2.0 发布时实际行覆盖率 89.91%。逐模块统计与统计口径见 [🧪 测试场景文档 · 统计汇总](docs/TEST_SCENARIOS.md#统计汇总)。
+截至 v0.2.x 工作区：约 1780 个 Rust 测试函数（`src/` 内联 + `src/core/tests/` E2E 模块 + `tests/i18n_e2e.rs`）、4 个 shell 端到端脚本、2 组 Criterion 基准（i18n 热路径 4 个基准函数 + 发号 / 限流 / 认证缓存热路径 7 个基准函数）。CI 覆盖率门禁为行覆盖率 ≥ 95%，pre-push 钩子另执行 ≥ 80% 的本地门禁；v0.2.0 发布时实际行覆盖率 89.91%。逐模块统计与统计口径见 [🧪 测试场景文档 · 统计汇总](docs/TEST_SCENARIOS.md#统计汇总)。
 
 ---
 
 ## 📊 性能
 
-本仓库唯一声明的 Criterion 基准是 i18n 热路径（`benches/i18n.rs`，`cargo bench --bench i18n` 复现），覆盖翻译查表、带参翻译、错误本地化与 Accept-Language 解析；ID 生成吞吐暂无公开基准数字（尚无对应基准框架，发布前请以自身负载实测）。设计层面的热路径要点——Segment 双缓冲与动态步长、Snowflake 串行化时间戳迁移、p50/p99/p999 环形缓冲分位数、release profile（thin LTO + `panic = "abort"`）——见 [📈 性能指南](docs/PERFORMANCE.md)。
+本仓库声明两项 Criterion 基准：i18n 热路径（`benches/i18n.rs`，覆盖翻译查表、带参翻译、错误本地化与 Accept-Language 解析）与发号 / 限流 / 认证缓存热路径（`benches/algorithms.rs`，覆盖 Snowflake 单条与批量、路由链路、令牌桶、认证缓存命中），复现命令分别为 `cargo bench --bench i18n` 与 `cargo bench --bench algorithms`，基线中位数见 [📈 性能指南 · 已记录基线](docs/PERFORMANCE.md#已记录基线)。设计层面的热路径要点——Segment 双缓冲与动态步长、Snowflake 无锁 CAS 状态字、p50/p99/p999 环形缓冲分位数、release profile（thin LTO + `panic = "abort"`）——同见该文档。
 
 ---
 
@@ -444,7 +445,7 @@ CI 五阶段门禁（fmt + clippy → cargo-deny → cargo-audit `--deny warning
 <tr><td align="center">✅</td><td>可观测与国际化</td><td>逐算法 p50/p99/p999 指标、健康检查、OTLP tracing、en / zh-CN i18n</td></tr>
 <tr><td align="center">✅</td><td>质量门禁</td><td>CI 五阶段门禁、覆盖率 ≥ 95%、cargo-deny / cargo-audit / CodeQL、约 1780 个测试</td></tr>
 <tr><td align="center">🚧</td><td>SDK 与分布式协调</td><td><code>sdk</code> facade（trait-kit 装配）持续强化；<code>etcd</code> 协调的生产化验证（feature 默认关闭）</td></tr>
-<tr><td align="center">📋</td><td>性能工程</td><td>ID 生成吞吐基准框架（criterion）、发布基线记录、批量生成调优</td></tr>
+<tr><td align="center">🚧</td><td>性能工程</td><td>批量生成调优、Segment 路由基准接入（ID 生成吞吐基准框架与发布基线已落地，见 [📈 性能指南](docs/PERFORMANCE.md)）</td></tr>
 <tr><td align="center">📋</td><td>云原生与容灾</td><td>Kubernetes Operator、多数据中心与自动故障转移、动态算法切换</td></tr>
 </table>
 

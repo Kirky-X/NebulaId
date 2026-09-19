@@ -1,16 +1,5 @@
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 
 //! Locale negotiation middleware (Phase 8 ).
 //!
@@ -45,7 +34,7 @@ use std::fmt;
 
 /// Supported locales for NebulaID.
 ///
-/// Variants match the top-level keys in `locales/*.yml`.
+/// Variants match the top-level keys in `locales/{en,zh}/messages.ftl`.
 ///
 /// # Security
 ///
@@ -63,8 +52,8 @@ impl Locale {
     /// Default locale when `Accept-Language` is missing or no match.
     pub const DEFAULT: Self = Locale::En;
 
-    /// Return the string identifier used in `locales/*.yml` and
-    /// `rust_i18n::set_locale`.
+    /// Return the string identifier consumed by `core::i18n`
+    /// (`translate_with_locale*` / `init_i18n` normalize "en" / "zh-CN").
     pub fn as_str(&self) -> &'static str {
         match self {
             Locale::En => "en",

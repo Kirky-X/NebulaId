@@ -35,8 +35,10 @@
 | 内联单元测试 | `src/` 各模块 `#[cfg(test)]` | 约 1560 个测试函数 | `cargo test --package nebulaid` |
 | E2E 测试模块 | `src/core/tests/`（13 个文件，经 `mod.rs` 注册） | 221 个测试函数 | `cargo test --package nebulaid --features etcd` |
 | i18n 端到端 | `tests/i18n_e2e.rs` | 1 个文件（middleware → Extension → 翻译响应全链） | 同上 |
+| 审计管道阻塞回归 | `tests/audit_ring_stall_repro.rs` | 1 个测试（灌满 inklog async 通道后断言审计 log() 不阻塞） | 同上 |
 | Shell 端到端 | `tests/*.sh` | 4 个脚本（见下节） | `./scripts/run.sh api-test` 等 |
-| Criterion 基准 | `benches/i18n.rs` | 1 组（4 基准函数 / 12 用例） | `cargo bench --bench i18n` |
+| Criterion 基准（i18n 热路径） | `benches/i18n.rs` | 1 组（4 基准函数 / 12 用例） | `cargo bench --bench i18n` |
+| Criterion 基准（发号热路径） | `benches/algorithms.rs` | 1 组（7 基准函数 / 7 用例） | `cargo bench --bench algorithms` |
 | 仓库文本守卫 | `src/core/tests/repo_docs_guards_tests.rs` | 1 个测试 | 随 `cargo test` 运行 |
 
 `src/core/tests/` 内的 E2E 模块按层组织，计数如下（`grep -c` 口径）：
@@ -193,7 +195,7 @@ cargo bench --bench i18n
 | ├─ `src/core/tests/` E2E 模块 | 221 |
 | └─ `tests/i18n_e2e.rs` | 少量（全链 i18n） |
 | Shell 端到端脚本 | 4（另有 1 个共用库） |
-| Criterion 基准组 | 1（4 函数 / 12 用例） |
+| Criterion 基准组 | 2（i18n：4 函数 / 12 用例；发号热路径：7 函数 / 7 用例） |
 | 仓库文本守卫 | 1 |
 
 覆盖率：CI 门禁为行覆盖率 ≥ 95%（`ci.yml`），pre-push 本地门禁 ≥ 80%（`_coverage_gate.sh`）；v0.2.0 发布时实际行覆盖率 89.91%（门禁值是下限，非当前值）。历史口径：v0.2.0 发布时 e2e 套件曾报 1829 条（见 [CHANGELOG](CHANGELOG.md)），后续演进以上表 grep 口径为准。

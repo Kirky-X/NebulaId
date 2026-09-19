@@ -1,16 +1,5 @@
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 
 //! Nebula ID - Enterprise-grade distributed ID generation system
 //!
@@ -30,6 +19,30 @@
 //! use nebulaid::core::Config;
 //! ```
 
+// ============================================================================
+// t! — 进程级全局翻译宏（unify-rust-i18n 统一基线，替换 rust-i18n 的 t!）
+// ============================================================================
+//
+// 定义在 crate 根且必须位于 `pub mod core;` / `pub mod server;` 之前,经宏的
+// 文本作用域覆盖全 crate 调用点(等价于原先 `#[macro_use] extern crate
+// rust_i18n;` 的作用域效果);`#[macro_export]` 同时把宏挂到 crate 根,
+// bin 侧(src/main.rs)经 `#[macro_use] extern crate nebulaid;` 引入。
+//
+// 运行时语义:进程默认 locale(经 `core::i18n::init_i18n` 设置)→ en 束 →
+// 键本身;参数按 Display 格式化为字符串后交给 Fluent 变量解析。
+#[macro_export]
+macro_rules! t {
+    ($key:expr $(,)?) => {
+        $crate::core::i18n::global_translate($key, &[])
+    };
+    ($key:expr, $($name:ident = $value:expr),+ $(,)?) => {
+        $crate::core::i18n::global_translate(
+            $key,
+            &[$((::std::stringify!($name), $value.to_string())),+],
+        )
+    };
+}
+
 // Core namespace - 核心业务逻辑
 pub mod core;
 
@@ -39,11 +52,3 @@ pub mod server;
 // SDK namespace - 嵌入式一等公民入口（feature `sdk` 门控）
 #[cfg(feature = "sdk")]
 pub mod sdk;
-
-// Phase 8 ICU i18n — load locale files at compile time.
-// `i18n!` embeds all `locales/*.yml` as static data; `t!()` macro becomes
-// available crate-wide via `#[macro_use] extern crate rust_i18n`.
-#[macro_use]
-extern crate rust_i18n;
-
-i18n!("locales", fallback = "en");

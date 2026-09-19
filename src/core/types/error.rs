@@ -1,16 +1,5 @@
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 
 // Phase 8 ICU i18n — Display strings extracted to `locales/{en,zh-CN}.yml`
 // under `error.<variant_snake>` keys. thiserror's `#[error("{}", t!(...))]`
@@ -26,7 +15,6 @@
 // (全仓无 CoreError 序列化使用点;HTTP/gRPC 出口走 `ErrorResponse` 固定
 // 结构,不受影响)。
 
-use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
@@ -392,11 +380,14 @@ impl CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use crate::core::i18n::{current_locale, init_i18n};
 
-    /// 串行化所有调用 `rust_i18n::set_locale` 的测试，避免并行 set_locale
-    /// 竞态导致 `to_string()`（依赖全局 locale）读到被其他测试改写的值。
-    static LOCALE_LOCK: Mutex<()> = Mutex::new(());
+    /// 串行化所有改写进程默认 locale 的测试(i18n.rs / helpers.rs 共用
+    /// core::i18n::test_support 锁),避免并行竞态导致 `to_string()`
+    /// (依赖全局 locale)读到被其他测试改写的值。
+    fn locale_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::core::i18n::test_support::lock()
+    }
 
     /// Verify CoreError Display impl delegates to `t!()` lookups.
     /// Covers all 24 variants under "en" (default) locale, plus a
@@ -407,9 +398,9 @@ mod tests {
     /// the default locale.
     #[test]
     fn test_core_error_display_i18n() {
-        let _locale_lock = LOCALE_LOCK.lock().unwrap();
+        let _locale_lock = locale_lock();
         // --- English locale (default) ---
-        rust_i18n::set_locale("en");
+        init_i18n("en");
 
         // Positional-arg variants
         assert_eq!(
@@ -505,7 +496,7 @@ mod tests {
         assert_eq!(CoreError::Unknown.to_string(), "Unknown error");
 
         // --- Chinese (zh-CN) locale — representative subset ---
-        rust_i18n::set_locale("zh-CN");
+        init_i18n("zh-CN");
         assert_eq!(
             CoreError::InvalidIdFormat("test".to_string()).to_string(),
             "无效的 ID 格式：test"
@@ -529,16 +520,16 @@ mod tests {
         assert_eq!(CoreError::Unknown.to_string(), "未知错误");
 
         // Restore default locale for subsequent parallel tests.
-        rust_i18n::set_locale("en");
+        init_i18n("en");
     }
 
     /// Verify `to_localized_string` returns per-locale translations
     /// without mutating global locale state (Phase 8 ).
     #[test]
     fn test_to_localized_string_per_locale() {
-        let _locale_lock = LOCALE_LOCK.lock().unwrap();
+        let _locale_lock = locale_lock();
         // Pin global locale to en to detect any accidental state coupling.
-        rust_i18n::set_locale("en");
+        init_i18n("en");
 
         // English
         assert_eq!(
@@ -551,15 +542,15 @@ mod tests {
             "无效输入：negative"
         );
         // Global locale must remain "en" after the zh-CN call
-        assert_eq!(&*rust_i18n::locale(), "en");
+        assert_eq!(current_locale(), "en");
     }
 
     /// Verify `to_localized_string` covers all variants (no panic, no
     /// empty string). Exercises named-arg and no-arg variants too.
     #[test]
     fn test_to_localized_string_all_variants_en() {
-        let _locale_lock = LOCALE_LOCK.lock().unwrap();
-        rust_i18n::set_locale("en");
+        let _locale_lock = locale_lock();
+        init_i18n("en");
 
         assert_eq!(
             CoreError::InvalidIdFormat("v".to_string()).to_localized_string("en"),
@@ -662,9 +653,9 @@ mod tests {
     /// unsupported locales (fr, ja, de, xx-XX).
     #[test]
     fn test_to_localized_string_unsupported_locale_falls_back_to_default() {
-        let _locale_lock = LOCALE_LOCK.lock().unwrap();
+        let _locale_lock = locale_lock();
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        init_i18n("en");
 
         let err = CoreError::InvalidIdFormat("test".to_string());
         let en_msg = err.to_localized_string("en");
@@ -712,9 +703,9 @@ mod tests {
     /// both arg shapes.
     #[test]
     fn test_to_localized_string_ja_falls_back_to_en() {
-        let _locale_lock = LOCALE_LOCK.lock().unwrap();
+        let _locale_lock = locale_lock();
         let _g = LocaleGuard::new();
-        rust_i18n::set_locale("en");
+        init_i18n("en");
 
         let err = CoreError::DatabaseError("db err".to_string(), None);
         let ja_msg = err.to_localized_string("ja");
@@ -733,7 +724,7 @@ mod tests {
     }
 
     /// Test-only helper to save/restore the global locale around tests
-    /// that call `rust_i18n::set_locale`.
+    /// that call `init_i18n`.
     struct LocaleGuard {
         saved: String,
     }
@@ -741,14 +732,14 @@ mod tests {
     impl LocaleGuard {
         fn new() -> Self {
             Self {
-                saved: rust_i18n::locale().to_string(),
+                saved: crate::core::i18n::current_locale(),
             }
         }
     }
 
     impl Drop for LocaleGuard {
         fn drop(&mut self) {
-            rust_i18n::set_locale(&self.saved);
+            crate::core::i18n::init_i18n(&self.saved);
         }
     }
 

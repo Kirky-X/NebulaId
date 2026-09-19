@@ -46,7 +46,7 @@ use base64::Engine;
 use sdforge::tower::ServiceExt;
 use sha2::Digest;
 use uuid::Uuid;
-use validator::Validate;
+use sdforge::validator::Validate;
 
 use crate::core::database::{
     ApiKeyInfo, ApiKeyRepository, ApiKeyResponse, ApiKeyRole, ApiKeyWithSecret, AuthenticatedKey,

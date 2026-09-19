@@ -3447,7 +3447,6 @@ dependencies = [
  "url",
  "utoipa",
  "uuid",
- "validator",
 ]
 
 [[package]]
@@ -4670,6 +4669,7 @@ dependencies = [
  "axum-extra",
  "clap",
  "clap-markdown",
+ "fluent-bundle",
  "futures-util",
  "inventory",
  "log",
@@ -4688,6 +4688,7 @@ dependencies = [
  "tonic-prost-build",
  "tower",
  "tower-http 0.7.1",
+ "unic-langid",
  "utoipa",
  "utoipa-swagger-ui",
  "uuid",

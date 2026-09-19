@@ -37,7 +37,7 @@ use metrics_exporter_prometheus::{
 };
 use sdforge::tower_http::set_header::SetResponseHeaderLayer;
 use std::sync::Arc;
-use validator::Validate;
+use sdforge::validator::Validate;
 
 #[derive(Clone)]
 pub struct NebulaIdState {
@@ -1746,7 +1746,8 @@ mod tests {
 
     // ========== validate_request tests ==========
 
-    #[derive(validator::Validate)]
+    #[derive(sdforge::validator::Validate)]
+    #[validate(crate = "::sdforge::validator")]
     struct TestValidatable {
         #[validate(length(min = 1, max = 64))]
         name: String,

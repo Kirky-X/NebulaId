@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use dbnexus::sea_orm::{
-    ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend, DbErr, Statement,
+    ConnectionTrait, DatabaseConnection, DbBackend, DbErr, Statement,
 };
 use tracing::{info, warn};
 
@@ -110,17 +110,32 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
 
     let final_url = ensure_pg_search_path(&final_url);
 
-    let mut connect_options = ConnectOptions::new(final_url.clone());
-
-    if config.engine != crate::core::config::DatabaseEngine::Sqlite {
-        connect_options
-            .max_connections(config.max_connections)
-            .min_connections(config.min_connections)
-            .connect_timeout(std::time::Duration::from_secs(
-                config.acquire_timeout_seconds,
-            ))
-            .idle_timeout(std::time::Duration::from_secs(config.idle_timeout_seconds));
-    }
+    // 2026-09-19 自研库切换：连接建立走 dbnexus DbPool（统一连接池 +
+    // 重试/故障转移/池健康检查能力），返回其底层 sea-orm DatabaseConnection，
+    // `create_connection` 签名与全部调用方不受影响。
+    // PoolConfig 单位：idle_timeout 秒、acquire_timeout 毫秒。
+    let defaults = dbnexus::PoolConfig::default();
+    let (max_conn, min_conn, acquire_ms) =
+        if config.engine == crate::core::config::DatabaseEngine::Sqlite {
+            // Sqlite 与改前一致：不显式设置池参数，沿用 sea-orm 默认
+            (defaults.max_connections, defaults.min_connections, defaults.acquire_timeout)
+        } else {
+            (
+                config.max_connections,
+                config.min_connections,
+                config.acquire_timeout_seconds * 1000,
+            )
+        };
+    let db_config = dbnexus::DbConfig {
+        url: final_url.clone(),
+        pool_config: dbnexus::PoolConfig {
+            max_connections: max_conn,
+            min_connections: min_conn,
+            idle_timeout: config.idle_timeout_seconds,
+            acquire_timeout: acquire_ms,
+        },
+        ..dbnexus::DbConfig::default()
+    };
 
     info!(
         "{}",
@@ -131,9 +146,19 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
         )
     );
 
-    let db = Database::connect(connect_options)
+    let pool = dbnexus::DbPool::with_config(db_config)
         .await
-        .map_err(CoreError::from)?;
+        .map_err(|e| CoreError::DatabaseError(e.to_string(), None))?;
+    // 经 admin 会话取底层 sea-orm 连接；DatabaseConnection 是 sqlx 池句柄，
+    // clone 后即使会话归还仍共享同一连接池，调用方签名与用法不变
+    let session = dbnexus::ConnectionPool::get_session(&pool, "admin")
+        .await
+        .map_err(|e| CoreError::DatabaseError(e.to_string(), None))?;
+    let db = session
+        .connection()
+        .map_err(|e| CoreError::DatabaseError(e.to_string(), None))?
+        .clone();
+    drop(session);
 
     info!(
         "{}",

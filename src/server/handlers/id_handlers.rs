@@ -281,14 +281,14 @@ impl super::ApiHandlers {
     tag = "ids",
     request_body = GenerateRequest,
     responses(
-        (status = 200, description = "ID 生成成功", body = GenerateResponse),
-        (status = 400, description = "请求参数校验失败", body = ErrorResponse),
-        (status = 401, description = "缺失/无效 API Key 或角色不是 User", body = ErrorResponse),
-        (status = 403, description = "跨 workspace 访问被拒绝", body = ErrorResponse),
-        (status = 404, description = "workspace 不存在", body = ErrorResponse),
-        (status = 429, description = "触发限流", body = ErrorResponse),
-        (status = 500, description = "服务端内部错误", body = ErrorResponse),
-        (status = 503, description = "下游依赖超时", body = ErrorResponse),
+        (status = 200, description = "ID generated successfully", body = GenerateResponse),
+        (status = 400, description = "Request validation failed", body = ErrorResponse),
+        (status = 401, description = "Missing/invalid API Key or role is not User", body = ErrorResponse),
+        (status = 403, description = "Cross-workspace access denied", body = ErrorResponse),
+        (status = 404, description = "Workspace not found", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
+        (status = 503, description = "Downstream dependency timeout", body = ErrorResponse),
     )
 )]
 pub fn generate_docs() {}
@@ -302,14 +302,14 @@ pub fn generate_docs() {}
     tag = "ids",
     request_body = BatchGenerateRequest,
     responses(
-        (status = 200, description = "批量生成成功（size 缺省 10，上限 batch_generate.max_batch_size）", body = BatchGenerateResponse),
-        (status = 400, description = "请求参数校验失败（含 size 超出配置上限）", body = ErrorResponse),
-        (status = 401, description = "缺失/无效 API Key 或角色不是 User", body = ErrorResponse),
-        (status = 403, description = "跨 workspace 访问被拒绝", body = ErrorResponse),
-        (status = 404, description = "workspace 不存在", body = ErrorResponse),
-        (status = 429, description = "触发限流", body = ErrorResponse),
-        (status = 500, description = "服务端内部错误", body = ErrorResponse),
-        (status = 503, description = "下游依赖超时", body = ErrorResponse),
+        (status = 200, description = "Batch generation succeeded (size defaults to 10, capped by batch_generate.max_batch_size)", body = BatchGenerateResponse),
+        (status = 400, description = "Request validation failed (including size exceeding the configured cap)", body = ErrorResponse),
+        (status = 401, description = "Missing/invalid API Key or role is not User", body = ErrorResponse),
+        (status = 403, description = "Cross-workspace access denied", body = ErrorResponse),
+        (status = 404, description = "Workspace not found", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
+        (status = 503, description = "Downstream dependency timeout", body = ErrorResponse),
     )
 )]
 pub fn batch_generate_docs() {}
@@ -323,12 +323,12 @@ pub fn batch_generate_docs() {}
     tag = "ids",
     request_body = ParseRequest,
     responses(
-        (status = 200, description = "ID 解析成功", body = ParseResponse),
-        (status = 400, description = "ID 格式或请求参数非法", body = ErrorResponse),
-        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
-        (status = 429, description = "触发限流", body = ErrorResponse),
-        (status = 500, description = "服务端内部错误", body = ErrorResponse),
-        (status = 503, description = "下游依赖超时", body = ErrorResponse),
+        (status = 200, description = "ID parsed successfully", body = ParseResponse),
+        (status = 400, description = "Invalid ID format or request parameters", body = ErrorResponse),
+        (status = 401, description = "Missing/invalid API Key", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
+        (status = 503, description = "Downstream dependency timeout", body = ErrorResponse),
     )
 )]
 pub fn parse_docs() {}

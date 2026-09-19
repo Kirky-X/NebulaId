@@ -740,11 +740,9 @@ struct UnconfiguredSegmentLoader;
 #[async_trait]
 impl SegmentLoader for UnconfiguredSegmentLoader {
     async fn load_segment(&self, _ctx: &GenerateContext, _worker_id: u8) -> Result<SegmentData> {
-        Err(CoreError::ConfigurationError(
-            "Segment 算法未接通数据源，需在装配处注入 DbSegmentLoader \
-             （SegmentRepository::allocate_segment）"
-                .to_string(),
-        ))
+        Err(CoreError::ConfigurationError(t!(
+            "error-detail.segment_loader_not_configured"
+        )))
     }
 }
 

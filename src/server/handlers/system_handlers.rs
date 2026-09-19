@@ -221,7 +221,7 @@ impl super::ApiHandlers {
     operation_id = "handle_health",
     tag = "system",
     responses(
-        (status = 200, description = "服务健康状态（算法视角）", body = HealthResponse),
+        (status = 200, description = "Service health status (algorithm view)", body = HealthResponse),
     )
 )]
 pub fn health_docs() {}
@@ -234,7 +234,7 @@ pub fn health_docs() {}
     operation_id = "handle_ready",
     tag = "system",
     responses(
-        (status = 200, description = "就绪探针结果（数据库/缓存依赖状态）", body = ReadyResponse),
+        (status = 200, description = "Readiness probe result (database/cache dependency status)", body = ReadyResponse),
     )
 )]
 pub fn ready_docs() {}
@@ -247,7 +247,7 @@ pub fn ready_docs() {}
     operation_id = "handle_metrics",
     tag = "system",
     responses(
-        (status = 200, description = "聚合运行指标（吞吐/延迟/依赖健康）", body = MetricsResponse),
+        (status = 200, description = "Aggregated runtime metrics (throughput/latency/dependency health)", body = MetricsResponse),
     )
 )]
 pub fn metrics_docs() {}
@@ -260,7 +260,7 @@ pub fn metrics_docs() {}
     operation_id = "handle_api_info",
     tag = "system",
     responses(
-        (status = 200, description = "服务元信息与端点清单", body = ApiInfoResponse),
+        (status = 200, description = "Service metadata and endpoint listing", body = ApiInfoResponse),
     )
 )]
 pub fn api_info_docs() {}
@@ -273,10 +273,10 @@ pub fn api_info_docs() {}
     operation_id = "handle_get_config",
     tag = "config",
     responses(
-        (status = 200, description = "当前配置（脱敏：不含数据库连接信息）", body = SecureConfigResponse),
-        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
-        (status = 429, description = "触发限流", body = ErrorResponse),
-        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+        (status = 200, description = "Current configuration (redacted: no database connection info)", body = SecureConfigResponse),
+        (status = 401, description = "Missing/invalid API Key", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub fn get_config_docs() {}
@@ -290,12 +290,12 @@ pub fn get_config_docs() {}
     tag = "config",
     request_body = UpdateRateLimitRequest,
     responses(
-        (status = 200, description = "更新结果", body = UpdateConfigResponse),
-        (status = 400, description = "请求参数校验失败", body = ErrorResponse),
-        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
-        (status = 403, description = "需要 Admin 角色（CWE-862）", body = ErrorResponse),
-        (status = 429, description = "触发限流", body = ErrorResponse),
-        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+        (status = 200, description = "Update result", body = UpdateConfigResponse),
+        (status = 400, description = "Request validation failed", body = ErrorResponse),
+        (status = 401, description = "Missing/invalid API Key", body = ErrorResponse),
+        (status = 403, description = "Admin role required (CWE-862)", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub fn update_rate_limit_docs() {}
@@ -309,12 +309,12 @@ pub fn update_rate_limit_docs() {}
     tag = "config",
     request_body = UpdateLoggingRequest,
     responses(
-        (status = 200, description = "更新结果", body = UpdateConfigResponse),
-        (status = 400, description = "请求参数校验失败", body = ErrorResponse),
-        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
-        (status = 403, description = "需要 Admin 角色（CWE-862）", body = ErrorResponse),
-        (status = 429, description = "触发限流", body = ErrorResponse),
-        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+        (status = 200, description = "Update result", body = UpdateConfigResponse),
+        (status = 400, description = "Request validation failed", body = ErrorResponse),
+        (status = 401, description = "Missing/invalid API Key", body = ErrorResponse),
+        (status = 403, description = "Admin role required (CWE-862)", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub fn update_logging_docs() {}
@@ -327,11 +327,11 @@ pub fn update_logging_docs() {}
     operation_id = "handle_reload_config",
     tag = "config",
     responses(
-        (status = 200, description = "重载结果（附最新配置）", body = UpdateConfigResponse),
-        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
-        (status = 403, description = "需要 Admin 角色（CWE-862）", body = ErrorResponse),
-        (status = 429, description = "触发限流", body = ErrorResponse),
-        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+        (status = 200, description = "Reload result (with latest configuration)", body = UpdateConfigResponse),
+        (status = 401, description = "Missing/invalid API Key", body = ErrorResponse),
+        (status = 403, description = "Admin role required (CWE-862)", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub fn reload_config_docs() {}
@@ -345,12 +345,12 @@ pub fn reload_config_docs() {}
     tag = "config",
     request_body = SetAlgorithmRequest,
     responses(
-        (status = 200, description = "算法绑定结果", body = SetAlgorithmResponse),
-        (status = 400, description = "请求参数校验失败", body = ErrorResponse),
-        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
-        (status = 403, description = "需要 Admin 角色（CWE-862）", body = ErrorResponse),
-        (status = 429, description = "触发限流", body = ErrorResponse),
-        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+        (status = 200, description = "Algorithm binding result", body = SetAlgorithmResponse),
+        (status = 400, description = "Request validation failed", body = ErrorResponse),
+        (status = 401, description = "Missing/invalid API Key", body = ErrorResponse),
+        (status = 403, description = "Admin role required (CWE-862)", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub fn set_algorithm_docs() {}

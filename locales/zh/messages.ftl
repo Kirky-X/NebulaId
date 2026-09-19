@@ -445,3 +445,196 @@ error-main-etcd_ping_timed_out = etcd ping 在 { $timeout_ms }ms 后超时，end
 error-main-etcd_lock_create_failed = 创建 EtcdDistributedLock 失败：{ $reason }
 error-detail-group_not_found = 组未找到：{ $id }
 error-detail-biz_tag_not_found = 业务标签未找到：{ $id }
+
+# T021 (unify-rust-i18n) —— OpenAPI operation 文案
+#（src/server/handlers/*_docs.rs 注解载体）。utoipa derive 装配是编译期
+# 静态的，注解内联英文规范串；运行时由 `openapi.rs::localize_openapi_json`
+# 在 OpenAPI 构建出口按当前 locale 做「命中才替换」：未命中保持 utoipa
+# 静态英文规范串，契约结构不变。
+# 键形：response  `<method>-<path-slug>-<status>`
+#       parameter `<method>-<path-slug>-param-<name>`
+# slug 规则：去首尾 `/`，段间 `/` → `-`，剥路径参数花括号
+#（`/api/v1/biz-tags/{id}` → `api-v1-biz-tags-id`）。
+
+# ===== ids (id_handlers.rs) =====
+post-api-v1-generate-200 = ID 生成成功
+post-api-v1-generate-400 = 请求参数校验失败
+post-api-v1-generate-401 = 缺失/无效 API Key 或角色不是 User
+post-api-v1-generate-403 = 跨 workspace 访问被拒绝
+post-api-v1-generate-404 = workspace 不存在
+post-api-v1-generate-429 = 触发限流
+post-api-v1-generate-500 = 服务端内部错误
+post-api-v1-generate-503 = 下游依赖超时
+post-api-v1-generate-batch-200 = 批量生成成功（size 缺省 10，上限 batch_generate.max_batch_size）
+post-api-v1-generate-batch-400 = 请求参数校验失败（含 size 超出配置上限）
+post-api-v1-generate-batch-401 = 缺失/无效 API Key 或角色不是 User
+post-api-v1-generate-batch-403 = 跨 workspace 访问被拒绝
+post-api-v1-generate-batch-404 = workspace 不存在
+post-api-v1-generate-batch-429 = 触发限流
+post-api-v1-generate-batch-500 = 服务端内部错误
+post-api-v1-generate-batch-503 = 下游依赖超时
+post-api-v1-parse-200 = ID 解析成功
+post-api-v1-parse-400 = ID 格式或请求参数非法
+post-api-v1-parse-401 = 缺失/无效 API Key
+post-api-v1-parse-429 = 触发限流
+post-api-v1-parse-500 = 服务端内部错误
+post-api-v1-parse-503 = 下游依赖超时
+
+# ===== system (system_handlers.rs) =====
+get-health-200 = 服务健康状态（算法视角）
+get-ready-200 = 就绪探针结果（数据库/缓存依赖状态）
+get-metrics-200 = 聚合运行指标（吞吐/延迟/依赖健康）
+get-api-v1-200 = 服务元信息与端点清单
+get-api-v1-config-200 = 当前配置（脱敏：不含数据库连接信息）
+get-api-v1-config-401 = 缺失/无效 API Key
+get-api-v1-config-429 = 触发限流
+get-api-v1-config-500 = 服务端内部错误
+post-api-v1-config-rate-limit-200 = 更新结果
+post-api-v1-config-rate-limit-400 = 请求参数校验失败
+post-api-v1-config-rate-limit-401 = 缺失/无效 API Key
+post-api-v1-config-rate-limit-403 = 需要 Admin 角色（CWE-862）
+post-api-v1-config-rate-limit-429 = 触发限流
+post-api-v1-config-rate-limit-500 = 服务端内部错误
+post-api-v1-config-logging-200 = 更新结果
+post-api-v1-config-logging-400 = 请求参数校验失败
+post-api-v1-config-logging-401 = 缺失/无效 API Key
+post-api-v1-config-logging-403 = 需要 Admin 角色（CWE-862）
+post-api-v1-config-logging-429 = 触发限流
+post-api-v1-config-logging-500 = 服务端内部错误
+post-api-v1-config-reload-200 = 重载结果（附最新配置）
+post-api-v1-config-reload-401 = 缺失/无效 API Key
+post-api-v1-config-reload-403 = 需要 Admin 角色（CWE-862）
+post-api-v1-config-reload-429 = 触发限流
+post-api-v1-config-reload-500 = 服务端内部错误
+post-api-v1-config-algorithm-200 = 算法绑定结果
+post-api-v1-config-algorithm-400 = 请求参数校验失败
+post-api-v1-config-algorithm-401 = 缺失/无效 API Key
+post-api-v1-config-algorithm-403 = 需要 Admin 角色（CWE-862）
+post-api-v1-config-algorithm-429 = 触发限流
+post-api-v1-config-algorithm-500 = 服务端内部错误
+
+# ===== workspaces / groups (workspace_handlers.rs) =====
+post-api-v1-workspaces-200 = 创建成功
+post-api-v1-workspaces-400 = 请求参数校验失败
+post-api-v1-workspaces-401 = 缺失/无效 API Key
+post-api-v1-workspaces-403 = 需要 Admin 角色
+post-api-v1-workspaces-429 = 触发限流
+post-api-v1-workspaces-500 = 服务端内部错误
+get-api-v1-workspaces-200 = workspace 列表（按调用者角色过滤）
+get-api-v1-workspaces-401 = 缺失/无效 API Key
+get-api-v1-workspaces-403 = 权限不足
+get-api-v1-workspaces-429 = 触发限流
+get-api-v1-workspaces-500 = 服务端内部错误
+get-api-v1-workspaces-name-param-name = workspace 名称
+get-api-v1-workspaces-name-200 = workspace 详情
+get-api-v1-workspaces-name-401 = 缺失/无效 API Key
+get-api-v1-workspaces-name-403 = 访问他人 workspace 被拒绝
+get-api-v1-workspaces-name-404 = workspace 不存在
+get-api-v1-workspaces-name-429 = 触发限流
+get-api-v1-workspaces-name-500 = 服务端内部错误
+post-api-v1-workspaces-name-regenerate-user-key-param-name = workspace 名称
+post-api-v1-workspaces-name-regenerate-user-key-200 = 新的 User API Key（明文 secret 仅此一次返回）
+post-api-v1-workspaces-name-regenerate-user-key-401 = 缺失/无效 API Key
+post-api-v1-workspaces-name-regenerate-user-key-403 = 需要 Admin 角色
+post-api-v1-workspaces-name-regenerate-user-key-404 = workspace 不存在
+post-api-v1-workspaces-name-regenerate-user-key-429 = 触发限流
+post-api-v1-workspaces-name-regenerate-user-key-500 = 服务端内部错误
+post-api-v1-groups-200 = 创建成功
+post-api-v1-groups-400 = 请求参数校验失败
+post-api-v1-groups-401 = 缺失/无效 API Key 或角色不是 User
+post-api-v1-groups-403 = 跨 workspace 访问被拒绝
+post-api-v1-groups-404 = workspace 不存在
+post-api-v1-groups-429 = 触发限流
+post-api-v1-groups-500 = 服务端内部错误
+get-api-v1-groups-param-workspace = workspace 名称（必填，User 仅可列自身 workspace）
+get-api-v1-groups-param-page = 页码，默认 1
+get-api-v1-groups-param-page_size = 每页数量，默认 20，上限 100
+get-api-v1-groups-200 = group 列表
+get-api-v1-groups-400 = 请求参数校验失败
+get-api-v1-groups-401 = 缺失/无效 API Key 或角色不是 User
+get-api-v1-groups-403 = 跨 workspace 访问被拒绝
+get-api-v1-groups-404 = workspace 不存在
+get-api-v1-groups-429 = 触发限流
+get-api-v1-groups-500 = 服务端内部错误
+
+# ===== biz-tags (biz_tag_handlers.rs) =====
+post-api-v1-biz-tags-200 = 创建成功
+post-api-v1-biz-tags-400 = 请求参数校验失败
+post-api-v1-biz-tags-401 = 缺失/无效 API Key 或角色不是 User
+post-api-v1-biz-tags-403 = workspace_id 与调用者不一致
+post-api-v1-biz-tags-429 = 触发限流
+post-api-v1-biz-tags-500 = 服务端内部错误
+get-api-v1-biz-tags-param-workspace_id = 按 workspace UUID 过滤（Admin 必填；User 忽略，强制取认证身份）
+get-api-v1-biz-tags-param-page = 页码，默认 1
+get-api-v1-biz-tags-param-page_size = 每页数量，默认 20，上限 100
+get-api-v1-biz-tags-200 = biz-tag 分页列表
+get-api-v1-biz-tags-400 = 请求参数校验失败 / workspace_id 非法 UUID
+get-api-v1-biz-tags-401 = 缺失/无效 API Key
+get-api-v1-biz-tags-403 = Admin 未显式指定 workspace_id
+get-api-v1-biz-tags-429 = 触发限流
+get-api-v1-biz-tags-500 = 服务端内部错误
+get-api-v1-biz-tags-id-param-id = biz-tag 行 ID（UUID）
+get-api-v1-biz-tags-id-200 = biz-tag 详情
+get-api-v1-biz-tags-id-400 = id 不是合法 UUID
+get-api-v1-biz-tags-id-401 = 缺失/无效 API Key 或角色不是 User
+get-api-v1-biz-tags-id-403 = 跨 workspace 访问被拒绝
+get-api-v1-biz-tags-id-404 = biz-tag 不存在
+get-api-v1-biz-tags-id-429 = 触发限流
+get-api-v1-biz-tags-id-500 = 服务端内部错误
+put-api-v1-biz-tags-id-param-id = biz-tag 行 ID（UUID）
+put-api-v1-biz-tags-id-200 = 更新成功
+put-api-v1-biz-tags-id-400 = id 不是合法 UUID 或请求参数校验失败
+put-api-v1-biz-tags-id-401 = 缺失/无效 API Key 或角色不是 User
+put-api-v1-biz-tags-id-403 = 跨 workspace 访问被拒绝
+put-api-v1-biz-tags-id-404 = biz-tag 不存在
+put-api-v1-biz-tags-id-429 = 触发限流
+put-api-v1-biz-tags-id-500 = 服务端内部错误
+delete-api-v1-biz-tags-id-param-id = biz-tag 行 ID（UUID）
+delete-api-v1-biz-tags-id-204 = 删除成功（无响应体）
+delete-api-v1-biz-tags-id-400 = id 不是合法 UUID
+delete-api-v1-biz-tags-id-401 = 缺失/无效 API Key 或角色不是 User
+delete-api-v1-biz-tags-id-403 = 跨 workspace 访问被拒绝
+delete-api-v1-biz-tags-id-404 = biz-tag 不存在
+delete-api-v1-biz-tags-id-429 = 触发限流
+delete-api-v1-biz-tags-id-500 = 服务端内部错误
+
+# ===== api-keys (api_key_handlers.rs) =====
+post-api-v1-api-keys-200 = 创建成功（明文 key_secret 仅此一次返回）
+post-api-v1-api-keys-400 = 请求参数校验失败（含 user key 缺失/非法 workspace_id）
+post-api-v1-api-keys-401 = 缺失/无效 API Key
+post-api-v1-api-keys-403 = 需要 Admin 角色
+post-api-v1-api-keys-429 = 触发限流
+post-api-v1-api-keys-500 = 服务端内部错误
+get-api-v1-api-keys-param-workspace_id = 按 workspace UUID 过滤；缺省/非法值回退 nil UUID（跨全量语义）
+get-api-v1-api-keys-param-page = 页码，默认 1
+get-api-v1-api-keys-param-page_size = 每页数量，默认 20，上限 100
+get-api-v1-api-keys-200 = API key 分页列表
+get-api-v1-api-keys-400 = 请求参数校验失败
+get-api-v1-api-keys-401 = 缺失/无效 API Key
+get-api-v1-api-keys-403 = 需要 Admin 角色
+get-api-v1-api-keys-429 = 触发限流
+get-api-v1-api-keys-500 = 服务端内部错误
+delete-api-v1-api-keys-id-param-id = API key 行 ID（UUID）
+delete-api-v1-api-keys-id-200 = 吊销成功
+delete-api-v1-api-keys-id-400 = id 不是合法 UUID
+delete-api-v1-api-keys-id-401 = 缺失/无效 API Key
+delete-api-v1-api-keys-id-403 = 需要 Admin 角色
+delete-api-v1-api-keys-id-429 = 触发限流
+delete-api-v1-api-keys-id-500 = 服务端内部错误
+
+# T021 (unify-rust-i18n) —— src/sdk/kit.rs 装配/错误文案与
+# UnconfiguredSegmentLoader 的未配置载荷（src/core/algorithm/segment.rs）。
+# FTL 模板承载句式；模块名经 { $module }、详情经 { $reason } 在构造点
+# 以 `t!` 传入。
+error-sdk-module_config_missing = { $module } 模块配置缺失：{ $reason }
+error-sdk-module_dependency_missing = { $module } 模块依赖 { $dependency } 缺失：{ $reason }
+error-sdk-module_audit_logger_missing = { $module } 模块审计日志器缺失：{ $reason }
+error-sdk-module_init_failed = { $module } 模块初始化失败：{ $reason }
+error-sdk-on_ready_capability_missing = { $module } on_ready 能力缺失：{ $reason }
+error-sdk-capability_missing = { $module } 能力缺失：{ $reason }
+error-sdk-module_register_failed = trait-kit 模块注册失败：{ $reason }
+error-sdk-assembly_config_missing = SDK 装配配置缺失：{ $reason }
+error-sdk-kit_build_failed = trait-kit build 失败：{ $reason }
+error-sdk-router_module_must_exist_on_ready_kit = RouterModule 能力在 Ready Kit 上必然存在（build 依赖图校验已保证）
+log-sdk-audit_logger_injection_confirmed = sdk: audit_logger 注入确认
+error-detail-segment_loader_not_configured = Segment 算法未接通数据源，需在装配处注入 DbSegmentLoader（SegmentRepository::allocate_segment）

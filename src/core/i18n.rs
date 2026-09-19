@@ -168,6 +168,18 @@ pub fn global_translate(key: &str, args: &[(&str, String)]) -> String {
     lookup(current_lang(), key, Args::Owned(args))
 }
 
+/// OpenAPI 文档运行时本地化用的「命中才译」查询(openapi.rs 专用)。
+///
+/// 与 [`lookup`]「未命中回退键本身」的语义不同,这里显式区分命中与未命中:
+/// `ftl_id`(FTL 消息标识,如 `post-generate-200`,不做点分转换)在请求语言束
+/// (未命中再查 en 束)中存在时返回其渲染结果,不存在返回 `None`——调用方
+/// 据此保留 utoipa 静态注册的英文规范串,OpenAPI 契约结构不变。
+pub fn translate_if_present(locale: &str, ftl_id: &str) -> Option<String> {
+    let lang = lang_of(locale);
+    format_from_bundle(lang, ftl_id, &Args::None)
+        .or_else(|| format_from_bundle("en", ftl_id, &Args::None))
+}
+
 enum Args<'a> {
     None,
     Owned(&'a [(&'a str, String)]),

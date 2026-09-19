@@ -8,16 +8,16 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use trait_kit::{
-    impl_async_auto_builder, impl_module_meta, AsyncHealthCheck, AsyncKit, AsyncLifecycle,
-    AsyncReady,
+    AsyncHealthCheck, AsyncKit, AsyncLifecycle, AsyncReady, impl_async_auto_builder,
+    impl_module_meta,
 };
 
+use crate::core::CoreError;
 use crate::core::algorithm::{AlgorithmRouter, CpuMonitor, DynAuditLogger, GenerateContext};
 use crate::core::config::Config;
 use crate::core::coordinator::{DistributedLock, LocalDistributedLock};
 use crate::core::database::SeaOrmRepository;
 use crate::core::types::{AlgorithmType, Id, IdBatch, IdFormat, Result};
-use crate::core::CoreError;
 
 #[cfg(feature = "etcd")]
 use crate::core::coordinator::{
@@ -38,9 +38,13 @@ impl_async_auto_builder!(
     Arc<dyn DistributedLock + Send + Sync>,
     CoreError,
     |kit| Box::pin(async move {
-        let config = kit
-            .config::<Config>()
-            .map_err(|e| CoreError::InternalError(format!("distributed-lock 模块配置缺失: {e}")))?;
+        let config = kit.config::<Config>().map_err(|e| {
+            CoreError::InternalError(t!(
+                "error.sdk.module_config_missing",
+                module = "distributed-lock",
+                reason = e
+            ))
+        })?;
         create_distributed_lock(&config).await
     })
 );
@@ -66,11 +70,20 @@ impl_module_meta!(
 
 impl_async_auto_builder!(RepositoryModule, Arc<SeaOrmRepository>, CoreError, |kit| {
     Box::pin(async move {
-        let RepositoryInput(repository) = kit
-            .config::<RepositoryInput>()
-            .map_err(|e| CoreError::InternalError(format!("repository 模块配置缺失: {e}")))?;
+        let RepositoryInput(repository) = kit.config::<RepositoryInput>().map_err(|e| {
+            CoreError::InternalError(t!(
+                "error.sdk.module_config_missing",
+                module = "repository",
+                reason = e
+            ))
+        })?;
         let lock = kit.require::<DistributedLockModule>().map_err(|e| {
-            CoreError::InternalError(format!("repository 模块依赖分布式锁缺失: {e}"))
+            CoreError::InternalError(t!(
+                "error.sdk.module_dependency_missing",
+                module = "repository",
+                dependency = "distributed-lock",
+                reason = e
+            ))
         })?;
         Ok(Arc::new(repository.with_distributed_lock(lock)))
     })
@@ -88,12 +101,20 @@ impl_module_meta!(RouterModule, "router", deps = [DistributedLockModule]);
 
 impl_async_auto_builder!(RouterModule, Arc<AlgorithmRouter>, CoreError, |kit| {
     Box::pin(async move {
-        let config = kit
-            .config::<Config>()
-            .map_err(|e| CoreError::InternalError(format!("router 模块配置缺失: {e}")))?;
-        let AuditLoggerInput(audit_logger) = kit
-            .config::<AuditLoggerInput>()
-            .map_err(|e| CoreError::InternalError(format!("router 模块审计日志器缺失: {e}")))?;
+        let config = kit.config::<Config>().map_err(|e| {
+            CoreError::InternalError(t!(
+                "error.sdk.module_config_missing",
+                module = "router",
+                reason = e
+            ))
+        })?;
+        let AuditLoggerInput(audit_logger) = kit.config::<AuditLoggerInput>().map_err(|e| {
+            CoreError::InternalError(t!(
+                "error.sdk.module_audit_logger_missing",
+                module = "router",
+                reason = e
+            ))
+        })?;
         // 可选依赖拉取：RepositoryModule 缺席（纯算法零 DB）时 build 必须成功。
         // trait-kit RC 的 `optional()` 仅在 `AsyncKit<Ready>` 上可用，build 回调
         //（Unbuilt 阶段）以 `require().ok()` 实现同语义（模块缺席 →
@@ -102,10 +123,13 @@ impl_async_auto_builder!(RouterModule, Arc<AlgorithmRouter>, CoreError, |kit| {
 
         let cpu_monitor = Arc::new(CpuMonitor::new());
         let router = AlgorithmRouter::new(config, audit_logger).with_cpu_monitor(cpu_monitor);
-        router
-            .initialize()
-            .await
-            .map_err(|e| CoreError::InternalError(format!("router 模块初始化失败: {e}")))?;
+        router.initialize().await.map_err(|e| {
+            CoreError::InternalError(t!(
+                "error.sdk.module_init_failed",
+                module = "router",
+                reason = e
+            ))
+        })?;
         Ok(Arc::new(router))
     })
 });
@@ -117,9 +141,13 @@ impl AsyncLifecycle for RouterModule {
         kit: &'a AsyncKit<AsyncReady>,
     ) -> Pin<Box<dyn Future<Output = std::result::Result<(), Self::Error>> + Send + 'a>> {
         Box::pin(async move {
-            let router = kit
-                .require::<RouterModule>()
-                .map_err(|e| CoreError::InternalError(format!("router on_ready 能力缺失: {e}")))?;
+            let router = kit.require::<RouterModule>().map_err(|e| {
+                CoreError::InternalError(t!(
+                    "error.sdk.on_ready_capability_missing",
+                    module = "router",
+                    reason = e
+                ))
+            })?;
             router.get_degradation_manager().start_background_check();
             Ok(())
         })
@@ -173,14 +201,23 @@ impl_module_meta!(IdGenModule, "id-generation", deps = [RouterModule]);
 impl_async_auto_builder!(IdGenModule, IdGenerator, CoreError, |kit| Box::pin(
     async move {
         let router = kit.require::<RouterModule>().map_err(|e| {
-            CoreError::InternalError(format!("id-generation 模块依赖路由缺失: {e}"))
+            CoreError::InternalError(t!(
+                "error.sdk.module_dependency_missing",
+                module = "id-generation",
+                dependency = "router",
+                reason = e
+            ))
         })?;
         // 可选依赖拉取（同 RouterModule.build 的 RC 限制处理）：RepositoryModule
         // 缺席时 `IdGenerator.repository` 为 None，Segment 守卫在生成期显性报错。
         let repository = kit.require::<RepositoryModule>().ok();
-        let config = kit
-            .config::<Config>()
-            .map_err(|e| CoreError::InternalError(format!("id-generation 模块配置缺失: {e}")))?;
+        let config = kit.config::<Config>().map_err(|e| {
+            CoreError::InternalError(t!(
+                "error.sdk.module_config_missing",
+                module = "id-generation",
+                reason = e
+            ))
+        })?;
         Ok(IdGenerator {
             router,
             repository,
@@ -351,9 +388,13 @@ impl NebulaIdKit {
     /// `require` 的读锁成本只发生在本次分发的瞬间（O(1) map 查找）；此后
     /// `IdGenerator::generate*` 直调内部 `Arc<AlgorithmRouter>`，热路径零锁。
     pub fn id_generator(&self) -> Result<IdGenerator> {
-        self.kit
-            .require::<IdGenModule>()
-            .map_err(|e| CoreError::InternalError(format!("id-generation 能力缺失: {e}")))
+        self.kit.require::<IdGenModule>().map_err(|e| {
+            CoreError::InternalError(t!(
+                "error.sdk.capability_missing",
+                module = "id-generation",
+                reason = e
+            ))
+        })
     }
 
     /// 各算法健康状态快照（直调 router，语义与旧 API 一致）。
@@ -365,7 +406,7 @@ impl NebulaIdKit {
         let router = self
             .kit
             .require::<RouterModule>()
-            .expect("RouterModule 能力在 Ready Kit 上必然存在（build 图校验已保证）");
+            .expect(&t!("error.sdk.router_module_must_exist_on_ready_kit"));
         router.health_check().await
     }
 
@@ -488,21 +529,26 @@ impl NebulaIdKitBuilder {
         kit.set_config(AuditLoggerInput(self.audit_logger));
 
         // 模块注册（依赖图由 trait-kit 在 build() 校验）
-        kit.register::<DistributedLockModule>()
-            .map_err(|e| CoreError::InternalError(format!("trait-kit 模块注册失败: {e}")))?;
+        kit.register::<DistributedLockModule>().map_err(|e| {
+            CoreError::InternalError(t!("error.sdk.module_register_failed", reason = e))
+        })?;
 
         // 仓储条件注册：仅注入时入图（register_if）——未注入时模块缺席、
         // build 不失败，"纯算法零 DB"这一核心卖点成立。
         kit.register_if::<RepositoryModule>(|_| self.repository.is_some())
-            .map_err(|e| CoreError::InternalError(format!("trait-kit 模块注册失败: {e}")))?;
+            .map_err(|e| {
+                CoreError::InternalError(t!("error.sdk.module_register_failed", reason = e))
+            })?;
         if let Some(repository) = self.repository {
             // 用户注入的仓储也要作为配置入 TypeMap（RepositoryModule build 回调读取）
             kit.set_config(RepositoryInput(repository));
         }
-        kit.register::<RouterModule>()
-            .map_err(|e| CoreError::InternalError(format!("trait-kit 模块注册失败: {e}")))?;
-        kit.register::<IdGenModule>()
-            .map_err(|e| CoreError::InternalError(format!("trait-kit 模块注册失败: {e}")))?;
+        kit.register::<RouterModule>().map_err(|e| {
+            CoreError::InternalError(t!("error.sdk.module_register_failed", reason = e))
+        })?;
+        kit.register::<IdGenModule>().map_err(|e| {
+            CoreError::InternalError(t!("error.sdk.module_register_failed", reason = e))
+        })?;
 
         // 生命周期与健康检查接线（on_ready 在 build() 完成后触发）
         kit.register_lifecycle::<RouterModule>();
@@ -510,18 +556,19 @@ impl NebulaIdKitBuilder {
 
         // 注入完整性显性校验（装配错误提前暴露，不落入模块回调的隐式
         // MissingConfig）；同时确认 audit_logger 注入形态，供启动观测。
-        let AuditLoggerInput(audit_logger) = kit
-            .config::<AuditLoggerInput>()
-            .map_err(|e| CoreError::InternalError(format!("SDK 装配配置缺失: {e}")))?;
+        let AuditLoggerInput(audit_logger) = kit.config::<AuditLoggerInput>().map_err(|e| {
+            CoreError::InternalError(t!("error.sdk.assembly_config_missing", reason = e))
+        })?;
         tracing::debug!(
             has_audit_logger = audit_logger.is_some(),
-            "sdk: audit_logger 注入确认"
+            "{}",
+            t!("log.sdk.audit_logger_injection_confirmed")
         );
 
         let ready_kit = kit
             .build()
             .await
-            .map_err(|e| CoreError::InternalError(format!("trait-kit build 失败: {e}")))?;
+            .map_err(|e| CoreError::InternalError(t!("error.sdk.kit_build_failed", reason = e)))?;
 
         let nebula = NebulaIdKit { kit: ready_kit };
         // 收尾轻校验：Ready Kit 的健康报告可枚举（空图必为空；后续模块
@@ -1012,8 +1059,8 @@ mod tests {
     /// 显式指定 Segment 算法在零仓储注入下同样被守卫拒绝
     ///（`generate_with_algorithm` 路径，旧 `client.rs` 用例覆盖）。
     #[tokio::test]
-    async fn test_kit_generate_with_algorithm_segment_without_repository_returns_configuration_error(
-    ) {
+    async fn test_kit_generate_with_algorithm_segment_without_repository_returns_configuration_error()
+     {
         let kit = NebulaIdKitBuilder::new(snowflake_config())
             .build()
             .await

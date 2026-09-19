@@ -1,8 +1,9 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-// Phase 8 ICU i18n — Display strings extracted to `locales/{en,zh-CN}.yml`
-// under `error.<variant_snake>` keys. thiserror's `#[error("{}", t!(...))]`
+// Phase 8 ICU i18n — Display strings live in `locales/{en,zh}/messages.ftl`
+// (Fluent/FTL catalog, unify-rust-i18n 基线) under `error.<variant_snake>`
+// keys. thiserror's `#[error("{}", t!(...))]`
 // attribute generates `impl Display` that calls `t!()` for translation lookup
 // at runtime. Default locale is "en" (set in main.rs via `init_i18n("en")`).
 //

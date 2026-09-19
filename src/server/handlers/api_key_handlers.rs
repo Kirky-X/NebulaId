@@ -293,12 +293,12 @@ impl super::ApiHandlers {
     tag = "api-keys",
     request_body = CreateApiKeyRequest,
     responses(
-        (status = 200, description = "创建成功（明文 key_secret 仅此一次返回）", body = ApiKeyWithSecretResponse),
-        (status = 400, description = "请求参数校验失败（含 user key 缺失/非法 workspace_id）", body = ErrorResponse),
-        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
-        (status = 403, description = "需要 Admin 角色", body = ErrorResponse),
-        (status = 429, description = "触发限流", body = ErrorResponse),
-        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+        (status = 200, description = "Created successfully (plaintext key_secret returned only once)", body = ApiKeyWithSecretResponse),
+        (status = 400, description = "Request validation failed (including missing/invalid workspace_id for user keys)", body = ErrorResponse),
+        (status = 401, description = "Missing/invalid API Key", body = ErrorResponse),
+        (status = 403, description = "Admin role required", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub fn create_api_key_docs() {}
@@ -311,17 +311,17 @@ pub fn create_api_key_docs() {}
     operation_id = "handle_list_api_keys",
     tag = "api-keys",
     params(
-        ("workspace_id" = Option<String>, Query, description = "按 workspace UUID 过滤；缺省/非法值回退 nil UUID（跨全量语义）"),
-        ("page" = Option<u64>, Query, description = "页码，默认 1"),
-        ("page_size" = Option<u64>, Query, description = "每页数量，默认 20，上限 100"),
+        ("workspace_id" = Option<String>, Query, description = "Filter by workspace UUID; missing/invalid values fall back to the nil UUID (spans all workspaces)"),
+        ("page" = Option<u64>, Query, description = "Page number, default 1"),
+        ("page_size" = Option<u64>, Query, description = "Items per page, default 20, max 100"),
     ),
     responses(
-        (status = 200, description = "API key 分页列表", body = ApiKeyListResponse),
-        (status = 400, description = "请求参数校验失败", body = ErrorResponse),
-        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
-        (status = 403, description = "需要 Admin 角色", body = ErrorResponse),
-        (status = 429, description = "触发限流", body = ErrorResponse),
-        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+        (status = 200, description = "Paginated API key list", body = ApiKeyListResponse),
+        (status = 400, description = "Request validation failed", body = ErrorResponse),
+        (status = 401, description = "Missing/invalid API Key", body = ErrorResponse),
+        (status = 403, description = "Admin role required", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub fn list_api_keys_docs() {}
@@ -334,15 +334,15 @@ pub fn list_api_keys_docs() {}
     operation_id = "handle_revoke_api_key",
     tag = "api-keys",
     params(
-        ("id" = String, Path, description = "API key 行 ID（UUID）"),
+        ("id" = String, Path, description = "API key row ID (UUID)"),
     ),
     responses(
-        (status = 200, description = "吊销成功", body = RevokeApiKeyResponse),
-        (status = 400, description = "id 不是合法 UUID", body = ErrorResponse),
-        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
-        (status = 403, description = "需要 Admin 角色", body = ErrorResponse),
-        (status = 429, description = "触发限流", body = ErrorResponse),
-        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+        (status = 200, description = "Revoked successfully", body = RevokeApiKeyResponse),
+        (status = 400, description = "id is not a valid UUID", body = ErrorResponse),
+        (status = 401, description = "Missing/invalid API Key", body = ErrorResponse),
+        (status = 403, description = "Admin role required", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub fn revoke_api_key_docs() {}

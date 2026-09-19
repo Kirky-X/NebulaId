@@ -450,3 +450,199 @@ error-main-etcd_ping_timed_out = etcd ping timed out after { $timeout_ms }ms for
 error-main-etcd_lock_create_failed = failed to create EtcdDistributedLock: { $reason }
 error-detail-group_not_found = Group not found: { $id }
 error-detail-biz_tag_not_found = BizTag not found: { $id }
+
+# T021 (unify-rust-i18n) — OpenAPI operation descriptions
+# (src/server/handlers/*_docs.rs annotation carriers). The utoipa derive
+# assembly is compile-time static, so the annotations carry these English
+# canonical strings inline; at runtime `openapi.rs::localize_openapi_json`
+# swaps response/parameter descriptions for the current locale's FTL text
+# (hit-only: a miss keeps the static English canonical string, so the
+# contract shape never changes).
+# Key shapes: response  `<method>-<path-slug>-<status>`
+#             parameter `<method>-<path-slug>-param-<name>`
+# slug rule: strip leading/trailing '/', join segments with '-', strip
+# path-parameter braces stripped (`/api/v1/biz-tags/{id}` -> `api-v1-biz-tags-id`).
+
+# ===== ids (id_handlers.rs) =====
+post-api-v1-generate-200 = ID generated successfully
+post-api-v1-generate-400 = Request validation failed
+post-api-v1-generate-401 = Missing/invalid API Key or role is not User
+post-api-v1-generate-403 = Cross-workspace access denied
+post-api-v1-generate-404 = Workspace not found
+post-api-v1-generate-429 = Rate limit exceeded
+post-api-v1-generate-500 = Internal server error
+post-api-v1-generate-503 = Downstream dependency timeout
+post-api-v1-generate-batch-200 = Batch generation succeeded (size defaults to 10, capped by batch_generate.max_batch_size)
+post-api-v1-generate-batch-400 = Request validation failed (including size exceeding the configured cap)
+post-api-v1-generate-batch-401 = Missing/invalid API Key or role is not User
+post-api-v1-generate-batch-403 = Cross-workspace access denied
+post-api-v1-generate-batch-404 = Workspace not found
+post-api-v1-generate-batch-429 = Rate limit exceeded
+post-api-v1-generate-batch-500 = Internal server error
+post-api-v1-generate-batch-503 = Downstream dependency timeout
+post-api-v1-parse-200 = ID parsed successfully
+post-api-v1-parse-400 = Invalid ID format or request parameters
+post-api-v1-parse-401 = Missing/invalid API Key
+post-api-v1-parse-429 = Rate limit exceeded
+post-api-v1-parse-500 = Internal server error
+post-api-v1-parse-503 = Downstream dependency timeout
+
+# ===== system (system_handlers.rs) =====
+get-health-200 = Service health status (algorithm view)
+get-ready-200 = Readiness probe result (database/cache dependency status)
+get-metrics-200 = Aggregated runtime metrics (throughput/latency/dependency health)
+get-api-v1-200 = Service metadata and endpoint listing
+get-api-v1-config-200 = Current configuration (redacted: no database connection info)
+get-api-v1-config-401 = Missing/invalid API Key
+get-api-v1-config-429 = Rate limit exceeded
+get-api-v1-config-500 = Internal server error
+post-api-v1-config-rate-limit-200 = Update result
+post-api-v1-config-rate-limit-400 = Request validation failed
+post-api-v1-config-rate-limit-401 = Missing/invalid API Key
+post-api-v1-config-rate-limit-403 = Admin role required (CWE-862)
+post-api-v1-config-rate-limit-429 = Rate limit exceeded
+post-api-v1-config-rate-limit-500 = Internal server error
+post-api-v1-config-logging-200 = Update result
+post-api-v1-config-logging-400 = Request validation failed
+post-api-v1-config-logging-401 = Missing/invalid API Key
+post-api-v1-config-logging-403 = Admin role required (CWE-862)
+post-api-v1-config-logging-429 = Rate limit exceeded
+post-api-v1-config-logging-500 = Internal server error
+post-api-v1-config-reload-200 = Reload result (with latest configuration)
+post-api-v1-config-reload-401 = Missing/invalid API Key
+post-api-v1-config-reload-403 = Admin role required (CWE-862)
+post-api-v1-config-reload-429 = Rate limit exceeded
+post-api-v1-config-reload-500 = Internal server error
+post-api-v1-config-algorithm-200 = Algorithm binding result
+post-api-v1-config-algorithm-400 = Request validation failed
+post-api-v1-config-algorithm-401 = Missing/invalid API Key
+post-api-v1-config-algorithm-403 = Admin role required (CWE-862)
+post-api-v1-config-algorithm-429 = Rate limit exceeded
+post-api-v1-config-algorithm-500 = Internal server error
+
+# ===== workspaces / groups (workspace_handlers.rs) =====
+post-api-v1-workspaces-200 = Created successfully
+post-api-v1-workspaces-400 = Request validation failed
+post-api-v1-workspaces-401 = Missing/invalid API Key
+post-api-v1-workspaces-403 = Admin role required
+post-api-v1-workspaces-429 = Rate limit exceeded
+post-api-v1-workspaces-500 = Internal server error
+get-api-v1-workspaces-200 = Workspace list (filtered by caller role)
+get-api-v1-workspaces-401 = Missing/invalid API Key
+get-api-v1-workspaces-403 = Insufficient permissions
+get-api-v1-workspaces-429 = Rate limit exceeded
+get-api-v1-workspaces-500 = Internal server error
+get-api-v1-workspaces-name-param-name = Workspace name
+get-api-v1-workspaces-name-200 = Workspace details
+get-api-v1-workspaces-name-401 = Missing/invalid API Key
+get-api-v1-workspaces-name-403 = Access to another workspace denied
+get-api-v1-workspaces-name-404 = Workspace not found
+get-api-v1-workspaces-name-429 = Rate limit exceeded
+get-api-v1-workspaces-name-500 = Internal server error
+post-api-v1-workspaces-name-regenerate-user-key-param-name = Workspace name
+post-api-v1-workspaces-name-regenerate-user-key-200 = New User API Key (plaintext secret returned only once)
+post-api-v1-workspaces-name-regenerate-user-key-401 = Missing/invalid API Key
+post-api-v1-workspaces-name-regenerate-user-key-403 = Admin role required
+post-api-v1-workspaces-name-regenerate-user-key-404 = Workspace not found
+post-api-v1-workspaces-name-regenerate-user-key-429 = Rate limit exceeded
+post-api-v1-workspaces-name-regenerate-user-key-500 = Internal server error
+post-api-v1-groups-200 = Created successfully
+post-api-v1-groups-400 = Request validation failed
+post-api-v1-groups-401 = Missing/invalid API Key or role is not User
+post-api-v1-groups-403 = Cross-workspace access denied
+post-api-v1-groups-404 = Workspace not found
+post-api-v1-groups-429 = Rate limit exceeded
+post-api-v1-groups-500 = Internal server error
+get-api-v1-groups-param-workspace = Workspace name (required; User may only list its own workspace)
+get-api-v1-groups-param-page = Page number, default 1
+get-api-v1-groups-param-page_size = Items per page, default 20, max 100
+get-api-v1-groups-200 = Group list
+get-api-v1-groups-400 = Request validation failed
+get-api-v1-groups-401 = Missing/invalid API Key or role is not User
+get-api-v1-groups-403 = Cross-workspace access denied
+get-api-v1-groups-404 = Workspace not found
+get-api-v1-groups-429 = Rate limit exceeded
+get-api-v1-groups-500 = Internal server error
+
+# ===== biz-tags (biz_tag_handlers.rs) =====
+post-api-v1-biz-tags-200 = Created successfully
+post-api-v1-biz-tags-400 = Request validation failed
+post-api-v1-biz-tags-401 = Missing/invalid API Key or role is not User
+post-api-v1-biz-tags-403 = workspace_id does not match the caller
+post-api-v1-biz-tags-429 = Rate limit exceeded
+post-api-v1-biz-tags-500 = Internal server error
+get-api-v1-biz-tags-param-workspace_id = Filter by workspace UUID (required for Admin; ignored for User, forced to the authenticated identity)
+get-api-v1-biz-tags-param-page = Page number, default 1
+get-api-v1-biz-tags-param-page_size = Items per page, default 20, max 100
+get-api-v1-biz-tags-200 = Paginated biz-tag list
+get-api-v1-biz-tags-400 = Request validation failed / workspace_id is not a valid UUID
+get-api-v1-biz-tags-401 = Missing/invalid API Key
+get-api-v1-biz-tags-403 = Admin did not explicitly specify workspace_id
+get-api-v1-biz-tags-429 = Rate limit exceeded
+get-api-v1-biz-tags-500 = Internal server error
+get-api-v1-biz-tags-id-param-id = Biz-tag row ID (UUID)
+get-api-v1-biz-tags-id-200 = Biz-tag details
+get-api-v1-biz-tags-id-400 = id is not a valid UUID
+get-api-v1-biz-tags-id-401 = Missing/invalid API Key or role is not User
+get-api-v1-biz-tags-id-403 = Cross-workspace access denied
+get-api-v1-biz-tags-id-404 = Biz-tag not found
+get-api-v1-biz-tags-id-429 = Rate limit exceeded
+get-api-v1-biz-tags-id-500 = Internal server error
+put-api-v1-biz-tags-id-param-id = Biz-tag row ID (UUID)
+put-api-v1-biz-tags-id-200 = Updated successfully
+put-api-v1-biz-tags-id-400 = id is not a valid UUID or request validation failed
+put-api-v1-biz-tags-id-401 = Missing/invalid API Key or role is not User
+put-api-v1-biz-tags-id-403 = Cross-workspace access denied
+put-api-v1-biz-tags-id-404 = Biz-tag not found
+put-api-v1-biz-tags-id-429 = Rate limit exceeded
+put-api-v1-biz-tags-id-500 = Internal server error
+delete-api-v1-biz-tags-id-param-id = Biz-tag row ID (UUID)
+delete-api-v1-biz-tags-id-204 = Deleted successfully (no response body)
+delete-api-v1-biz-tags-id-400 = id is not a valid UUID
+delete-api-v1-biz-tags-id-401 = Missing/invalid API Key or role is not User
+delete-api-v1-biz-tags-id-403 = Cross-workspace access denied
+delete-api-v1-biz-tags-id-404 = Biz-tag not found
+delete-api-v1-biz-tags-id-429 = Rate limit exceeded
+delete-api-v1-biz-tags-id-500 = Internal server error
+
+# ===== api-keys (api_key_handlers.rs) =====
+post-api-v1-api-keys-200 = Created successfully (plaintext key_secret returned only once)
+post-api-v1-api-keys-400 = Request validation failed (including missing/invalid workspace_id for user keys)
+post-api-v1-api-keys-401 = Missing/invalid API Key
+post-api-v1-api-keys-403 = Admin role required
+post-api-v1-api-keys-429 = Rate limit exceeded
+post-api-v1-api-keys-500 = Internal server error
+get-api-v1-api-keys-param-workspace_id = Filter by workspace UUID; missing/invalid values fall back to the nil UUID (spans all workspaces)
+get-api-v1-api-keys-param-page = Page number, default 1
+get-api-v1-api-keys-param-page_size = Items per page, default 20, max 100
+get-api-v1-api-keys-200 = Paginated API key list
+get-api-v1-api-keys-400 = Request validation failed
+get-api-v1-api-keys-401 = Missing/invalid API Key
+get-api-v1-api-keys-403 = Admin role required
+get-api-v1-api-keys-429 = Rate limit exceeded
+get-api-v1-api-keys-500 = Internal server error
+delete-api-v1-api-keys-id-param-id = API key row ID (UUID)
+delete-api-v1-api-keys-id-200 = Revoked successfully
+delete-api-v1-api-keys-id-400 = id is not a valid UUID
+delete-api-v1-api-keys-id-401 = Missing/invalid API Key
+delete-api-v1-api-keys-id-403 = Admin role required
+delete-api-v1-api-keys-id-429 = Rate limit exceeded
+delete-api-v1-api-keys-id-500 = Internal server error
+
+# T021 (unify-rust-i18n) — SDK kit.rs assembly/error strings and one
+# UnconfiguredSegmentLoader payload (src/sdk/kit.rs,
+# src/core/algorithm/segment.rs). The FTL template carries the shape;
+# module names are passed as { $module } and the details as { $reason }
+# via `t!` at the construction site.
+error-sdk-module_config_missing = { $module } module config missing: { $reason }
+error-sdk-module_dependency_missing = { $module } module dependency { $dependency } missing: { $reason }
+error-sdk-module_audit_logger_missing = { $module } module audit logger missing: { $reason }
+error-sdk-module_init_failed = { $module } module initialization failed: { $reason }
+error-sdk-on_ready_capability_missing = { $module } on_ready capability missing: { $reason }
+error-sdk-capability_missing = { $module } capability missing: { $reason }
+error-sdk-module_register_failed = trait-kit module registration failed: { $reason }
+error-sdk-assembly_config_missing = SDK assembly config missing: { $reason }
+error-sdk-kit_build_failed = trait-kit build failed: { $reason }
+error-sdk-router_module_must_exist_on_ready_kit = RouterModule capability must exist on a Ready Kit (guaranteed by build dependency-graph validation)
+log-sdk-audit_logger_injection_confirmed = sdk: audit_logger injection confirmed
+error-detail-segment_loader_not_configured = Segment algorithm has no data source wired; inject DbSegmentLoader (SegmentRepository::allocate_segment) at the assembly site

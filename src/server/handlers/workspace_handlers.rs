@@ -162,12 +162,12 @@ impl super::ApiHandlers {
     tag = "workspaces",
     request_body = CreateWorkspaceRequest,
     responses(
-        (status = 200, description = "创建成功", body = WorkspaceResponse),
-        (status = 400, description = "请求参数校验失败", body = ErrorResponse),
-        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
-        (status = 403, description = "需要 Admin 角色", body = ErrorResponse),
-        (status = 429, description = "触发限流", body = ErrorResponse),
-        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+        (status = 200, description = "Created successfully", body = WorkspaceResponse),
+        (status = 400, description = "Request validation failed", body = ErrorResponse),
+        (status = 401, description = "Missing/invalid API Key", body = ErrorResponse),
+        (status = 403, description = "Admin role required", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub fn create_workspace_docs() {}
@@ -181,11 +181,11 @@ pub fn create_workspace_docs() {}
     operation_id = "handle_list_workspaces",
     tag = "workspaces",
     responses(
-        (status = 200, description = "workspace 列表（按调用者角色过滤）", body = WorkspaceListResponse),
-        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
-        (status = 403, description = "权限不足", body = ErrorResponse),
-        (status = 429, description = "触发限流", body = ErrorResponse),
-        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+        (status = 200, description = "Workspace list (filtered by caller role)", body = WorkspaceListResponse),
+        (status = 401, description = "Missing/invalid API Key", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub fn list_workspaces_docs() {}
@@ -199,15 +199,15 @@ pub fn list_workspaces_docs() {}
     operation_id = "handle_get_workspace",
     tag = "workspaces",
     params(
-        ("name" = String, Path, description = "workspace 名称"),
+        ("name" = String, Path, description = "Workspace name"),
     ),
     responses(
-        (status = 200, description = "workspace 详情", body = WorkspaceResponse),
-        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
-        (status = 403, description = "访问他人 workspace 被拒绝", body = ErrorResponse),
-        (status = 404, description = "workspace 不存在", body = ErrorResponse),
-        (status = 429, description = "触发限流", body = ErrorResponse),
-        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+        (status = 200, description = "Workspace details", body = WorkspaceResponse),
+        (status = 401, description = "Missing/invalid API Key", body = ErrorResponse),
+        (status = 403, description = "Access to another workspace denied", body = ErrorResponse),
+        (status = 404, description = "Workspace not found", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub fn get_workspace_docs() {}
@@ -221,15 +221,15 @@ pub fn get_workspace_docs() {}
     operation_id = "handle_regenerate_user_key",
     tag = "workspaces",
     params(
-        ("name" = String, Path, description = "workspace 名称"),
+        ("name" = String, Path, description = "Workspace name"),
     ),
     responses(
-        (status = 200, description = "新的 User API Key（明文 secret 仅此一次返回）", body = ApiKeyWithSecretResponse),
-        (status = 401, description = "缺失/无效 API Key", body = ErrorResponse),
-        (status = 403, description = "需要 Admin 角色", body = ErrorResponse),
-        (status = 404, description = "workspace 不存在", body = ErrorResponse),
-        (status = 429, description = "触发限流", body = ErrorResponse),
-        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+        (status = 200, description = "New User API Key (plaintext secret returned only once)", body = ApiKeyWithSecretResponse),
+        (status = 401, description = "Missing/invalid API Key", body = ErrorResponse),
+        (status = 403, description = "Admin role required", body = ErrorResponse),
+        (status = 404, description = "Workspace not found", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub fn regenerate_user_key_docs() {}
@@ -243,13 +243,13 @@ pub fn regenerate_user_key_docs() {}
     tag = "groups",
     request_body = CreateGroupRequest,
     responses(
-        (status = 200, description = "创建成功", body = GroupResponse),
-        (status = 400, description = "请求参数校验失败", body = ErrorResponse),
-        (status = 401, description = "缺失/无效 API Key 或角色不是 User", body = ErrorResponse),
-        (status = 403, description = "跨 workspace 访问被拒绝", body = ErrorResponse),
-        (status = 404, description = "workspace 不存在", body = ErrorResponse),
-        (status = 429, description = "触发限流", body = ErrorResponse),
-        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+        (status = 200, description = "Created successfully", body = GroupResponse),
+        (status = 400, description = "Request validation failed", body = ErrorResponse),
+        (status = 401, description = "Missing/invalid API Key or role is not User", body = ErrorResponse),
+        (status = 403, description = "Cross-workspace access denied", body = ErrorResponse),
+        (status = 404, description = "Workspace not found", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub fn create_group_docs() {}
@@ -262,18 +262,18 @@ pub fn create_group_docs() {}
     operation_id = "handle_list_groups",
     tag = "groups",
     params(
-        ("workspace" = String, Query, description = "workspace 名称（必填，User 仅可列自身 workspace）"),
-        ("page" = Option<u64>, Query, description = "页码，默认 1"),
-        ("page_size" = Option<u64>, Query, description = "每页数量，默认 20，上限 100"),
+        ("workspace" = String, Query, description = "Workspace name (required; User may only list its own workspace)"),
+        ("page" = Option<u64>, Query, description = "Page number, default 1"),
+        ("page_size" = Option<u64>, Query, description = "Items per page, default 20, max 100"),
     ),
     responses(
-        (status = 200, description = "group 列表", body = GroupListResponse),
-        (status = 400, description = "请求参数校验失败", body = ErrorResponse),
-        (status = 401, description = "缺失/无效 API Key 或角色不是 User", body = ErrorResponse),
-        (status = 403, description = "跨 workspace 访问被拒绝", body = ErrorResponse),
-        (status = 404, description = "workspace 不存在", body = ErrorResponse),
-        (status = 429, description = "触发限流", body = ErrorResponse),
-        (status = 500, description = "服务端内部错误", body = ErrorResponse),
+        (status = 200, description = "Group list", body = GroupListResponse),
+        (status = 400, description = "Request validation failed", body = ErrorResponse),
+        (status = 401, description = "Missing/invalid API Key or role is not User", body = ErrorResponse),
+        (status = 403, description = "Cross-workspace access denied", body = ErrorResponse),
+        (status = 404, description = "Workspace not found", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub fn list_groups_docs() {}

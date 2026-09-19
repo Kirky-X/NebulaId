@@ -164,6 +164,102 @@ pub fn create_swagger_router() -> Router {
     Router::new()
 }
 
+// ============================================================================
+// OpenAPI 运行时本地化（T021 unify-rust-i18n）
+// ============================================================================
+
+/// 由 spec 路径生成 operation 键的 path-slug 段（与 etyma 先例同一规则）：
+/// 去首尾 `/`，段间 `/` → `-`，剥离路径参数花括号
+/// （`/api/v1/biz-tags/{id}` → `api-v1-biz-tags-id`，`/api/v1/` → `api-v1`）。
+fn operation_slug(path: &str) -> String {
+    path.trim_matches('/')
+        .split('/')
+        .map(|segment| segment.replace(['{', '}'], ""))
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// 是否 HTTP method 键（遍历 path item 成员时区分 method 与 `parameters` 等
+/// OpenAPI 对象字段；口径与 FTL operation 键的 `<method>-` 前缀一致）。
+fn is_http_method(s: &str) -> bool {
+    matches!(
+        s,
+        "get" | "put" | "post" | "delete" | "options" | "head" | "patch" | "trace"
+    )
+}
+
+/// 构建经运行时本地化的 OpenAPI JSON（`/api-docs/openapi.json` 出口）。
+///
+/// `ApiDoc` 的 utoipa derive 装配是编译期静态的，注解 description 只能是
+/// 单语规范串（T021 起为英文规范串，与 FTL en 串逐字节一致）；此处序列化后
+/// 按当前进程 locale 做「命中才替换」：
+/// - response description 键 `<method>-<path-slug>-<status>`；
+/// - parameter description 键 `<method>-<path-slug>-param-<name>`；
+/// FTL 键登记见 `locales/{en,zh}/messages.ftl` 的 T021 段。未命中的
+/// description 保持静态英文规范串，契约结构与 HTTP 语义不变。
+pub(crate) fn localized_openapi_json() -> serde_json::Value {
+    let mut doc = serde_json::to_value(ApiDoc::openapi()).expect("ApiDoc must serialize to JSON");
+    localize_openapi_json(&mut doc, &crate::core::i18n::current_locale());
+    doc
+}
+
+/// 就地替换 `doc["paths"]` 下各 operation 的 response/parameter description
+/// （命中 FTL 键才替换，见 [`localized_openapi_json`]）。
+fn localize_openapi_json(doc: &mut serde_json::Value, locale: &str) {
+    let Some(paths) = doc.get_mut("paths").and_then(|p| p.as_object_mut()) else {
+        return;
+    };
+    for (path, item) in paths.iter_mut() {
+        let slug = operation_slug(path);
+        let Some(item) = item.as_object_mut() else {
+            continue;
+        };
+        for (method, op) in item.iter_mut() {
+            if !is_http_method(method) {
+                continue;
+            }
+            let base = format!("{method}-{slug}");
+            let Some(op) = op.as_object_mut() else {
+                continue;
+            };
+            // operation 级 description（当前注解未用；键命中即替换，供后续扩展）
+            if let Some(text) = crate::core::i18n::translate_if_present(locale, &base) {
+                op.insert("description".to_string(), serde_json::Value::String(text));
+            }
+            if let Some(responses) = op.get_mut("responses").and_then(|r| r.as_object_mut()) {
+                for (status, response) in responses.iter_mut() {
+                    let Some(text) = crate::core::i18n::translate_if_present(
+                        locale,
+                        &format!("{base}-{status}"),
+                    ) else {
+                        continue;
+                    };
+                    if let Some(response) = response.as_object_mut() {
+                        response.insert("description".to_string(), serde_json::Value::String(text));
+                    }
+                }
+            }
+            if let Some(parameters) = op.get_mut("parameters").and_then(|p| p.as_array_mut()) {
+                for parameter in parameters.iter_mut() {
+                    let Some(parameter) = parameter.as_object_mut() else {
+                        continue;
+                    };
+                    let Some(name) = parameter.get("name").and_then(|n| n.as_str()) else {
+                        continue;
+                    };
+                    if let Some(text) = crate::core::i18n::translate_if_present(
+                        locale,
+                        &format!("{base}-param-{name}"),
+                    ) {
+                        parameter
+                            .insert("description".to_string(), serde_json::Value::String(text));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// OpenAPI JSON 处理器
 #[sdforge::utoipa::path(
     get,
@@ -174,7 +270,7 @@ pub fn create_swagger_router() -> Router {
     tag = "docs"
 )]
 pub async fn openapi_json_handler() -> impl axum::response::IntoResponse {
-    axum::Json(ApiDoc::openapi())
+    axum::Json(localized_openapi_json())
 }
 
 #[cfg(test)]
@@ -330,5 +426,117 @@ mod tests {
             .as_str()
             .unwrap_or_default();
         assert_eq!(tag, "order", "示例值须与文档口径一致(biz_tag=order)");
+    }
+
+    // ========== T021 —— OpenAPI 运行时本地化守卫 ==========
+
+    /// operation_slug 单元测试：剥花括号、`/` → `-`、首尾 `/` 归零。
+    #[test]
+    fn operation_slug_strips_path_params_and_prefixes() {
+        assert_eq!(
+            operation_slug("/api/v1/biz-tags/{id}"),
+            "api-v1-biz-tags-id"
+        );
+        assert_eq!(operation_slug("/api/v1/"), "api-v1");
+        assert_eq!(operation_slug("/health"), "health");
+        assert_eq!(
+            operation_slug("/api/v1/workspaces/{name}/regenerate-user-key"),
+            "api-v1-workspaces-name-regenerate-user-key"
+        );
+    }
+
+    /// 从磁盘读取 en FTL 的键集合（与 `core::i18n` 键齐性守卫同一解析口径：
+    /// `key = value` 行，`.`→`-` 映射不适用——本测试只消费 FTL 原生键）。
+    fn en_ftl_keys() -> Vec<String> {
+        let ftl = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales/en/messages.ftl"),
+        )
+        .expect("locales/en/messages.ftl must exist on disk");
+        ftl.lines()
+            .filter_map(|line| line.split_once(" = "))
+            .map(|(key, _)| key.trim().to_string())
+            .collect()
+    }
+
+    /// T021 守卫：messages.ftl 中全部 `<method>-` 前缀键都必须可由 spec 路由
+    /// 经 `operation_slug` 计算命中（response 键 `<method>-<slug>-<status>`、
+    /// parameter 键 `<method>-<slug>-param-<name>`）——防止 slug 与 FTL 键
+    /// 漂移导致运行时替换静默失效。
+    #[test]
+    fn all_openapi_ftl_operation_keys_reachable_from_spec_routes() {
+        let doc = openapi_json();
+        let mut spec_keys: std::collections::HashSet<String> = Default::default();
+        for (path, item) in doc["paths"].as_object().expect("paths must be an object") {
+            let slug = operation_slug(path);
+            for (method, op) in item.as_object().expect("path item must be an object") {
+                if !is_http_method(method) {
+                    continue;
+                }
+                let base = format!("{method}-{slug}");
+                if let Some(responses) = op.get("responses").and_then(|r| r.as_object()) {
+                    for status in responses.keys() {
+                        spec_keys.insert(format!("{base}-{status}"));
+                    }
+                }
+                if let Some(parameters) = op.get("parameters").and_then(|p| p.as_array()) {
+                    for parameter in parameters {
+                        if let Some(name) = parameter.get("name").and_then(|n| n.as_str()) {
+                            spec_keys.insert(format!("{base}-param-{name}"));
+                        }
+                    }
+                }
+            }
+        }
+
+        let missing: Vec<String> = en_ftl_keys()
+            .into_iter()
+            .filter(|key| {
+                is_http_method(key.split('-').next().unwrap_or_default())
+                    && !spec_keys.contains(key)
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "FTL operation keys not reachable from spec routes (slug/键漂移?): {missing:?}"
+        );
+    }
+
+    /// T021 —— 本地化替换语义：en/zh 双 locale 下命中键的 description 均被
+    /// 对应 FTL 文案替换（en 替换结果与注解内联英文规范串同源）。
+    #[test]
+    fn localized_openapi_replaces_descriptions_on_hit() {
+        for locale in ["en", "zh-CN"] {
+            let mut doc =
+                serde_json::to_value(ApiDoc::openapi()).expect("ApiDoc must serialize to JSON");
+            localize_openapi_json(&mut doc, locale);
+
+            let generate = &doc["paths"]["/api/v1/generate"]["post"];
+            let expected =
+                crate::core::i18n::translate_if_present(locale, "post-api-v1-generate-200")
+                    .expect("post-api-v1-generate-200 must hit the catalog");
+            assert_eq!(
+                generate["responses"]["200"]["description"].as_str(),
+                Some(expected.as_str()),
+                "200 description must be localized ({locale})"
+            );
+
+            // parameter description：GET /api/v1/groups 的 workspace 参数
+            let groups = &doc["paths"]["/api/v1/groups"]["get"];
+            let params = groups["parameters"].as_array().expect("parameters array");
+            let workspace = params
+                .iter()
+                .find(|p| p.get("name").and_then(|n| n.as_str()) == Some("workspace"))
+                .expect("workspace parameter present");
+            let expected = crate::core::i18n::translate_if_present(
+                locale,
+                "get-api-v1-groups-param-workspace",
+            )
+            .expect("get-api-v1-groups-param-workspace must hit the catalog");
+            assert_eq!(
+                workspace["description"].as_str(),
+                Some(expected.as_str()),
+                "parameter description must be localized ({locale})"
+            );
+        }
     }
 }

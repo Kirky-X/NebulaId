@@ -1,0 +1,87 @@
+# HTTP 端到端基准配置 B：生产形态口径（认证开 + 限流开但不节流）。
+# 认证走 Argon2id + 进程内缓存（cache_ttl 300s），首请求回源，其余走缓存。
+# 限流 rps 拉高（桶不拒绝），保留令牌桶判定本身的每请求开销。
+# 仅供性能基准使用，不用于生产。
+
+[app]
+name = "nebula-id-bench"
+host = "127.0.0.1"
+http_port = 8080
+grpc_port = 9091
+dc_id = 0
+worker_id = 0
+
+[logging]
+level = "warn"
+format = "json"
+include_location = false
+
+[database]
+engine = "postgresql"
+host = "localhost"
+port = 5433
+database = "idgen"
+username = "idgen"
+password = "${NEBULA_DATABASE_PASSWORD}"
+max_connections = 50
+min_connections = 5
+acquire_timeout_seconds = 30
+idle_timeout_seconds = 300
+
+[redis]
+url = "redis://localhost:6380"
+pool_size = 16
+key_prefix = "nebula:id:"
+ttl_seconds = 600
+
+[algorithm]
+default = "snowflake"
+
+[algorithm.segment]
+base_step = 1000
+min_step = 500
+max_step = 100000
+switch_threshold = 0.1
+
+[algorithm.snowflake]
+datacenter_id_bits = 3
+worker_id_bits = 8
+sequence_bits = 10
+clock_drift_threshold_ms = 1000
+
+[algorithm.uuid_v8]
+enabled = true
+
+[monitoring]
+metrics_enabled = true
+metrics_path = "/metrics"
+tracing_enabled = false
+otlp_endpoint = ""
+
+[rate_limit]
+enabled = true
+default_rps = 10000000
+burst_size = 1000000
+
+[tls]
+enabled = false
+http_enabled = false
+grpc_enabled = false
+cert_path = ""
+key_path = ""
+
+[batch_generate]
+max_batch_size = 100
+
+[auth]
+enabled = true
+cache_ttl_seconds = 300
+api_key_salt = "bench-salt-0123456789abcdef"
+api_keys = [
+  { key_id = "bench-user", key_secret = "bench-secret-value-0123456789abcdef", workspace = "bench-ws", role = "user", rate_limit = 10000000, name = "bench-user-key" }
+]
+
+[etcd]
+endpoints = []
+connect_timeout_ms = 5000
+watch_timeout_ms = 5000

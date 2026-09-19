@@ -1,16 +1,5 @@
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 
 use crate::server::api_version::{api_version_middleware, API_V1};
 use crate::server::audit::{audit_middleware_fn, AuditLogger, AuditMiddleware};
@@ -51,7 +40,7 @@ use std::sync::Arc;
 use validator::Validate;
 
 #[derive(Clone)]
-pub struct AppState {
+pub struct NebulaIdState {
     pub handlers: Arc<ApiHandlers>,
     pub auth: Arc<ApiKeyAuth>,
     pub config_service: Arc<dyn ConfigManagementService>,
@@ -339,7 +328,7 @@ pub async fn create_router_with_rate_limit(
 
     let config_service = handlers.get_config_service();
 
-    let app_state = AppState {
+    let app_state = NebulaIdState {
         handlers: handlers.clone(),
         auth: auth.clone(),
         config_service: config_service.clone(),
@@ -678,7 +667,7 @@ async fn verify_workspace_id(
 }
 
 async fn handle_generate(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     extensions: axum::Extension<Option<uuid::Uuid>>,
     extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
@@ -702,7 +691,7 @@ async fn handle_generate(
 }
 
 async fn handle_batch_generate(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     extensions: axum::Extension<Option<uuid::Uuid>>,
     extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
@@ -753,11 +742,11 @@ async fn handle_batch_generate(
     }
 }
 
-async fn handle_health(State(state): State<AppState>) -> Json<HealthResponse> {
+async fn handle_health(State(state): State<NebulaIdState>) -> Json<HealthResponse> {
     Json(state.handlers.health().await)
 }
 
-async fn handle_ready(State(state): State<AppState>) -> Json<ReadyResponse> {
+async fn handle_ready(State(state): State<NebulaIdState>) -> Json<ReadyResponse> {
     Json(state.handlers.ready().await)
 }
 
@@ -767,7 +756,7 @@ async fn handle_ready(State(state): State<AppState>) -> Json<ReadyResponse> {
 /// 原子计数/观测环读取），灌入 exporter registry 后渲染；JSON 输出移除
 /// （结构化 JSON 快照仍可经 `GET /api/v1/config` 等管理面获取，监控抓取
 /// 统一走本端点）。
-async fn handle_metrics(State(state): State<AppState>) -> axum::response::Response {
+async fn handle_metrics(State(state): State<NebulaIdState>) -> axum::response::Response {
     let snapshot = state.handlers.metrics().await;
     let body = state.prometheus.render(&snapshot);
     (
@@ -781,7 +770,7 @@ async fn handle_metrics(State(state): State<AppState>) -> axum::response::Respon
 }
 
 async fn handle_parse(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     Extension(locale): Extension<Locale>,
     Json(req): Json<ParseRequest>,
 ) -> Result<Json<ParseResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -813,12 +802,12 @@ async fn handle_parse(
     }
 }
 
-async fn handle_get_config(State(state): State<AppState>) -> Json<SecureConfigResponse> {
+async fn handle_get_config(State(state): State<NebulaIdState>) -> Json<SecureConfigResponse> {
     Json(state.config_service.get_secure_config())
 }
 
 async fn handle_update_rate_limit(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     Extension(locale): Extension<Locale>,
     Json(req): Json<UpdateRateLimitRequest>,
 ) -> Result<Json<UpdateConfigResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -831,7 +820,7 @@ async fn handle_update_rate_limit(
 }
 
 async fn handle_update_logging(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     Extension(locale): Extension<Locale>,
     Json(req): Json<UpdateLoggingRequest>,
 ) -> Result<Json<UpdateConfigResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -852,12 +841,12 @@ async fn handle_update_logging(
 // 影响：debug_handler 仅用于开发期生成更友好的 handler 类型错误诊断，不影响运行时
 // 行为。移除后若 handler 签名错误，编译错误信息会较晦涩（指向 FromRequest impl），
 // 是已知 trade-off。
-async fn handle_reload_config(State(state): State<AppState>) -> Json<UpdateConfigResponse> {
+async fn handle_reload_config(State(state): State<NebulaIdState>) -> Json<UpdateConfigResponse> {
     Json(state.config_service.reload_config().await)
 }
 
 async fn handle_set_algorithm(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     Extension(locale): Extension<Locale>,
     Json(req): Json<SetAlgorithmRequest>,
 ) -> Result<Json<SetAlgorithmResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -938,7 +927,7 @@ async fn handle_api_info() -> Json<ApiInfoResponse> {
 // ========== BizTag Handlers ==========
 
 async fn handle_create_biz_tag(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     extensions: axum::Extension<Option<uuid::Uuid>>,
     extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
@@ -962,7 +951,7 @@ async fn handle_create_biz_tag(
 }
 
 async fn handle_get_biz_tag(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     extensions: axum::Extension<Option<uuid::Uuid>>,
     extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
@@ -989,7 +978,7 @@ async fn handle_get_biz_tag(
 }
 
 async fn handle_update_biz_tag(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     extensions: axum::Extension<Option<uuid::Uuid>>,
     extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
@@ -1024,7 +1013,7 @@ async fn handle_update_biz_tag(
 }
 
 async fn handle_delete_biz_tag(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     extensions: axum::Extension<Option<uuid::Uuid>>,
     extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
@@ -1054,7 +1043,7 @@ async fn handle_delete_biz_tag(
 }
 
 async fn handle_list_biz_tags(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     extensions: axum::Extension<Option<uuid::Uuid>>,
     extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
@@ -1109,7 +1098,7 @@ async fn handle_list_biz_tags(
 // ========== Workspace Handlers ==========
 
 async fn handle_create_workspace(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     Extension(locale): Extension<Locale>,
     Json(req): Json<CreateWorkspaceRequest>,
 ) -> Result<Json<WorkspaceResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -1126,7 +1115,7 @@ async fn handle_create_workspace(
 }
 
 async fn handle_list_workspaces(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     extensions: axum::Extension<Option<uuid::Uuid>>,
     extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
@@ -1222,7 +1211,7 @@ async fn enforce_workspace_read_access(
 }
 
 async fn handle_get_workspace(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     extensions: axum::Extension<Option<uuid::Uuid>>,
     extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
@@ -1243,7 +1232,7 @@ async fn handle_get_workspace(
 // ========== Group Handlers ==========
 
 async fn handle_create_group(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     extensions: axum::Extension<Option<uuid::Uuid>>,
     extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
@@ -1267,7 +1256,7 @@ async fn handle_create_group(
 }
 
 async fn handle_regenerate_user_key(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     Extension(locale): Extension<Locale>,
     Path(name): Path<String>,
 ) -> Result<Json<ApiKeyWithSecretResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -1280,7 +1269,7 @@ async fn handle_regenerate_user_key(
 }
 
 async fn handle_list_groups(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     extensions: axum::Extension<Option<uuid::Uuid>>,
     extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
@@ -1317,7 +1306,7 @@ async fn handle_list_groups(
 // ========== API Key Handlers ==========
 
 async fn handle_create_api_key(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     Extension(locale): Extension<Locale>,
     Json(req): Json<CreateApiKeyRequest>,
 ) -> Result<Json<ApiKeyWithSecretResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -1361,7 +1350,7 @@ async fn handle_create_api_key(
 }
 
 async fn handle_list_api_keys(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     Extension(locale): Extension<Locale>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<ApiKeyListResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -1404,7 +1393,7 @@ async fn handle_list_api_keys(
 }
 
 async fn handle_revoke_api_key(
-    State(state): State<AppState>,
+    State(state): State<NebulaIdState>,
     Extension(locale): Extension<Locale>,
     Path(id): Path<String>,
 ) -> Result<Json<RevokeApiKeyResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -2195,13 +2184,13 @@ mod tests {
         );
     }
 
-    // ========== AppState helper ==========
+    // ========== NebulaIdState helper ==========
 
-    fn create_test_app_state() -> AppState {
+    fn create_test_app_state() -> NebulaIdState {
         let handlers = create_test_api_handlers();
         let auth = create_test_auth();
         let config_service = handlers.get_config_service();
-        AppState {
+        NebulaIdState {
             handlers,
             auth,
             config_service,
@@ -2333,7 +2322,7 @@ mod tests {
             algorithm_router.clone(),
             config_service.clone(),
         ));
-        let state = AppState {
+        let state = NebulaIdState {
             handlers,
             auth: create_test_auth(),
             config_service,
@@ -3298,7 +3287,7 @@ mod tests {
 
     fn app_state_with_mock(
         mock_config: crate::server::handlers::mock_tests::MockConfigManagementService,
-    ) -> AppState {
+    ) -> NebulaIdState {
         use crate::server::handlers::mock_generator::MockIdGenerator;
 
         let handlers = Arc::new(ApiHandlers::new(
@@ -3307,7 +3296,7 @@ mod tests {
         ));
         let auth = create_test_auth();
         let config_service = handlers.get_config_service();
-        AppState {
+        NebulaIdState {
             handlers,
             auth,
             config_service,

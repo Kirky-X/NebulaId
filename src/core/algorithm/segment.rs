@@ -1,16 +1,5 @@
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 
 //! Segment 算法模块
 //!
@@ -19,7 +8,6 @@
 //! 的默认装配是 [`UnconfiguredSegmentLoader`]（显性报错），需在装配处注入
 //! `DbSegmentLoader`；`cfg(test)` 构建下默认注入 [`TestSegmentLoader`] 以维持
 //! 既有 crate 内测试行为。
-
 use crate::core::algorithm::{
     AlgorithmMetricsSnapshot, GenerateContext, HealthStatus, IdAlgorithm,
 };
@@ -286,7 +274,7 @@ pub struct DoubleBuffer {
     current: Arc<ArcSwap<AtomicSegment>>,
     next: Arc<ArcSwapOption<AtomicSegment>>,
     switch_threshold: f64,
-    // diting-perf C2 修复：loading 标记防止多线程并发触发 load_segment
+    // 修复：loading 标记防止多线程并发触发 load_segment
     loading: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -304,7 +292,7 @@ impl DoubleBuffer {
         }
     }
 
-    /// diting-perf C2 修复：CAS 标记 loading=true，返回是否抢占成功。
+    /// 修复：CAS 标记 loading=true，返回是否抢占成功。
     /// 成功的线程负责 load_segment；失败的线程应 spin-wait 直到 loading=false。
     pub fn try_start_loading(&self) -> bool {
         self.loading
@@ -312,12 +300,12 @@ impl DoubleBuffer {
             .is_ok()
     }
 
-    /// diting-perf C2 修复：load_segment 完成（无论成功失败）后必须调用，重置 loading。
+    /// 修复：load_segment 完成（无论成功失败）后必须调用，重置 loading。
     pub fn finish_loading(&self) {
         self.loading.store(false, Ordering::Release);
     }
 
-    /// diting-perf C2 修复：检查是否正在加载。
+    /// 修复：检查是否正在加载。
     pub fn is_loading(&self) -> bool {
         self.loading.load(Ordering::Acquire)
     }
@@ -582,7 +570,7 @@ impl IdAlgorithm for SegmentAlgorithm {
 
             if let Some((start, _end)) = current.try_consume(1) {
                 self.metrics.total_generated.fetch_add(1, Ordering::Relaxed);
-                // diting-perf C1 修复：cache_hits 递增，cache_hit_rate 才能正确反映命中率
+                // 修复：cache_hits 递增，cache_hit_rate 才能正确反映命中率
                 self.metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
                 return Ok(Id::from_u128(start.into()));
             }
@@ -592,7 +580,7 @@ impl IdAlgorithm for SegmentAlgorithm {
                 if next.is_some() {
                     buffer.swap();
                 } else {
-                    // diting-perf C2 修复：CAS 防止多线程同时 load_segment
+                    // 修复：CAS 防止多线程同时 load_segment
                     if buffer.try_start_loading() {
                         self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
                         let load_result = self.segment_loader.load_segment(ctx, 0).await;

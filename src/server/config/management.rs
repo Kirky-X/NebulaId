@@ -1,16 +1,5 @@
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 
 use super::hot_reload::HotReloadConfig;
 use crate::core::config::Config;
@@ -20,7 +9,7 @@ use crate::core::database::{
 };
 use crate::core::types::id::AlgorithmType;
 use crate::server::models::{
-    AlgorithmConfigInfo, AppConfigInfo, CacheMetrics, ConfigResponse, ConnectionPoolMetrics,
+    AlgorithmConfigInfo, NebulaIdConfigInfo, CacheMetrics, ConfigResponse, ConnectionPoolMetrics,
     CreateGroupRequest, CreateWorkspaceRequest, DatabaseConfigInfo, DatabaseMetrics,
     GroupListResponse, GroupResponse, LoggingConfigInfo, MonitoringConfigInfo, RateLimitConfigInfo,
     SecureConfigResponse, SegmentConfigInfo, SetAlgorithmRequest, SetAlgorithmResponse,
@@ -161,7 +150,7 @@ impl ConfigManager {
 
     fn config_to_response(config: &Config) -> ConfigResponse {
         ConfigResponse {
-            app: AppConfigInfo {
+            app: NebulaIdConfigInfo {
                 name: config.app.name.clone(),
                 host: config.app.host.clone(),
                 http_port: config.app.http_port,
@@ -221,7 +210,7 @@ impl ConfigManager {
 
     fn secure_config_to_response(config: &Config) -> SecureConfigResponse {
         SecureConfigResponse {
-            app: AppConfigInfo {
+            app: NebulaIdConfigInfo {
                 name: config.app.name.clone(),
                 host: config.app.host.clone(),
                 http_port: config.app.http_port,

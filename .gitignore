@@ -17,6 +17,7 @@ Thumbs.db
 # Rust Build Artifacts
 # -----------------------------------------------------------------------------
 target/
+target-bench/
 
 # -----------------------------------------------------------------------------
 # IDE and Editor Files
@@ -37,6 +38,7 @@ target/
 .trae/
 .iflow/
 .qoder/
+.zcode/
 openspec/
 specmark/
 **/specmark/
@@ -160,8 +162,7 @@ di.md
 # -----------------------------------------------------------------------------
 # Docker
 # -----------------------------------------------------------------------------
-.dockerignore
-!Dockerfile
+!docker/Dockerfile*
 docker-compose.override.yml
 *.tar
 *.tar.gz

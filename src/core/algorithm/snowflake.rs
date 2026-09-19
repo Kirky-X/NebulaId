@@ -1,16 +1,5 @@
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 
 //! Snowflake ID generation algorithm.
 //!
@@ -18,7 +7,6 @@
 //! implementation. UUID-style generation lives in the dedicated
 //! `uuid_v8.rs` module; the previously test-only UUID generators and
 //! DI builder that lived here were removed as dead code.
-
 use crate::core::algorithm::{
     AlgorithmMetricsSnapshot, GenerateContext, HealthStatus, IdAlgorithm,
 };
@@ -27,7 +15,7 @@ use crate::core::types::{AlgorithmType, CoreError, Id, IdBatch, Result};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use tracing::info;
 
 const DEFAULT_START_TIME: u64 = 1704067200000;
@@ -235,17 +223,25 @@ impl SnowflakeAlgorithm {
 
     /// Wait for the next millisecond timestamp.
     ///
-    /// 修复：原注释声称使用 `std::thread::sleep`，但实际代码用的是
-    /// `tokio::time::sleep`（async-friendly）。注释已更新以匹配代码。
-    ///
-    /// 此函数仅在时钟回拨罕见场景调用，sleep duration 极短（1ms）。
+    /// 混合等待：先自旋（`spin_loop`）至多约 2ms——毫秒轮转的典型等待就是
+    /// 亚毫秒级（同毫秒序列耗尽到下一毫秒边界），1ms 周期的 tokio sleep 有
+    /// 定时器粒度过冲（实测把持续吞吐压到理论上限的一半左右，见基准
+    /// `snowflake/batch_generate_10000`），自旋可把轮转等待收紧到真实边界；
+    /// 预算耗尽仍未越过 `last_ts`（时钟回拨等待场景，可达阈值级毫秒数）才
+    /// 退回 1ms 周期 sleep，避免长等待空转烧核。
     async fn wait_for_next_ms(&self, last_ts: u64) -> u64 {
+        const SPIN_BUDGET: Duration = Duration::from_millis(2);
+        let spin_deadline = Instant::now() + SPIN_BUDGET;
         loop {
             let current = Self::get_timestamp();
             if current > last_ts {
                 return current;
             }
-            tokio::time::sleep(Duration::from_millis(1)).await;
+            if Instant::now() < spin_deadline {
+                std::hint::spin_loop();
+            } else {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
         }
     }
 

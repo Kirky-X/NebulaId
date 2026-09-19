@@ -1,55 +1,7 @@
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 
 #![cfg(test)]
-
-//! # 基础设施层端到端测试（infrastructure layer e2e tests）
-//!
-//! 本文件覆盖 `temp/功能场景穷举分析.md` 中以下章节的端到端场景：
-//!
-//! - **第 3.3 节 安全头**（`src/server/router.rs` L190-L214）：6 个
-//!   `SetResponseHeaderLayer` 中间件注入安全响应头；通过构造带相同
-//!   layer 的 axum Router + oneshot 验证响应头是否正确注入
-//! - **第 3.2 节 IP 提取**（`src/server/middleware/utils.rs`）：
-//!   `get_client_ip` 在 trusted_proxies / 非 trusted / 空 header 等场景下
-//!   的行为
-//! - **第 3.2 节 限流桶清理**（`src/server/rate_limit/limiter.rs`）：
-//!   `start_cleanup` 后台任务周期移除空闲桶、保留活跃桶
-//! - **第 2.3 节 容器构建**（`src/core/container/app_container.rs`）：
-//!   builder 缺依赖返回 ConfigurationError、health_check 返回
-//!   `Result<bool, CoreError>`
-//! - **第 2.5 节 数据库连接**（`src/core/database/connection.rs`）：
-//!   迁移执行、密码含 `${}` 占位符拒绝
-//! - **第 3.6 节 TLS**（`src/server/config/tls.rs`）：证书/密钥不存在
-//!   返回错误、用 rcgen 自签证书验证 initialize 成功
-//!
-//! ## 与现有单元测试的区别
-//!
-//! 现有单元测试聚焦「函数孤立行为」（如 `get_client_ip` 单次调用、
-//! `RateLimiter::cleanup` 同步清理、`TlsManager::initialize` 单路径）。
-//! 本文件聚焦「跨模块端到端协同」：
-//!
-//! - 安全头用真实 axum Router + oneshot 验证 HTTP 响应头
-//! - 限流桶清理用真实 `start_cleanup` 后台 tokio 任务 + 时间窗口验证
-//! - 容器 health_check 用真实 cache + mock db pool 验证错误传播
-//! - TLS 用 rcgen 生成的真实自签证书文件验证完整初始化流程
-//!
-//! ## 并行安全
-//!
-//! 所有 TLS 测试用 `tempfile::NamedTempFile` 隔离文件 I/O；限流清理
-//! 测试用独立的 `RateLimiter` 实例避免桶状态竞争。
-
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
@@ -72,7 +24,7 @@ use crate::server::config::tls::{TlsError, TlsManager};
 use crate::server::middleware::utils::get_client_ip;
 use crate::server::rate_limit::limiter::RateLimiter;
 
-// E2E-SECHEAD 组：安全头注入端到端
+// 安全头注入端到端组
 // ============================================================================
 
 /// 构造一个带 6 个安全头 `SetResponseHeaderLayer` 的最小 Router，
@@ -106,7 +58,7 @@ fn build_security_headers_router() -> Router {
         ))
 }
 
-/// E2E-SECHEAD-001: 验证响应包含所有 6 个安全头。
+/// 验证响应包含所有 6 个安全头。
 #[tokio::test]
 async fn e2e_security_headers_injected_on_response() {
     let app = build_security_headers_router();
@@ -146,7 +98,7 @@ async fn e2e_security_headers_injected_on_response() {
     );
 }
 
-/// E2E-SECHEAD-002: 验证 X-Content-Type-Options: nosniff。
+/// 验证 X-Content-Type-Options: nosniff。
 #[tokio::test]
 async fn e2e_security_header_x_content_type_options_nosniff() {
     let app = build_security_headers_router();
@@ -164,7 +116,7 @@ async fn e2e_security_header_x_content_type_options_nosniff() {
     );
 }
 
-/// E2E-SECHEAD-003: 验证 X-Frame-Options: DENY。
+/// 验证 X-Frame-Options: DENY。
 #[tokio::test]
 async fn e2e_security_header_x_frame_options_deny() {
     let app = build_security_headers_router();
@@ -182,7 +134,7 @@ async fn e2e_security_header_x_frame_options_deny() {
     );
 }
 
-/// E2E-SECHEAD-004: 验证 CSP: default-src 'self'。
+/// 验证 CSP: default-src 'self'。
 #[tokio::test]
 async fn e2e_security_header_csp_default_src_self() {
     let app = build_security_headers_router();
@@ -200,7 +152,7 @@ async fn e2e_security_header_csp_default_src_self() {
     );
 }
 
-/// E2E-SECHEAD-005: 验证 HSTS max-age=31536000。
+/// 验证 HSTS max-age=31536000。
 #[tokio::test]
 async fn e2e_security_header_hsts_max_age() {
     let app = build_security_headers_router();
@@ -307,10 +259,10 @@ async fn e2e_get_client_ip_returns_none_when_no_headers() {
 }
 
 // ============================================================================
-// E2E-CLEANUP 组：限流桶清理端到端
+// 限流桶清理端到端组
 // ============================================================================
 
-/// E2E-CLEANUP-001: start_cleanup 后台任务应移除超过 max_idle 的空闲桶。
+/// start_cleanup 后台任务应移除超过 max_idle 的空闲桶。
 #[tokio::test]
 async fn e2e_rate_limiter_cleanup_removes_idle_buckets() {
     let limiter = RateLimiter::new(10, 5);
@@ -341,7 +293,7 @@ async fn e2e_rate_limiter_cleanup_removes_idle_buckets() {
     );
 }
 
-/// E2E-CLEANUP-002: start_cleanup 后台任务应保留持续访问的活跃桶。
+/// start_cleanup 后台任务应保留持续访问的活跃桶。
 #[tokio::test]
 async fn e2e_rate_limiter_cleanup_keeps_active_buckets() {
     let limiter = RateLimiter::new(100, 100);

@@ -1,16 +1,5 @@
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 
 use dbnexus::sea_orm::{
     ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend, DbErr, Statement,
@@ -175,7 +164,10 @@ pub(crate) fn api_keys_grace_period_alter_sql() -> String {
 /// 存在（见 init.sql 与本文件建表 DDL 的注释）；缺约束时该 INSERT 直接报
 /// "there is no unique or exclusion constraint"，号段首分配在存量库上必失败。
 /// PostgreSQL 无 `ADD CONSTRAINT IF NOT EXISTS`，按本文件枚举类型的既有
-/// 模式用 `EXCEPTION WHEN duplicate_object` 吞掉已存在。
+/// 模式用 EXCEPTION 吞掉已存在；需同时接 `duplicate_object`（42710）与
+/// `duplicate_table`（42P07）：全新库路径下建表 DDL 的内联同名约束已先行
+/// 创建同名索引，此处再 ADD CONSTRAINT 报的是 "relation already exists"
+/// （42P07），只接 42710 会让全新库迁移必失败。
 ///
 /// 抽成独立函数是测试接缝（同 [`api_keys_grace_period_alter_sql`]）。
 pub(crate) fn nebula_segments_unique_constraint_sql() -> String {
@@ -184,7 +176,7 @@ pub(crate) fn nebula_segments_unique_constraint_sql() -> String {
             ALTER TABLE {}.nebula_segments
                 ADD CONSTRAINT uq_nebula_segments_ws_tag_dc UNIQUE (workspace_id, biz_tag, dc_id);
         EXCEPTION
-            WHEN duplicate_object THEN null;
+            WHEN duplicate_object OR duplicate_table THEN null;
         END $$"#,
         NEBULA_SCHEMA
     )
@@ -857,8 +849,9 @@ mod tests {
     }
 
     /// 号段唯一约束的存量库回填必须是幂等 DO 块：约束已存在时
-    /// `duplicate_object` 被吞掉（no-op），目标表与约束名必须正确 ——
-    /// `INSERT ... ON CONFLICT (workspace_id, biz_tag, dc_id)` 依赖它。
+    /// `duplicate_object` / `duplicate_table` 被吞掉（no-op），目标表与约束名
+    /// 必须正确 —— `INSERT ... ON CONFLICT (workspace_id, biz_tag, dc_id)`
+    /// 依赖它。
     #[test]
     fn test_run_migrations_emits_unique_constraint_for_segments() {
         let sql = nebula_segments_unique_constraint_sql();
@@ -874,8 +867,9 @@ mod tests {
             "constraint name and columns must match init.sql / ON CONFLICT target, got: {sql}"
         );
         assert!(
-            sql.contains("WHEN duplicate_object THEN null"),
-            "backfill must be idempotent via duplicate_object swallow, got: {sql}"
+            sql.contains("WHEN duplicate_object OR duplicate_table THEN null"),
+            "backfill must be idempotent: 42710 duplicate_object（存量库重复约束）与 \
+             42P07 duplicate_table（全新库建表内联约束的同名索引冲突）都要吞掉, got: {sql}"
         );
     }
 

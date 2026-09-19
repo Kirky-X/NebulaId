@@ -1,16 +1,5 @@
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 
 use crate::core::algorithm::{AuditEvent as CoreAuditEvent, AuditLogger as CoreAuditLoggerTrait};
 use async_trait::async_trait;
@@ -378,27 +367,23 @@ impl AuditLogger {
         )
     )]
     async fn log_shared(&self, event: Arc<AuditEvent>) {
-        // 锁内只做内存操作（push/pop），快速释放锁
-        {
+        // 环满时先在锁内摘下最旧事件，丢弃告警在锁外发。tracing 后端可能
+        // 阻塞（实测 inklog 异步通道积压到 capacity 后每条日志 send_timeout
+        // 阻塞 100ms）：warn 一旦横跨互斥锁，全部请求的审计写入就会按日志
+        // 后端的退避速度串行化（历史事故：环满后 HTTP 全服务塌到 ~6 rps）。
+        let dropped = {
             let mut events = self.events.lock().await;
             // 修复：VecDeque 满时丢弃最旧事件。如果未配置文件持久化，
             // 丢弃意味着审计事件永久丢失（违反 SOC2/GDPR 合规）。
             // 此处记录 warning 提示运维人员配置 `audit_log_path`。
+            let mut dropped = Vec::new();
             if events.len() >= self.max_events {
                 let dropped_count = events.len() - self.max_events + 1;
                 for _ in 0..dropped_count {
-                    if let Some(dropped) = events.pop_front() {
+                    if let Some(dropped_event) = events.pop_front() {
                         if self.file_tx.is_none() {
                             // 未配置文件持久化：丢弃即永久丢失
-                            tracing::warn!(
-                                event_id = dropped.id,
-                                event_type = ?dropped.event_type,
-                                "{}",
-                                t!(
-                                    "log.server.audit.logger.event_dropped_no_persistence",
-                                    max_events = self.max_events
-                                )
-                            );
+                            dropped.push(dropped_event);
                             self.total_errors.fetch_add(1, Ordering::SeqCst);
                         }
                         // 已配置 file_tx 的事件已被异步写入文件，内存丢弃可接受
@@ -407,6 +392,18 @@ impl AuditLogger {
             }
             events.push_back(event.clone());
             self.total_logged.fetch_add(1, Ordering::SeqCst);
+            dropped
+        };
+        for dropped_event in &dropped {
+            tracing::warn!(
+                event_id = dropped_event.id,
+                event_type = ?dropped_event.event_type,
+                "{}",
+                t!(
+                    "log.server.audit.logger.event_dropped_no_persistence",
+                    max_events = self.max_events
+                )
+            );
         }
 
         // 锁外异步发送到文件 writer channel（非阻塞）；Arc 共享，无深拷贝

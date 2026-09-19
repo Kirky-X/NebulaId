@@ -1,16 +1,5 @@
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 
 use sdforge::utoipa::ToSchema;
 use serde::{Deserialize, Serialize};
@@ -474,7 +463,7 @@ pub struct IdMetadataResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ConfigResponse {
-    pub app: AppConfigInfo,
+    pub app: NebulaIdConfigInfo,
     pub database: DatabaseConfigInfo,
     pub algorithm: AlgorithmConfigInfo,
     pub monitoring: MonitoringConfigInfo,
@@ -484,7 +473,7 @@ pub struct ConfigResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct AppConfigInfo {
+pub struct NebulaIdConfigInfo {
     pub name: String,
     pub host: String,
     pub http_port: u16,
@@ -508,7 +497,7 @@ pub struct DatabaseConfigInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SecureConfigResponse {
-    pub app: AppConfigInfo,
+    pub app: NebulaIdConfigInfo,
     pub algorithm: AlgorithmConfigInfo,
     pub monitoring: MonitoringConfigInfo,
     pub logging: LoggingConfigInfo,

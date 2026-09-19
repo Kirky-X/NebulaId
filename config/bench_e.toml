@@ -1,0 +1,88 @@
+# HTTP 端到端基准配置 A：纯管线口径（认证关、限流关）。
+# 仅供性能基准使用，不用于生产。
+
+[app]
+name = "nebula-id-bench"
+host = "127.0.0.1"
+http_port = 8080
+grpc_port = 9091
+dc_id = 0
+worker_id = 0
+
+[logging]
+level = "warn"
+format = "json"
+include_location = false
+
+[database]
+engine = "postgresql"
+host = "localhost"
+port = 5433
+database = "idgen"
+username = "idgen"
+password = "${NEBULA_DATABASE_PASSWORD}"
+max_connections = 50
+min_connections = 5
+acquire_timeout_seconds = 30
+idle_timeout_seconds = 300
+
+[redis]
+url = "redis://localhost:6380"
+pool_size = 16
+key_prefix = "nebula:id:"
+ttl_seconds = 600
+
+[algorithm]
+default = "snowflake"
+
+[algorithm.segment]
+base_step = 1000
+min_step = 500
+max_step = 100000
+switch_threshold = 0.1
+
+[algorithm.snowflake]
+datacenter_id_bits = 3
+worker_id_bits = 8
+sequence_bits = 10
+clock_drift_threshold_ms = 1000
+
+[algorithm.uuid_v8]
+enabled = true
+
+[monitoring]
+metrics_enabled = true
+metrics_path = "/metrics"
+tracing_enabled = false
+otlp_endpoint = ""
+
+[rate_limit]
+enabled = false
+default_rps = 10000
+burst_size = 100
+
+[tls]
+enabled = false
+http_enabled = false
+grpc_enabled = false
+cert_path = ""
+key_path = ""
+
+[batch_generate]
+max_batch_size = 100
+
+[auth]
+enabled = false
+cache_ttl_seconds = 0
+api_key_salt = "bench-salt-0123456789abcdef"
+api_keys = []
+
+[etcd]
+endpoints = []
+connect_timeout_ms = 5000
+watch_timeout_ms = 5000
+
+[audit]
+file_logging_enabled = false
+file_logging_path = "logs/audit.log"
+memory_capacity = 1000000

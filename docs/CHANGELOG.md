@@ -48,6 +48,17 @@ fail-fast（change `key-rotation-and-config-failfast`）。**含多项行为变�
 
 ### Changed（行为变更）
 
+- **Snowflake 毫秒轮转等待改为混合 spin-then-sleep**：`wait_for_next_ms` 此前
+  固定 1ms 周期 `tokio::time::sleep`，定时器粒度过冲把持续发号吞吐压到位宽
+  理论上限（1023 ID/ms ≈ 102 万 ID/s，默认 10 位 sequence）的一半左右；现先
+  自旋（≤2ms 预算，覆盖毫秒轮转的亚毫秒等待），预算耗尽仍未越过目标毫秒
+  （时钟回拨等待场景）才回落 1ms sleep，避免长等待空转。基准确认串行 / 批量
+  / 超大批量三口径全部收敛到位宽上限（约 2.1×，见
+  [PERFORMANCE.md · 已记录基线](PERFORMANCE.md#已记录基线)）；语义不变——
+  仍严格等待真实时钟越过目标毫秒后才发号。同步新增
+  `snowflake/batch_generate_10000` 基准用例（单次 `block_on` 摊薄到 1 万 ID，
+  近似「纯 reserve 路径」下限口径）。
+
 - **HTTP workspace/group 读接口租户隔离**：`GET /api/v1/groups` 此前未做任何
   角色校验，按客户端提供的 `?workspace=` 任意列取任意租户的 group；现收敛为
   User-only 端点（Admin 调用返回 403），且 User key 仅可列自身 workspace
@@ -218,6 +229,22 @@ fail-fast（change `key-rotation-and-config-failfast`）。**含多项行为变�
 
 ### Fixed
 
+- **日志管道容量级阻塞导致的全文服务停顿**：inklog 主 async 通道为
+  `bounded(channel_capacity)`（默认 10000），file sink 未显式配置路径时无
+  消费者排水；服务累计 ~1 万条日志后每条日志经 `send_timeout(100ms)` 阻塞
+  再降级。审计 `log_shared` 又把环满的 `warn!` 横跨互斥锁发出，全部请求的
+  审计写入按 100ms/条串行化——实测运行 ~1 万请求后 HTTP 吞吐从 ~1.4 万 rps
+  塌到 ~6 rps（每请求 ~11s，服务端 CPU 空闲）。修复两层：`init_observability`
+  显式配置 inklog file sink（通道持续排水）；丢弃告警移到互斥锁外（日志后端
+  再慢也不串行化请求）。回归测试 `tests/audit_ring_stall_repro.rs` 灌满通道
+  后断言 log() 不阻塞。修复后 c=64 实测：/health 13,675 rps（p99 16ms）、
+  /generate 4,974 rps（p99 39ms）、批量 100 ID 达 ~28.4 万 ID/s。
+- **全新数据库迁移不再失败**：`nebula_segments` 的号段唯一约束回填 DO 块只
+  接 `duplicate_object`（42710），而全新库路径下建表 DDL 的内联同名约束
+  `uq_nebula_segments_ws_tag_dc` 已先行创建同名索引，`ADD CONSTRAINT` 报的是
+  "relation already exists"（42P07 `duplicate_table`），未被吞掉 → 全新库
+  首次启动迁移必失败退出。现同时接住两个条件，存量库升级与全新库初始化
+  两条路径均幂等（钉子测试已同步）。
 - **停机不再泄漏后台任务**：`rate_limit_cleanup` 与降级巡检任务此前只在
   `shutdown_signal` 分支回收；服务器先退出（正常停止或错误返回）时二者泄漏，
   且 tokio 运行时 drop 会一直等这个永不自退的循环任务。改为 select 各分支只产出

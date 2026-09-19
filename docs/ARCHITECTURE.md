@@ -194,19 +194,8 @@ stateDiagram-v2
 所有手写 `.rs` 文件必须包含以下版权头：
 
 ```rust
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 ```
 
 **例外：** 自动生成的 protobuf 文件（`src/server/proto/`）不需要版权头。
@@ -307,7 +296,7 @@ graph TB
 
     subgraph 调用方
         Handlers[ApiHandlers<br/>config_service: Arc&lt;dyn ConfigManagementService&gt;<br/>src/server/handlers/mod.rs]
-        Router[create_router<br/>AppState.config_service:<br/>Arc&lt;dyn ConfigManagementService&gt;]
+        Router[create_router<br/>NebulaIdState.config_service:<br/>Arc&lt;dyn ConfigManagementService&gt;]
         Main[src/main.rs<br/>Arc::new(ConfigManager::new(...))<br/>coerce to Arc&lt;dyn ConfigManagementService&gt;]
     end
 

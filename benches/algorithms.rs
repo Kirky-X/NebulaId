@@ -1,16 +1,5 @@
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 
 //! Criterion micro-benchmarks for the core ID-generation / rate-limit /
 //! auth-cache hot paths (Lane W1 T009 基线).
@@ -29,7 +18,6 @@
 //! 说明：Segment 路由未纳入本基准 —— `SegmentAlgorithm` / `SegmentLoader`
 //! 均为 `pub(crate)`，外部 bench 无法注入内存 stub 号段装载器；待后续任务在
 //! 装配处接入 `DbSegmentLoader` 后再评估是否补 Segment 路由基准。
-
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -100,6 +88,29 @@ fn bench_snowflake_batch_generate(c: &mut Criterion) {
         b.iter(|| {
             let batch = rt
                 .block_on(algo.batch_generate(black_box(&ctx), 100))
+                .unwrap();
+            black_box(batch)
+        })
+    });
+}
+
+/// Snowflake 超大批量（单批 10000 个 ID = `[batch_generate].max_batch_size` 上限）。
+/// 单次 block_on 摊薄到 10k 个 ID 上，近似「纯 reserve 路径」的下限口径。
+fn bench_snowflake_batch_generate_10000(c: &mut Criterion) {
+    let rt = bench_runtime();
+    let algo = rt.block_on(async {
+        let builder = AlgorithmBuilder::new(AlgorithmType::Snowflake);
+        SnowflakeFactory
+            .build(&builder, &Config::default())
+            .await
+            .expect("snowflake build must succeed")
+    });
+    let ctx = bench_ctx();
+
+    c.bench_function("snowflake/batch_generate_10000", |b| {
+        b.iter(|| {
+            let batch = rt
+                .block_on(algo.batch_generate(black_box(&ctx), 10_000))
                 .unwrap();
             black_box(batch)
         })
@@ -195,6 +206,7 @@ criterion_group!(
     benches,
     bench_snowflake_generate,
     bench_snowflake_batch_generate,
+    bench_snowflake_batch_generate_10000,
     bench_router_generate,
     bench_router_generate_uuid,
     bench_rate_limiter,

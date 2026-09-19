@@ -1,16 +1,5 @@
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 
 //! 工作区与工作区组仓储:`WorkspaceRepository` / `GroupRepository` 两个 trait
 //! 及其 SeaORM 实现（含关联 biz_tags 的级联读取与级联删除）。
@@ -150,7 +139,7 @@ impl WorkspaceRepository for SeaOrmRepository {
 
         // 使用ok_or_else替代is_none+unwrap模式，避免冗余和潜在panic风险
         let existing = existing.ok_or_else(|| {
-            crate::core::CoreError::NotFound(format!("Workspace not found: {}", id))
+            crate::core::CoreError::NotFound(t!("error.detail.workspace_not_found", id = id))
         })?;
 
         let updated = WorkspaceActiveModel {
@@ -190,9 +179,9 @@ impl WorkspaceRepository for SeaOrmRepository {
             })?;
 
         if result.rows_affected == 0 {
-            return Err(crate::core::CoreError::NotFound(format!(
-                "Workspace not found: {}",
-                id
+            return Err(crate::core::CoreError::NotFound(t!(
+                "error.detail.workspace_not_found",
+                id = id
             )));
         }
 
@@ -343,9 +332,9 @@ impl GroupRepository for SeaOrmRepository {
             .is_some();
 
         if !workspace_exists {
-            return Err(crate::core::CoreError::NotFound(format!(
-                "Workspace not found: {}",
-                group.workspace_id
+            return Err(crate::core::CoreError::NotFound(t!(
+                "error.detail.workspace_not_found",
+                id = group.workspace_id
             )));
         }
 
@@ -415,8 +404,9 @@ impl GroupRepository for SeaOrmRepository {
             })?;
 
         // 使用ok_or_else替代is_none+unwrap模式
-        let existing = existing
-            .ok_or_else(|| crate::core::CoreError::NotFound(format!("Group not found: {}", id)))?;
+        let existing = existing.ok_or_else(|| {
+            crate::core::CoreError::NotFound(t!("error.detail.group_not_found", id = id))
+        })?;
 
         let updated = GroupActiveModel {
             id: Set(existing.id),

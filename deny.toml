@@ -19,12 +19,12 @@ exceptions = []
 
 [[licenses.clarify]]
 crate = "nebula-core"
-expression = "MIT OR Apache-2.0"
+expression = "Apache-2.0"
 license-files = [{ path = "crates/core/LICENSE", hash = 0x00000000 }]
 
 [[licenses.clarify]]
 crate = "nebula-server"
-expression = "MIT OR Apache-2.0"
+expression = "Apache-2.0"
 license-files = [{ path = "crates/server/LICENSE", hash = 0x00000000 }]
 
 [licenses.private]

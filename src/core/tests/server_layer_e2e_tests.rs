@@ -1,16 +1,5 @@
-// Copyright © 2026 Kirky.X
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language and permissions and
-// limitations under the License.
+// Copyright (c) 2025-2026 Kirky.X🌠
+// SPDX-License-Identifier: Apache-2.0
 
 //! # 服务层端到端测试（server layer e2e tests）
 //!
@@ -47,7 +36,6 @@
 //!
 //! 所有测试用 `tempfile::tempdir()` 隔离文件 I/O；CORS 测试用
 //! `std::env::set_var` 时通过 `E2E_ENV_LOCK` 串行化避免环境变量竞争。
-
 use std::sync::Arc;
 
 use axum::{
@@ -1646,7 +1634,7 @@ async fn e2e_anonymous_block_middleware_fail_closed_when_extension_missing() {
 }
 
 // ============================================================================
-// E2E-AUDITMW-001: 审计中间件端到端 HTTP 流（2xx → Success）
+// 审计中间件端到端 HTTP 流（2xx → Success）
 // ============================================================================
 
 #[tokio::test]
@@ -1718,7 +1706,7 @@ async fn e2e_audit_middleware_records_success_event_for_2xx_response() {
 }
 
 // ============================================================================
-// E2E-AUDITMW-002: 审计中间件端到端 HTTP 流（4xx → Failure）
+// 审计中间件端到端 HTTP 流（4xx → Failure）
 // ============================================================================
 
 #[tokio::test]
@@ -1783,7 +1771,7 @@ async fn e2e_audit_middleware_records_failure_event_for_4xx_response() {
 }
 
 // ============================================================================
-// E2E-AUDITMW-003: 审计中间件端到端 HTTP 流（5xx → Partial）
+// 审计中间件端到端 HTTP 流（5xx → Partial）
 // ============================================================================
 
 #[tokio::test]
@@ -1849,7 +1837,7 @@ async fn e2e_audit_middleware_records_partial_event_for_5xx_response() {
 }
 
 // ============================================================================
-// E2E-AUDITMW-004: 审计中间件记录 client_ip 与 user_agent
+// 审计中间件记录 client_ip 与 user_agent
 // ============================================================================
 
 #[tokio::test]

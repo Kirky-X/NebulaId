@@ -1500,3 +1500,49 @@ pub(crate) mod mock_tests {
         // If we reach here without panic, the test passes
     }
 }
+
+#[cfg(test)]
+mod openapi_doc_carriers {
+    //! OpenAPI 注解载体函数（`*_docs`）：`#[utoipa::path]` 宏的编译期挂载点，
+    //! 运行时零调用（`#[allow(dead_code)]`），是行覆盖率的恒定盲区。此处集中
+    //! 显式调用：既钉住「可调用、不 panic」的契约，也消除该盲区。
+
+    use crate::server::handlers::{
+        api_key_handlers, biz_tag_handlers, id_handlers, system_handlers, workspace_handlers,
+    };
+
+    #[test]
+    fn all_docs_carriers_are_callable() {
+        // id_handlers
+        id_handlers::generate_docs();
+        id_handlers::batch_generate_docs();
+        id_handlers::parse_docs();
+        // system_handlers
+        system_handlers::health_docs();
+        system_handlers::ready_docs();
+        system_handlers::metrics_docs();
+        system_handlers::api_info_docs();
+        system_handlers::get_config_docs();
+        system_handlers::update_rate_limit_docs();
+        system_handlers::update_logging_docs();
+        system_handlers::reload_config_docs();
+        system_handlers::set_algorithm_docs();
+        // api_key_handlers
+        api_key_handlers::create_api_key_docs();
+        api_key_handlers::list_api_keys_docs();
+        api_key_handlers::revoke_api_key_docs();
+        // biz_tag_handlers
+        biz_tag_handlers::create_biz_tag_docs();
+        biz_tag_handlers::list_biz_tags_docs();
+        biz_tag_handlers::get_biz_tag_docs();
+        biz_tag_handlers::update_biz_tag_docs();
+        biz_tag_handlers::delete_biz_tag_docs();
+        // workspace_handlers
+        workspace_handlers::create_workspace_docs();
+        workspace_handlers::list_workspaces_docs();
+        workspace_handlers::get_workspace_docs();
+        workspace_handlers::regenerate_user_key_docs();
+        workspace_handlers::create_group_docs();
+        workspace_handlers::list_groups_docs();
+    }
+}

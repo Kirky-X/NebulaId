@@ -31,7 +31,7 @@ pub(crate) fn redact_db_url(url: &str) -> String {
 
 impl From<DbErr> for CoreError {
     fn from(e: DbErr) -> Self {
-        // T038 —— 第一层文案与改前逐字节一致(e.to_string()),底层 DbErr
+        // 第一层文案与改前逐字节一致(e.to_string()),底层 DbErr
         // 经 ErrorSource 保链(source() 非空;错误链仅进服务端日志)。
         CoreError::DatabaseError(e.to_string(), Some(crate::core::types::ErrorSource::new(e)))
     }
@@ -576,7 +576,7 @@ mod tests {
                     msg.contains("query blew up"),
                     "DatabaseError should embed original DbErr text, got: {msg}"
                 );
-                // T038 —— 底层 DbErr 必须经 source() 保链(错误链仅进服务端日志)
+                // 底层 DbErr 必须经 source() 保链(错误链仅进服务端日志)
                 let source = source.expect("From<DbErr> must preserve the source error");
                 assert!(
                     source.to_string().contains("query blew up"),

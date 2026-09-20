@@ -117,85 +117,34 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
-  # 多平台构建
-  build-release:
-    name: Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    needs: [pre-release-audit]
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ ubuntu-latest, windows-latest, macos-latest ]
-        include:
-          - os: ubuntu-latest
-            artifact_name: nebula-id
-            asset_name: nebula-id-linux-x86_64.tar.gz
-          - os: windows-latest
-            artifact_name: nebula-id.exe
-            asset_name: nebula-id-windows-x86_64.zip
-          - os: macos-latest
-            artifact_name: nebula-id
-            asset_name: nebula-id-macos-x86_64.tar.gz
-
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install protoc
-        shell: bash
+      # 发布成功后必须可在 crates.io 查询到（索引传播有延迟，轮询重试）。
+      # crates.io API 强制要求 User-Agent 头，缺失时返回 403。
+      - name: Verify on crates.io
         run: |
-          if [[ "${{ matrix.os }}" == *"ubuntu"* ]]; then
-            sudo apt-get update && sudo apt-get install -y protobuf-compiler
-          elif [[ "${{ matrix.os }}" == *"macos"* ]]; then
-            brew install protobuf
-          elif [[ "${{ matrix.os }}" == *"windows"* ]]; then
-            choco install protoc
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          ok=""
+          CODE="000"
+          for i in 1 2 3 4 5; do
+            sleep 20
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" -H 'User-Agent: kirky-x-release-verify' \
+              "https://crates.io/api/v1/crates/nebulaid/${VERSION}")
+            echo "try$i: HTTP ${CODE}"
+            if [ "$CODE" = "200" ]; then ok=1; break; fi
+            if [ "$CODE" != "403" ]; then break; fi
+          done
+          if [ -z "$ok" ]; then
+            echo "::error::nebulaid ${VERSION} 未出现在 crates.io（HTTP ${CODE}）"
+            exit 1
           fi
+          echo "crates.io 已收录 nebulaid ${VERSION} ✓"
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "nebula-build-${{ matrix.os }}"
-          cache-targets: false
-
-      - name: Build Release Binary
-        run: cargo build --release --locked
-
-      - name: Create Artifact
-        run: |
-          mkdir -p release
-          cp target/release/${{ matrix.artifact_name }} release/
-          cd release
-          if [[ "${{ matrix.os }}" == *"windows"* ]]; then
-            tar -czf ../${{ matrix.asset_name }} .
-          else
-            if [[ "${{ matrix.os }}" == *"ubuntu"* ]]; then
-              tar -czf ../${{ matrix.asset_name }} .
-            else
-              tar -czf ../${{ matrix.asset_name }} .
-            fi
-          fi
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.asset_name }}
-          path: release/${{ matrix.asset_name }}
-          compression-level: 9
-          retention-days: 30
-
-  # 创建 GitHub Release
+  # GitHub Release：仅随 tag 附源码压缩包（GitHub 自动生成 Source code
+  # zip/tar.gz），不构建、不上传二进制附件——二进制分发统一走 crates.io。
   github-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: build-release
-    if: always() && (needs.build-release.result != 'skipped')
+    needs: [pre-release-audit]
     permissions:
       contents: write
     steps:
@@ -208,55 +157,7 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
-      - name: Download Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-        continue-on-error: true
-
-      - name: List Artifacts
-        run: |
-          echo "=== Artifacts downloaded ==="
-          if [ -d "artifacts" ] && [ "$(ls -A artifacts 2>/dev/null)" ]; then
-            ls -la artifacts/
-            echo "Found $(find artifacts -type f | wc -l) artifact(s)"
-          else
-            echo "⚠️ No artifacts found!"
-          fi
-          echo "============================"
-
-      - name: Check Build Status
-        run: |
-          BUILD_RESULT="${{ needs.build-release.result }}"
-          echo "Build matrix result: $BUILD_RESULT"
-          if [[ "$BUILD_RESULT" != "success" ]]; then
-            echo "⚠️ Some platform builds may have failed"
-          fi
-
-      - name: Check if artifacts exist
-        id: check-artifacts
-        run: |
-          if [ -d "artifacts" ] && [ "$(ls -A artifacts 2>/dev/null)" ]; then
-            echo "has_artifacts=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_artifacts=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create Release (with artifacts)
-        if: steps.check-artifacts.outputs.has_artifacts == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/*
-          name: Release v${{ steps.version.outputs.VERSION }}
-          generate_release_notes: true
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create Release (without artifacts - tag only)
-        if: steps.check-artifacts.outputs.has_artifacts == 'false'
+      - name: Create Release (source archives only)
         uses: softprops/action-gh-release@v2
         with:
           name: Release v${{ steps.version.outputs.VERSION }}

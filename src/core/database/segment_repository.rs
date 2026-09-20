@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! 号段（Segment）仓储:`SegmentRepository` trait 及其 SeaORM 实现，
-//! 含 T015 原子 `UPDATE ... RETURNING` 分配路径与 T028 语句超时接线。
+//! 含 原子 `UPDATE ... RETURNING` 分配路径与 语句超时接线。
 
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
@@ -262,8 +262,8 @@ impl SegmentRepository for SeaOrmRepository {
     ) -> Result<SegmentInfo> {
         // 非 dc 变体即 dc_id = 0 的号段（实体列默认值 0），与 dc 变体共用同一
         // 原子分配路径，保证两种调用形态读写同一套行、互不越界。
-        // T023 热路径观测：span 字段仅 workspace/biz_tag/step，无敏感数据。
-        // T028：生成热路径经集中式语句超时包裹，DB 挂起时显性返回
+        // 热路径观测：span 字段仅 workspace/biz_tag/step，无敏感数据。
+        // 生成热路径经集中式语句超时包裹，DB 挂起时显性返回
         // TimeoutError（由 Segment 降级链接管），而非无限悬挂。
         let span = tracing::info_span!(
             "db.allocate_segment",
@@ -286,7 +286,7 @@ impl SegmentRepository for SeaOrmRepository {
         step: i32,
         dc_id: i32,
     ) -> Result<SegmentInfo> {
-        // T028：与 `allocate_segment` 同一超时口径（dc 变体同为生成热路径）。
+        // 与 `allocate_segment` 同一超时口径（dc 变体同为生成热路径）。
         with_statement_timeout(
             self.statement_timeout,
             self.allocate_segment_in_dc(workspace_id, biz_tag, step, dc_id),
@@ -578,7 +578,7 @@ mod mock_tests {
         );
     }
 
-    // --- allocate_segment / allocate_segment_with_dc（T015 原子分配） ---
+    // --- allocate_segment / allocate_segment_with_dc（原子分配） ---
     //
     // 热路径已无分布式锁、无显式事务：正常路径是 1 条 `UPDATE ... RETURNING`；
     // 首查无行路径是 `INSERT ... ON CONFLICT DO NOTHING` + 重试一次 UPDATE。
@@ -715,7 +715,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_segment_allocate_does_not_acquire_distributed_lock() {
-        // T015：热路径不再取分布式锁 —— 注入一把 acquire 必失败的锁，
+        // 热路径不再取分布式锁 —— 注入一把 acquire 必失败的锁，
         // 分配仍应成功（若取锁则会 InternalError）。
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![returning_row(1, 101)]])

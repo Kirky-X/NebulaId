@@ -5,7 +5,7 @@
 
 pub mod core;
 
-// T039 —— 告警子系统 re-export 随 `alerting` feature 门控(与
+// 告警子系统 re-export 随 `alerting` feature 门控(与
 // core.rs 的项级门控同 cfg:test 构建恒包含,使 e2e 测试在默认
 // feature 下照常编译)。
 #[cfg(any(test, feature = "alerting"))]

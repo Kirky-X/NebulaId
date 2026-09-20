@@ -204,13 +204,13 @@ impl super::ApiHandlers {
     }
 }
 
-// ========== OpenAPI path 注解（T033）==========
+// ========== OpenAPI path 注解==========
 //
 // 实际的 axum handler 函数（`handle_health` / `handle_get_config` 等）位于
 // `src/server/router.rs`（本 lane 不可修改），此处以「注解载体函数」承载
 // `#[utoipa::path]`，仅供 `openapi.rs` 的 `paths(...)` 注册；路由信息
 // （路径/方法）以 router.rs 注册处为准。错误响应统一引用 `ErrorResponse`
-// （T032 信封）。config 五个端点的 handler 同在 router.rs，注解就近落在
+// （信封）。config 五个端点的 handler 同在 router.rs，注解就近落在
 // 本文件（system/config 资源域）。
 
 /// OpenAPI 注解载体：`GET /health`（实际 handler：`router::handle_health`，公开）。
@@ -1042,6 +1042,80 @@ mod tests {
         // max_key_age_days = 0 is a degenerate but valid input; should not panic.
         let handle = handlers.start_key_rotation_task(std::time::Duration::from_secs(60), 0);
         assert!(handle.is_some());
+        if let Some(h) = handle {
+            h.shutdown();
+        }
+    }
+
+    /// 轮换成功且认证缓存已接线：新 secret 生成后必须立即失效该 key 的
+    /// 缓存条目（否则宽限期内旧凭证在缓存 TTL 内仍被放行）。覆盖轮换
+    /// Ok 分支 + garrison 缓存失效调用 + shutdown 收尾的完整链路。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_key_rotation_success_invalidates_auth_cache() {
+        use crate::server::auth::AuthCache;
+
+        let mut mock_config = MockSysMockConfigService::new();
+        mock_config
+            .expect_get_database_metrics()
+            .returning(healthy_db_metrics);
+        mock_config
+            .expect_get_cache_metrics()
+            .returning(healthy_cache_metrics);
+        mock_config
+            .expect_get_algorithm_metrics()
+            .returning(Vec::new);
+
+        let old_key = ApiKeyInfo {
+            id: Uuid::new_v4(),
+            key_id: "nino_old-key-1".to_string(),
+            key_prefix: "nino_".to_string(),
+            role: ApiKeyRole::User,
+            workspace_id: Some(Uuid::new_v4()),
+            name: "old-key".to_string(),
+            description: None,
+            rate_limit: 1000,
+            enabled: true,
+            expires_at: None,
+            last_used_at: None,
+            created_at: chrono::Utc::now().naive_utc() - chrono::Duration::days(90),
+        };
+
+        let mut mock_repo = MockSysMockApiKeyRepo::new();
+        mock_repo
+            .expect_get_keys_older_than()
+            .return_once(move |_| Ok(vec![old_key]));
+        mock_repo.expect_rotate_api_key().returning(|_, _| {
+            Ok(crate::core::database::ApiKeyWithSecret {
+                key: crate::core::database::ApiKeyResponse {
+                    id: uuid::Uuid::new_v4(),
+                    key_id: "nino_old-key-1".to_string(),
+                    key_prefix: "nino_".to_string(),
+                    name: "rotated".to_string(),
+                    description: None,
+                    role: ApiKeyRole::User,
+                    rate_limit: 1000,
+                    enabled: true,
+                    expires_at: None,
+                    created_at: chrono::Utc::now().naive_utc(),
+                },
+                key_secret: "new-secret".to_string(),
+                grace_expires_at: Some(chrono::Utc::now().naive_utc()),
+            })
+        });
+
+        // 与 create_handlers_with_mock_config_and_repo 相同，但额外接线认证缓存。
+        let mock_gen = Arc::new(MockIdGenerator::new()) as Arc<dyn CoreIdGenerator>;
+        let config_service: Arc<dyn ConfigManagementService> = Arc::new(mock_config);
+        let repo: Arc<dyn ApiKeyRepository> = Arc::new(mock_repo);
+        let handlers = Arc::new(
+            super::super::ApiHandlers::with_api_key_repository(mock_gen, config_service, repo)
+                .with_auth_cache(Arc::new(AuthCache::new(300).await)),
+        );
+
+        // 10ms 间隔：首 tick 即触发轮换 + 缓存失效，随后 shutdown 收尾。
+        let handle = handlers.start_key_rotation_task(std::time::Duration::from_millis(10), 1);
+        assert!(handle.is_some());
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
         if let Some(h) = handle {
             h.shutdown();
         }

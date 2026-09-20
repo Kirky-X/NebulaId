@@ -44,7 +44,7 @@ pub struct Config {
     pub logging: LoggingConfig,
     /// Rate limiting settings
     pub rate_limit: RateLimitConfig,
-    /// 审计持久化设置（T030：内存容量独立配置，生产默认文件持久化）
+    /// 审计持久化设置（内存容量独立配置，生产默认文件持久化）
     #[serde(default)]
     pub audit: AuditConfig,
     /// 热更新设置（auto_watch_enabled 默认 false，缺省时零行为变化）
@@ -220,7 +220,7 @@ impl Config {
             ));
         }
 
-        // T028 —— 0 会经 `Duration::from_secs(0)` 传给 `tokio::time::timeout`，
+        // 0 会经 `Duration::from_secs(0)` 传给 `tokio::time::timeout`，
         // 热查询立即超时，等价于数据库全拒。与 `acquire_timeout_seconds` 同口径拒绝。
         if self.database.statement_timeout_secs == 0 {
             return Err(ConfigError::InvalidValue(
@@ -1271,7 +1271,7 @@ mod tests {
         );
     }
 
-    /// T028 —— database.statement_timeout_secs=0 时校验失败
+    /// database.statement_timeout_secs=0 时校验失败
     #[test]
     fn validate_statement_timeout_zero_fails() {
         let mut config = Config::default();

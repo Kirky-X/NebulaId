@@ -43,7 +43,7 @@ use axum::Json;
 
 /// Convert database errors to `CoreError::DatabaseError`.
 ///
-/// T038 —— 第一层文案与改前逐字节一致(`error.to_string()`),底层错误
+/// 第一层文案与改前逐字节一致(`error.to_string()`),底层错误
 /// 对象经 [`crate::core::types::ErrorSource`] 保链(source() 非空;错误链
 /// 仅进服务端日志,见 `core_error_to_response`)。
 pub(super) fn map_db_error<E>(error: E) -> CoreError
@@ -63,7 +63,7 @@ pub(super) fn map_uuid_error<E: std::fmt::Display>(error: E) -> CoreError {
     )
 }
 
-/// `CoreError` → `(HTTP 状态码, 业务错误码)` 单表分类（T032）。
+/// `CoreError` → `(HTTP 状态码, 业务错误码)` 单表分类。
 ///
 /// 这是唯一的事实来源：HTTP 错误响应的状态码与 `business_code`
 /// （[`ErrorResponse`]）都从本表取值，保证两者不会各自漂移；
@@ -73,7 +73,7 @@ pub(super) fn map_uuid_error<E: std::fmt::Display>(error: E) -> CoreError {
 /// （旧 `CoreError::to_http_response` / `http_status_code` /
 /// `error_code` 依赖进程级全局 locale，已作为死代码移除）；locale
 /// 化文案统一经 `to_localized_string` + 下方 helpers 生成。
-/// T032 起原函数并入本表（一张映射表两用），不再单设状态码查询口。
+/// 原函数并入本表（一张映射表两用），不再单设状态码查询口。
 ///
 /// 业务码沿用 `ApiErrorCode` 注册表：
 /// - 404 泛型 `NotFound` 默认映射 `WorkspaceNotFound`（2001，沿用被移除的
@@ -129,7 +129,7 @@ fn core_error_classification(e: &CoreError) -> (StatusCode, ApiErrorCode) {
 /// locale-aware translation now goes through `to_localized_string`
 /// + the helpers below.
 ///
-/// T032 — 状态码判定委托给 [`core_error_classification`] 单表
+/// 状态码判定委托给 [`core_error_classification`] 单表
 /// （同一张表同时给出 `business_code`），本函数只保留旧行接口。
 #[cfg(test)]
 fn core_error_status_code(e: &CoreError) -> StatusCode {
@@ -290,8 +290,8 @@ pub fn core_error_to_response(e: &CoreError, locale: Locale) -> (StatusCode, Jso
         | CoreError::TimeoutError => e.to_localized_string(locale.as_str()),
     };
 
-    // T032 — 状态码与业务码同表判定，request_id/timestamp 在装配处生成。
-    // T022 — request_id 优先取请求上下文（request_id 中间件安装的任务局部
+    // 状态码与业务码同表判定，request_id/timestamp 在装配处生成。
+    // request_id 优先取请求上下文（request_id 中间件安装的任务局部
     // 上下文），保证错误响应体与 x-request-id 响应头一致；无中间件上下文
     // （单元测试 / 独立调用）时保留装配处新生成的 UUID v4。
     let (status, business_code) = core_error_classification(e);
@@ -303,7 +303,7 @@ pub fn core_error_to_response(e: &CoreError, locale: Locale) -> (StatusCode, Jso
     (status, Json(error))
 }
 
-// ========== 共享授权（T010）==========
+// ========== 共享授权==========
 
 /// 共享的 workspace 资源级授权决策（HTTP 与 gRPC 同源）。
 ///
@@ -349,7 +349,7 @@ pub(crate) async fn authorize_workspace_access(
     }
 }
 
-// ========== gRPC 错误消毒（T013）==========
+// ========== gRPC 错误消毒==========
 
 /// gRPC 侧「变体 → Code」映射，与 [`core_error_status_code`] 同源：
 /// 4xx 变体逐一对应同语义的 gRPC Code（400→InvalidArgument、401→
@@ -412,7 +412,7 @@ pub fn invalid_uuid_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>
     )
 }
 
-/// Build a 400 response for `sdforge::validator::ValidationErrors`, with the
+/// Build a 400 response for `validator::ValidationErrors`, with the
 /// locale-translated message.
 ///
 /// Phase 8 (MEDIUM fix) — uses `errors.field_errors()` to
@@ -427,7 +427,7 @@ pub fn invalid_uuid_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>
 /// are joined by `"; "` and capped at `MAX_CLIENT_MESSAGE_LEN` bytes
 /// via `sanitize_for_production` to bound response size.
 pub(crate) fn validation_error_response(
-    errors: &sdforge::validator::ValidationErrors,
+    errors: &validator::ValidationErrors,
     locale: Locale,
 ) -> (StatusCode, Json<ErrorResponse>) {
     let mut parts: Vec<String> = Vec::new();
@@ -579,7 +579,7 @@ pub(crate) fn workspace_id_required_response(locale: Locale) -> (StatusCode, Jso
 mod tests {
     use super::*;
     use crate::core::types::error::CoreError;
-    use sdforge::validator::Validate;
+    use validator::Validate;
 
     /// Save and restore the global locale around tests(与 i18n.rs /
     /// error.rs 共用 test_support 锁串行化)。
@@ -715,7 +715,7 @@ mod tests {
         assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    // ========== T032 —— 统一错误信封 business_code ==========
+    // ========== —— 统一错误信封 business_code ==========
 
     /// 单表分类全变体矩阵：`core_error_classification` 给出的
     /// (状态码, business_code) 必须与 `core_error_status_code` 既有
@@ -869,8 +869,8 @@ mod tests {
         assert_eq!(json.code, 429);
 
         // 校验失败：validation_error_response → "3002"。
-        #[derive(sdforge::validator::Validate)]
-        #[validate(crate = "::sdforge::validator")]
+        #[derive(validator::Validate)]
+        #[validate(crate = "::validator")]
         struct SampleReq {
             #[validate(length(min = 1, max = 64))]
             name: String,
@@ -1211,7 +1211,7 @@ mod tests {
         assert!(prefix_end <= MAX_CLIENT_MESSAGE_LEN);
     }
 
-    // ========== authorize_workspace_access（T010 共享授权）==========
+    // ========== authorize_workspace_access（共享授权）==========
 
     /// User 访问自身 workspace → 放行。
     #[tokio::test]
@@ -1267,7 +1267,7 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
-    // ========== core_error_to_grpc_status（T013 gRPC 错误消毒）==========
+    // ========== core_error_to_grpc_status（gRPC 错误消毒）==========
 
     /// 5xx 类错误必须消毒：Code 固定 Internal，message 固定 "internal
     /// error"，不得携带 Display 明文（含变体前缀 "Database error"）或内层
@@ -1474,8 +1474,8 @@ mod tests {
 
         // Construct a struct with `#[validate(length(min = 1, max = 64))]`
         // and trigger a validation failure by setting the field to "".
-        #[derive(sdforge::validator::Validate)]
-        #[validate(crate = "::sdforge::validator")]
+        #[derive(validator::Validate)]
+        #[validate(crate = "::validator")]
         struct SampleReq {
             #[validate(length(min = 1, max = 64))]
             workspace_id: String,
@@ -1523,8 +1523,8 @@ mod tests {
         let _g = LocaleGuard::new();
         crate::core::i18n::init_i18n("en");
 
-        #[derive(sdforge::validator::Validate)]
-        #[validate(crate = "::sdforge::validator")]
+        #[derive(validator::Validate)]
+        #[validate(crate = "::validator")]
         struct SampleReq {
             #[validate(length(min = 1, max = 64))]
             workspace_id: String,
@@ -1553,8 +1553,8 @@ mod tests {
         let _g = LocaleGuard::new();
         crate::core::i18n::init_i18n("en");
 
-        #[derive(sdforge::validator::Validate)]
-        #[validate(crate = "::sdforge::validator")]
+        #[derive(validator::Validate)]
+        #[validate(crate = "::validator")]
         struct RangeReq {
             #[validate(range(min = 100, max = 1_000_000))]
             count: i64,
@@ -1606,8 +1606,8 @@ mod tests {
         let _g = LocaleGuard::new();
         crate::core::i18n::init_i18n("en");
 
-        #[derive(sdforge::validator::Validate)]
-        #[validate(crate = "::sdforge::validator")]
+        #[derive(validator::Validate)]
+        #[validate(crate = "::validator")]
         struct MultiReq {
             #[validate(length(min = 1, max = 64))]
             workspace_id: String,

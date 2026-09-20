@@ -23,6 +23,7 @@ pub mod models;
 pub mod openapi;
 pub mod rate_limit;
 pub mod sdforge_adapter;
+pub mod swagger_ui;
 
 // Proto module (internal use only, but needed by binary target)
 pub mod proto;

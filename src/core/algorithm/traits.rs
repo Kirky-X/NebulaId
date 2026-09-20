@@ -166,7 +166,7 @@ pub struct AlgorithmBuilder {
     cpu_monitor: Option<Arc<CpuMonitor>>,
     #[cfg(feature = "etcd")]
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
-    /// T016r —— Segment 号段装载器注入口（工厂构造参数透传）。
+    /// Segment 号段装载器注入口（工厂构造参数透传）。
     ///
     /// `Some(loader)` 时 Segment 工厂以该装载器构建 `SegmentAlgorithm`
     /// （生产装配 `DbSegmentLoader` 走此缝）；`None` 时委托原始
@@ -284,7 +284,7 @@ pub struct SnowflakeFactory;
 pub struct UuidV8Factory;
 pub struct SegmentFactory;
 
-/// T016r —— Segment 工厂的 DbSegmentLoader 装配包装（E lane 移交残余）。
+/// Segment 工厂的 DbSegmentLoader 装配包装（E lane 移交残余）。
 ///
 /// 注册表中 Segment 项指向本工厂而非裸 [`SegmentFactory`]：
 /// - `AlgorithmBuilder` 携带 `with_segment_loader` 注入的装载器时，按
@@ -332,7 +332,7 @@ pub fn algorithm_factories() -> &'static HashMap<AlgorithmType, Arc<dyn Algorith
         let mut m: HashMap<AlgorithmType, Arc<dyn AlgorithmFactory>> = HashMap::new();
         m.insert(AlgorithmType::Snowflake, Arc::new(SnowflakeFactory));
         m.insert(AlgorithmType::UuidV8, Arc::new(UuidV8Factory));
-        // T016r：Segment 经 DbAwareSegmentFactory 代理，支持工厂路径注入
+        // Segment 经 DbAwareSegmentFactory 代理，支持工厂路径注入
         // DbSegmentLoader（未注入时委托 SegmentFactory，行为不变）。
         m.insert(AlgorithmType::Segment, Arc::new(DbAwareSegmentFactory));
         m

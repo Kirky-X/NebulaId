@@ -147,7 +147,7 @@ pub(crate) fn sample_segment_model(id: i64, workspace_id: &str, biz_tag: &str) -
     }
 }
 
-/// No-op lock guard for testing only (M8 fix).
+/// No-op lock guard for testing only (fix).
 ///
 /// 仅在 `#[cfg(test)]` 下使用：测试环境用 SQLite 单连接，数据库事务本身
 /// 提供原子性保证，无需分布式锁。生产环境未配置锁时 `allocate_segment`

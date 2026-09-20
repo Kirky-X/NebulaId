@@ -276,12 +276,12 @@ impl super::ApiHandlers {
     }
 }
 
-// ========== OpenAPI path 注解（T033）==========
+// ========== OpenAPI path 注解==========
 //
 // 实际的 axum handler 函数位于 `src/server/router.rs`（本 lane 不可修改），
 // 此处以「注解载体函数」承载 `#[utoipa::path]`，仅供 `openapi.rs` 的
 // `paths(...)` 注册；路由信息（路径/方法）以 router.rs 注册处为准。
-// 错误响应统一引用 `ErrorResponse`（T032 信封）。
+// 错误响应统一引用 `ErrorResponse`（信封）。
 // 三个端点均为 Admin-only（router.rs 中位于 v1_admin_routes）。
 
 /// OpenAPI 注解载体：`POST /api/v1/api-keys`（实际 handler：`router::handle_create_api_key`，Admin-only）。
@@ -532,5 +532,97 @@ mod tests {
             matches!(result, Err(CoreError::InvalidIdFormat(_))),
             "bad expires_at must be rejected, got {result:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod create_guard_branches {
+    //! create_api_key 守卫分支补测：User 角色缺 workspace_id、expires_at
+    //! 非法格式两条错误出口（既有测试未覆盖），以及认证缓存
+    //! invalidate/clear 在接线缓存后的真实执行路径。
+
+    use super::super::ApiHandlers;
+    use super::*;
+    use crate::core::database::ApiKeyRepository;
+    use crate::server::auth::AuthCache;
+    use crate::server::config::management::ConfigManagementService;
+    use crate::server::handlers::mock_generator::MockIdGenerator;
+    use crate::server::handlers::mock_tests::{MockApiKeyRepository, MockConfigManagementService};
+    use crate::server::models::CreateApiKeyRequest;
+    use std::sync::Arc;
+    use uuid::Uuid;
+
+    fn handlers_with(
+        mock_repo: MockApiKeyRepository,
+        cache: Option<Arc<AuthCache>>,
+    ) -> Arc<ApiHandlers> {
+        let mock_gen = Arc::new(MockIdGenerator::new());
+        let config_service: Arc<dyn ConfigManagementService> =
+            Arc::new(MockConfigManagementService::new());
+        let repo: Arc<dyn ApiKeyRepository> = Arc::new(mock_repo);
+        let handlers = ApiHandlers::with_api_key_repository(mock_gen, config_service, repo);
+        if let Some(cache) = cache {
+            Arc::new(handlers.with_auth_cache(cache))
+        } else {
+            Arc::new(handlers)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_user_key_without_workspace_is_rejected() {
+        // User 角色必须显式绑定 workspace：缺 workspace_id 直接 InvalidInput，
+        // 不触达仓储（mock 未设任何期望，意外调用会 panic）。
+        let handlers = handlers_with(MockApiKeyRepository::new(), None);
+        let req = CreateApiKeyRequest {
+            workspace_id: None,
+            name: "orphan-user-key".to_string(),
+            description: None,
+            role: Some("user".to_string()),
+            rate_limit: None,
+            expires_at: None,
+        };
+
+        let result = handlers.create_api_key(None, req).await;
+        assert!(
+            matches!(result, Err(CoreError::InvalidInput(_))),
+            "User key 无 workspace 必须返回 InvalidInput, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_api_key_with_invalid_expires_at_is_rejected() {
+        let mut mock_repo = MockApiKeyRepository::new();
+        mock_repo.expect_count_admin_keys().return_once(|| Ok(0));
+        // 过期时间解析失败必须在到达仓储创建之前发生。
+        mock_repo.expect_create_api_key().never();
+
+        let handlers = handlers_with(mock_repo, None);
+        let req = CreateApiKeyRequest {
+            workspace_id: Some(Uuid::new_v4().to_string()),
+            name: "bad-expiry-key".to_string(),
+            description: None,
+            role: Some("admin".to_string()),
+            rate_limit: None,
+            expires_at: Some("not-a-timestamp".to_string()),
+        };
+
+        let result = handlers.create_api_key(None, req).await;
+        assert!(
+            matches!(result, Err(CoreError::InvalidIdFormat(_))),
+            "非法 expires_at 必须返回 InvalidIdFormat, got {result:?}"
+        );
+    }
+
+    #[cfg(feature = "garrison-auth")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_auth_cache_invalidate_and_clear_with_cache_wired() {
+        let handlers = handlers_with(
+            MockApiKeyRepository::new(),
+            Some(Arc::new(AuthCache::new(300).await)),
+        );
+
+        // 未命中缓存的 key_id 上执行失效/清空：no-op 但必须走真实缓存路径。
+        handlers.invalidate_auth_cache("niad_no-such-key").await;
+        handlers.clear_auth_cache().await;
     }
 }

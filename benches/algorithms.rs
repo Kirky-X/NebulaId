@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Criterion micro-benchmarks for the core ID-generation / rate-limit /
-//! auth-cache hot paths (Lane W1 T009 基线).
+//! auth-cache hot paths (Lane W1 基线).
 //!
 //! Run with: `cargo bench --bench algorithms`
 //!

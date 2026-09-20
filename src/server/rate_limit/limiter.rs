@@ -35,7 +35,7 @@ use tracing::debug;
 
 /// 限流表分片数（2 的幂）。按 key 哈希分摊读写热点：单把全局
 /// `RwLock<HashMap>` 在多核高 QPS 下会让所有 check 在同一写锁上串行
-/// （去热点 T025）。依赖选型：`dashmap` 不在 Cargo.toml（本任务禁改
+/// （去热点）。依赖选型：`dashmap` 不在 Cargo.toml（本任务禁改
 /// 依赖），采用 `parking_lot::RwLock<HashMap>` 分片等价实现。
 const LIMITER_SHARDS: usize = 16;
 
@@ -306,7 +306,7 @@ impl RateLimiter {
             (default_rps, default_burst)
         };
 
-        // Get or create the limiter for this key（T025：写锁粒度=key 所属分片）
+        // Get or create the limiter for this key（写锁粒度=key 所属分片）
         let limiter = {
             let mut shard = self.limiters.shard_for(key).write();
             shard
@@ -794,7 +794,7 @@ mod tests {
         drop(RateLimiter::get_concurrency_limiter(4));
     }
 
-    /// T025 分片表语义回归：大量 distinct key 并发 check（跨所有分片）
+    /// 分片表语义回归：大量 distinct key 并发 check（跨所有分片）
     /// 不 panic，桶计数与 key 总数一致，清理语义逐 key 正确。
     #[tokio::test]
     async fn test_sharded_table_many_concurrent_keys_no_panic() {

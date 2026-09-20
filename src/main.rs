@@ -481,7 +481,7 @@ fn build_api_handlers(
         .with_key_rotation_grace_period(grace_period_seconds)
 }
 
-/// T008 —— 生产环境强制 TLS 的判定核心（纯判定 + 一处逃生门 warn，便于单测）。
+/// 生产环境强制 TLS 的判定核心（纯判定 + 一处逃生门 warn，便于单测）。
 ///
 /// 规则（fail-fast）：
 /// - 非 production，或 `tls.enabled == true` → 放行；
@@ -490,7 +490,7 @@ fn build_api_handlers(
 ///     放行并 warn（仅限内网评估的显式豁免）；
 ///   - 其余情形 → `Err`，调用方打印本地化 error 并以非零码退出。
 ///
-/// production 判定含 T007 反向默认：`NEBULA_ENV` 缺失/未知值按生产执行，
+/// production 判定含 反向默认：`NEBULA_ENV` 缺失/未知值按生产执行，
 /// 因此缺省部署同样被本校验覆盖。
 fn validate_tls_required_in_production(
     environment: Environment,
@@ -509,19 +509,19 @@ fn validate_tls_required_in_production(
     ))
 }
 
-/// T016 —— etcd 协调组件装配产物（仅 etcd feature）。
+/// etcd 协调组件装配产物（仅 etcd feature）。
 ///
 /// `lock` 供仓储号段分配跨进程互斥；`client` 为共享长连接 etcd 客户端，
-/// 供 T017 worker 分配与 T027 健康巡检注入复用；`None` = 未配置 etcd 的单机模式。
+/// 供 worker 分配与 健康巡检注入复用；`None` = 未配置 etcd 的单机模式。
 #[cfg(feature = "etcd")]
 struct CoordinationComponents {
     lock: std::sync::Arc<dyn nebulaid::core::coordinator::DistributedLock + Send + Sync>,
-    /// 共享长连接 etcd client（T017 worker 分配 / T027 健康巡检注入复用）；
+    /// 共享长连接 etcd client（worker 分配 / 健康巡检注入复用）；
     /// `None` = 未配置 etcd 的单机模式。
     client: Option<std::sync::Arc<dyn nebulaid::core::coordinator::EtcdClientOps>>,
 }
 
-/// T017 —— worker 租约守护（仅 etcd feature）：持有分配器与 keepalive 停机通道。
+/// worker 租约守护（仅 etcd feature）：持有分配器与 keepalive 停机通道。
 ///
 /// 续期连续失败的致命错误经独立的 oneshot 通道（`allocate_worker_id` 的
 /// `failure_tx` 入参）上报，main 的 select 接入后触发优雅停机（fail-stop）；
@@ -533,7 +533,7 @@ struct WorkerLeaseGuard {
     stop_tx: tokio::sync::watch::Sender<bool>,
 }
 
-/// T017 —— worker_id 运行时分配（Snowflake 构造前调用）。
+/// worker_id 运行时分配（Snowflake 构造前调用）。
 ///
 /// 经 `EtcdWorkerAllocator::allocate()` 从 etcd 抢占 worker key（key value =
 /// 本实例 instance_id，lease 30s 绑定存活），成功后 spawn lease keepalive
@@ -594,7 +594,7 @@ async fn allocate_worker_id(
     })
 }
 
-/// T016 —— etcd 协调组件装配（fail-closed）。
+/// etcd 协调组件装配（fail-closed）。
 ///
 /// 规则：
 /// - 未配置 etcd endpoints → 单机部署合法，返回 `LocalDistributedLock`
@@ -627,7 +627,7 @@ async fn assemble_coordination(config: &Config) -> Result<CoordinationComponents
                 reason = e
             ))
         })?
-        // T043 —— operation_timeout_secs 自配置接线（默认 3s）。
+        // operation_timeout_secs 自配置接线（默认 3s）。
         .with_operation_timeout(std::time::Duration::from_secs(
             config.etcd.operation_timeout_secs,
         ));
@@ -669,7 +669,7 @@ async fn assemble_coordination(config: &Config) -> Result<CoordinationComponents
     })
 }
 
-/// T018 —— 无 etcd 路径默认 worker 标识风险判定（纯判定，便于单测）。
+/// 无 etcd 路径默认 worker 标识风险判定（纯判定，便于单测）。
 ///
 /// 未配置 etcd（无运行时 worker 分配）且 worker_id / dc_id 任一仍为默认值 0
 /// 时返回 true：此时 Snowflake 直接以配置值作为机器标识，多实例部署若不显式
@@ -683,7 +683,7 @@ fn should_warn_default_worker_identity(
     !etcd_endpoints_configured && (worker_id == 0 || dc_id == 0)
 }
 
-/// T035 + T013(unify-rust-i18n)—— 进程默认 locale 解析(生产入口)。
+/// (unify-rust-i18n)—— 进程默认 locale 解析(生产入口)。
 ///
 /// 检测链(unify-rust-i18n 统一基线 §2,顺序不可调换):
 /// `NEBULA_LOCALE`(项目覆盖变量)
@@ -713,7 +713,7 @@ fn resolve_locale(nebula_locale_env: Option<&str>, config_locale: &str) -> (Stri
 /// 检测链纯函数(env/sys 全部注入,便于单测)。
 ///
 /// - 显式入口(NEBULA_LOCALE / config.app.locale)仅接受规范值 "en"/"zh-CN"
-///   (大小写敏感,保留 T035 语义:不做隐式归一化);空串视同未设置。
+///   (大小写敏感,保留 语义:不做隐式归一化);空串视同未设置。
 /// - 环境链/sys-locale 走 POSIX 归一化([`normalize_posix_locale`]):
 ///   zh* → "zh-CN",en* → "en",C/POSIX/其余语言跳过继续走链。
 /// - 显式入口出现非空非法值时置 `invalid = true`(调用方输出本地化 warn)
@@ -782,7 +782,7 @@ fn normalize_posix_locale(raw: &str) -> Option<&'static str> {
     }
 }
 
-/// T037 —— 可观测性初始化:inklog 日志 + 早期 `en` i18n。
+/// 可观测性初始化:inklog 日志 + 早期 `en` i18n。
 ///
 /// 日志初始化由 inklog 接管(替换原手写的 tracing_subscriber::fmt() 链)。
 /// 本地 ../inklog 已切换至 EnvFilter,自动从 RUST_LOG 读取按模块过滤规则
@@ -792,7 +792,7 @@ fn normalize_posix_locale(raw: &str) -> Option<&'static str> {
 /// 级别(set_level 经内部 reload 句柄作用于 live subscriber)。
 ///
 /// i18n 先以内置默认 en 初始化,覆盖配置加载前的极早期日志;配置与
-/// NEBULA_LOCALE 检测链解析完成后按生效 locale 重新初始化(T035/T013,
+/// NEBULA_LOCALE 检测链解析完成后按生效 locale 重新初始化(
 /// 见 [`load_config`])。
 async fn init_observability() -> Result<Arc<inklog::LoggerManager>> {
     let logger = Arc::new(
@@ -814,7 +814,7 @@ async fn init_observability() -> Result<Arc<inklog::LoggerManager>> {
     Ok(logger)
 }
 
-/// T037 —— 命令行配置路径解析(`--config <path>` 显式指定,否则内置默认路径)。
+/// 命令行配置路径解析(`--config <path>` 显式指定,否则内置默认路径)。
 fn parse_config_path(args: &[String]) -> (String, bool) {
     let explicit_path = args.len() > 2 && args[1] == "--config";
     if explicit_path {
@@ -824,14 +824,14 @@ fn parse_config_path(args: &[String]) -> (String, bool) {
     }
 }
 
-/// T037 —— 配置加载合并与 fail-fast 校验。
+/// 配置加载合并与 fail-fast 校验。
 ///
 /// 顺序与原 main 内联实现逐字节一致:resolve_startup_config(仅「未显式
 /// 指定 --config 且该路径确实不存在」允许回落内置默认值,且必须显式 warn)
-/// → 环境变量覆盖合并 → T035/T013 进程默认 locale 检测链(NEBULA_LOCALE >
+/// → 环境变量覆盖合并 → 进程默认 locale 检测链(NEBULA_LOCALE >
 /// config.app.locale > LC_ALL/LC_MESSAGES/LANG > sys-locale > "en",非法值
-/// 告警并继续走链)→ T018 无 etcd 默认
-/// worker 标识告警 → T008 生产环境强制 TLS(校验失败打印本地化 error 并
+/// 告警并继续走链)→ 无 etcd 默认
+/// worker 标识告警 → 生产环境强制 TLS(校验失败打印本地化 error 并
 /// 以非零码退出)。
 ///
 /// 注:api_key_salt 的生产校验仍留在 [`init_repository`](与「DB 连接成功」
@@ -871,7 +871,7 @@ fn load_config(config_path: &str, explicit_path: bool) -> Result<Config> {
     })?);
     info!("{}", t!("log.main.config_loaded"));
 
-    // T035 + T013 —— 进程默认 locale 检测链:NEBULA_LOCALE >
+    // —— 进程默认 locale 检测链:NEBULA_LOCALE >
     // config.app.locale > LC_ALL/LC_MESSAGES/LANG > sys-locale > "en"
     //(用户显式配置优先于系统语言;config.app.locale serde 默认空串 = auto,
     // 显式 "en"/"zh-CN" 钉死进程语言)。非法值告警并继续走链。此后所有
@@ -891,7 +891,7 @@ fn load_config(config_path: &str, explicit_path: bool) -> Result<Config> {
     info!("{}", t!("log.main.locale_initialized", locale = &locale));
     nebulaid::core::i18n::init_i18n(&locale);
 
-    // T018 —— 无 etcd 时默认 worker 标识多实例风险告警:etcd 未配置意味着
+    // 无 etcd 时默认 worker 标识多实例风险告警:etcd 未配置意味着
     // 没有 worker_id 运行时分配兜底,worker_id/dc_id 任一为默认 0 时显性
     // 提醒(多实例必须显式配置,否则 Snowflake 会重复)。
     if should_warn_default_worker_identity(
@@ -909,8 +909,8 @@ fn load_config(config_path: &str, explicit_path: bool) -> Result<Config> {
         );
     }
 
-    // T008 —— 生产环境强制 TLS(fail-fast)。环境判定经 Environment::from_env()
-    //(含 T007 反向默认:NEBULA_ENV 缺失/未知值按生产执行,缺失时此处顺带
+    // 生产环境强制 TLS(fail-fast)。环境判定经 Environment::from_env()
+    //(含 反向默认:NEBULA_ENV 缺失/未知值按生产执行,缺失时此处顺带
     // 触发唯一一次 warn)。校验失败打印本地化 error 并以非零码退出;
     // NEBULA_ALLOW_INSECURE_TLS=1 显式放行(函数内 warn)。
     if validate_tls_required_in_production(
@@ -928,18 +928,18 @@ fn load_config(config_path: &str, explicit_path: bool) -> Result<Config> {
     Ok(config)
 }
 
-/// T037 —— 仓储装配产物:SeaOrmRepository(可选)+ 协调组件(仅 etcd)。
+/// 仓储装配产物:SeaOrmRepository(可选)+ 协调组件(仅 etcd)。
 struct RepositoryStack {
     repository: Option<Arc<database::SeaOrmRepository>>,
-    /// T016 协调装配产物;`client` 供健康巡检与 worker 分配复用。
+    /// 协调装配产物;`client` 供健康巡检与 worker 分配复用。
     #[cfg(feature = "etcd")]
     coordination: CoordinationComponents,
 }
 
-/// T037 —— DB 连接/迁移/分布式锁协调/仓储构造。
+/// DB 连接/迁移/分布式锁协调/仓储构造。
 ///
 /// 顺序与原 main 内联实现一致:连接(失败 exit 1)→ 迁移(失败 exit 1)→
-/// T016 分布式锁装配(fail-closed,etcd 配置了 endpoints 却不可达时
+/// 分布式锁装配(fail-closed,etcd 配置了 endpoints 却不可达时
 /// exit 1;未配置 endpoints 才允许单机本地锁)→ 仓储构造(生产环境
 /// api_key_salt 弱默认校验 panic)。
 async fn init_repository(config: &Config) -> Result<RepositoryStack> {
@@ -966,7 +966,7 @@ async fn init_repository(config: &Config) -> Result<RepositoryStack> {
         }
     };
 
-    // T016 —— 分布式锁装配(fail-closed),提前到仓储构造之前:
+    // 分布式锁装配(fail-closed),提前到仓储构造之前
     // 配置显式含 etcd endpoints 时,etcd 不可用直接拒绝启动(多实例场景
     // 静默回退进程内锁必然重复 ID);未配置 endpoints 才允许单机本地锁。
     #[cfg(not(feature = "etcd"))]
@@ -989,7 +989,7 @@ async fn init_repository(config: &Config) -> Result<RepositoryStack> {
         coordination.lock.clone();
 
     let repository: Option<Arc<database::SeaOrmRepository>> = if let Some(conn) = db_connection {
-        // tiangang C1 修复:生产环境强制校验 api_key_salt 非空且非弱默认值。
+        // 生产环境强制校验 api_key_salt 非空且非弱默认值。
         // 规则 12(失败必须显性化):校验失败时 panic,禁止弱 pepper 静默放行。
         if nebulaid::core::config::is_production() {
             let salt = &config.auth.api_key_salt;
@@ -1011,7 +1011,7 @@ async fn init_repository(config: &Config) -> Result<RepositoryStack> {
         let repo = Arc::new(
             database::SeaOrmRepository::new(conn, config.auth.api_key_salt.clone())
                 .with_distributed_lock(lock)
-                // T043 —— statement_timeout_secs 自配置接线（默认 5s）。
+                // statement_timeout_secs 自配置接线（默认 5s）。
                 .with_statement_timeout(std::time::Duration::from_secs(
                     config.database.statement_timeout_secs,
                 )),
@@ -1029,7 +1029,7 @@ async fn init_repository(config: &Config) -> Result<RepositoryStack> {
     })
 }
 
-/// T037 —— 认证/审计栈装配产物。
+/// 认证/审计栈装配产物。
 struct AuthStack {
     auth: Arc<ApiKeyAuth>,
     audit_logger: Arc<AuditLogger>,
@@ -1039,14 +1039,14 @@ struct AuthStack {
     auth_cache: Option<Arc<nebulaid::server::auth::AuthCache>>,
 }
 
-/// T037 —— 认证栈装配:决策缓存、ApiKeyAuth、API key 初始化、审计 logger、
+/// 认证栈装配:决策缓存、ApiKeyAuth、API key 初始化、审计 logger、
 /// 热重载配置与文件监视。
 ///
 /// - 认证决策缓存 —— ApiKeyAuth 与 ApiHandlers 共享同一实例:前者读缓存
 ///   加速校验,后者在吊销/轮换/重置时失效条目。`cache_ttl_seconds = 0`
 ///   表示禁用,此时不再装配实例(装配了也不会写入,却仍要在每次校验后
 ///   多打一次 get_api_key_by_id 判因,纯空转开销)。
-/// - T030 —— 审计内存容量改用独立的 audit.memory_capacity;生产环境按
+/// - —— 审计内存容量改用独立的 audit.memory_capacity;生产环境按
 ///   audit.file_logging_enabled(默认 true)落盘 audit.file_logging_path
 ///   (SOC2/GDPR 审计留痕);开发环境维持内存环形:最小意外原则。
 async fn init_auth_stack(
@@ -1150,7 +1150,7 @@ async fn init_auth_stack(
     }
 }
 
-/// T037 —— 服务器运行栈:[`run_servers`] 的全部输入。
+/// 服务器运行栈:[`run_servers`] 的全部输入。
 struct ServerStack {
     config: Config,
     server_config: ServerConfig,
@@ -1162,12 +1162,12 @@ struct ServerStack {
     /// garrison 认证决策缓存(与 ApiKeyAuth 共享同一实例)。
     #[cfg(feature = "garrison-auth")]
     auth_cache: Option<Arc<nebulaid::server::auth::AuthCache>>,
-    /// T016 协调组件(仅 etcd;`client` 供健康巡检与 worker 分配复用)。
+    /// 协调组件(仅 etcd;`client` 供健康巡检与 worker 分配复用)。
     #[cfg(feature = "etcd")]
     coordination: CoordinationComponents,
 }
 
-/// T037 —— etcd/non-etcd 共用的 handlers + 配置服务构造。
+/// etcd/non-etcd 共用的 handlers + 配置服务构造。
 ///
 /// 原实现两个 cfg 块各自内联 ConfigManager 与 `build_api_handlers` 调用
 /// (霰弹手术气味:新增 builder 方法需同步改两处)。本 helper 集中构造逻辑,
@@ -1207,7 +1207,7 @@ fn build_handlers_and_config_service(
     }
 }
 
-/// T037 —— TLS 管理器装配。
+/// TLS 管理器装配。
 ///
 /// TLS 配置错误 fail-fast —— enabled=true 且证书缺失/解析失败时拒绝启动
 /// (不再静默降级明文)。enabled=false 时 initialize() 直接返回 Ok,明文
@@ -1230,7 +1230,7 @@ async fn init_tls_manager(config: &Config) -> Result<Option<Arc<TlsManager>>> {
     )
 }
 
-/// T037 —— etcd 运行时组件(仅 etcd feature):T027 健康巡检 + T017 worker 租约。
+/// etcd 运行时组件(仅 etcd feature): 健康巡检 + worker 租约。
 #[cfg(feature = "etcd")]
 struct EtcdRuntimeComponents {
     health_monitor: Arc<EtcdClusterHealthMonitor>,
@@ -1241,10 +1241,10 @@ struct EtcdRuntimeComponents {
     lease_failure_rx: Option<tokio::sync::oneshot::Receiver<String>>,
 }
 
-/// T037 —— etcd 运行时装配(仅 etcd feature)。
+/// etcd 运行时装配(仅 etcd feature)。
 ///
-/// T027 健康巡检接线(注入协调装配的共享长连接 client + 缓存周期落盘)与
-/// T017 worker_id 运行时分配(分配失败 fail-closed:打印本地化 error 并以
+/// 健康巡检接线(注入协调装配的共享长连接 client + 缓存周期落盘)与
+/// worker_id 运行时分配(分配失败 fail-closed:打印本地化 error 并以
 /// 非零码退出 —— 多实例回退静态默认 0 必然产生重复 worker_id)。
 #[cfg(feature = "etcd")]
 async fn init_etcd_runtime(
@@ -1252,7 +1252,7 @@ async fn init_etcd_runtime(
     coordination: &CoordinationComponents,
 ) -> EtcdRuntimeComponents {
     info!("{}", t!("log.main.initializing_etcd_health_monitor"));
-    // T027 —— 缓存文件名追加 pid 段:同机多副本共用 dc_id 时
+    // 缓存文件名追加 pid 段:同机多副本共用 dc_id 时
     // `./data/etcd_cache_{dc_id}.json` 会互相踩踏覆盖。
     let etcd_cache_path = format!(
         "./data/etcd_cache_{}_{}.json",
@@ -1260,7 +1260,7 @@ async fn init_etcd_runtime(
         std::process::id()
     );
 
-    // T027 —— 健康巡检统一走注入的长连接 client:复用 T016 协调装配
+    // 健康巡检统一走注入的长连接 client:复用 协调装配
     // 的 EtcdClientWrapper(fail-closed 已 ping 探活)。原实现此处再建
     // 一个 client 且 fallback 路径每次检查新建 client —— etcd connect
     // 是 lazy 的,构造成功不代表可达,Failed 判定几乎永不触发。
@@ -1283,7 +1283,7 @@ async fn init_etcd_runtime(
         warn!("{}", t!("log.main.etcd_local_cache_load_failed", error = e));
     }
 
-    // T027 —— 巡检与缓存持久化接线:健康状态周期刷新(真实 ping 判定
+    // 巡检与缓存持久化接线:健康状态周期刷新(真实 ping 判定
     // Degraded/Failed 并驱动降级),本地缓存周期落盘(etcd 故障时
     // 供重启后的实例读取)。未配置 etcd(单机)时同样不启动巡检意义
     // 不大,但保持一致行为无副作用(check 走 no_endpoints early-return)。
@@ -1296,7 +1296,7 @@ async fn init_etcd_runtime(
 
     info!("{}", t!("log.main.etcd_health_monitor_initialized"));
 
-    // T017 —— worker_id 运行时分配:etcd 已配置(coordination.client 为
+    // worker_id 运行时分配:etcd 已配置(coordination.client 为
     // Some)时于 Snowflake 构造前分配并覆盖静态配置值;分配失败 fail-closed
     //(多实例回退静态默认 0 必然重复 ID)。
     let (lease_failure_tx, lease_failure_rx) = tokio::sync::oneshot::channel::<String>();
@@ -1328,7 +1328,7 @@ async fn init_etcd_runtime(
     }
 }
 
-/// T017 —— lease 续期失败等待:etcd 构建等待上报通道(未分配 worker 时
+/// lease 续期失败等待:etcd 构建等待上报通道(未分配 worker 时
 /// 恒 pending);非 etcd 构建恒 pending(select 臂永不触发,等价于原实现
 /// 「非 etcd 无此臂」)。
 async fn wait_for_lease_failure(
@@ -1345,7 +1345,7 @@ async fn wait_for_lease_failure(
     std::future::pending::<String>().await
 }
 
-/// T037 —— 服务器运行编排:ID 生成器/限流/handlers/TLS/降级巡检装配、
+/// 服务器运行编排:ID 生成器/限流/handlers/TLS/降级巡检装配、
 /// HTTP/gRPC spawn 与优雅停机 select。
 ///
 /// etcd 与非 etcd 构建共用同一实现(此前为两段近乎复制的 cfg 块:限流器、
@@ -1366,7 +1366,7 @@ async fn run_servers(stack: ServerStack) -> Result<()> {
     #[cfg(feature = "garrison-auth")]
     let auth_cache = stack.auth_cache;
 
-    // T027 健康巡检 + T017 worker 租约(仅 etcd feature;非 etcd 构建
+    // 健康巡检 + worker 租约(仅 etcd feature;非 etcd 构建
     // 无此阶段)。
     #[cfg(feature = "etcd")]
     let etcd_runtime = init_etcd_runtime(&mut config, &coordination).await;
@@ -1440,7 +1440,7 @@ async fn run_servers(stack: ServerStack) -> Result<()> {
         tls_manager,
     ));
 
-    // T017 —— lease 续期失败臂的 future 输入:非 etcd 构建恒 None。
+    // lease 续期失败臂的 future 输入:非 etcd 构建恒 None。
     #[cfg(feature = "etcd")]
     let lease_failure_rx = etcd_runtime.lease_failure_rx;
     #[cfg(not(feature = "etcd"))]
@@ -1489,7 +1489,7 @@ async fn run_servers(stack: ServerStack) -> Result<()> {
             info!("{}", t!("log.main.shutdown_signal_received"));
             Ok(())
         }
-        // T017 —— lease 续期连续失败 fail-stop:etcd 不可达使 lease 失效后,
+        // lease 续期连续失败 fail-stop:etcd 不可达使 lease 失效后,
         // 该 worker_id 可能已被其他实例接管,继续发号会重复 ID → 触发优雅停机。
         // 未分配 worker lease(含非 etcd 构建)时该 future 恒 pending。
         lease_reason = wait_for_lease_failure(lease_failure_rx) => {
@@ -1508,7 +1508,7 @@ async fn run_servers(stack: ServerStack) -> Result<()> {
     degradation_manager.stop_background_check().await;
     rate_limit_cleanup.abort();
 
-    // T017 —— 停机收尾:停 keepalive 任务,并经归属校验释放 worker_id
+    // 停机收尾:停 keepalive 任务,并经归属校验释放 worker_id
     //(best-effort:失败仅告警,lease TTL 到期后 etcd 会自动回收 key)。
     #[cfg(feature = "etcd")]
     if let Some(guard) = &etcd_runtime.worker_lease {
@@ -1536,7 +1536,7 @@ async fn run_servers(stack: ServerStack) -> Result<()> {
     server_result
 }
 
-/// T037 —— main 主体只保留顺序编排:可观测性 → 配置 → 仓储 → 认证/审计
+/// main 主体只保留顺序编排:可观测性 → 配置 → 仓储 → 认证/审计
 /// 栈 → 服务器运行。各阶段细节见对应装配函数。
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -1957,7 +1957,7 @@ mod tests {
         server.abort();
     }
 
-    // ==================== T008: 生产环境 TLS 强制校验 ====================
+    // ==================== 生产环境 TLS 强制校验 ====================
 
     #[test]
     fn test_validate_tls_production_tls_disabled_no_escape_hatch_errors() {
@@ -1997,9 +1997,9 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ==================== T016: 分布式锁装配 fail-closed ====================
+    // ==================== 分布式锁装配 fail-closed ====================
 
-    /// T016 —— 配置显式含 etcd endpoints + 不可达端点 → 装配必须失败（fail-closed）。
+    /// 配置显式含 etcd endpoints + 不可达端点 → 装配必须失败（fail-closed）。
     ///
     /// `etcd_client::Client::connect` 是 lazy 的，`EtcdClientWrapper::new` 对不可达
     /// endpoint 也返回 Ok；`assemble_coordination` 因此在构造后 ping 探活，把
@@ -2023,7 +2023,7 @@ mod tests {
         );
     }
 
-    /// T016 —— 未配置 endpoints → 单机本地锁放行（合法），共享 client 为 None。
+    /// 未配置 endpoints → 单机本地锁放行（合法），共享 client 为 None。
     #[cfg(feature = "etcd")]
     #[tokio::test]
     async fn test_assemble_coordination_local_lock_when_no_endpoints() {
@@ -2051,7 +2051,7 @@ mod tests {
         guard.release().await.expect("本地锁 release 必须成功");
     }
 
-    /// T016 verify 钉（bin 侧可达性）—— `DbSegmentLoader` 经 mod.rs re-export
+    /// verify 钉（bin 侧可达性）—— `DbSegmentLoader` 经 mod.rs re-export
     /// 后可从 bin crate 构造（`SegmentAlgorithm::new(dc).with_segment_loader(...)`
     /// 装配契约的 bin 侧入口）。注意：服务端 Segment 实例由
     /// `AlgorithmRouter::initialize` 经 `SegmentFactory` 内部构建，bin 侧
@@ -2067,9 +2067,9 @@ mod tests {
         let _loader = nebulaid::core::algorithm::DbSegmentLoader::new(repo);
     }
 
-    // ==================== T018: 无 etcd 默认 worker 标识告警 ====================
+    // ==================== 无 etcd 默认 worker 标识告警 ====================
 
-    /// T018 —— 未配置 etcd + worker_id/dc_id 默认 0 → 必须告警。
+    /// 未配置 etcd + worker_id/dc_id 默认 0 → 必须告警。
     #[test]
     fn test_warn_default_worker_identity_triggers_on_defaults() {
         assert!(should_warn_default_worker_identity(false, 0, 0));
@@ -2077,23 +2077,23 @@ mod tests {
         assert!(should_warn_default_worker_identity(false, 5, 0));
     }
 
-    /// T018 —— 已配置 etcd（有运行时分配兜底）→ 不告警，即使值为默认 0。
+    /// 已配置 etcd（有运行时分配兜底）→ 不告警，即使值为默认 0。
     #[test]
     fn test_warn_default_worker_identity_skipped_when_etcd_configured() {
         assert!(!should_warn_default_worker_identity(true, 0, 0));
         assert!(!should_warn_default_worker_identity(true, 0, 3));
     }
 
-    /// T018 —— 未配置 etcd 但标识均已显式配置（非 0）→ 不告警。
+    /// 未配置 etcd 但标识均已显式配置（非 0）→ 不告警。
     #[test]
     fn test_warn_default_worker_identity_skipped_when_explicitly_configured() {
         assert!(!should_warn_default_worker_identity(false, 1, 1));
         assert!(!should_warn_default_worker_identity(false, 255, 31));
     }
 
-    // ==================== T035: 默认 locale 配置化 ====================
+    // ==================== 默认 locale 配置化 ====================
 
-    /// T035 —— 环境变量 NEBULA_LOCALE 优先于配置值。
+    /// 环境变量 NEBULA_LOCALE 优先于配置值。
     #[test]
     fn test_resolve_locale_env_overrides_config() {
         let (locale, invalid) = resolve_locale(Some("zh-CN"), "en");
@@ -2101,7 +2101,7 @@ mod tests {
         assert!(!invalid);
     }
 
-    /// T035 —— 环境变量缺失时使用配置值。
+    /// 环境变量缺失时使用配置值。
     #[test]
     fn test_resolve_locale_falls_back_to_config() {
         let (locale, invalid) = resolve_locale(None, "zh-CN");
@@ -2113,7 +2113,7 @@ mod tests {
         assert!(!invalid);
     }
 
-    /// T035 —— 环境变量为空串视同未设置（沿环境变量覆盖惯例）。
+    /// 环境变量为空串视同未设置（沿环境变量覆盖惯例）。
     #[test]
     fn test_resolve_locale_empty_env_treated_as_unset() {
         let (locale, invalid) = resolve_locale(Some(""), "zh-CN");
@@ -2121,7 +2121,7 @@ mod tests {
         assert!(!invalid);
     }
 
-    /// T035 —— 非法值（env 与 config 两侧）回退 en 并标记 invalid。
+    /// 非法值（env 与 config 两侧）回退 en 并标记 invalid。
     #[test]
     fn test_resolve_locale_invalid_values_fall_back_to_en() {
         // env 非法
@@ -2140,9 +2140,9 @@ mod tests {
         assert!(invalid);
     }
 
-    // ==================== T013 (unify-rust-i18n): 检测链扩展 ====================
+    // ==================== (unify-rust-i18n): 检测链扩展 ====================
 
-    /// T013 —— POSIX 名归一化:`zh_CN.UTF-8` → zh-CN、`zh_TW` → zh-CN、
+    /// POSIX 名归一化:`zh_CN.UTF-8` → zh-CN、`zh_TW` → zh-CN、
     /// `en_US` → en、C/POSIX/未知语言 → None(回退链继续)。
     #[test]
     fn test_normalize_posix_locale() {
@@ -2159,7 +2159,7 @@ mod tests {
         assert_eq!(normalize_posix_locale(""), None);
     }
 
-    /// T013 —— NEBULA_LOCALE 优先于整条检测链(env 变量 + sys-locale 同时存在)。
+    /// NEBULA_LOCALE 优先于整条检测链(env 变量 + sys-locale 同时存在)。
     #[test]
     fn test_detect_chain_nebula_locale_beats_env_and_sys() {
         let (locale, invalid) = resolve_locale_from(
@@ -2174,7 +2174,7 @@ mod tests {
         assert!(!invalid);
     }
 
-    /// T013 —— 用户显式配置优先于系统语言:config "zh-CN" 胜过 LANG/en 变体,
+    /// 用户显式配置优先于系统语言:config "zh-CN" 胜过 LANG/en 变体,
     /// config "en" 能钉死英文(屏蔽 zh 系统)。
     #[test]
     fn test_detect_chain_config_beats_env_chain() {
@@ -2201,7 +2201,7 @@ mod tests {
         assert!(!invalid);
     }
 
-    /// T013 —— 无显式偏好(NEBULA_LOCALE 未设、config 空 = auto)时,
+    /// 无显式偏好(NEBULA_LOCALE 未设、config 空 = auto)时,
     /// POSIX 环境链按 LC_ALL → LC_MESSAGES → LANG 顺序生效。
     #[test]
     fn test_detect_chain_posix_env_order() {
@@ -2233,7 +2233,7 @@ mod tests {
         assert_eq!(locale, "en");
     }
 
-    /// T013 —— 环境链全空时由 sys-locale 兜底;C/POSIX/未知语言跳过继续走链。
+    /// 环境链全空时由 sys-locale 兜底;C/POSIX/未知语言跳过继续走链。
     #[test]
     fn test_detect_chain_sys_locale_and_unsupported_skip() {
         let (locale, _) = resolve_locale_from(None, "", None, None, None, Some("zh-CN"));
@@ -2251,7 +2251,7 @@ mod tests {
         assert!(!invalid);
     }
 
-    /// T013 —— 空串视同未设置(NEBULA_LOCALE 与 config 两侧),auto 走系统链。
+    /// 空串视同未设置(NEBULA_LOCALE 与 config 两侧),auto 走系统链。
     #[test]
     fn test_detect_chain_empty_values_treated_as_unset() {
         let (locale, invalid) =
@@ -2260,7 +2260,7 @@ mod tests {
         assert!(!invalid);
     }
 
-    /// T013 —— 显式入口非法值不短路:置 invalid 并继续走链(系统语言兜底),
+    /// 显式入口非法值不短路:置 invalid 并继续走链(系统语言兜底),
     /// 链尾仍落 en;告警标记保留给调用方。
     #[test]
     fn test_detect_chain_invalid_explicit_value_continues_chain() {

@@ -151,7 +151,7 @@ enum AuditCommand {
     Flush(tokio::sync::oneshot::Sender<()>),
 }
 
-/// writer task 周期 flush 间隔（T025：常开 `BufWriter<File>` 按行写，
+/// writer task 周期 flush 间隔（常开 `BufWriter<File>` 按行写，
 /// 缓冲行靠本定时器定期落盘；50ms 保证既有「sleep 后读文件」用例语义
 /// 不变，同时把每事件一次 open/close 的系统调用摊薄为每周期一次 flush）。
 const AUDIT_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
@@ -174,7 +174,7 @@ pub struct AuditLogger {
 /// `VecDeque` 预分配条数上限。
 ///
 /// `max_events` 由调用方传入，当前唯一生产来源是配置值
-/// （T030 起 `src/main.rs` 传 `audit.memory_capacity`，不再借用
+/// （`src/main.rs` 传 `audit.memory_capacity`，不再借用
 /// `rate_limit.default_rps`）——直接按它预分配等于让一个配置数字决定
 /// 进程启动时的内存申请量。`with_capacity` 只是容量提示，钳制它不改变
 /// "最多保留 `max_events` 条"的淘汰语义。
@@ -230,7 +230,7 @@ impl AuditLogger {
 
         let handle = tokio::spawn(async move {
             use std::io::Write;
-            // T025 —— writer 常开一个 `BufWriter<File>`（append），按行写 +
+            // writer 常开一个 `BufWriter<File>`（append），按行写 +
             // 周期 flush，替代原「每事件一次 OpenOptions::open」；系统调用
             // 从 O(事件数) 摊薄到 O(缓冲满 + flush 周期数)。
             // 打开失败或写失败进入 broken 模式（句柄置 None）：后续事件逐条
@@ -346,7 +346,7 @@ impl AuditLogger {
 
     /// 记录一条审计事件。
     ///
-    /// T025 —— 入参收 `impl Into<Arc<AuditEvent>>`：内存环形与文件 writer
+    /// 入参收 `impl Into<Arc<AuditEvent>>`：内存环形与文件 writer
     /// 共享同一 `Arc` 实例，消除原实现的两次深拷贝（push_back 一次深拷贝
     /// 加 Box::new 一次深拷贝）。调用方传 owned 事件（历史路径零改动）或
     /// 已构造的 `Arc<AuditEvent>`（多写场景免拷贝）皆可。
@@ -355,7 +355,7 @@ impl AuditLogger {
     }
 
     /// `log` 的执行体（inherent async，无 async_trait 反序列化，
-    /// `#[instrument]` 属性覆盖可靠）。T023 热路径观测：span 字段仅事件
+    /// `#[instrument]` 属性覆盖可靠）。 热路径观测：span 字段仅事件
     /// 类型/workspace/结果，不含事件明细与任何凭据。
     #[tracing::instrument(
         name = "audit.log",
@@ -448,9 +448,9 @@ impl AuditLogger {
     /// 仍会克隆 `redacted_client_ip` / `redacted_user_agent`，所以实际
     /// 节省的是其余字段的深拷贝，量级为 1-2 万次/秒）。
     ///
-    /// T023 热路径观测：span 字段仅事件类型/workspace，事件体与路径不进 span。
+    /// 热路径观测：span 字段仅事件类型/workspace，事件体与路径不进 span。
     ///
-    /// T025 起 writer task 走常开 `BufWriter`（`append_event`），本函数仅剩
+    /// writer task 走常开 `BufWriter`（`append_event`），本函数仅剩
     /// 单测直写用途（作为逐字节一致的对照实现），故 cfg(test)。
     #[cfg(test)]
     #[tracing::instrument(
@@ -480,7 +480,7 @@ impl AuditLogger {
 
     /// 审计事件 → 单行 JSON 字节（含换行）。文件持久化的唯一序列化实现：
     /// 直写辅助 [`Self::write_event_to_file`] 与 writer task 的常开
-    /// `BufWriter`（T025）共用，保证两条写入路径逐字节一致。
+    /// `BufWriter`共用，保证两条写入路径逐字节一致。
     fn serialize_event_line(event: &AuditEvent) -> std::io::Result<Vec<u8>> {
         // 仅对需要脱敏的 client_ip / user_agent 做转换，其余字段引用序列化。
         let redacted_client_ip = event.client_ip.as_deref().map(AuditEvent::redact_ip);
@@ -512,7 +512,7 @@ impl AuditLogger {
         Ok(buf)
     }
 
-    /// T025 —— writer task 写入路径：向常开 `BufWriter` 追加一行。
+    /// writer task 写入路径：向常开 `BufWriter` 追加一行。
     /// 句柄为 `None`（broken 模式：初始打开或写入失败后）时返回错误，
     /// 由调用方计入 total_errors。
     fn append_event(
@@ -533,7 +533,7 @@ impl AuditLogger {
         }
     }
 
-    /// T025 —— 冲刷常开 `BufWriter` 并 sync_all 落盘（`Flush` 命令路径）。
+    /// 冲刷常开 `BufWriter` 并 sync_all 落盘（`Flush` 命令路径）。
     fn flush_writer(writer: &mut Option<std::io::BufWriter<std::fs::File>>) -> std::io::Result<()> {
         use std::io::Write;
         match writer.as_mut() {
@@ -2586,7 +2586,7 @@ mod tests {
     #[tokio::test]
     async fn test_core_audit_logger_trait_log_unknown_result_preserved() {
         // CoreAuditEvent can have result=Unknown; server-side preserves it
-        // (M4 fix: no longer forced to Failure).
+        // (fix: no longer forced to Failure).
         use crate::core::algorithm::{
             AuditEvent as CoreAuditEvent, AuditLogger as CoreAuditLoggerTrait,
         };
@@ -2697,7 +2697,7 @@ mod tests {
         assert_eq!(logger.total_logged(), 1);
     }
 
-    // ========== T030 AuditConfig 贯通 ==========
+    // ========== AuditConfig 贯通 ==========
 
     /// AuditConfig 的容量与路径贯通 AuditLogger：以配置值构造文件 logger，
     /// 写事件后文件存在对应行。内存环形容量 = audit.memory_capacity（第 4 条

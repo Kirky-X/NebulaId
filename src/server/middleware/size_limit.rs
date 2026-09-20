@@ -21,7 +21,7 @@ pub struct RequestBodyTooLarge;
 
 impl IntoResponse for RequestBodyTooLarge {
     fn into_response(self) -> Response {
-        // T032 —— 统一错误信封（ErrorResponse，含 business_code）；
+        // 统一错误信封（ErrorResponse，含 business_code）；
         // 原 ApiErrorResponse 双格式已移除。
         use crate::server::models::{ApiErrorCode, ErrorResponse};
 
@@ -66,7 +66,7 @@ mod tests {
 
         assert_eq!(axum_response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
-        // T032 — 统一错误信封：413 + business_code=3001（InvalidInput），
+        // 统一错误信封：413 + business_code=3001（InvalidInput），
         // 且携带装配处生成的 request_id/timestamp。
         let bytes = axum::body::to_bytes(axum_response.into_body(), usize::MAX)
             .await

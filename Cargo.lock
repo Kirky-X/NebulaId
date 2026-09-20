@@ -936,7 +936,9 @@ checksum = "6e8ccc4ea9f6acc32d102c0f6d471d11d913ad15f20c04de743374861fa1d414"
 
 [[package]]
 name = "confers"
-version = "0.6.0-rc.4"
+version = "0.6.0-rc.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff95e01ed3c29084efe4e95e365fa831e3101504d269a59972d5914020b3d389"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -963,7 +965,9 @@ dependencies = [
 
 [[package]]
 name = "confers-macros"
-version = "0.6.0-rc.4"
+version = "0.6.0-rc.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f68d3acdd765107a376e4fca48d40d8bc027d52a99a94e307992f2dfdc824077"
 dependencies = [
  "darling 0.24.1",
  "proc-macro2",
@@ -1319,7 +1323,9 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
 name = "dbnexus"
-version = "0.6.0-rc.4"
+version = "0.6.0-rc.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "241e972a062928ae8faacbc955bfdf0fb7599f09fe6497dfd27ec8527d1b1961"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1857,6 +1863,8 @@ dependencies = [
 [[package]]
 name = "garrison"
 version = "0.9.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9595a7eb414a750d42c1a29c542b4f8d30c72ae2aeecebcc1fac36d9fe1407f"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1867,15 +1875,16 @@ dependencies = [
  "fluent",
  "futures",
  "http",
+ "inklog",
  "inventory",
  "limiteron",
  "oxcache",
  "parking_lot",
+ "sdforge",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "subtle",
- "sys-locale",
  "thiserror",
  "tokio",
  "tracing",
@@ -2733,7 +2742,9 @@ dependencies = [
 
 [[package]]
 name = "inklog"
-version = "0.3.0-rc.4"
+version = "0.3.0-rc.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25233fa7e1dfc3ee5c212d98438d1329af15a3157319cfa81a6cc6b49d68cbf1"
 dependencies = [
  "aes-gcm",
  "aho-corasick",
@@ -3134,12 +3145,13 @@ dependencies = [
 [[package]]
 name = "limiteron"
 version = "0.3.0-rc.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc73be0cd6c8f66d28fe6897b5412a3c03827ffe9a7550de37b66e6690c85d1b"
 dependencies = [
  "ahash",
  "async-trait",
  "chrono",
  "dashmap",
- "fluent-bundle",
  "ipnet",
  "log",
  "oxcache",
@@ -3148,13 +3160,11 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
- "sys-locale",
  "thiserror",
  "tokio",
  "tokio-util",
  "toml",
  "tracing",
- "unic-langid",
  "uuid",
 ]
 
@@ -3446,7 +3456,9 @@ dependencies = [
  "unic-langid",
  "url",
  "utoipa",
+ "utoipa-swagger-ui",
  "uuid",
+ "validator",
 ]
 
 [[package]]
@@ -3654,12 +3666,13 @@ checksum = "13c45bb4a6ae1280ec0803b1ef9d3455eb50f01efbbe1447ab020f1d54fba9d8"
 [[package]]
 name = "oxcache"
 version = "0.5.0-rc.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d6c9870fdf44705199a23baf0ecfa891ba9b4b58fe56d556fb2afacf7e507f4"
 dependencies = [
  "async-trait",
  "bloomfilter",
  "chrono",
  "dashmap",
- "fluent-bundle",
  "icu",
  "moka",
  "once_cell",
@@ -3669,7 +3682,6 @@ dependencies = [
  "serde_json",
  "serde_stacker",
  "tokio",
- "unic-langid",
  "uuid",
  "writeable",
 ]
@@ -4294,7 +4306,6 @@ dependencies = [
  "pin-project-lite",
  "rand 0.10.2",
  "ryu",
- "sha1_smol",
  "socket2",
  "tokio",
  "tokio-util",
@@ -4665,12 +4676,13 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "sdforge"
 version = "0.5.0-rc.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68a378126f32116e626245d59d9226dfd82d6b984baca4b2cda90a1b86c367c8"
 dependencies = [
  "axum",
  "axum-extra",
  "clap",
  "clap-markdown",
- "fluent-bundle",
  "futures-util",
  "inventory",
  "log",
@@ -4689,7 +4701,6 @@ dependencies = [
  "tonic-prost-build",
  "tower",
  "tower-http 0.7.1",
- "unic-langid",
  "utoipa",
  "utoipa-swagger-ui",
  "uuid",
@@ -4699,6 +4710,8 @@ dependencies = [
 [[package]]
 name = "sdforge-macros"
 version = "0.5.0-rc.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5f7a1ad330bdfaabd93f1eb4129df97d183ffaca1cfdd2cf389eca34058bf36"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5041,12 +5054,6 @@ dependencies = [
  "cpufeatures 0.3.1",
  "digest 0.11.3",
 ]
-
-[[package]]
-name = "sha1_smol"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
 
 [[package]]
 name = "sha2"
@@ -5903,7 +5910,9 @@ dependencies = [
 
 [[package]]
 name = "trait-kit"
-version = "0.5.0-rc.5"
+version = "0.5.0-rc.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "726ca13fe2e870e40548c8eff4d02614548e31615282395da2df696a4981bfb9"
 dependencies = [
  "fluent-bundle",
  "unic-langid",

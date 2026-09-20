@@ -64,19 +64,19 @@ pub struct NebulaIdConfig {
     /// 多实例约束：未配置 etcd（无 worker_id 运行时分配）时，本值与
     /// [`NebulaIdConfig::worker_id`] 共同构成 Snowflake 的机器标识；多实例部署
     /// 必须显式配置（环境变量 `DC_ID` 或配置文件），默认值 0 会使多实例
-    /// 生成重复 ID（启动时进程会输出 warn 提醒，见 main.rs T018）。
+    /// 生成重复 ID（启动时进程会输出 warn 提醒，见 main.rs）。
     pub dc_id: u8,
     /// Worker ID (0-255)
     ///
     /// 多实例约束：配置了 etcd endpoints 时本值会被运行时分配的 worker_id
-    /// 覆盖（T017）；未配置 etcd 时即为 Snowflake 的最终机器标识，多实例
+    /// 覆盖；未配置 etcd 时即为 Snowflake 的最终机器标识，多实例
     /// 部署必须显式配置（环境变量 `WORKER_ID` 或配置文件），默认值 0 会使
-    /// 多实例生成重复 ID（启动时进程会输出 warn 提醒，见 main.rs T018）。
+    /// 多实例生成重复 ID（启动时进程会输出 warn 提醒，见 main.rs）。
     pub worker_id: u8,
     /// Graceful shutdown timeout (seconds)
     #[serde(default = "default_shutdown_timeout_seconds")]
     pub shutdown_timeout_seconds: u64,
-    /// Process default locale (T035/T013)。空串(auto,serde 默认)= 未显式
+    /// Process default locale。空串(auto,serde 默认)= 未显式
     /// 表达语言偏好,跟随系统语言检测链(NEBULA_LOCALE → 本字段 → LC_ALL/
     /// LC_MESSAGES/LANG → sys-locale → en,见 main.rs `resolve_locale`);
     /// 显式写入规范值 "en"/"zh-CN" 则钉死进程语言,**用户配置优先于系统
@@ -90,9 +90,9 @@ fn default_shutdown_timeout_seconds() -> u64 {
 }
 
 fn default_locale() -> String {
-    // T013(unify-rust-i18n):默认空串 = auto(跟随系统语言检测链,链尾 en)。
+    // (unify-rust-i18n):默认空串 = auto(跟随系统语言检测链,链尾 en)。
     // 若默认 "en",config.app.locale 会在检测链中恒短路,统一基线要求的
-    // 系统语言自动检测在默认部署下不可达(设计决策,见 T013 实施记录)。
+    // 系统语言自动检测在默认部署下不可达(设计决策,实施记录)。
     String::new()
 }
 
@@ -164,14 +164,14 @@ pub struct DatabaseConfig {
     pub acquire_timeout_seconds: u64,
     /// Idle connection timeout (seconds)
     pub idle_timeout_seconds: u64,
-    /// 单语句执行超时（秒，T028）。仓储热查询（validate_api_key /
+    /// 单语句执行超时（秒）。仓储热查询（validate_api_key /
     /// allocate_segment 等）经 `tokio::time::timeout` 包裹，防止 DB 挂起
     /// 拖死生成与认证热路径。默认 5 秒。
     #[serde(default = "default_statement_timeout_secs")]
     pub statement_timeout_secs: u64,
 }
 
-/// T028 —— `statement_timeout_secs` 的 serde 默认值（与仓储内置默认一致）。
+/// `statement_timeout_secs` 的 serde 默认值（与仓储内置默认一致）。
 fn default_statement_timeout_secs() -> u64 {
     5
 }
@@ -295,13 +295,13 @@ pub struct EtcdConfig {
     pub connect_timeout_ms: u64,
     /// Watch timeout (milliseconds)
     pub watch_timeout_ms: u64,
-    /// 单次 etcd 操作超时（秒，T028）。`EtcdClientWrapper` 的各操作经
+    /// 单次 etcd 操作超时（秒）。`EtcdClientWrapper` 的各操作经
     /// `tokio::time::timeout` 包裹，防止 etcd 挂起阻塞协调路径。默认 3 秒。
     #[serde(default = "default_operation_timeout_secs")]
     pub operation_timeout_secs: u64,
 }
 
-/// T028 —— `operation_timeout_secs` 的 serde 默认值（与客户端内置默认一致）。
+/// `operation_timeout_secs` 的 serde 默认值（与客户端内置默认一致）。
 fn default_operation_timeout_secs() -> u64 {
     3
 }
@@ -509,7 +509,7 @@ mod tests {
         assert_eq!(cfg.watch_timeout_ms, 5000);
     }
 
-    // ----- T035: NebulaIdConfig.locale -----
+    // ----- NebulaIdConfig.locale -----
 
     #[test]
     fn test_app_config_locale_default_is_auto_empty() {

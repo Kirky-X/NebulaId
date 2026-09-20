@@ -52,6 +52,15 @@ async fn audit_logging_stays_fast_after_ring_and_channel_saturation() {
 
     // 容量饱和后的 log() 必须仍然快（每次耗时以 20ms 为上限，远宽于
     // 修复后的微秒级、远紧于回归时的 ~100ms 阻塞）。
+    // llvm-cov 插桩（CI default leg 即插桩运行本测试）会把绝对时长整体拖高
+    // 数倍，20ms 恒定上限在插桩下偶发误报；检测到 LLVM_PROFILE_FILE（llvm-cov
+    // 注入）时放宽到 80ms——仍在回归信号（~100ms 阻塞）之下，保持区分度。
+    let instrumented = std::env::var_os("LLVM_PROFILE_FILE").is_some();
+    let per_call_cap = if instrumented {
+        Duration::from_millis(80)
+    } else {
+        Duration::from_millis(20)
+    };
     let mut worst = Duration::ZERO;
     for i in 10_500..10_520u64 {
         let start = Instant::now();
@@ -59,13 +68,14 @@ async fn audit_logging_stays_fast_after_ring_and_channel_saturation() {
         worst = worst.max(start.elapsed());
     }
     assert!(
-        worst < Duration::from_millis(20),
+        worst < per_call_cap,
         "audit log() must not block after channel saturation (worst={worst:?}); \
          this indicates the inklog async channel is undrained or the audit mutex \
          spans a blocking log call"
     );
 
-    // 64 并发 × 10 次灌压后同样断言（覆盖并发排队形态）。
+    // 64 并发 × 10 次灌压后同样断言（覆盖并发排队形态）；插桩下同样按比例
+    // 放宽（见上），真回归（每次 ~100ms 阻塞在锁上）仍远超上限。
     let audit = Arc::new(audit);
     let mut handles = Vec::new();
     for j in 0..64u64 {
@@ -83,8 +93,13 @@ async fn audit_logging_stays_fast_after_ring_and_channel_saturation() {
     for h in handles {
         worst = worst.max(h.await.unwrap());
     }
+    let concurrent_cap = if instrumented {
+        Duration::from_millis(300)
+    } else {
+        Duration::from_millis(100)
+    };
     assert!(
-        worst < Duration::from_millis(100),
+        worst < concurrent_cap,
         "concurrent audit log() must not serialize on a blocking log backend \
          (worst={worst:?})"
     );

@@ -3,7 +3,7 @@
 
 //! API Key 凭证哈希抽象（`KeyHasher`）与 Argon2id 默认实现。
 //!
-//! T036 自 `SeaOrmRepository` 抽取：仓储构造注入 `Arc<dyn KeyHasher>`，
+//! 自 `SeaOrmRepository` 抽取：仓储构造注入 `Arc<dyn KeyHasher>`，
 //! 不再直接依赖 argon2；哈希算法可独立替换与测试。
 
 use argon2::password_hash::phc::PasswordHash;

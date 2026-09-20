@@ -544,7 +544,7 @@ mod grpc_auth {
 
     /// 测试固定 workspace UUID：key 绑定（`AuthenticatedKey.workspace_id`）与
     /// 目录反查（`get_workspace` 返回的 `WorkspaceResponse.id`）共用，保证
-    /// T011 资源级授权的「自身 namespace」判定能对上。
+    /// 资源级授权的「自身 namespace」判定能对上。
     const WS_AUTH: Uuid = uuid::Uuid::from_u128(0x5e1f_7ea7_0001);
 
     /// 固定凭证：grpc-key / grpc-secret → workspace ws-grpc + User 角色
@@ -633,7 +633,7 @@ mod grpc_auth {
     }
 
     /// 构造启用认证 + workspace 目录的 handlers：目录把任意名称解析到
-    /// `WS_AUTH`（T011 资源级授权需要 namespace 反查 UUID 成功且与 key
+    /// `WS_AUTH`（资源级授权需要 namespace 反查 UUID 成功且与 key
     /// 绑定一致，才能走通 generate 类接口的成功路径）。
     fn workspace_aware_handlers() -> Arc<ApiHandlers> {
         let mut mock_config = MockConfigManagementService::new();
@@ -988,7 +988,7 @@ mod grpc_auth {
 
     #[tokio::test]
     async fn repeated_auth_failures_hit_resource_exhausted() {
-        // T012 — 同 peer 连续认证失败超阈值（5 分钟 10 次）后必须返回
+        // 同 peer 连续认证失败超阈值（5 分钟 10 次）后必须返回
         // ResourceExhausted：失败桶与 HTTP 中间件同源（HTTP 对应 429），
         // 每次拒绝都经 reject 入桶，下一次请求先查桶再解析凭证。
         // 直连 trait 方法时 peer_ip 兜底 "unknown"，天然同一桶。
@@ -1414,7 +1414,7 @@ mod grpc_auth {
         jh.abort();
     }
 
-    /// 流式 batch 失败分支（T013 后语义）：count=0 触发批大小校验错误，
+    /// 流式 batch 失败分支（后语义）：count=0 触发批大小校验错误，
     /// 流以 `Err(Status::InvalidArgument)` 终止 —— 不再把错误串塞进
     /// `algorithm` 字段伪装成正常项。
     #[tokio::test]
@@ -1462,7 +1462,7 @@ mod grpc_auth {
 }
 
 // =============================================================================
-// T011 gRPC 资源级授权 —— generate 系接口跨租户隔离（HTTP 语义对齐）
+// gRPC 资源级授权 —— generate 系接口跨租户隔离（HTTP 语义对齐）
 // =============================================================================
 
 mod grpc_authz {

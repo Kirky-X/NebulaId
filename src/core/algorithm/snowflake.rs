@@ -21,7 +21,7 @@ use tracing::info;
 const DEFAULT_START_TIME: u64 = 1704067200000;
 
 /// clock drift 衰减阈值：距最近一次回拨事件持续无新事件达到该毫秒数后，
-/// `clock_drift_ms` 衰减清零、health_check 恢复 Healthy（T019）。
+/// `clock_drift_ms` 衰减清零、health_check 恢复 Healthy。
 const DEFAULT_DRIFT_DECAY_AFTER_MS: u64 = 60_000;
 
 /// 进程级单调锚点：`monotonic_millis()` 返回自首次调用起的毫秒数（恒 >= 1，
@@ -170,7 +170,7 @@ impl SnowflakeAlgorithm {
     }
 
     /// drift 衰减：距最近一次回拨事件超过 `drift_decay_after_ms` 且期间无新
-    /// 事件时，清零 `clock_drift_ms`，使 health_check 恢复 Healthy（T019）。
+    /// 事件时，清零 `clock_drift_ms`，使 health_check 恢复 Healthy。
     ///
     /// 在每次进入生成路径时检查（成功与回拨失败共用入口）：若本次调用又发生
     /// 回拨，回拨分支会刷新 `last_drift_at_ms` 并重新记录漂移，衰减不会吞掉
@@ -261,7 +261,7 @@ impl SnowflakeAlgorithm {
     }
 
     /// 时钟回拨公共处理（单条 / 批量共用）：记录 drift、刷新衰减时钟基准
-    /// （T019）、计数并输出告警日志。
+    /// 计数并输出告警日志。
     fn record_clock_backward(&self, current_timestamp: u64, last_timestamp: u64, drift: u64) {
         self.clock_drift_ms.store(drift, Ordering::Relaxed);
         self.last_drift_at_ms
@@ -289,7 +289,7 @@ impl SnowflakeAlgorithm {
     ///   时间戳）；
     /// - 同毫秒剩余不足（`take == 0`）：等待真实时钟越过当前毫秒后 CAS 轮转
     ///   `(ts, seq) → (next_ts, 0)` 并重试；
-    /// - 时钟回拨：记录 drift（T019 衰减语义不变）；超阈值返回
+    /// - 时钟回拨：记录 drift（衰减语义不变）；超阈值返回
     ///   [`CoreError::ClockMovedBackward`]；阈值内等待时钟追平后 CAS 把
     ///   `last_ts` 推进到 `wait_ts`（seq 归零）并重试。
     ///
@@ -305,7 +305,7 @@ impl SnowflakeAlgorithm {
             });
         }
 
-        // drift 衰减检查（T019）：持续 60 秒无新回拨事件后清零漂移，
+        // drift 衰减检查：持续 60 秒无新回拨事件后清零漂移，
         // health_check 据此恢复 Healthy。
         self.maybe_decay_drift();
 
@@ -435,7 +435,7 @@ impl IdAlgorithm for SnowflakeAlgorithm {
 
         // 区间预留：每次向 reserve 申请「还差的个数」，一次 CAS 预留一整段
         // 连续序列号。同毫秒剩余不足时 reserve 内部推进到下一毫秒重试；
-        // 时钟回拨超阈值返回 Err（回拨路径的 drift 记录与 T019 衰减不受影响）。
+        // 时钟回拨超阈值返回 Err（回拨路径的 drift 记录与 衰减不受影响）。
         while ids.len() < size && retries < MAX_RETRIES {
             match self.reserve((size - ids.len()) as u64).await {
                 Ok((timestamp, start_seq, count)) => {
@@ -459,7 +459,7 @@ impl IdAlgorithm for SnowflakeAlgorithm {
         }
 
         // 重试耗尽仍未凑满请求量（含一例未成的情况）：
-        // 显式报错并附上已生成/请求数量，不再静默返回短批次（T020）——
+        // 显式报错并附上已生成/请求数量，不再静默返回短批次——
         // 静默短批会让调用方误以为拿到了全部请求的 ID。
         if ids.len() < size {
             return Err(CoreError::InternalError(format!(
@@ -819,7 +819,7 @@ mod tests {
     }
 
     /// batch_generate 在所有 generate_id 调用都失败时，应重试 MAX_RETRIES 次
-    /// 后返回 InternalError，且消息显式包含「已生成 0/请求 5」两个数量（T020）。
+    /// 后返回 InternalError，且消息显式包含「已生成 0/请求 5」两个数量。
     #[tokio::test]
     async fn test_batch_generate_retries_exhausted_returns_internal_error() {
         let algo = SnowflakeAlgorithm::new(0, 0);
@@ -899,7 +899,7 @@ mod tests {
     }
 
     // ========================================================================
-    // clock drift 衰减（T019）
+    // clock drift 衰减
     // ========================================================================
 
     /// 回拨事件必须同时记录 last_drift_at_ms（衰减判定的时钟基准）。

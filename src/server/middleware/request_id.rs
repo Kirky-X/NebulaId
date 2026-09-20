@@ -1,7 +1,7 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! Request ID 中间件（T022）：提取 / 校验 / 生成 / 贯穿。
+//! Request ID 中间件：提取 / 校验 / 生成 / 贯穿。
 //!
 //! 语义：
 //! - 请求头 `x-request-id` 存在且为合法 UUID 时**透传原值**（不重排格式）；

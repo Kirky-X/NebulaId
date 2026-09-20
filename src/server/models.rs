@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use sdforge::utoipa::ToSchema;
-use sdforge::validator::Validate;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use validator::Validate;
 
 /// Health status of the system
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
@@ -44,10 +44,10 @@ impl From<String> for HealthStatus {
     }
 }
 
-/// T033 —— OpenAPI 示例值与 `docs/API_REFERENCE.md` 同一口径
+/// OpenAPI 示例值与 `docs/API_REFERENCE.md` 同一口径
 /// （workspace `demo`、biz_tag `order`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::sdforge::validator")]
+#[validate(crate = "::validator")]
 #[schema(example = json!({
     "workspace": "demo",
     "group": "order",
@@ -88,7 +88,7 @@ pub struct GenerateResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::sdforge::validator")]
+#[validate(crate = "::validator")]
 pub struct BatchGenerateRequest {
     #[validate(length(min = 1, max = 64))]
     pub workspace: String,
@@ -152,7 +152,7 @@ pub struct ErrorResponse {
     pub code: i32,
     /// 结构化业务错误码（`ApiErrorCode` 的四位数字串，如 `"4001"`）。
     ///
-    /// T032 —— 统一错误信封：与 HTTP 状态码 `code` 同源于 helpers 的
+    /// 统一错误信封：与 HTTP 状态码 `code` 同源于 helpers 的
     /// 单张分类映射表（`CoreError` → 状态码 + 业务码一次判定），客户端
     /// 以本字段做语义分支，不再解析 `message` 文案。
     pub business_code: String,
@@ -308,7 +308,7 @@ impl ErrorMessage {
     }
 }
 
-/// T032 —— 原 `ApiErrorResponse`（`code`/`message`/`details`/`request_id`/
+/// 原 `ApiErrorResponse`（`code`/`message`/`details`/`request_id`/
 /// `timestamp` 双格式信封）及其 `From<ErrorResponse>` 转换已移除：
 /// 全部错误响应统一走上方 [`ErrorResponse`]（含 `business_code`）单信封，
 /// 避免两套错误 JSON 形状并存漂移。原 404→WorkspaceNotFound 等状态码
@@ -397,7 +397,7 @@ pub struct DegradationMetrics {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::sdforge::validator")]
+#[validate(crate = "::validator")]
 #[schema(example = json!({
     "id": "123456789012345",
     "workspace": "demo",
@@ -566,7 +566,7 @@ pub struct TlsConfigInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::sdforge::validator")]
+#[validate(crate = "::validator")]
 pub struct UpdateRateLimitRequest {
     #[validate(range(min = 1, max = 1000000))]
     pub default_rps: Option<u32>,
@@ -576,14 +576,14 @@ pub struct UpdateRateLimitRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::sdforge::validator")]
+#[validate(crate = "::validator")]
 pub struct UpdateLoggingRequest {
     #[validate(length(min = 1, max = 20))]
     pub level: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::sdforge::validator")]
+#[validate(crate = "::validator")]
 pub struct SetAlgorithmRequest {
     #[validate(length(min = 1, max = 64))]
     pub biz_tag: String,
@@ -619,7 +619,7 @@ pub struct ApiInfoResponse {
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::sdforge::validator")]
+#[validate(crate = "::validator")]
 pub struct CreateBizTagRequest {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub workspace_id: uuid::Uuid,
@@ -652,7 +652,7 @@ pub struct CreateBizTagRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::sdforge::validator")]
+#[validate(crate = "::validator")]
 pub struct UpdateBizTagRequest {
     #[validate(length(min = 1, max = 64))]
     pub name: Option<String>,
@@ -704,7 +704,7 @@ pub struct BizTagListResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::sdforge::validator")]
+#[validate(crate = "::validator")]
 pub struct PaginationParams {
     pub workspace_id: Option<String>, // Optional: filter by workspace
     #[serde(default = "default_page")]
@@ -725,7 +725,7 @@ fn default_page_size() -> u64 {
 
 /// Query params for listing groups (requires workspace parameter)
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::sdforge::validator")]
+#[validate(crate = "::validator")]
 pub struct GroupListParams {
     pub workspace: String,
     #[serde(default = "default_page")]
@@ -748,7 +748,7 @@ pub fn datetime_to_rfc3339(dt: chrono::DateTime<chrono::FixedOffset>) -> String 
 // ========== API Key Models ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::sdforge::validator")]
+#[validate(crate = "::validator")]
 pub struct CreateApiKeyRequest {
     pub workspace_id: Option<String>, // Optional: None for admin keys, required for user keys
     #[validate(length(min = 1, max = 64))]
@@ -863,7 +863,7 @@ pub struct RevokeApiKeyResponse {
 // ========== Workspace Models ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::sdforge::validator")]
+#[validate(crate = "::validator")]
 pub struct CreateWorkspaceRequest {
     #[validate(length(min = 1, max = 64))]
     pub name: String,
@@ -906,7 +906,7 @@ pub struct WorkspaceListResponse {
 // ========== Group Models ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::sdforge::validator")]
+#[validate(crate = "::validator")]
 pub struct CreateGroupRequest {
     #[validate(length(min = 1, max = 64))]
     pub workspace: String, // workspace name
@@ -1045,7 +1045,7 @@ mod tests {
         }
     }
 
-    // ========== ErrorResponse（T032 统一错误信封）==========
+    // ========== ErrorResponse（统一错误信封）==========
 
     #[test]
     fn test_error_response_new_omits_details() {
@@ -1055,7 +1055,7 @@ mod tests {
             "Not Found".to_string(),
         );
         assert_eq!(resp.code, 404);
-        // T032 — business_code 是 ApiErrorCode 的四位数字串。
+        // business_code 是 ApiErrorCode 的四位数字串。
         assert_eq!(resp.business_code, "2001");
         assert_eq!(resp.message, "Not Found");
         assert_eq!(resp.details, None);
@@ -1140,7 +1140,7 @@ mod tests {
         assert_eq!(ApiErrorCode::ServiceUnavailable.to_string(), "5004");
     }
 
-    // ========== T032 —— ApiErrorResponse 双格式已移除 ==========
+    // ========== —— ApiErrorResponse 双格式已移除 ==========
     //
     // 原 `ApiErrorResponse` 及 `From<ErrorResponse> for ApiErrorResponse`
     // 的测试随类型一并删除；业务码映射的钉桩改由

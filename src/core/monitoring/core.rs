@@ -1,7 +1,7 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! T039 —— 告警子系统 feature 门控。
+//! 告警子系统 feature 门控。
 //!
 //! 本文件的非测试项(AlertManager/AlertRule/告警状态机/通知通道/webhook
 //! 分发/broadcast 事件流)整体属于告警子系统,生产路径零引用

@@ -157,7 +157,7 @@ pub enum ApiVersionErrorResponse {
 
 impl IntoResponse for ApiVersionErrorResponse {
     fn into_response(self) -> Response {
-        // T032 —— 统一错误信封（ErrorResponse，含 business_code）；
+        // 统一错误信封（ErrorResponse，含 business_code）；
         // 原 ApiErrorResponse 双格式已移除。
         use crate::server::models::{ApiErrorCode, ErrorResponse};
 
@@ -236,7 +236,7 @@ mod tests {
         let response = error.into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-        // T032 — 统一错误信封：400 + business_code=3001（InvalidInput），
+        // 统一错误信封：400 + business_code=3001（InvalidInput），
         // 且携带装配处生成的 request_id/timestamp。
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await

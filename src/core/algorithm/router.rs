@@ -161,7 +161,7 @@ pub struct AlgorithmRouter {
     cpu_monitor: Option<Arc<crate::core::algorithm::segment::CpuMonitor>>,
     #[cfg(feature = "etcd")]
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
-    /// T016r —— Segment 号段生产装配的仓储句柄（可选）。
+    /// Segment 号段生产装配的仓储句柄（可选）。
     ///
     /// `Some` 时 `initialize` 以其构建 `DbSegmentLoader` 经工厂注入
     /// `SegmentAlgorithm`；`None` 时生产构建（非 cfg(test)）在 Segment
@@ -179,7 +179,7 @@ pub struct AlgorithmRouter {
 // 均为 Send + Sync，编译器会自动推导。原 `unsafe impl` 是历史遗留，
 // 掩盖了潜在的非线程安全字段，应删除让编译器做严格检查。
 
-/// T016r —— `Arc<dyn SegmentRepository>` 的 Sized 委托适配器。
+/// `Arc<dyn SegmentRepository>` 的 Sized 委托适配器。
 ///
 /// `DbSegmentLoader<R: SegmentRepository>`（segment.rs，本 lane 不可改）
 /// 隐式要求 `R: Sized`，无法直接以 trait 对象实例化；本 newtype 以 7 个
@@ -284,7 +284,7 @@ impl AlgorithmRouter {
         }
     }
 
-    /// 注入 Segment 号段仓储（T016r 生产装配入口）。
+    /// 注入 Segment 号段仓储（生产装配入口）。
     ///
     /// 调用方持有现成 `SeaOrmRepository` 时传入可复用同一连接池；未传入时
     /// 生产构建在 Segment 为默认算法的前提下按 `config.database` 自举
@@ -328,7 +328,7 @@ impl AlgorithmRouter {
             if let Some(ref cpu_monitor) = self.cpu_monitor {
                 builder = builder.with_cpu_monitor(cpu_monitor.clone());
             }
-            // T016r：Segment 生产装配——把 DbSegmentLoader 经工厂构造参数
+            // Segment 生产装配——把 DbSegmentLoader 经工厂构造参数
             // 透传给 SegmentFactory（测试构建无仓储可解析时为 None，工厂
             // 委托原始路径，SegmentAlgorithm::new 维持测试默认内存造段器）。
             if alg_type == AlgorithmType::Segment {
@@ -381,7 +381,7 @@ impl AlgorithmRouter {
         Ok(())
     }
 
-    /// T016r —— 解析 Segment 号段装载器（`initialize` 构建 Segment 时调用）。
+    /// 解析 Segment 号段装载器（`initialize` 构建 Segment 时调用）。
     ///
     /// 优先级：
     /// 1. [`Self::with_segment_repository`] 显式注入的仓储 → `DbSegmentLoader`；
@@ -437,7 +437,7 @@ impl AlgorithmRouter {
                     Ok(conn) => {
                         let repository: Arc<dyn SegmentRepository> = Arc::new(
                             SeaOrmRepository::new(conn, config.auth.api_key_salt.clone())
-                                // T043 —— 自举仓储同样接线语句超时（默认 5s）。
+                                // 自举仓储同样接线语句超时（默认 5s）。
                                 .with_statement_timeout(std::time::Duration::from_secs(
                                     config.database.statement_timeout_secs,
                                 )),
@@ -611,7 +611,7 @@ impl AlgorithmRouter {
     }
 
     /// 路由层单条生成漏斗：HTTP / gRPC / SDK 三条入口的单条生成最终都经此。
-    /// T023 热路径观测：span 字段仅 workspace/group/biz_tag/algorithm。
+    /// 热路径观测：span 字段仅 workspace/group/biz_tag/algorithm。
     #[tracing::instrument(
         name = "router.generate",
         skip_all,
@@ -2107,7 +2107,7 @@ mod tests {
         router.shutdown().await;
     }
 
-    // ============== T016r 装配契约测试 ==============
+    // ============== 装配契约测试 ==============
 
     /// 最小 SegmentRepository mock：`allocate_segment` 顺序发号并记录步长，
     /// 其余方法按「不参与本用例」语义返回空/缺省。

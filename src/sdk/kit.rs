@@ -28,7 +28,7 @@ use crate::core::coordinator::{
 ///
 /// 无依赖；从 TypeMap 拉 `Config` 经 `create_distributed_lock` 构造锁
 ///（etcd 优先、fail-closed：配置要求 etcd 但构建失败 → build 返回错误，
-/// 与 `main.rs` T016 行为一致）。
+/// 与 `main.rs` 行为一致）。
 pub struct DistributedLockModule;
 
 impl_module_meta!(DistributedLockModule, "distributed-lock");
@@ -302,7 +302,7 @@ impl IdGenerator {
     }
 }
 
-/// 分布式锁创建（T016 fail-closed）：`etcd` feature 且 endpoints 已配置 →
+/// 分布式锁创建（fail-closed）：`etcd` feature 且 endpoints 已配置 →
 /// `EtcdDistributedLock`（构造后 ping 探活，lazy connect 不代表可达）；
 /// 任一步失败返回 `Err`（SDK 宿主 `build()` 显性失败），**不再静默回退**
 /// 进程内锁 —— 多实例部署静默回退必然重复 ID。未配置 endpoints →
@@ -681,10 +681,10 @@ mod tests {
         );
     }
 
-    /// 测试共享：单机配置（清空 etcd endpoints → T016 fail-closed 语义下
+    /// 测试共享：单机配置（清空 etcd endpoints → fail-closed 语义下
     /// `create_distributed_lock` 走 LocalDistributedLock，构建零外部依赖）。
     /// 注意 `Config::default()` 的 etcd.endpoints 非空（["etcd:2379"]），
-    /// 在 T016 之后未配置可达 etcd 的默认配置会让 build 显性失败。
+    /// 未配置可达 etcd 的默认配置会让 build 显性失败。
     fn local_config() -> Config {
         let mut config = Config::default();
         config.etcd.endpoints = Vec::new();
@@ -1092,9 +1092,9 @@ mod tests {
         assert_eq!(batch.ids.len(), 10);
     }
 
-    // ==================== T016: 分布式锁 fail-closed 与号段装配契约 ====================
+    // ==================== 分布式锁 fail-closed 与号段装配契约 ====================
 
-    /// T016 —— 未配置 endpoints → 本地锁（单机合法，构建不依赖外部 etcd）。
+    /// 未配置 endpoints → 本地锁（单机合法，构建不依赖外部 etcd）。
     #[cfg(feature = "etcd")]
     #[tokio::test]
     async fn test_create_distributed_lock_local_when_no_endpoints() {
@@ -1110,7 +1110,7 @@ mod tests {
         guard.release().await.expect("本地锁 release 必须成功");
     }
 
-    /// T016 fail-closed —— 配置要求 etcd 但端点不可达 → `create_distributed_lock`
+    /// fail-closed —— 配置要求 etcd 但端点不可达 → `create_distributed_lock`
     /// 返回 `Err`（lazy connect 下 `EtcdClientWrapper::new` 可能 Ok，由 ping 探活
     /// 确定性拒绝），错误显性声明拒绝回退。
     #[cfg(feature = "etcd")]
@@ -1131,7 +1131,7 @@ mod tests {
         );
     }
 
-    /// T016 fail-closed —— 完整 kit build 路径：配置要求 etcd 但不可达 →
+    /// fail-closed —— 完整 kit build 路径：配置要求 etcd 但不可达 →
     /// `DistributedLockModule` 构建失败必须让 `build()` 显性失败。
     #[cfg(feature = "etcd")]
     #[tokio::test]
@@ -1148,7 +1148,7 @@ mod tests {
         );
     }
 
-    /// T016 verify 钉 —— 号段装配契约：`DbSegmentLoader`（真连仓储）经
+    /// verify 钉 —— 号段装配契约：`DbSegmentLoader`（真连仓储）经
     /// `SegmentAlgorithm::new(dc).with_segment_loader(...)` 注入后，generate
     /// 消费的就是 `allocate_segment` 返回的号段区间（生产装配的算法级语义）。
     #[tokio::test]

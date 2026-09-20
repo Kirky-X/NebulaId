@@ -1,7 +1,7 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! Audit persistence configuration (T030).
+//! Audit persistence configuration.
 //!
 //! 审计事件的内存容量与文件持久化此前借用 `rate_limit.default_rps`
 //! 作为容量、硬编码在装配处，既无独立语义也无独立开关。本配置把
@@ -64,7 +64,7 @@ mod tests {
     }
 
     /// 内存容量独立于 rate_limit：AuditConfig 的容量默认值与 RateLimitConfig
-    /// 的 default_rps 无任何推导关系（T030 的核心解耦点）。
+    /// 的 default_rps 无任何推导关系（核心解耦点）。
     #[test]
     fn test_memory_capacity_is_independent_of_rate_limit() {
         let audit = AuditConfig::default();

@@ -224,7 +224,7 @@ impl SeaOrmRepository {
 
     /// Hash API key：委托构造注入的 [`KeyHasher`](crate::core::auth::KeyHasher)。
     ///
-    /// T036 前此处内联 Argon2id 实现（replaces SHA256, CWE-916 fix）；哈希
+    /// 前此处内联 Argon2id 实现（replaces SHA256, CWE-916 fix）；哈希
     /// 算法与 pepper/salt 材料编码现迁至 `crate::core::auth::key_hasher`
     /// （默认 [`Argon2KeyHasher`](crate::core::auth::Argon2KeyHasher)），仓储
     /// 不再直接依赖 argon2。行为逐字节一致。
@@ -238,7 +238,7 @@ impl SeaOrmRepository {
         self.key_hasher.verify(key_id, key_secret, stored_hash)
     }
 
-    /// `validate_api_key` 的执行体（T023：抽出到 inherent 方法，使 trait
+    /// `validate_api_key` 的执行体（抽出到 inherent 方法，使 trait
     /// 方法处能以手工 span + `Instrument` 包住真实执行范围——async_trait
     /// 反序列化会让 `#[instrument]` 属性的覆盖语义不可靠）。
     async fn validate_api_key_inner(
@@ -432,10 +432,10 @@ impl ApiKeyRepository for SeaOrmRepository {
         key_id: &str,
         key_secret: &str,
     ) -> Result<Option<AuthenticatedKey>> {
-        // T023 热路径观测：手工建 span 并显式 instrument 执行体（async_trait
+        // 热路径观测：手工建 span 并显式 instrument 执行体（async_trait
         // 反序列化后 `#[instrument]` 属性覆盖语义不可靠）。span 只携带
         // key_id 长度，绝不携带 key/secret/凭据。
-        // T028：执行体再经集中式语句超时包裹（span 覆盖含超时等待的全程）。
+        // 执行体再经集中式语句超时包裹（span 覆盖含超时等待的全程）。
         let span = tracing::info_span!("db.validate_api_key", key_id_len = key_id.len());
         with_statement_timeout(
             self.statement_timeout,
@@ -935,7 +935,7 @@ mod mock_tests {
         assert!(!repo.verify_key("kid1", "secret1", ""));
     }
 
-    /// T036 —— `with_key_hasher` 可在默认 Argon2id fallback 之上注入定制
+    /// `with_key_hasher` 可在默认 Argon2id fallback 之上注入定制
     /// 哈希器：注入不同 salt 的 `Argon2KeyHasher` 后，哈希结果随之改变
     /// （注入生效），且输出仍为合法 PHC 格式。
     #[test]

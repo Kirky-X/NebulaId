@@ -7,7 +7,7 @@
 // attribute generates `impl Display` that calls `t!()` for translation lookup
 // at runtime. Default locale is "en" (set in main.rs via `init_i18n("en")`).
 //
-// T038 错误链保留 —— `DatabaseError` / `EtcdError` / `IoError` 三个变体
+// 错误链保留 —— `DatabaseError` / `EtcdError` / `IoError` 三个变体
 // 在第一层人类可读文案(`.0`,供 Display/i18n 与 HTTP 出口消毒,内容与
 // 改前逐字节一致)之外,以 `#[source] Option<ErrorSource>` 保留底层错误
 // 源:`error.source()` 非空,完整错误链只进服务端日志
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
 
-/// T038 —— 底层错误源的类型擦除保链容器。
+/// 底层错误源的类型擦除保链容器。
 ///
 /// `CoreError` 需要保持 `Clone`(id_handlers 指标路径 `e.clone()`),
 /// `std::io::Error` 等底层错误不实现 `Clone`,故以
@@ -96,7 +96,7 @@ pub enum CoreError {
     #[error("{}", t!("error.segment_exhausted", max_id = max_id))]
     SegmentExhausted { max_id: u64 },
 
-    /// T038 —— `.0` 为第一层人类可读文案(Display/i18n 面与改前一致),
+    /// `.0` 为第一层人类可读文案(Display/i18n 面与改前一致),
     /// `.1` 保留底层错误源(仅进服务端日志,见 [`ErrorSource`])。
     #[error("{}", t!("error.database_error", value = _0))]
     DatabaseError(String, #[source] Option<ErrorSource>),
@@ -131,7 +131,7 @@ pub enum CoreError {
     #[error("{}", t!("error.invalid_api_key_signature"))]
     InvalidApiKeySignature,
 
-    /// T038 —— `.0` 为第一层人类可读文案;`.1` 保链(etcd-client 仅 etcd
+    /// `.0` 为第一层人类可读文案;`.1` 保链(etcd-client 仅 etcd
     /// feature 可用,core types 以 [`ErrorSource::text`] 文本保链)。
     #[error("{}", t!("error.etcd_error", value = _0))]
     EtcdError(String, #[source] Option<ErrorSource>),
@@ -139,7 +139,7 @@ pub enum CoreError {
     #[error("{}", t!("error.parse_error", value = _0))]
     ParseError(String),
 
-    /// T038 —— `.0` 为第一层人类可读文案;`.1` 保留底层
+    /// `.0` 为第一层人类可读文案;`.1` 保留底层
     /// `std::io::Error`(经 `From<std::io::Error>` 自动携带)。
     #[error("{}", t!("error.io_error", value = _0))]
     IoError(String, #[source] Option<ErrorSource>),
@@ -166,7 +166,7 @@ impl From<std::num::ParseIntError> for CoreError {
 
 impl From<std::io::Error> for CoreError {
     fn from(e: std::io::Error) -> Self {
-        // T038 —— 第一层文案与改前一致(e.to_string()),底层错误对象保链。
+        // 第一层文案与改前一致(e.to_string()),底层错误对象保链。
         CoreError::IoError(e.to_string(), Some(ErrorSource::new(e)))
     }
 }
@@ -315,7 +315,7 @@ impl CoreError {
         }
     }
 
-    /// T038 —— 第一层人类可读文案(不含 source 链)。
+    /// 第一层人类可读文案(不含 source 链)。
     ///
     /// 即 `i18n_args` 插值所用的那份文本(`i18n_args` 对含文案载荷的变体
     /// 以 `Cow::Borrowed` 借用同一字段,两者结构性同源、不会漂移):
@@ -790,9 +790,9 @@ mod tests {
         assert_eq!(detailed.details, Some(serde_json::json!({"retry": false})));
     }
 
-    // ==================== T038: 错误链保留 ====================
+    // ==================== 错误链保留 ====================
 
-    /// T038 —— `From<std::io::Error>` 保留底层错误对象:`source()` 非空,
+    /// `From<std::io::Error>` 保留底层错误对象:`source()` 非空,
     /// 第一层文案与 Display/i18n 面和改前逐字节一致。
     #[test]
     fn test_io_error_preserves_source_chain() {
@@ -805,7 +805,7 @@ mod tests {
         assert_eq!(err.to_string(), "I/O error: config file missing");
     }
 
-    /// T038 —— DatabaseError 构造点保留底层错误源:source() 非空且第一层
+    /// DatabaseError 构造点保留底层错误源:source() 非空且第一层
     /// 文案不含源链(HTTP 出口消毒面不变)。`From<DbErr>` 路径由
     /// connection.rs 的 test_from_dberr 钉住。
     #[test]
@@ -827,7 +827,7 @@ mod tests {
         );
     }
 
-    /// T038 —— EtcdError 以 [`ErrorSource::text`] 保链(etcd-client 仅 etcd
+    /// EtcdError 以 [`ErrorSource::text`] 保链(etcd-client 仅 etcd
     /// feature 可用,core::types 不能依赖它,构造点以 Display 文本保链):
     /// source() 非空、文案可读。
     #[test]
@@ -842,7 +842,7 @@ mod tests {
         assert_eq!(err.to_string(), "Etcd error: etcd ping failed");
     }
 
-    /// T038 —— `top_level_message` 与 i18n 渲染同源:i18n_args 插值的正是
+    /// `top_level_message` 与 i18n 渲染同源:i18n_args 插值的正是
     /// 第一层文案(改前 = String 载荷,输出逐字节一致)。
     #[test]
     fn test_top_level_message_matches_i18n_rendered_args() {

@@ -17,10 +17,10 @@ use crate::server::models::{
     UpdateRateLimitRequest, UuidV8ConfigInfo, WorkspaceListResponse, WorkspaceResponse,
 };
 use async_trait::async_trait;
-use sdforge::validator::Validate;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+use validator::Validate;
 
 /// Configuration management service trait.
 ///
@@ -1477,5 +1477,310 @@ mod tests {
             .await
             .expect("empty mock must query")
             .is_none());
+    }
+}
+
+#[cfg(test)]
+mod repository_backed_paths {
+    //! 覆盖率补充：`with_repository` 注入路径下的 Workspace/Group 读取映射分支
+    //! （既有测试仅覆盖仓储为 `None` 的 fallback 分支）。以最小假仓储打通
+    //! list/get workspace 与 list groups 的真实映射代码路径。
+
+    use super::*;
+    use crate::core::database::{
+        CreateGroupRequest, CreateWorkspaceRequest, Group, GroupRepository, UpdateGroupRequest,
+        UpdateWorkspaceRequest, Workspace, WorkspaceRepository, WorkspaceStatus,
+    };
+    use crate::core::types::Result;
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    pub(super) fn test_workspace(name: &str) -> Workspace {
+        let now = chrono::Utc::now().naive_utc();
+        Workspace {
+            id: uuid::Uuid::now_v7(),
+            name: name.to_string(),
+            description: Some(format!("{} description", name)),
+            status: WorkspaceStatus::Active,
+            max_groups: 10,
+            max_biz_tags: 100,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn test_group(workspace_id: uuid::Uuid, name: &str) -> Group {
+        let now = chrono::Utc::now().naive_utc();
+        Group {
+            id: uuid::Uuid::now_v7(),
+            workspace_id,
+            name: name.to_string(),
+            description: None,
+            max_biz_tags: 50,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    struct FakeWorkspaceRepo {
+        workspaces: Vec<Workspace>,
+    }
+
+    #[async_trait::async_trait]
+    impl WorkspaceRepository for FakeWorkspaceRepo {
+        async fn create_workspace(&self, _workspace: &CreateWorkspaceRequest) -> Result<Workspace> {
+            Err(crate::core::CoreError::InternalError(
+                "fake repository: 路径未被本模块测试触及".to_string(),
+            ))
+        }
+        async fn get_workspace(&self, _id: uuid::Uuid) -> Result<Option<Workspace>> {
+            Err(crate::core::CoreError::InternalError(
+                "fake repository: 路径未被本模块测试触及".to_string(),
+            ))
+        }
+        async fn get_workspace_by_name(&self, name: &str) -> Result<Option<Workspace>> {
+            Ok(self.workspaces.iter().find(|w| w.name == name).cloned())
+        }
+        async fn update_workspace(
+            &self,
+            _id: uuid::Uuid,
+            _workspace: &UpdateWorkspaceRequest,
+        ) -> Result<Workspace> {
+            Err(crate::core::CoreError::InternalError(
+                "fake repository: 路径未被本模块测试触及".to_string(),
+            ))
+        }
+        async fn delete_workspace(&self, _id: uuid::Uuid) -> Result<()> {
+            Err(crate::core::CoreError::InternalError(
+                "fake repository: 路径未被本模块测试触及".to_string(),
+            ))
+        }
+        async fn list_workspaces(
+            &self,
+            _limit: Option<u32>,
+            _offset: Option<u32>,
+        ) -> Result<Vec<Workspace>> {
+            Ok(self.workspaces.clone())
+        }
+        async fn get_workspace_with_groups(
+            &self,
+            _id: uuid::Uuid,
+        ) -> Result<Option<(Workspace, Vec<Group>)>> {
+            Err(crate::core::CoreError::InternalError(
+                "fake repository: 路径未被本模块测试触及".to_string(),
+            ))
+        }
+        async fn get_workspace_with_groups_and_biz_tags(
+            &self,
+            _id: uuid::Uuid,
+        ) -> Result<Option<(Workspace, Vec<(Group, Vec<crate::core::database::BizTag>)>)>> {
+            Err(crate::core::CoreError::InternalError(
+                "fake repository: 路径未被本模块测试触及".to_string(),
+            ))
+        }
+    }
+
+    struct FakeGroupRepo {
+        groups: Vec<Group>,
+    }
+
+    #[async_trait::async_trait]
+    impl GroupRepository for FakeGroupRepo {
+        async fn create_group(&self, _group: &CreateGroupRequest) -> Result<Group> {
+            Err(crate::core::CoreError::InternalError(
+                "fake repository: 路径未被本模块测试触及".to_string(),
+            ))
+        }
+        async fn get_group(&self, _id: uuid::Uuid) -> Result<Option<Group>> {
+            Err(crate::core::CoreError::InternalError(
+                "fake repository: 路径未被本模块测试触及".to_string(),
+            ))
+        }
+        async fn get_group_by_workspace_and_name(
+            &self,
+            _workspace_id: uuid::Uuid,
+            name: &str,
+        ) -> Result<Option<Group>> {
+            Ok(self.groups.iter().find(|g| g.name == name).cloned())
+        }
+        async fn update_group(
+            &self,
+            _id: uuid::Uuid,
+            _group: &UpdateGroupRequest,
+        ) -> Result<Group> {
+            Err(crate::core::CoreError::InternalError(
+                "fake repository: 路径未被本模块测试触及".to_string(),
+            ))
+        }
+        async fn delete_group(&self, _id: uuid::Uuid) -> Result<()> {
+            Err(crate::core::CoreError::InternalError(
+                "fake repository: 路径未被本模块测试触及".to_string(),
+            ))
+        }
+        async fn list_groups(
+            &self,
+            workspace_id: uuid::Uuid,
+            _limit: Option<u32>,
+            _offset: Option<u32>,
+        ) -> Result<Vec<Group>> {
+            Ok(self
+                .groups
+                .iter()
+                .filter(|g| g.workspace_id == workspace_id)
+                .cloned()
+                .collect())
+        }
+        async fn get_group_with_biz_tags(
+            &self,
+            _id: uuid::Uuid,
+        ) -> Result<Option<(Group, Vec<crate::core::database::BizTag>)>> {
+            Err(crate::core::CoreError::InternalError(
+                "fake repository: 路径未被本模块测试触及".to_string(),
+            ))
+        }
+        async fn delete_group_with_biz_tags(&self, _id: uuid::Uuid) -> Result<()> {
+            Err(crate::core::CoreError::InternalError(
+                "fake repository: 路径未被本模块测试触及".to_string(),
+            ))
+        }
+    }
+
+    pub(super) fn manager_with_repos(
+        workspaces: Vec<Workspace>,
+        groups: Vec<Group>,
+    ) -> ConfigManager {
+        INIT.call_once(|| {
+            std::env::set_var("NEBULA_TEST_MODE", "1");
+        });
+        let hot_config = Arc::new(HotReloadConfig::new(
+            Config::default(),
+            "config/config.toml".to_string(),
+        ));
+        let algorithm_router = Arc::new(crate::core::algorithm::AlgorithmRouter::new(
+            Config::default(),
+            None,
+        ));
+        let mut manager = ConfigManager::new(hot_config, algorithm_router);
+        manager.workspace_repository = Some(Arc::new(FakeWorkspaceRepo { workspaces }));
+        manager.group_repository = Some(Arc::new(FakeGroupRepo { groups }));
+        manager
+    }
+
+    #[tokio::test]
+    async fn list_workspaces_maps_rows_to_responses() {
+        let manager =
+            manager_with_repos(vec![test_workspace("ws-a"), test_workspace("ws-b")], vec![]);
+        let resp = manager.list_workspaces().await.unwrap();
+        assert_eq!(resp.total, 2);
+        assert_eq!(resp.workspaces.len(), 2);
+        assert_eq!(resp.workspaces[0].name, "ws-a");
+        assert!(resp.workspaces[0].user_api_key.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_workspace_maps_found_and_missing() {
+        let manager = manager_with_repos(vec![test_workspace("ws-a")], vec![]);
+
+        let found = manager.get_workspace("ws-a").await.unwrap().unwrap();
+        assert_eq!(found.name, "ws-a");
+        assert_eq!(found.max_groups, 10);
+
+        let missing = manager.get_workspace("no-such-ws").await.unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_groups_maps_rows_and_missing_workspace() {
+        let ws = test_workspace("ws-a");
+        let groups = vec![test_group(ws.id, "g-1"), test_group(ws.id, "g-2")];
+        let manager = manager_with_repos(vec![ws], groups);
+
+        let resp = manager.list_groups("ws-a").await.unwrap();
+        assert_eq!(resp.total, 2);
+        assert_eq!(resp.groups[0].workspace_name, "ws-a");
+
+        // 工作区不存在 → 空列表（非错误）。
+        let empty = manager.list_groups("no-such-ws").await.unwrap();
+        assert_eq!(empty.total, 0);
+        assert!(empty.groups.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod fake_repo_unused_paths {
+    //! 假仓储的「本模块测试不触及」路径显式返回错误：这里逐一遍历调用，钉住
+    //! 「假仓储绝不静默成功」的契约，同时消除未执行方法体的覆盖率盲区。
+
+    use super::repository_backed_paths::{manager_with_repos, test_workspace};
+    use super::*;
+
+    #[tokio::test]
+    async fn unused_fake_paths_return_errors_not_success() {
+        let manager = manager_with_repos(vec![test_workspace("ws-a")], vec![]);
+        let ws_id = uuid::Uuid::now_v7();
+
+        // WorkspaceRepository 未使用路径
+        let repo = manager.workspace_repository.clone().unwrap();
+        assert!(repo
+            .create_workspace(&crate::core::database::CreateWorkspaceRequest {
+                name: "x".to_string(),
+                description: None,
+                max_groups: None,
+                max_biz_tags: None,
+            })
+            .await
+            .is_err());
+        assert!(repo.get_workspace(ws_id).await.is_err());
+        assert!(repo
+            .update_workspace(
+                ws_id,
+                &crate::core::database::UpdateWorkspaceRequest {
+                    name: None,
+                    description: None,
+                    status: None,
+                    max_groups: None,
+                    max_biz_tags: None,
+                }
+            )
+            .await
+            .is_err());
+        assert!(repo.delete_workspace(ws_id).await.is_err());
+        assert!(repo.get_workspace_with_groups(ws_id).await.is_err());
+        assert!(repo
+            .get_workspace_with_groups_and_biz_tags(ws_id)
+            .await
+            .is_err());
+
+        // GroupRepository 未使用路径
+        let group_repo = manager.group_repository.clone().unwrap();
+        assert!(group_repo
+            .create_group(&crate::core::database::CreateGroupRequest {
+                workspace_id: ws_id,
+                name: "g".to_string(),
+                description: None,
+                max_biz_tags: None,
+            })
+            .await
+            .is_err());
+        assert!(group_repo.get_group(ws_id).await.is_err());
+        assert!(group_repo
+            .get_group_by_workspace_and_name(ws_id, "g")
+            .await
+            .is_ok());
+        assert!(group_repo
+            .update_group(
+                ws_id,
+                &crate::core::database::UpdateGroupRequest {
+                    name: None,
+                    description: None,
+                    max_biz_tags: None,
+                }
+            )
+            .await
+            .is_err());
+        assert!(group_repo.delete_group(ws_id).await.is_err());
+        assert!(group_repo.get_group_with_biz_tags(ws_id).await.is_err());
+        assert!(group_repo.delete_group_with_biz_tags(ws_id).await.is_err());
     }
 }

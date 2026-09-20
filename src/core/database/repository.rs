@@ -4,7 +4,7 @@
 //! 仓储核心:`SeaOrmRepository` 类型、跨域共享构件（集中式语句超时 helper）
 //! 以及各资源域仓储模块（segment / workspace / biz_tag / api_key）的聚合 re-export。
 //!
-//! T036 起仓储实现按资源域拆分到同级子模块；本模块保留类型定义与构造装配，
+//! 仓储实现按资源域拆分到同级子模块；本模块保留类型定义与构造装配，
 //! 并对 trait 做 `pub use` 以维持 `crate::core::database::repository::XxxRepository`
 //! 既有路径可用（调用方零改动）。
 
@@ -20,11 +20,11 @@ pub use crate::core::database::segment_repository::SegmentRepository;
 pub use crate::core::database::workspace_repository::{GroupRepository, WorkspaceRepository};
 use crate::core::types::Result;
 
-/// T028 —— 语句超时默认值（秒）。与 `DatabaseConfig::statement_timeout_secs`
+/// 语句超时默认值（秒）。与 `DatabaseConfig::statement_timeout_secs`
 /// 的 serde 默认一致；仓储未经 `with_statement_timeout` 接线配置时按此兜底。
 const DEFAULT_STATEMENT_TIMEOUT_SECS: u64 = 5;
 
-/// T028 —— 集中式语句超时 helper：热查询经 `tokio::time::timeout` 包裹，
+/// 集中式语句超时 helper：热查询经 `tokio::time::timeout` 包裹，
 /// 防止 DB 挂起拖死生成/认证热路径。
 ///
 /// 超时错误映射选择既有 [`crate::core::CoreError::TimeoutError`]（而非
@@ -61,7 +61,7 @@ pub struct SeaOrmRepository {
     /// 是刻意的 —— `SeaOrmRepository` 按 `Clone` 传播（SDK Kit 化克隆连接池），
     /// 各克隆必须共享同一份节流状态，否则节流形同虚设。
     pub(crate) last_used_writes: Arc<Mutex<HashMap<String, Instant>>>,
-    /// T028 —— 单语句执行超时。热查询经 `with_statement_timeout` 包裹；
+    /// 单语句执行超时。热查询经 `with_statement_timeout` 包裹；
     /// 构造默认 [`DEFAULT_STATEMENT_TIMEOUT_SECS`]，可经
     /// [`Self::with_statement_timeout`] 接线 `DatabaseConfig::statement_timeout_secs`。
     pub(crate) statement_timeout: Duration,
@@ -87,7 +87,7 @@ impl SeaOrmRepository {
         self
     }
 
-    /// T028 —— 接线语句超时（来自 `DatabaseConfig::statement_timeout_secs`）。
+    /// 接线语句超时（来自 `DatabaseConfig::statement_timeout_secs`）。
     ///
     /// ```ignore
     /// SeaOrmRepository::new(conn, salt)
@@ -98,7 +98,7 @@ impl SeaOrmRepository {
         self
     }
 
-    /// Inject a distributed lock implementation (M8 fix).
+    /// Inject a distributed lock implementation (fix).
     ///
     /// 生产环境必须调用此方法注入分布式锁，否则 `allocate_segment` 会返回
     /// `ConfigurationError`。默认构建（无 etcd feature）可注入
@@ -139,7 +139,7 @@ impl SeaOrmRepository {
 
     /// 读取注入的分布式锁（兼容/诊断用途）。
     ///
-    /// 号段分配自 T015 起改为单语句原子 `UPDATE ... RETURNING`，并发正确性由
+    /// 号段分配自 改为单语句原子 `UPDATE ... RETURNING`，并发正确性由
     /// 数据库行锁保证，**热路径不再获取该锁**；注入 setter 与本读取器仅为
     /// 兼容既有装配 API（main.rs / sdk::kit）而保留。
     pub fn distributed_lock(
@@ -178,7 +178,7 @@ mod mock_tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    // ============== T028 语句超时 ==============
+    // ============== 语句超时 ==============
 
     /// 慢 future 超时 → 必须映射为可匹配的 `CoreError::TimeoutError`。
     #[tokio::test]
@@ -230,7 +230,7 @@ mod mock_tests {
         let lock: Arc<dyn DistributedLock + Send + Sync> = Arc::new(DummyDistributedLock);
         let repo = SeaOrmRepository::new(empty_pg_connection(), "salt".to_string())
             .with_distributed_lock(lock);
-        // T015 后锁仅为兼容注入保留（号段热路径不再取锁），getter 可诊断。
+        // 后锁仅为兼容注入保留（号段热路径不再取锁），getter 可诊断。
         assert!(repo.distributed_lock().is_some());
     }
 

@@ -59,29 +59,28 @@ unexpected_cfgs = { level = "allow", check-cfg = [
 ] }
 
 [dependencies]
-# 自研生态（Kirky-X）：本地工作副本路径依赖（../base、../garrison），随 base 波次
-# 实时联动；version 字段保留以备发布与版本校验。正式版发布后可按需切回 registry。
-# 注意：路径依赖只作用于本 manifest 的直接声明——garrison/sdforge 等的传递
-# registry 需求须由文末 [patch.crates-io] 强制统一，否则 pre-release 版本会出现
-# path/registry 双源并存（API 漂移时表现为下游 crate 编译失败）。
-confers = { path = "../base/confers", version = "0.6.0-rc.4", features = ["interpolation", "watch"] }
-oxcache = { path = "../base/oxcache", version = "0.5.0-rc.4" }
-dbnexus = { path = "../base/dbnexus", version = "0.6.0-rc.4", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
-sdforge = { path = "../base/sdforge", version = "0.5.0-rc.4", default-features = false, features = ["http", "grpc", "openapi", "context", "docs"] }
-inklog = { path = "../base/inklog", version = "0.3.0-rc.4", default-features = false, features = ["fast-masking"] }
+# 自研生态（Kirky-X）：统一走 crates.io registry（与 garrison/sdforge 等同一
+# RC 波次），不再使用 ../base、../garrison 兄弟仓库路径依赖——本仓库可独立
+# 构建，CI 无需 checkout 兄弟目录。pre-release 语义下 req 下界即各库当前
+# 最新发布版，后续小版本按 semver 自动上浮。
+confers = { version = "0.6.0-rc.5", features = ["interpolation", "watch"] }
+oxcache = { version = "0.5.0-rc.4" }
+dbnexus = { version = "0.6.0-rc.5", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
+sdforge = { version = "0.5.0-rc.4", default-features = false, features = ["http", "grpc", "openapi", "context", "docs"] }
+inklog = { version = "0.3.0-rc.5", default-features = false, features = ["fast-masking"] }
 # fast-masking：Aho-Corasick 多模式脱敏加速（凭证/密钥类日志字段的
 # 自动脱敏是本服务合规刚需；开 feature 即得，无接线代码）
 # garrison: 一站式身份认证框架（同作者 Kirky.X），通过 garrison-auth feature 启用，
 # 接管 API key 验证。仅启用 web-axum（中间件）+ protocol-apikey（ApiKeyHandler）+ cache-memory（KV 后端）。
-# 0.9.0-rc.1 起内部与本项目同一 RC 波次（confers 0.6.0-rc.4 / oxcache 0.5.0-rc.4 /
-# sdforge 0.5.0-rc.4 / inklog 0.3.0-rc.4），旧 0.8.x 的类型不跨边界技术债已随升级收敛。
-garrison = { path = "../garrison", version = "0.9.0-rc.1", optional = true, default-features = false, features = ["web-axum", "protocol-apikey", "cache-memory"] }
+# 0.9.0-rc.1 起内部与本项目同一 RC 波次（confers 0.6.0-rc.5 / oxcache 0.5.0-rc.4 /
+# sdforge 0.5.0-rc.4 / inklog 0.3.0-rc.5），旧 0.8.x 的类型不跨边界技术债已随升级收敛。
+garrison = { version = "0.9.0-rc.1", optional = true, default-features = false, features = ["web-axum", "protocol-apikey", "cache-memory"] }
 # trait-kit: 模块定义标准接口与 Kit 能力管理中心（同作者自研生态，
 # garrison/limiteron/dbnexus/sdforge 均提供 trait-kit 集成面）。
-# 锁定 0.5.0-rc.5（与 sdforge 0.5.0-rc.4 / garrison 0.9.0-rc.1 同一 RC 生态）；
+# 锁定 0.5.0-rc.6（与 confers 0.6.0-rc.5 / garrison 0.9.0-rc.1 同一 RC 生态）；
 # 正式版发布后按 semver 上浮。
 # 仅 sdk feature 拉入（dep:trait-kit）：不开 sdk 的构建依赖树零影响。
-trait-kit = { path = "../base/trait-kit", version = "0.5.0-rc.5", optional = true, default-features = false, features = ["async", "lifecycle", "health"] }
+trait-kit = { version = "0.5.0-rc.6", optional = true, default-features = false, features = ["async", "lifecycle", "health"] }
 
 # 工具
 async-trait = "0.1"
@@ -105,6 +104,11 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 # Derive 宏直接依赖：展开时生成 `::crate_name::` 绝对路径，必须是直接依赖。
 # 属性宏通过 `#[sdforge::crate::macro]` 调用，不受 extern prelude 限制。
 utoipa = { version = "5.5", default-features = false, features = ["macros", "uuid", "chrono"] }
+# Swagger UI 静态资源（吸收 sdforge `docs` feature 的 UI 面，见 server/swagger_ui.rs）：
+# 已发布的 sdforge 0.5.0-rc.4 仅有 swagger_ui_router()——它会在
+# /api-docs/openapi.json 注册 sdforge 自有 inventory 聚合 spec，与本服务自有
+# spec 端点同路径冲突（Router::merge panic），故 UI 路由本地装配、spec 复用本服务端点。
+utoipa-swagger-ui = { version = "9.0", default-features = false, features = ["axum"] }
 prost = { version = "0.14", default-features = false, features = ["derive"] }
 sea-orm = { version = "2.0", default-features = false, features = ["macros", "with-json", "with-uuid", "with-chrono"] }
 tonic-prost = { version = "0.14", default-features = false }
@@ -143,8 +147,11 @@ subtle = "2.6"
 # OsRng 由 getrandom feature 提供
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "password-hash", "getrandom"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-# validator 已迁移为 sdforge::validator re-export（sdforge http feature 门控，
-# 本 crate 的 sdforge 依赖恒开 http），直接依赖移除。
+# validator: 直接依赖（0.21，与 sdforge 内部同版本，trait 不跨边界）。已发布
+# 的 sdforge 0.5.0-rc.4 未提供 validator re-export（该面在 sdforge rc.5 WIP 中，
+# 尚未发布）；sdforge rc.5 发布后可评估切回 sdforge::validator re-export，
+# 再次移除本直接依赖。
+validator = { version = "0.21", default-features = false, features = ["derive"] }
 serde_with = "3.23"
 
 # 错误处理
@@ -164,7 +171,7 @@ url = "2.5"
 # core 的 TokenBucketLimiter / ConcurrencyLimiter / Limiter 原语），不启用——
 # 这同时解除了 limiteron → dbnexus ^0.4 的传递约束（postgres feature 是
 # optional dbnexus 的开关）。
-limiteron = { path = "../base/limiteron", version = "0.3.0-rc.4", default-features = false }
+limiteron = { version = "0.3.0-rc.4", default-features = false }
 
 # 国际化（统一基线 unify-rust-i18n：Fluent/ICU 栈，替换 rust-i18n YAML 后端）。
 # - fluent-bundle 0.16 concurrent：Send+Sync 的 FluentBundle 双束（en/zh）可入
@@ -223,19 +230,3 @@ opt-level = 0
 [profile.bench]
 opt-level = 3
 lto = true
-
-# sdforge / inklog 等自研依赖现以 ../base 本地工作副本路径依赖为主（见
-# [dependencies] 头注）。[patch.crates-io] 是路径依赖的必要补充：把全图传递
-# registry 需求统一重定向到本地工作副本（pre-release 语义下 path 与 registry
-# 候选不自动合并）。代价与 [dependencies] 的路径依赖相同——构建需要兄弟目录
-# （../base、../garrison）存在；正式版发布后删除本节切回 registry。
-
-[patch.crates-io]
-confers = { path = "../base/confers" }
-oxcache = { path = "../base/oxcache" }
-dbnexus = { path = "../base/dbnexus" }
-sdforge = { path = "../base/sdforge" }
-inklog = { path = "../base/inklog" }
-limiteron = { path = "../base/limiteron" }
-trait-kit = { path = "../base/trait-kit" }
-garrison = { path = "../garrison" }

@@ -36,20 +36,20 @@ use metrics_exporter_prometheus::{
     Matcher, PrometheusBuilder, PrometheusHandle, PrometheusRecorder,
 };
 use sdforge::tower_http::set_header::SetResponseHeaderLayer;
-use sdforge::validator::Validate;
 use std::sync::Arc;
+use validator::Validate;
 
 #[derive(Clone)]
 pub struct NebulaIdState {
     pub handlers: Arc<ApiHandlers>,
     pub auth: Arc<ApiKeyAuth>,
     pub config_service: Arc<dyn ConfigManagementService>,
-    /// Prometheus 文本渲染桥（T021）：/metrics 渲染路径把既有指标快照
+    /// Prometheus 文本渲染桥：/metrics 渲染路径把既有指标快照
     /// 灌入 exporter 自有 registry。generate 热路径不经过本桥，零新增开销。
     pub prometheus: Arc<PrometheusMetricsBridge>,
 }
 
-// ========== Prometheus /metrics 桥接（T021） ==========
+// ========== Prometheus /metrics 桥接 ==========
 
 /// `nebula_id_generate_latency_seconds` 直方图桶（秒）。ID 生成典型耗时
 /// 在微秒到毫秒量级，桶按此密度分布并延伸到秒级长尾。
@@ -439,11 +439,11 @@ pub async fn create_router_with_rate_limit(
         )
         .merge(api_v1_routes)
         .with_state(app_state)
-        // Swagger UI（吸收 sdforge `docs` feature）：只挂 UI 路由，spec 复用
-        // 上方自有的 /api-docs/openapi.json（sdforge 捆绑版会在同路径注册
-        // 其 inventory 聚合 spec，与本仓路由冲突）。暴露面与 spec 一致：
-        // 两者均为公开只读文档端点。
-        .merge(sdforge::docs::swagger_ui_router_with_spec(
+        // Swagger UI（吸收 sdforge `docs` feature 的 UI 面）：只挂 UI 路由，spec
+        // 复用上方自有的 /api-docs/openapi.json（已发布的 sdforge 0.5.0-rc.4
+        // 捆绑版会在同路径注册其 inventory 聚合 spec，与本仓路由冲突）。暴露面
+        // 与 spec 一致：两者均为公开只读文档端点。
+        .merge(crate::server::swagger_ui::swagger_ui_router_with_spec(
             "/api-docs/openapi.json",
         ));
     // 全局限流真实挂载，且必须位于 CORS
@@ -501,7 +501,7 @@ pub async fn create_router_with_rate_limit(
         .layer(axum::middleware::from_fn(
             sdforge::context::context_middleware,
         ))
-        // T022 — request_id 中间件：UUID 语义的校验/生成层，挂载在
+        // request_id 中间件：UUID 语义的校验/生成层，挂载在
         // context_middleware 外侧（后 `.layer()`，先执行）。它把校验通过
         // /新生成的 UUID v7 回写进请求头，context_middleware 随后对同一
         // 取值透传装配，保证两条路径响应头一致；同时安装 extensions
@@ -633,7 +633,7 @@ async fn verify_user_workspace(
 ///
 /// Phase 8 — returns locale-translated error on mismatch.
 ///
-/// T010 — 比较/角色判定决策委托给共享授权函数
+/// 比较/角色判定决策委托给共享授权函数
 /// `helpers::authorize_workspace_access`（HTTP 与 gRPC 同源），本函数只保留
 /// HTTP 传输相关的部分：认证禁用（key_workspace_id = None）放行与 locale
 /// 错误响应装配。所有调用点上游均已通过 `verify_user_role` 保证角色为
@@ -750,7 +750,7 @@ async fn handle_ready(State(state): State<NebulaIdState>) -> Json<ReadyResponse>
     Json(state.handlers.ready().await)
 }
 
-/// T021 — `/metrics` 输出 Prometheus 文本格式（text/plain; version=0.0.4）。
+/// `/metrics` 输出 Prometheus 文本格式（text/plain; version=0.0.4）。
 ///
 /// 渲染路径采样：读取既有指标快照（`ApiHandlers::metrics()`，内部仅
 /// 原子计数/观测环读取），灌入 exporter registry 后渲染；JSON 输出移除
@@ -856,14 +856,14 @@ async fn handle_set_algorithm(
     Ok(Json(state.config_service.set_algorithm(req).await))
 }
 
-/// `/api/v1` 路由前缀清单（T005）—— `handle_api_info` 的 parity 守卫
+/// `/api/v1` 路由前缀清单—— `handle_api_info` 的 parity 守卫
 /// 数据源，路径风格与 endpoints 展示一致（`:name`/`:id`；axum 0.8 路由
 /// 注册处为 `{name}` 语法，语义一一对应）。新增 /api/v1 路由时必须同步
 /// 本表：`test_api_info_endpoints_cover_v1_routes` 断言 api-info 的
 /// endpoints 清单覆盖全部前缀，漏登会在测试面显性失败而非静默漂移。
 /// （守卫按子串匹配，条目文字（方法/描述）改动不会误报。）
 ///
-/// T031 起标注 `#[cfg(test)]`：本表唯一消费方是 tests 模块的 parity
+/// 标注 `#[cfg(test)]`：本表唯一消费方是 tests 模块的 parity
 /// 守卫测试，非测试构建下为死代码（HEAD 处 `cargo clippy --features
 /// etcd -- -D warnings` 既有失败点，此处一并修复）。
 #[cfg(test)]
@@ -889,7 +889,7 @@ const API_V1_ROUTE_PREFIXES: &[&str] = &[
 async fn handle_api_info() -> Json<ApiInfoResponse> {
     Json(ApiInfoResponse {
         name: "Nebula ID Service".to_string(),
-        // T005 — 版本号唯一来源 = Cargo.toml（此前与 openapi.rs 各自
+        // 版本号唯一来源 = Cargo.toml（此前与 openapi.rs 各自
         // 硬编码 "1.0.0"，发版时会漂移）。
         version: env!("CARGO_PKG_VERSION").to_string(),
         description: "Distributed ID Generation Service".to_string(),
@@ -1124,7 +1124,7 @@ async fn handle_list_workspaces(
     // `core_error_to_response` instead of silently returning an empty
     // list, so 5xx internal errors are logged server-side and the
     // client sees a generic locale-translated message.
-    // T031（CWE-862 / CWE-639）—— 跨租户读面收敛。先做角色门禁
+    // （CWE-862 / CWE-639）—— 跨租户读面收敛。先做角色门禁
     // （未授权角色不产生仓储查询），再拉取列表并按角色过滤：
     // - Admin：保持全量列表（跨租户管理语义，行为不变）。
     // - User：仅保留自身 workspace（逐条经共享授权函数
@@ -1175,7 +1175,7 @@ async fn handle_list_workspaces(
     Ok(Json(filtered))
 }
 
-/// T031 —— workspace 单查读面的角色-租户收敛（`handle_get_workspace` 专用）。
+/// workspace 单查读面的角色-租户收敛（`handle_get_workspace` 专用）。
 ///
 /// - Admin：跨租户放行（行为不变）。
 /// - User：经共享授权函数
@@ -1219,7 +1219,7 @@ async fn handle_get_workspace(
 ) -> Result<Json<WorkspaceResponse>, (StatusCode, Json<ErrorResponse>)> {
     match state.handlers.get_workspace(&name).await {
         Ok(Some(ws)) => {
-            // T031（CWE-639）—— User key 仅可查看自身 workspace；Admin
+            // （CWE-639）—— User key 仅可查看自身 workspace；Admin
             // 跨租户放行（行为不变）；判定经共享授权函数。
             enforce_workspace_read_access(&extensions_role.0, extensions.0, &ws, locale).await?;
             Ok(Json(ws))
@@ -1281,13 +1281,13 @@ async fn handle_list_groups(
     // locale-translated message is used.
     validate_request(&params, locale)?;
 
-    // T031（CWE-862）—— 角色收敛：list_groups 与 create_group 同为
+    // （CWE-862）—— 角色收敛：list_groups 与 create_group 同为
     // User-only 端点。此前该 handler 未调用任何角色校验，任何认证主体
     // （含 Admin/Anonymous）都能按客户端提供的 `?workspace=` 任意列取
     // group。Admin 需要列 group 时应走管理面而非数据面。
     verify_user_role(extensions_role.0, locale)?;
 
-    // T031（CWE-639）—— workspace 归属校验：User key 仅可列自身
+    // （CWE-639）—— workspace 归属校验：User key 仅可列自身
     // workspace 的 group。按 workspace 名反查 UUID 后经共享授权函数
     // `helpers::authorize_workspace_access`（与 create_group/gRPC 同源）
     // 判定；他人 workspace → 403 workspace_mismatch。
@@ -1746,8 +1746,8 @@ mod tests {
 
     // ========== validate_request tests ==========
 
-    #[derive(sdforge::validator::Validate)]
-    #[validate(crate = "::sdforge::validator")]
+    #[derive(validator::Validate)]
+    #[validate(crate = "::validator")]
     struct TestValidatable {
         #[validate(length(min = 1, max = 64))]
         name: String,
@@ -1837,7 +1837,7 @@ mod tests {
     async fn test_handle_api_info_returns_response() {
         let resp = handle_api_info().await;
         assert_eq!(resp.name, "Nebula ID Service");
-        // T005 — 版本号唯一来源 = Cargo.toml（openapi.rs 同步）。
+        // 版本号唯一来源 = Cargo.toml（openapi.rs 同步）。
         assert_eq!(resp.version, env!("CARGO_PKG_VERSION"));
         assert!(!resp.endpoints.is_empty());
         // Verify endpoints list contains expected entries.
@@ -1846,7 +1846,7 @@ mod tests {
         assert!(resp.endpoints.iter().any(|e| e.contains("/parse")));
     }
 
-    /// T005 parity 守卫：api-info 的 endpoints 清单必须覆盖
+    /// parity 守卫：api-info 的 endpoints 清单必须覆盖
     /// `API_V1_ROUTE_PREFIXES` 全部路由前缀。方案说明：axum 不公开
     /// 路由枚举 API，故以 router.rs 内与路由注册同处维护的前缀常量表
     /// 为准，按「子串包含」断言（条目文字改动不误报）；新增路由漏登
@@ -1965,7 +1965,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
-    // ========== request_id 中间件全链路（T022） ==========
+    // ========== request_id 中间件全链路 ==========
 
     #[tokio::test]
     async fn test_full_router_echoes_uuid_request_id_header() {
@@ -3062,7 +3062,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_list_workspaces_without_repository_returns_error() {
         let state = create_test_app_state();
-        // T031 — Admin 角色保持全量列表语义，仓库缺失时仍为 500。
+        // Admin 角色保持全量列表语义，仓库缺失时仍为 500。
         let result = handle_list_workspaces(
             State(state),
             Extension(None),
@@ -3080,7 +3080,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_get_workspace_without_repository_returns_internal_error() {
         let state = create_test_app_state();
-        // T031 — Admin 角色跨租户放行，仓库缺失时仍为 500。
+        // Admin 角色跨租户放行，仓库缺失时仍为 500。
         let result = handle_get_workspace(
             State(state),
             Extension(None),
@@ -3212,7 +3212,7 @@ mod tests {
             page: 1,
             page_size: 0, // below min=1
         };
-        // T031 — 校验先于角色/归属校验，故任意角色均可观察到 400。
+        // 校验先于角色/归属校验，故任意角色均可观察到 400。
         let result = handle_list_groups(
             State(state),
             Extension(None),
@@ -3265,12 +3265,12 @@ mod tests {
         .await;
         assert!(result.is_err());
         let (status, _) = result.unwrap_err();
-        // T031 — 角色校验通过后进入 workspace 归属校验；无仓库时
+        // 角色校验通过后进入 workspace 归属校验；无仓库时
         // workspace 反查返回 InternalError → 500。
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    // ========== T031 —— workspace/group 读面租户隔离 ==========
+    // ========== —— workspace/group 读面租户隔离 ==========
 
     fn make_workspace_response(id: uuid::Uuid, name: &str) -> WorkspaceResponse {
         WorkspaceResponse {

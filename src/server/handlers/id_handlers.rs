@@ -264,13 +264,13 @@ impl super::ApiHandlers {
     }
 }
 
-// ========== OpenAPI path 注解（T033）==========
+// ========== OpenAPI path 注解==========
 //
 // 实际的 axum handler 函数（`handle_generate` 等）位于 `src/server/router.rs`
 // （本 lane 不可修改），故此处以「注解载体函数」承载 `#[utoipa::path]`：
 // 载体函数不参与运行时路由，仅供 `openapi.rs` 的 `paths(...)` 注册。
 // 路由信息（路径/方法）以 router.rs 注册处为准；错误响应统一引用
-// `ErrorResponse`（T032 信封，business_code 见 openapi.rs 错误码表）。
+// `ErrorResponse`（信封，business_code 见 openapi.rs 错误码表）。
 
 /// OpenAPI 注解载体：`POST /api/v1/generate`（实际 handler：`router::handle_generate`）。
 #[allow(dead_code)]

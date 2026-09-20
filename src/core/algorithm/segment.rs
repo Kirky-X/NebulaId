@@ -465,13 +465,13 @@ impl SegmentAlgorithm {
         }
     }
 
-    /// 注入自定义号段装载器（T016 pub 化：装配处注入入口）。
+    /// 注入自定义号段装载器（pub 化：装配处注入入口）。
     ///
     /// 生产装配方（main.rs / 嵌入式 SDK）经 mod.rs re-export 拿到
     /// `SegmentAlgorithm` 与 `DbSegmentLoader` 后，用本方法把
     /// `DbSegmentLoader`（真连 DB 号段）替换掉 `new()` 的默认
     /// `UnconfiguredSegmentLoader`；测试同理可注入内存造段器
-    /// （T014：依赖造段器行为的单测必须显式注入）。
+    /// （依赖造段器行为的单测必须显式注入）。
     pub fn with_segment_loader(mut self, loader: Arc<dyn SegmentLoader + Send + Sync>) -> Self {
         self.segment_loader = loader;
         self
@@ -665,7 +665,7 @@ impl IdAlgorithm for SegmentAlgorithm {
         ))
     }
 
-    /// 健康状况同时反映两路信号（T029）：
+    /// 健康状况同时反映两路信号
     /// 1. buffer 空虚（尚无任何活动号段缓冲）→ Degraded；
     /// 2. 最近一次号段加载失败且尚无成功恢复 → Degraded（附错误摘要）。
     ///    「最近一次」为新结果覆盖旧结果：失败后再次成功加载即恢复 Healthy。
@@ -876,7 +876,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_segment_algorithm_generate() {
-        // 显式注入内存造段器（T014：依赖造段行为的测试不再隐式依赖默认装配）。
+        // 显式注入内存造段器（依赖造段行为的测试不再隐式依赖默认装配）。
         let algo =
             SegmentAlgorithm::new(0).with_segment_loader(Arc::new(TestSegmentLoader::default()));
         let ctx = GenerateContext {
@@ -1055,7 +1055,7 @@ mod tests {
         assert!(matches!(status, HealthStatus::Healthy));
     }
 
-    // ===== health_check 反映最近号段加载结果（T029）=====
+    // ===== health_check 反映最近号段加载结果=====
 
     /// 恒失败装载器：注入 load 错误以驱动 health_check 降级路径。
     struct FailingSegmentLoader;
@@ -1159,7 +1159,7 @@ mod tests {
         assert!(matches!(algo.health_check(), HealthStatus::Degraded(_)));
     }
 
-    /// T014 语义不破坏：UnconfiguredSegmentLoader 的 ConfigurationError
+    /// 语义不破坏：UnconfiguredSegmentLoader 的 ConfigurationError
     /// 同样计入「最近一次加载失败」，health_check 非 Healthy。
     #[tokio::test]
     async fn test_unconfigured_loader_error_counts_as_load_failure_for_health() {
@@ -1276,7 +1276,7 @@ mod tests {
         );
     }
 
-    // ===== DbSegmentLoader（T014）=====
+    // ===== DbSegmentLoader=====
 
     use crate::core::types::SegmentInfo;
 

@@ -76,7 +76,7 @@ impl ApiKeyAuth {
 
     /// 认证失败速率检查：同一客户端 IP 在 5 分钟窗口内失败 ≥ 10 次则拒绝。
     ///
-    /// T012 — 提为 `pub(crate)`：gRPC 认证失败路径复用同一失败桶
+    /// 提为 `pub(crate)`：gRPC 认证失败路径复用同一失败桶
     /// （HTTP 429 对应 gRPC `Code::ResourceExhausted`），两条传输线
     /// 共享同一阈值与窗口，不另建第二份计数器。
     pub(crate) fn check_auth_failure_rate(&self, client_ip: &str) -> bool {
@@ -114,7 +114,7 @@ impl ApiKeyAuth {
         if failures_map.len() > MAX_TRACKED_AUTH_FAILURE_IPS {
             failures_map.retain(|_, v| !v.is_empty());
             if failures_map.len() > MAX_TRACKED_AUTH_FAILURE_IPS {
-                // T025 —— 仍超上限时按「每 IP 最早失败时间」淘汰最旧条目，
+                // 仍超上限时按「每 IP 最早失败时间」淘汰最旧条目，
                 // 替代一次性 `clear()`：清空会把正在活跃攻击的 IP 的失败
                 // 计数一并抹掉，攻击者立即获得全新的 10 次失败预算（等于
                 // 自解除封禁）。按最旧淘汰保留活跃失败者的计数，与
@@ -140,7 +140,7 @@ impl ApiKeyAuth {
 
     /// 记录一次认证失败（按客户端 IP 入桶）。
     ///
-    /// T012 — 提为 `pub(crate)`：gRPC 认证拒绝出口与 HTTP 中间件
+    /// 提为 `pub(crate)`：gRPC 认证拒绝出口与 HTTP 中间件
     /// 共享同一失败桶（见 [`Self::check_auth_failure_rate`]）。
     pub(crate) fn record_auth_failure(&self, client_ip: &str) {
         let now = Instant::now();
@@ -1165,7 +1165,7 @@ mod tests {
         }
     }
 
-    /// T025 —— 超上限改为「淘汰最旧条目」而非整体清空：
+    /// 超上限改为「淘汰最旧条目」而非整体清空
     /// 1. 表规模回到上限内（10_000）；
     /// 2. 被淘汰的是每 IP 最早失败时间最旧的条目；
     /// 3. 活跃攻击 IP（失败时间最新）的计数保留——攻击者不因容量阀值
@@ -1336,5 +1336,78 @@ mod tests {
             last_status = resp.status();
         }
         assert_eq!(last_status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn test_check_auth_failure_rate_blocks_after_threshold() {
+        let auth = ApiKeyAuth::new(Arc::new(make_mock_repo()), true);
+
+        // 无失败记录的 IP 直接放行（同时触发空桶驱逐路径）。
+        assert!(auth.check_auth_failure_rate("192.0.2.50"));
+
+        // 恰好 10 次失败后命中阈值分支：放行翻转为拒绝。
+        for _ in 0..10 {
+            auth.record_auth_failure("192.0.2.50");
+        }
+        assert!(!auth.check_auth_failure_rate("192.0.2.50"));
+
+        // 阈值按 IP 隔离，其他 IP 不受影响。
+        assert!(auth.check_auth_failure_rate("192.0.2.51"));
+    }
+
+    /// 宽限期内的旧凭证：认证放行但必须跳过缓存写入（缓存只能表达相对
+    /// TTL，写入会变相延长宽限窗口），且显式留痕。
+    #[cfg(feature = "garrison-auth")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grace_credential_authenticates_without_cache_write() {
+        use crate::server::auth::AuthCache;
+        use crate::server::handlers::mock_tests::MockApiKeyRepository;
+
+        let mut mock = MockApiKeyRepository::new();
+        mock.expect_validate_api_key().times(1).returning(|_, _| {
+            Ok(Some(AuthenticatedKey {
+                workspace_id: None,
+                role: ApiKeyRole::User,
+                used_previous_credential: true,
+            }))
+        });
+        // 宽限路径必须在读 key 行（缓存写入前置）之前返回：若实现退化去写
+        // 缓存，这里的 times(0) 会让 mock panic。
+        mock.expect_get_api_key_by_id().times(0);
+        let auth =
+            ApiKeyAuth::new(Arc::new(mock), true).with_cache(Arc::new(AuthCache::new(300).await));
+
+        let result = auth.validate_key("k", "old-secret").await;
+        let result = result.expect("宽限凭证必须放行");
+        assert!(
+            result.used_previous_credential,
+            "放行结果必须携带宽限语义标记"
+        );
+    }
+
+    /// key 行读取失败（异常或删除中）：宁可不缓存，也不能以缺失过期时间
+    /// 的条目入缓存。回源校验本身必须照常放行。
+    #[cfg(feature = "garrison-auth")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_cache_write_skipped_when_key_row_lookup_fails() {
+        use crate::core::CoreError;
+        use crate::server::auth::AuthCache;
+        use crate::server::handlers::mock_tests::MockApiKeyRepository;
+
+        let mut mock = MockApiKeyRepository::new();
+        mock.expect_validate_api_key().times(1).returning(|_, _| {
+            Ok(Some(AuthenticatedKey {
+                workspace_id: None,
+                role: ApiKeyRole::User,
+                used_previous_credential: false,
+            }))
+        });
+        mock.expect_get_api_key_by_id()
+            .returning(|_| Err(CoreError::InternalError("row gone".into())));
+        let auth =
+            ApiKeyAuth::new(Arc::new(mock), true).with_cache(Arc::new(AuthCache::new(300).await));
+
+        let result = auth.validate_key("k", "s").await;
+        assert!(result.is_some(), "行读取失败只影响缓存写入，不影响放行");
     }
 }

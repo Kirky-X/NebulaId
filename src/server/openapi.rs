@@ -144,7 +144,7 @@ use crate::server::models::{
         )
     ),
     tags(
-        // T033 —— tag 体系与 handlers 注解载体的资源域对齐：
+        // tag 体系与 handlers 注解载体的资源域对齐
         // ids / workspaces / groups / biz-tags / api-keys / config / system / docs。
         // （admin 语义并入 api-keys / config 的端点描述与 403 响应说明。）
         (name = "ids", description = "ID generation and parsing"),
@@ -165,7 +165,7 @@ pub fn create_swagger_router() -> Router {
 }
 
 // ============================================================================
-// OpenAPI 运行时本地化（T021 unify-rust-i18n）
+// OpenAPI 运行时本地化（unify-rust-i18n）
 // ============================================================================
 
 /// 由 spec 路径生成 operation 键的 path-slug 段（与 etyma 先例同一规则）：
@@ -191,7 +191,7 @@ fn is_http_method(s: &str) -> bool {
 /// 构建经运行时本地化的 OpenAPI JSON（`/api-docs/openapi.json` 出口）。
 ///
 /// `ApiDoc` 的 utoipa derive 装配是编译期静态的，注解 description 只能是
-/// 单语规范串（T021 起为英文规范串，与 FTL en 串逐字节一致）；此处序列化后
+/// 单语规范串（为英文规范串，与 FTL en 串逐字节一致）；此处序列化后
 /// 按当前进程 locale 做「命中才替换」：
 /// - response description 键 `<method>-<path-slug>-<status>`；
 /// - parameter description 键 `<method>-<path-slug>-param-<name>`；
@@ -290,20 +290,20 @@ mod tests {
         let _router = create_swagger_router();
     }
 
-    // ========== T033 —— paths 守卫 ==========
+    // ========== —— paths 守卫 ==========
 
-    /// `/api/v1` 业务路由清单（T033）—— openapi paths 与 `router.rs`
+    /// `/api/v1` 业务路由清单—— openapi paths 与 `router.rs`
     /// 注册处的一一对应表（路径用 OpenAPI `{}` 语法；router.rs 注册处
     /// 为同名 `{}` 语法，语义一一对应；`/api/v1` 根以 `/api/v1/` 呈现）。
     ///
     /// 方案说明（选型见任务报告）： axum 0.8 `Router::routes()` 不展开
     /// `nest()` 的子路由，且完整装配 router 需要克隆整套 auth/audit/限流
-    /// mock，故守卫不遍历运行时 Router，而是对齐既有 T005 parity 清单
+    /// mock，故守卫不遍历运行时 Router，而是对齐既有 parity 清单
     /// （`router.rs::API_V1_ROUTE_PREFIXES` / api-info endpoints）维护本表：
     /// - 正向：本表每条路径+方法都必须出现在 openapi 文档（漏注解即失败）；
     /// - 反向：openapi 文档中 `/api/` 前缀路径不得超出本表（注解漂移即失败）；
     /// - 上界：paths 总数 ≥ 表长（任务要求的「paths 数 ≥ 路由数」）。
-    /// 新增 /api/v1 路由时 T005 守卫会先失败并把开发者引到 router.rs，
+    /// 新增 /api/v1 路由时 守卫会先失败并把开发者引到 router.rs，
     /// 同步本表与注解即可。
     const EXPECTED_V1_PATHS: &[(&str, &[&str])] = &[
         ("/api/v1/", &["get"]),
@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn test_openapi_error_responses_reference_unified_envelope() {
-        // T032 统一错误信封：受保护端点的 4xx/5xx 都应引用 $ref ErrorResponse。
+        // 统一错误信封：受保护端点的 4xx/5xx 都应引用 $ref ErrorResponse。
         let doc = openapi_json();
         let generate = &doc["paths"]["/api/v1/generate"]["post"];
         let unauthorized = &generate["responses"]["401"];
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_core_request_schemas_carry_examples() {
-        // T033 —— 核心四 schema 必须带 example（与 docs/API_REFERENCE.md 同口径）。
+        // 核心四 schema 必须带 example（与 docs/API_REFERENCE.md 同口径）。
         let doc = openapi_json();
         let schemas = &doc["components"]["schemas"];
         for name in [
@@ -429,7 +429,7 @@ mod tests {
         assert_eq!(tag, "order", "示例值须与文档口径一致(biz_tag=order)");
     }
 
-    // ========== T021 —— OpenAPI 运行时本地化守卫 ==========
+    // ========== —— OpenAPI 运行时本地化守卫 ==========
 
     /// operation_slug 单元测试：剥花括号、`/` → `-`、首尾 `/` 归零。
     #[test]
@@ -459,7 +459,7 @@ mod tests {
             .collect()
     }
 
-    /// T021 守卫：messages.ftl 中全部 `<method>-` 前缀键都必须可由 spec 路由
+    /// 守卫：messages.ftl 中全部 `<method>-` 前缀键都必须可由 spec 路由
     /// 经 `operation_slug` 计算命中（response 键 `<method>-<slug>-<status>`、
     /// parameter 键 `<method>-<slug>-param-<name>`）——防止 slug 与 FTL 键
     /// 漂移导致运行时替换静默失效。
@@ -502,7 +502,7 @@ mod tests {
         );
     }
 
-    /// T021 —— 本地化替换语义：en/zh 双 locale 下命中键的 description 均被
+    /// 本地化替换语义：en/zh 双 locale 下命中键的 description 均被
     /// 对应 FTL 文案替换（en 替换结果与注解内联英文规范串同源）。
     #[test]
     fn localized_openapi_replaces_descriptions_on_hit() {
@@ -539,5 +539,63 @@ mod tests {
                 "parameter description must be localized ({locale})"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod localize_edge_shapes {
+    //! `localize_openapi_json` 对畸形 spec 形状的容错分支：缺 paths、条目非
+    //! 对象、非 HTTP 动词、responses/parameters 形状不符时必须安静跳过，
+    //! 不得 panic，也不得产出错误的替换。
+
+    use super::*;
+
+    #[test]
+    fn missing_paths_returns_unchanged() {
+        let mut doc = serde_json::json!({ "info": { "title": "x" } });
+        localize_openapi_json(&mut doc, "en");
+        assert!(doc.get("paths").is_none(), "无 paths 时文档必须原样保留");
+    }
+
+    #[test]
+    fn malformed_path_items_and_methods_are_skipped() {
+        let mut doc = serde_json::json!({
+            "paths": {
+                // path 条目非对象 → continue
+                "/api/v1/x": "not-an-object",
+                // operation 条目非对象 → continue；非 HTTP 动词 → continue
+                "/api/v1/y": { "get": "not-an-object", "trace": { "responses": {} } },
+            }
+        });
+        localize_openapi_json(&mut doc, "en");
+        assert_eq!(doc["paths"]["/api/v1/x"], "not-an-object");
+        assert_eq!(doc["paths"]["/api/v1/y"]["get"], "not-an-object");
+    }
+
+    #[test]
+    fn malformed_responses_and_parameters_are_skipped() {
+        let mut doc = serde_json::json!({
+            "paths": {
+                // responses 非 object / parameters 非 array → 内层循环跳过
+                "/api/v1/z": { "get": {
+                    "responses": "not-an-object",
+                    "parameters": "not-an-array",
+                } },
+                // response 条目非 object → continue；parameter 缺 name → continue
+                "/api/v1/w": { "get": {
+                    "responses": { "500": "not-an-object" },
+                    "parameters": [ { "in": "query" } ],
+                } },
+            }
+        });
+        localize_openapi_json(&mut doc, "en");
+        assert_eq!(
+            doc["paths"]["/api/v1/z"]["get"]["responses"],
+            "not-an-object"
+        );
+        assert_eq!(
+            doc["paths"]["/api/v1/w"]["get"]["responses"]["500"],
+            "not-an-object"
+        );
     }
 }

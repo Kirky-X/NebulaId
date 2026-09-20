@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use sdforge::utoipa::ToSchema;
+use sdforge::validator::Validate;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use validator::Validate;
 
 /// Health status of the system
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
@@ -47,7 +47,7 @@ impl From<String> for HealthStatus {
 /// OpenAPI 示例值与 `docs/API_REFERENCE.md` 同一口径
 /// （workspace `demo`、biz_tag `order`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::validator")]
+#[validate(crate = "::sdforge::validator")]
 #[schema(example = json!({
     "workspace": "demo",
     "group": "order",
@@ -88,7 +88,7 @@ pub struct GenerateResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::validator")]
+#[validate(crate = "::sdforge::validator")]
 pub struct BatchGenerateRequest {
     #[validate(length(min = 1, max = 64))]
     pub workspace: String,
@@ -397,7 +397,7 @@ pub struct DegradationMetrics {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::validator")]
+#[validate(crate = "::sdforge::validator")]
 #[schema(example = json!({
     "id": "123456789012345",
     "workspace": "demo",
@@ -566,7 +566,7 @@ pub struct TlsConfigInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::validator")]
+#[validate(crate = "::sdforge::validator")]
 pub struct UpdateRateLimitRequest {
     #[validate(range(min = 1, max = 1000000))]
     pub default_rps: Option<u32>,
@@ -576,14 +576,14 @@ pub struct UpdateRateLimitRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::validator")]
+#[validate(crate = "::sdforge::validator")]
 pub struct UpdateLoggingRequest {
     #[validate(length(min = 1, max = 20))]
     pub level: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::validator")]
+#[validate(crate = "::sdforge::validator")]
 pub struct SetAlgorithmRequest {
     #[validate(length(min = 1, max = 64))]
     pub biz_tag: String,
@@ -619,7 +619,7 @@ pub struct ApiInfoResponse {
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::validator")]
+#[validate(crate = "::sdforge::validator")]
 pub struct CreateBizTagRequest {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub workspace_id: uuid::Uuid,
@@ -652,7 +652,7 @@ pub struct CreateBizTagRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::validator")]
+#[validate(crate = "::sdforge::validator")]
 pub struct UpdateBizTagRequest {
     #[validate(length(min = 1, max = 64))]
     pub name: Option<String>,
@@ -704,7 +704,7 @@ pub struct BizTagListResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::validator")]
+#[validate(crate = "::sdforge::validator")]
 pub struct PaginationParams {
     pub workspace_id: Option<String>, // Optional: filter by workspace
     #[serde(default = "default_page")]
@@ -725,7 +725,7 @@ fn default_page_size() -> u64 {
 
 /// Query params for listing groups (requires workspace parameter)
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::validator")]
+#[validate(crate = "::sdforge::validator")]
 pub struct GroupListParams {
     pub workspace: String,
     #[serde(default = "default_page")]
@@ -748,7 +748,7 @@ pub fn datetime_to_rfc3339(dt: chrono::DateTime<chrono::FixedOffset>) -> String 
 // ========== API Key Models ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::validator")]
+#[validate(crate = "::sdforge::validator")]
 pub struct CreateApiKeyRequest {
     pub workspace_id: Option<String>, // Optional: None for admin keys, required for user keys
     #[validate(length(min = 1, max = 64))]
@@ -863,7 +863,7 @@ pub struct RevokeApiKeyResponse {
 // ========== Workspace Models ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::validator")]
+#[validate(crate = "::sdforge::validator")]
 pub struct CreateWorkspaceRequest {
     #[validate(length(min = 1, max = 64))]
     pub name: String,
@@ -906,7 +906,7 @@ pub struct WorkspaceListResponse {
 // ========== Group Models ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
-#[validate(crate = "::validator")]
+#[validate(crate = "::sdforge::validator")]
 pub struct CreateGroupRequest {
     #[validate(length(min = 1, max = 64))]
     pub workspace: String, // workspace name

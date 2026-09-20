@@ -36,8 +36,8 @@ use metrics_exporter_prometheus::{
     Matcher, PrometheusBuilder, PrometheusHandle, PrometheusRecorder,
 };
 use sdforge::tower_http::set_header::SetResponseHeaderLayer;
+use sdforge::validator::Validate;
 use std::sync::Arc;
-use validator::Validate;
 
 #[derive(Clone)]
 pub struct NebulaIdState {
@@ -439,11 +439,11 @@ pub async fn create_router_with_rate_limit(
         )
         .merge(api_v1_routes)
         .with_state(app_state)
-        // Swagger UI（吸收 sdforge `docs` feature 的 UI 面）：只挂 UI 路由，spec
-        // 复用上方自有的 /api-docs/openapi.json（已发布的 sdforge 0.5.0-rc.4
-        // 捆绑版会在同路径注册其 inventory 聚合 spec，与本仓路由冲突）。暴露面
-        // 与 spec 一致：两者均为公开只读文档端点。
-        .merge(crate::server::swagger_ui::swagger_ui_router_with_spec(
+        // Swagger UI：只挂 UI 路由，spec 复用上方自有的 /api-docs/openapi.json
+        //（sdforge 0.5.0-rc.5 起提供 with_spec 变体；捆绑版 swagger_ui_router
+        // 会在同路径注册其 inventory 聚合 spec，与本仓路由冲突）。暴露面与
+        // spec 一致：两者均为公开只读文档端点。
+        .merge(sdforge::docs::swagger_ui_router_with_spec(
             "/api-docs/openapi.json",
         ));
     // 全局限流真实挂载，且必须位于 CORS
@@ -1746,8 +1746,8 @@ mod tests {
 
     // ========== validate_request tests ==========
 
-    #[derive(validator::Validate)]
-    #[validate(crate = "::validator")]
+    #[derive(sdforge::validator::Validate)]
+    #[validate(crate = "::sdforge::validator")]
     struct TestValidatable {
         #[validate(length(min = 1, max = 64))]
         name: String,

@@ -39,8 +39,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use sdforge::validator::Validate;
 use uuid::Uuid;
-use validator::Validate;
 
 use crate::core::database::{
     ApiKey, ApiKeyInfo, ApiKeyRepository, ApiKeyResponse, ApiKeyRole, ApiKeyWithSecret,

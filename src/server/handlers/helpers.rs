@@ -412,7 +412,7 @@ pub fn invalid_uuid_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>
     )
 }
 
-/// Build a 400 response for `validator::ValidationErrors`, with the
+/// Build a 400 response for `sdforge::validator::ValidationErrors`, with the
 /// locale-translated message.
 ///
 /// Phase 8 (MEDIUM fix) — uses `errors.field_errors()` to
@@ -427,7 +427,7 @@ pub fn invalid_uuid_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>
 /// are joined by `"; "` and capped at `MAX_CLIENT_MESSAGE_LEN` bytes
 /// via `sanitize_for_production` to bound response size.
 pub(crate) fn validation_error_response(
-    errors: &validator::ValidationErrors,
+    errors: &sdforge::validator::ValidationErrors,
     locale: Locale,
 ) -> (StatusCode, Json<ErrorResponse>) {
     let mut parts: Vec<String> = Vec::new();
@@ -579,7 +579,7 @@ pub(crate) fn workspace_id_required_response(locale: Locale) -> (StatusCode, Jso
 mod tests {
     use super::*;
     use crate::core::types::error::CoreError;
-    use validator::Validate;
+    use sdforge::validator::Validate;
 
     /// Save and restore the global locale around tests(与 i18n.rs /
     /// error.rs 共用 test_support 锁串行化)。
@@ -869,8 +869,8 @@ mod tests {
         assert_eq!(json.code, 429);
 
         // 校验失败：validation_error_response → "3002"。
-        #[derive(validator::Validate)]
-        #[validate(crate = "::validator")]
+        #[derive(sdforge::validator::Validate)]
+        #[validate(crate = "::sdforge::validator")]
         struct SampleReq {
             #[validate(length(min = 1, max = 64))]
             name: String,
@@ -1474,8 +1474,8 @@ mod tests {
 
         // Construct a struct with `#[validate(length(min = 1, max = 64))]`
         // and trigger a validation failure by setting the field to "".
-        #[derive(validator::Validate)]
-        #[validate(crate = "::validator")]
+        #[derive(sdforge::validator::Validate)]
+        #[validate(crate = "::sdforge::validator")]
         struct SampleReq {
             #[validate(length(min = 1, max = 64))]
             workspace_id: String,
@@ -1523,8 +1523,8 @@ mod tests {
         let _g = LocaleGuard::new();
         crate::core::i18n::init_i18n("en");
 
-        #[derive(validator::Validate)]
-        #[validate(crate = "::validator")]
+        #[derive(sdforge::validator::Validate)]
+        #[validate(crate = "::sdforge::validator")]
         struct SampleReq {
             #[validate(length(min = 1, max = 64))]
             workspace_id: String,
@@ -1553,8 +1553,8 @@ mod tests {
         let _g = LocaleGuard::new();
         crate::core::i18n::init_i18n("en");
 
-        #[derive(validator::Validate)]
-        #[validate(crate = "::validator")]
+        #[derive(sdforge::validator::Validate)]
+        #[validate(crate = "::sdforge::validator")]
         struct RangeReq {
             #[validate(range(min = 100, max = 1_000_000))]
             count: i64,
@@ -1606,8 +1606,8 @@ mod tests {
         let _g = LocaleGuard::new();
         crate::core::i18n::init_i18n("en");
 
-        #[derive(validator::Validate)]
-        #[validate(crate = "::validator")]
+        #[derive(sdforge::validator::Validate)]
+        #[validate(crate = "::sdforge::validator")]
         struct MultiReq {
             #[validate(length(min = 1, max = 64))]
             workspace_id: String,

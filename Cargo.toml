@@ -66,14 +66,14 @@ unexpected_cfgs = { level = "allow", check-cfg = [
 confers = { version = "0.6.0-rc.5", features = ["interpolation", "watch"] }
 oxcache = { version = "0.5.0-rc.4" }
 dbnexus = { version = "0.6.0-rc.5", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
-sdforge = { version = "0.5.0-rc.4", default-features = false, features = ["http", "grpc", "openapi", "context", "docs"] }
+sdforge = { version = "0.5.0-rc.5", default-features = false, features = ["http", "grpc", "openapi", "context", "docs"] }
 inklog = { version = "0.3.0-rc.5", default-features = false, features = ["fast-masking"] }
 # fast-masking：Aho-Corasick 多模式脱敏加速（凭证/密钥类日志字段的
 # 自动脱敏是本服务合规刚需；开 feature 即得，无接线代码）
 # garrison: 一站式身份认证框架（同作者 Kirky.X），通过 garrison-auth feature 启用，
 # 接管 API key 验证。仅启用 web-axum（中间件）+ protocol-apikey（ApiKeyHandler）+ cache-memory（KV 后端）。
 # 0.9.0-rc.1 起内部与本项目同一 RC 波次（confers 0.6.0-rc.5 / oxcache 0.5.0-rc.4 /
-# sdforge 0.5.0-rc.4 / inklog 0.3.0-rc.5），旧 0.8.x 的类型不跨边界技术债已随升级收敛。
+# sdforge 0.5.0-rc.5 / inklog 0.3.0-rc.5），旧 0.8.x 的类型不跨边界技术债已随升级收敛。
 garrison = { version = "0.9.0-rc.1", optional = true, default-features = false, features = ["web-axum", "protocol-apikey", "cache-memory"] }
 # trait-kit: 模块定义标准接口与 Kit 能力管理中心（同作者自研生态，
 # garrison/limiteron/dbnexus/sdforge 均提供 trait-kit 集成面）。
@@ -104,11 +104,6 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 # Derive 宏直接依赖：展开时生成 `::crate_name::` 绝对路径，必须是直接依赖。
 # 属性宏通过 `#[sdforge::crate::macro]` 调用，不受 extern prelude 限制。
 utoipa = { version = "5.5", default-features = false, features = ["macros", "uuid", "chrono"] }
-# Swagger UI 静态资源（吸收 sdforge `docs` feature 的 UI 面，见 server/swagger_ui.rs）：
-# 已发布的 sdforge 0.5.0-rc.4 仅有 swagger_ui_router()——它会在
-# /api-docs/openapi.json 注册 sdforge 自有 inventory 聚合 spec，与本服务自有
-# spec 端点同路径冲突（Router::merge panic），故 UI 路由本地装配、spec 复用本服务端点。
-utoipa-swagger-ui = { version = "9.0", default-features = false, features = ["axum"] }
 prost = { version = "0.14", default-features = false, features = ["derive"] }
 sea-orm = { version = "2.0", default-features = false, features = ["macros", "with-json", "with-uuid", "with-chrono"] }
 tonic-prost = { version = "0.14", default-features = false }
@@ -147,11 +142,8 @@ subtle = "2.6"
 # OsRng 由 getrandom feature 提供
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "password-hash", "getrandom"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-# validator: 直接依赖（0.21，与 sdforge 内部同版本，trait 不跨边界）。已发布
-# 的 sdforge 0.5.0-rc.4 未提供 validator re-export（该面在 sdforge rc.5 WIP 中，
-# 尚未发布）；sdforge rc.5 发布后可评估切回 sdforge::validator re-export，
-# 再次移除本直接依赖。
-validator = { version = "0.21", default-features = false, features = ["derive"] }
+# validator: 经 sdforge::validator re-export 消费（0.5.0-rc.5 起提供该面，
+# http feature 门控；本 crate 的 sdforge 依赖恒开 http），直接依赖移除。
 serde_with = "3.23"
 
 # 错误处理

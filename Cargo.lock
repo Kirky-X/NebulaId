@@ -3456,9 +3456,7 @@ dependencies = [
  "unic-langid",
  "url",
  "utoipa",
- "utoipa-swagger-ui",
  "uuid",
- "validator",
 ]
 
 [[package]]
@@ -4675,14 +4673,15 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "sdforge"
-version = "0.5.0-rc.4"
+version = "0.5.0-rc.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68a378126f32116e626245d59d9226dfd82d6b984baca4b2cda90a1b86c367c8"
+checksum = "678394737868a422cac83a685f8fdc09246f6013fda68aa0863c7ee29169ca6a"
 dependencies = [
  "axum",
  "axum-extra",
  "clap",
  "clap-markdown",
+ "fluent-bundle",
  "futures-util",
  "inventory",
  "log",
@@ -4701,6 +4700,7 @@ dependencies = [
  "tonic-prost-build",
  "tower",
  "tower-http 0.7.1",
+ "unic-langid",
  "utoipa",
  "utoipa-swagger-ui",
  "uuid",
@@ -4709,9 +4709,9 @@ dependencies = [
 
 [[package]]
 name = "sdforge-macros"
-version = "0.5.0-rc.4"
+version = "0.5.0-rc.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5f7a1ad330bdfaabd93f1eb4129df97d183ffaca1cfdd2cf389eca34058bf36"
+checksum = "681b005a3788c688e86f422991cc16b06d2cc4aafb0b1851873d1ff062afc709"
 dependencies = [
  "proc-macro2",
  "quote",

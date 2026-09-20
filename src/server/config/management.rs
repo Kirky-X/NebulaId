@@ -17,10 +17,10 @@ use crate::server::models::{
     UpdateRateLimitRequest, UuidV8ConfigInfo, WorkspaceListResponse, WorkspaceResponse,
 };
 use async_trait::async_trait;
+use sdforge::validator::Validate;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
-use validator::Validate;
 
 /// Configuration management service trait.
 ///
@@ -1713,7 +1713,6 @@ mod fake_repo_unused_paths {
     //! 「假仓储绝不静默成功」的契约，同时消除未执行方法体的覆盖率盲区。
 
     use super::repository_backed_paths::{manager_with_repos, test_workspace};
-    use super::*;
 
     #[tokio::test]
     async fn unused_fake_paths_return_errors_not_success() {

@@ -5,8 +5,8 @@
 
 use super::audit::AuditConfig;
 use super::{
-    AlgorithmConfig, NebulaIdConfig, AuthConfig, BatchGenerateConfig, ConfigError, ConfigResult,
-    DatabaseConfig, EtcdConfig, LogLevel, LoggingConfig, MonitoringConfig, RateLimitConfig,
+    AlgorithmConfig, AuthConfig, BatchGenerateConfig, ConfigError, ConfigResult, DatabaseConfig,
+    EtcdConfig, LogLevel, LoggingConfig, MonitoringConfig, NebulaIdConfig, RateLimitConfig,
     RedisConfig, TlsConfig,
 };
 use serde::{Deserialize, Serialize};

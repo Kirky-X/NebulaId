@@ -1,9 +1,7 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-use dbnexus::sea_orm::{
-    ConnectionTrait, DatabaseConnection, DbBackend, DbErr, Statement,
-};
+use dbnexus::sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, Statement};
 use tracing::{info, warn};
 
 use crate::core::config::DatabaseConfig;
@@ -118,7 +116,11 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
     let (max_conn, min_conn, acquire_ms) =
         if config.engine == crate::core::config::DatabaseEngine::Sqlite {
             // Sqlite 与改前一致：不显式设置池参数，沿用 sea-orm 默认
-            (defaults.max_connections, defaults.min_connections, defaults.acquire_timeout)
+            (
+                defaults.max_connections,
+                defaults.min_connections,
+                defaults.acquire_timeout,
+            )
         } else {
             (
                 config.max_connections,

@@ -44,9 +44,9 @@ use axum::{
 };
 use base64::Engine;
 use sdforge::tower::ServiceExt;
+use sdforge::validator::Validate;
 use sha2::Digest;
 use uuid::Uuid;
-use sdforge::validator::Validate;
 
 use crate::core::database::{
     ApiKeyInfo, ApiKeyRepository, ApiKeyResponse, ApiKeyRole, ApiKeyWithSecret, AuthenticatedKey,

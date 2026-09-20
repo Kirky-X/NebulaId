@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use sdforge::utoipa::ToSchema;
+use sdforge::validator::Validate;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use sdforge::validator::Validate;
 
 /// Health status of the system
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]

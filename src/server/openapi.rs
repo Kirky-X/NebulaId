@@ -195,6 +195,7 @@ fn is_http_method(s: &str) -> bool {
 /// 按当前进程 locale 做「命中才替换」：
 /// - response description 键 `<method>-<path-slug>-<status>`；
 /// - parameter description 键 `<method>-<path-slug>-param-<name>`；
+///
 /// FTL 键登记见 `locales/{en,zh}/messages.ftl` 的 T021 段。未命中的
 /// description 保持静态英文规范串，契约结构与 HTTP 语义不变。
 pub(crate) fn localized_openapi_json() -> serde_json::Value {

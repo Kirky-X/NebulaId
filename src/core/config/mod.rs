@@ -34,7 +34,7 @@ pub mod tls;
 pub use algorithm::{
     AlgorithmConfig, SegmentAlgorithmConfig, SnowflakeAlgorithmConfig, UuidV8Config,
 };
-pub use app::{NebulaIdConfig, DatabaseConfig, DatabaseEngine, EtcdConfig};
+pub use app::{DatabaseConfig, DatabaseEngine, EtcdConfig, NebulaIdConfig};
 pub use app_config::resolve_startup_config;
 pub use app_config::Config;
 pub use app_config::HotReloadSettings;

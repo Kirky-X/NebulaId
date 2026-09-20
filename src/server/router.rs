@@ -36,8 +36,8 @@ use metrics_exporter_prometheus::{
     Matcher, PrometheusBuilder, PrometheusHandle, PrometheusRecorder,
 };
 use sdforge::tower_http::set_header::SetResponseHeaderLayer;
-use std::sync::Arc;
 use sdforge::validator::Validate;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct NebulaIdState {

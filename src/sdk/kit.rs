@@ -8,16 +8,16 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use trait_kit::{
-    AsyncHealthCheck, AsyncKit, AsyncLifecycle, AsyncReady, impl_async_auto_builder,
-    impl_module_meta,
+    impl_async_auto_builder, impl_module_meta, AsyncHealthCheck, AsyncKit, AsyncLifecycle,
+    AsyncReady,
 };
 
-use crate::core::CoreError;
 use crate::core::algorithm::{AlgorithmRouter, CpuMonitor, DynAuditLogger, GenerateContext};
 use crate::core::config::Config;
 use crate::core::coordinator::{DistributedLock, LocalDistributedLock};
 use crate::core::database::SeaOrmRepository;
 use crate::core::types::{AlgorithmType, Id, IdBatch, IdFormat, Result};
+use crate::core::CoreError;
 
 #[cfg(feature = "etcd")]
 use crate::core::coordinator::{
@@ -1059,8 +1059,8 @@ mod tests {
     /// 显式指定 Segment 算法在零仓储注入下同样被守卫拒绝
     ///（`generate_with_algorithm` 路径，旧 `client.rs` 用例覆盖）。
     #[tokio::test]
-    async fn test_kit_generate_with_algorithm_segment_without_repository_returns_configuration_error()
-     {
+    async fn test_kit_generate_with_algorithm_segment_without_repository_returns_configuration_error(
+    ) {
         let kit = NebulaIdKitBuilder::new(snowflake_config())
             .build()
             .await

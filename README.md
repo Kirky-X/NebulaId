@@ -74,7 +74,7 @@
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">📊 <b>可观测性</b><br><span style="color:#64748B">Prometheus <code>/metrics</code> 逐算法暴露 p50/p99/p999 与 <code>clock_backwards</code>，OTLP tracing，健康检查端点</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🌍 <b>ICU 国际化</b><br><span style="color:#64748B"><code>rust-i18n</code> + <code>Accept-Language</code> 协商（RFC 7231 §5.3.5），<code>en</code> 与 <code>zh-CN</code> 全量错误文案与日志</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🌍 <b>ICU 国际化</b><br><span style="color:#64748B">unify-rust-i18n（Fluent/ICU 栈）+ <code>Accept-Language</code> 协商（RFC 7231 §5.3.5），<code>en</code> 与 <code>zh-CN</code> 全量错误文案与日志</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🛡️ <b>传输与响应安全</b><br><span style="color:#64748B">rustls TLS 1.2/1.3（<code>min_tls_version</code> 强制）、安全响应头、严格 CORS、可信代理 IP 归属</span></td>
@@ -342,7 +342,7 @@ max_batch_size = 100        # validate(): 1..=10000
 
 ## 🌐 国际化
 
-Nebula ID 自 v0.2.0 起内置 ICU 国际化（`rust-i18n`），覆盖错误消息与日志的运行时翻译：
+Nebula ID 自 v0.2.0 起内置 ICU 国际化（unify-rust-i18n，Fluent/ICU 栈），覆盖错误消息与日志的运行时翻译：
 
 | Locale 标签 | 语言 | locales 文件 | 状态 |
 |-------------|------|--------------|------|
@@ -530,7 +530,7 @@ Nebula ID 站在以下优秀开源项目的肩膀上：
 | [trait-kit](https://crates.io/crates/trait-kit) | 模块接口与 Kit 装配（Kirky.X 自研生态） |
 | [limiteron](https://crates.io/crates/limiteron) | 限流原语（Kirky.X 自研生态） |
 | [oxcache](https://crates.io/crates/oxcache) | 多级缓存（Kirky.X 自研生态） |
-| [rust-i18n](https://crates.io/crates/rust-i18n) | ICU 国际化 |
+| [fluent-bundle](https://crates.io/crates/fluent-bundle) | ICU 国际化（unify-rust-i18n 基线） |
 
 ### 💝 特别感谢
 

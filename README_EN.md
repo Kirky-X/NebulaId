@@ -74,7 +74,7 @@ Double-buffered segments, drift-guarded bit slicing, custom UUID v8 layouts — 
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">📊 <b>Observability</b><br><span style="color:#64748B">Prometheus <code>/metrics</code> exposes per-algorithm p50/p99/p999 and <code>clock_backwards</code>, plus OTLP tracing and health check endpoints</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🌍 <b>ICU Internationalization</b><br><span style="color:#64748B"><code>rust-i18n</code> with <code>Accept-Language</code> negotiation (RFC 7231 §5.3.5); full error and log translations for <code>en</code> and <code>zh-CN</code></span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🌍 <b>ICU Internationalization</b><br><span style="color:#64748B">unify-rust-i18n (Fluent/ICU stack) with <code>Accept-Language</code> negotiation (RFC 7231 §5.3.5); full error and log translations for <code>en</code> and <code>zh-CN</code></span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🛡️ <b>Transport & Response Security</b><br><span style="color:#64748B">rustls TLS 1.2/1.3 (<code>min_tls_version</code> enforced), security headers, strict CORS, trusted-proxy IP attribution</span></td>
@@ -341,7 +341,7 @@ max_batch_size = 100        # validate(): 1..=10000
 
 ## 🌐 Internationalization
 
-Since v0.2.0 Nebula ID ships built-in ICU internationalization (`rust-i18n`) covering runtime translation of error messages and logs:
+Since v0.2.0 Nebula ID ships built-in ICU internationalization (unify-rust-i18n, Fluent/ICU stack) covering runtime translation of error messages and logs:
 
 | Locale tag | Language | Locales file | Status |
 |------------|----------|--------------|--------|
@@ -530,7 +530,7 @@ Nebula ID stands on the shoulders of these excellent open source projects:
 | [trait-kit](https://crates.io/crates/trait-kit) | Module interfaces and Kit assembly (Kirky.X ecosystem) |
 | [limiteron](https://crates.io/crates/limiteron) | Rate-limiting primitives (Kirky.X ecosystem) |
 | [oxcache](https://crates.io/crates/oxcache) | Multi-level cache (Kirky.X ecosystem) |
-| [rust-i18n](https://crates.io/crates/rust-i18n) | ICU internationalization |
+| [fluent-bundle](https://crates.io/crates/fluent-bundle) | ICU internationalization (unify-rust-i18n baseline) |
 
 ### 💝 Special Thanks
 

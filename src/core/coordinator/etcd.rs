@@ -2796,10 +2796,11 @@ mod tests {
 
     /// 测试共享 —— 有状态 KV mock：txn 写入对 kv_get 可见（模拟 etcd KV），
     /// kv_delete 真删除。返回 (mock, store)。
-    fn stateful_store_mock() -> (
+    type StatefulStoreMock = (
         MockEtcdClientOps,
         Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>,
-    ) {
+    );
+    fn stateful_store_mock() -> StatefulStoreMock {
         let store: Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
         let mut mock = MockEtcdClientOps::new();
@@ -3017,7 +3018,7 @@ mod tests {
             mock.expect_lease_keep_alive_once().returning(move |_| {
                 let n = call_count.fetch_add(1, Ordering::SeqCst);
                 // 偶数次失败、奇数次成功 → 连续失败最多 1 次
-                if n % 2 == 0 {
+                if n.is_multiple_of(2) {
                     Err(EtcdError::Network("flaky".into()))
                 } else {
                     Ok(())

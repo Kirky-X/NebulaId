@@ -190,10 +190,12 @@ mod tests {
                 true,
             )
             .await;
-        let events = ok_logger.events.lock().expect("lock");
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].result, AuditResult::Success);
-        assert!(events[0].resource.contains("42"));
+        {
+            let events = ok_logger.events.lock().expect("lock");
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].result, AuditResult::Success);
+            assert!(events[0].resource.contains("42"));
+        }
 
         let fail_logger = logger();
         fail_logger

@@ -1302,10 +1302,7 @@ mod tests {
         ] {
             let auth = Arc::new(ApiKeyAuth::new(repo.clone(), true));
             let router = build_test_router(auth);
-            let resp = router
-                .oneshot(make_request(Some(&header.to_string())))
-                .await
-                .unwrap();
+            let resp = router.oneshot(make_request(Some(header))).await.unwrap();
             assert_eq!(
                 resp.status(),
                 StatusCode::UNAUTHORIZED,

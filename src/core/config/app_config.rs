@@ -1142,18 +1142,15 @@ mod tests {
     /// 放宽严格模式 —— 两者都不是正确方向，故按真相排除并留档。
     #[test]
     fn test_shipped_config_files_load_cleanly() {
-        for path in ["config/config.toml"] {
-            assert!(
-                std::path::Path::new(path).exists(),
-                "测试前提：仓库内应存在随附配置 {}",
-                path
-            );
-            match Config::load_from_file(path) {
-                Ok(_) => {}
-                Err(e) => panic!(
-                    "随附配置 {} 必须能干净加载（若为未知键，修配置文件而非放宽属性）：{}",
-                    path, e
-                ),
+        let path = "config/config.toml";
+        assert!(
+            std::path::Path::new(path).exists(),
+            "测试前提：仓库内应存在随附配置 {path}"
+        );
+        match Config::load_from_file(path) {
+            Ok(_) => {}
+            Err(e) => {
+                panic!("随附配置 {path} 必须能干净加载（若为未知键，修配置文件而非放宽属性）：{e}")
             }
         }
     }

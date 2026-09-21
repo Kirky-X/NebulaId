@@ -984,8 +984,7 @@ pub struct ApiKeyWithSecret {
 
 ### `CoreError`
 
-`src/core/types/error.rs` 中 `CoreError` 的**全部**变体（T034 对照修正，
-以代码为准），及其经 `core_error_classification`
+`src/core/types/error.rs` 中 `CoreError` 的**全部**变体（以代码为准），及其经 `core_error_classification`
 （`src/server/handlers/helpers.rs`）单表映射出的 HTTP 状态码与
 `business_code`：
 
@@ -1229,7 +1228,7 @@ locale 中间件仅作用于 `/api/v1/*` 路由。根路径下的
 未认证请求共享同一个 `"anonymous"` 桶。
 
 **作用范围**：限流器仅挂载在 HTTP 栈上。gRPC 流量目前
-不经过限流层（见 `src/server/grpc.rs` 的 T023 注记），因此 gRPC 客户端
+不经过限流层，因此 gRPC 客户端
 没有对应 HTTP 429 的机制。
 
 ---
@@ -1264,7 +1263,7 @@ locale 中间件仅作用于 `/api/v1/*` 路由。根路径下的
 
 ## 🌍 HTTP 端点
 
-> T034 端点全录（与 `src/server/router.rs` 注册处一一对照，OpenAPI 侧见
+> 端点全录（与 `src/server/router.rs` 注册处一一对照，OpenAPI 侧见
 > `/api-docs/openapi.json` 与 `src/server/openapi.rs` 的 `paths(...)`）。
 > 认证标注：**公开** = 无需凭证；**认证** = 任意有效 API Key；
 > **User** = 仅 User 角色；**Admin** = 仅 Admin 角色。

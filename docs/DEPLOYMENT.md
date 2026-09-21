@@ -159,11 +159,11 @@ docker run -d \
 | `RUST_LOG` | info | 日志级别 (trace/debug/info/warn/error) |
 | `RUST_BACKTRACE` | 0 | 错误堆栈 (0/1/full) |
 | `DATABASE_URL` | - | 完整数据库 URL（覆盖其他配置） |
-| `NEBULA_LOCALE` | 取 `app.locale`（默认 `en`） | 进程默认 locale（T035 起生效，原 `LOCALE` 为文档虚构变量）。可选值：`en`、`zh-CN`，非法值回退 `en`。仅用于设置 `fluent-bundle` 全局 locale 影响启动日志与未走 `Accept-Language` 中间件的路径；`/api/v1/*` 路由的运行时响应语言由请求 `Accept-Language` 头协商，不受此变量影响。 |
+| `NEBULA_LOCALE` | 取 `app.locale`（默认 `en`） | 进程默认 locale（原 `LOCALE` 为文档虚构变量）。可选值：`en`、`zh-CN`，非法值回退 `en`。仅用于设置 `fluent-bundle` 全局 locale 影响启动日志与未走 `Accept-Language` 中间件的路径；`/api/v1/*` 路由的运行时响应语言由请求 `Accept-Language` 头协商，不受此变量影响。 |
 
 ### 4.3 NEBULA_LOCALE 与 locale 配置详解
 
-进程默认 locale 的解析优先级（T035）：**`NEBULA_LOCALE` 环境变量 > 配置文件 `app.locale` > 内置默认 `en`**；取值非法（不在 `en`/`zh-CN` 中）时回退 `en` 并输出告警。
+进程默认 locale 的解析优先级：**`NEBULA_LOCALE` 环境变量 > 配置文件 `app.locale` > 内置默认 `en`**；取值非法（不在 `en`/`zh-CN` 中）时回退 `en` 并输出告警。
 
 生效的 locale 控制服务进程的全局默认语言，主要影响以下场景：
 
@@ -292,7 +292,7 @@ EOF
 
 ## 8. scripts/run.sh 子命令
 
-自 v0.2.0 起，所有开发与部署脚本合并为统一入口 `scripts/run.sh`，替代了 v0.1.x 的多个分散脚本（`deploy`、`pre-commit-check`、`redis_test`、`test_api`、`install-pre-commit-hooks` 等）。旧脚本已重命名为 `_*_impl.sh` 内部实现，不再直接调用。
+自 v0.2.0 起，所有开发与部署脚本合并为统一入口 `scripts/run.sh`，替代了早期的多个分散脚本（`deploy`、`pre-commit-check`、`redis_test`、`test_api`、`install-pre-commit-hooks` 等）。旧脚本已重命名为 `_*_impl.sh` 内部实现，不再直接调用。
 
 ```bash
 # 通用调用格式
@@ -387,7 +387,7 @@ GitHub Actions CI（`.github/workflows/ci.yml`）通过同一入口调用此子�
 ./scripts/run.sh api-test http://localhost:8080
 ```
 
-内部调用 `tests/api_test.sh`（V6 综合测试套件），对 Nebula ID HTTP API 执行端到端测试：
+内部调用 `tests/api_test.sh`（综合测试套件），对 Nebula ID HTTP API 执行端到端测试：
 
 - 健康检查端点：`GET /health`、`GET /ready`
 - 指标端点：`GET /metrics`

@@ -253,7 +253,7 @@ fail-fast（change `key-rotation-and-config-failfast`）。**含多项行为变�
   `http_enabled`/`grpc_enabled = true` 时，per-port 开关被忽略、端口按明文启动，
   此前无任何提示；现按 `tls_config_conflict` 显式 warn。启动日志里
   "HTTPS is enabled but using HTTP fallback for now" 的误导文案改为如实描述
-  （wiring T005 后该端口确实做 TLS 终结）。
+  （该端口确实做 TLS 终结）。
 - **`docker/vendor-deps.sh` 不再打包凭据**：向 `.docker-vendor/` 打依赖副本时
   增加 `.env*` / `local_settings*` 排除（修复前实测确实带入了依赖仓库的
   `.env.test` / `.env.example`）。

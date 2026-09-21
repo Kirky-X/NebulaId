@@ -130,7 +130,7 @@ init_observability → init_sdforge(防inventory剥离) → load_config(fail-fas
 | `garrison-auth` | garrison 接管验证 + `AuthCache` 接线（`server/auth/cache.rs`、`api_key_auth.rs` 缓存路径、main.rs 装配） | ✅ | 关闭后走手写 Argon2id 直查路径（无缓存） |
 | `etcd` | `core/coordinator/etcd.rs` 全部、router 的 etcd 健康监控接线、main.rs 协调运行时与 fail-stop select 臂 | ❌ | 开启后 worker_id 租约分配、分布式锁、健康巡检+文件缓存 |
 | `alerting` | `core/monitoring/core.rs` 告警子系统（AlertManager/规则状态机/通知通道/事件流） | ❌ | **test 构建恒包含**（`cfg(any(test, feature))`）；生产零引用 |
-| `integration-tests` | 门控需要真实数据库的 `#[ignore]` 测试（8 个仓储 + 1 个 etcd T017） | ❌ | 需真实 PostgreSQL / etcd |
+| `integration-tests` | 门控需要真实数据库的 `#[ignore]` 测试（8 个仓储 + 1 个 etcd） | ❌ | 需真实 PostgreSQL / etcd |
 | `sdk` | `src/sdk/`（kit.rs 1211 行）+ trait-kit 依赖，蕴含 `openapi` | ❌ | 不开时依赖树零影响 |
 
 ### 2.2 可构建组合矩阵与行为差异
@@ -241,7 +241,7 @@ init_observability → init_sdforge(防inventory剥离) → load_config(fail-fas
 | ALG-24 | `sequence_bits=0` | 构建后发号 | `SequenceOverflow{timestamp}` 短路返回（防 CAS 空转） | 单测 | ❌ 缺口（分支无直接测试） |
 | ALG-25 | batch 高压 | batch 大批量 | 重试 100 次耗尽→`InternalError`（含 generated/requested 明细），**不返回短批** | 内联 | ✅ |
 | ALG-26 | `batch_generate(0)` | 调用 | 空 `IdBatch` Ok（与 Segment 相反） | e2e + 内联 | ✅ |
-| ALG-27 | 回拨后静置 >60s（drift_decay） | 注入回拨→推进单调钟→发号 | drift 衰减清零，health 恢复；新回拨事件阻止衰减 | 内联 T019 三用例 | ✅ |
+| ALG-27 | 回拨后静置 >60s（drift_decay） | 注入回拨→推进单调钟→发号 | drift 衰减清零，health 恢复；新回拨事件阻止衰减 | 内联三用例 | ✅ |
 | ALG-28 | drift == 阈值（边界） | 精确注入 | health **仍 Healthy**（严格大于才 Unhealthy） | 内联边界 | ✅ |
 | ALG-29 | dc/worker 超出位宽 | `worker_id=300`（8bit 布局） | 现状：**无校验，位污染高位**（validate 也不查 worker_id 对位宽） | 钉桩测试暴露该行为 | ❌ 缺口 |
 
@@ -278,7 +278,7 @@ init_observability → init_sdforge(防inventory剥离) → load_config(fail-fas
 | ALG-51 | `AlgorithmType::from_str` 7 个 UUID 别名（uuid_v7/uuid_v4 等全部映射 UuidV8）+ 非法值 | 别名生效；非法→`InvalidAlgorithmType` | e2e + 内联 | ✅ |
 | ALG-52 | `Id::Display` 版本位嗅探 | bits76-79==4/7/8 渲染为 UUID，否则数值——**数值型 ID 高位恰好命中版本位会被误渲染**（固有歧义） | 钉桩测试 | ❌ 缺口 |
 | ALG-53 | `CoreError` 24 变体 → HTTP 码/business_code/i18n（en+zh-CN） | 单表映射全对（见 3.14 SEC-30 消毒） | helpers 全变体矩阵 + error.rs Display 测试 | ✅ |
-| ALG-54 | `ErrorSource` 保链 | `DatabaseError`/`EtcdError`/`IoError` 底层 cause 经 source() 保留，顶层文案与 i18n 同源 | T038 保链测试 | ✅ |
+| ALG-54 | `ErrorSource` 保链 | `DatabaseError`/`EtcdError`/`IoError` 底层 cause 经 source() 保留，顶层文案与 i18n 同源 | 保链测试 | ✅ |
 | ALG-55 | 延迟环 1024 槽、分位、8 线程并发写 | 环绕正确、p50/p99/p999 nearest-rank、clock_backwards 计数 | metrics 内联 | ✅ |
 | ALG-56 | QpsWindow 秒切换/时钟回拨 | 秒切换双缓冲正确；**时钟早于 epoch 时 `expect` panic**（与 snowflake 容错策略不一致） | 回拨分支钉桩 | ❌ 缺口（回拨分支） |
 
@@ -322,7 +322,7 @@ init_observability → init_sdforge(防inventory剥离) → load_config(fail-fas
 | AUTH-20 | Admin 访问 User-only 端点（generate/biz-tags 等） | 403 `admin_cannot_perform`/1002 | e2e 矩阵 | ✅ |
 | AUTH-21 | User 访问 Admin-only（api-keys、workspaces 创建、config 写） | 403 `Admin access required` | e2e + 内联 mini router | ⚠️ 真实 router 穿透无测试（见 GAP） |
 | AUTH-22 | Anonymous 访问认证端点（5 方法） | 401 fail-closed | e2e | ✅ |
-| AUTH-23 | User 访问他人 workspace 资源 | biz-tag 增删改查 4 方法全部 403（IDOR 防护：先查后比 workspace） | e2e 4 例 + T031 隔离 | ✅ |
+| AUTH-23 | User 访问他人 workspace 资源 | biz-tag 增删改查 4 方法全部 403（IDOR 防护：先查后比 workspace） | e2e 4 例 + 隔离 | ✅ |
 | AUTH-24 | Admin `GET /biz-tags` 不带 workspace_id | **400/拒绝**（必须显式指定，CWE-639 修复）；User 强制绑定自身 | e2e | ✅ |
 | AUTH-25 | 认证禁用时 workspace 归属 | key 无 workspace 绑定 → 放行任意 workspace（既有语义） | 内联 verify_* 矩阵 | ✅ |
 
@@ -361,7 +361,7 @@ init_observability → init_sdforge(防inventory剥离) → load_config(fail-fas
 | 编号 | 场景（前置） | 步骤 | 预期 | 验证 | 现状 |
 |---|---|---|---|---|---|
 | RES-01 | Admin 创建 workspace | `POST /workspaces` | 200 + **User key 明文仅此一次**；默认 max_groups=10/max_biz_tags=100/status=Active | e2e + api_test.sh | ✅ |
-| RES-02 | 列表租户视图 | User list / Admin list | User 逐条过滤只见自身；Admin 全量（T031） | e2e | ✅ |
+| RES-02 | 列表租户视图 | User list / Admin list | User 逐条过滤只见自身；Admin 全量 | e2e | ✅ |
 | RES-03 | 按名查询 | `GET /workspaces/{name}` | User 仅自身（先反查行再比对）；他人→403；不存在→404 | e2e | ✅ |
 | RES-04 | 重置用户密钥 | `POST /workspaces/{name}/regenerate-user-key` | 旧 user key 删除 + 缓存失效 + 新 secret 返回一次 | e2e/api_test.sh | ✅ |
 | RES-05 | group 创建/列表 | User + 归属校验 | 200/分页；跨租户 403 | e2e | ✅ |
@@ -397,7 +397,7 @@ init_observability → init_sdforge(防inventory剥离) → load_config(fail-fas
 | GRPC-04 | 失败桶共享 | HTTP+gRPC 混合失败 | 同一桶累计，跨协议 429/ResourceExhausted | ⚠️ 单协议已测，跨协议组合缺 | ⚠️ |
 | GRPC-05 | authorize_namespace | admin 发号→403；跨租户→403；未知 ns→404；仓储故障→Internal 固定文案 | e2e 5 例 | ✅ |
 | GRPC-06 | BatchGenerateStream | 请求初始化非法 | 流消费前即拒绝；流内某项跨租户→Status **终止整个流** | e2e 流测试 | ✅ |
-| GRPC-07 | 错误映射全表 | CoreError 24 变体 → gRPC 码 | 4xx 保留本地化消息（200 字节截断）；5xx→Internal("internal error") 固定文案（T013 消毒） | helpers 矩阵 | ✅ |
+| GRPC-07 | 错误映射全表 | CoreError 24 变体 → gRPC 码 | 4xx 保留本地化消息（200 字节截断）；5xx→Internal("internal error") 固定文案（消毒） | helpers 矩阵 | ✅ |
 | GRPC-08 | proto 契约 | 字段名 `namespace`/`tag` 对应 HTTP workspace/biz_tag；GenerateResponse 无 datacenter 字段 | 契约测试防 proto 漂移 | ⚠️ 生成物手工维护（build.rs 已移除），无契约守卫 | ⚠️ |
 | GRPC-09 | gRPC TLS/mTLS | ca_path 配置 | tonic ServerTlsConfig 生效 | ⚠️ TLS 装配单测有，传输级 mTLS 握手缺 | ⚠️ |
 
@@ -437,11 +437,11 @@ init_observability → init_sdforge(防inventory剥离) → load_config(fail-fas
 
 | 编号 | 场景（前置） | 步骤 | 预期 | 验证 | 现状 |
 |---|---|---|---|---|---|
-| COORD-01 | 正常 etcd | allocate | 从 1..=255 分配（跳过 0 哨兵），写 `/idgen/workers/{dc}/{worker}`+lease | mock 12 例 + T017 真库 ignore | ✅ |
+| COORD-01 | 正常 etcd | allocate | 从 1..=255 分配（跳过 0 哨兵），写 `/idgen/workers/{dc}/{worker}`+lease | mock 12 例 + 真库 ignore | ✅ |
 | COORD-02 | 全占 | 255 个全被占 | `NoAvailableId` | mock | ✅ |
 | COORD-03 | CAS 冲突/预检失败 | key 已存在/kv_get Err | 跳过该 id 继续（预检失败容错为可分配） | mock | ✅ |
 | COORD-04 | release 语义 | 本人释放/他人 key/不存在/删除失败 | 成功并清状态 / **拒绝删除（归属校验）** / 幂等成功 / Err | mock | ✅ |
-| COORD-05 | keepalive | 周期=TTL/3(10s) | 连续 3 失败→fail-stop 上报+退出；间歇成功重置计数；stop 信号优雅退出 | mock T017 4 例 | ✅ |
+| COORD-05 | keepalive | 周期=TTL/3(10s) | 连续 3 失败→fail-stop 上报+退出；间歇成功重置计数；stop 信号优雅退出 | mock 4 例 | ✅ |
 | COORD-06 | 健康状态机 | ping 连败 3/5 次 | Degraded→Failed+缓存模式；成功恢复退出缓存；空 endpoints **不改状态** | mock（degradation_tests 4 例 + etcd.rs 内联） | ✅ |
 | COORD-07 | 缓存文件 | 状态落盘/跨实例读 | JSON roundtrip；坏 JSON→InternalError；目录不存在→写失败错误 | mock 8 例 | ✅ |
 | COORD-08 | 分布式锁 | acquire 冲突 | 重试 3 次×100ms→AcquireFailed；TTL 下限钳 1s；CAS 失败撤销已授 lease 防泄漏；Drop spawn 释放/无 runtime 仅 warn | mock 12 例 | ✅ |
@@ -543,7 +543,7 @@ init_observability → init_sdforge(防inventory剥离) → load_config(fail-fas
 |---|---|---|---|---|
 | L0 内联单元 | src 各模块 `#[cfg(test)]` | core 892 + server 717 + sdk 24 + main 18 ≈ 1651 | 零（MockDatabase/rcgen 自签/tempfile） | 每次提交（pre-commit `cargo test --lib`） |
 | L1 crate 内 E2E | `src/core/tests/` 12 模块 + `tests/i18n_e2e.rs` | 221 + 7 | 零 | 每次提交 |
-| L2 真实基建 | `#[ignore]` ×9（8 仓储 + 1 etcd T017） | 9 | PostgreSQL / etcd | 合并前手工 / 夜间 |
+| L2 真实基建 | `#[ignore]` ×9（8 仓储 + 1 etcd） | 9 | PostgreSQL / etcd | 合并前手工 / 夜间 |
 | L3 shell 黑盒 | `tests/*.sh` 4 脚本（对运行中服务） | 4 | docker compose 全栈 | 发版前 |
 | L4 基准 | `benches/i18n.rs`（唯一）、`benches/algorithms.rs` | 2 文件 | 零 | 性能回归时 |
 
@@ -565,7 +565,7 @@ docker compose -f docker/docker-compose.yml up -d postgres
 DATABASE_URL=postgresql://idgen:idgen123@localhost:5432/idgen \
   cargo test --package nebulaid --features integration-tests -- --ignored --no-fail-fast
 
-# L2 真实 etcd（T017）
+# L2 真实 etcd
 ETCD_TEST_ENDPOINTS=http://127.0.0.1:2379 \
   cargo test --package nebulaid --features etcd,integration-tests -- --ignored
 

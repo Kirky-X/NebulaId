@@ -25,8 +25,8 @@
 
 本仓库 `Cargo.toml` 中声明**两项** Criterion 基准（均为 `harness = false`）：
 
-- `[[bench]] name = "i18n"`（`benches/i18n.rs`）：i18n 热路径，钉住 Phase 8 T041（LOW L4 perf fix）的基线，保证后续 i18n 改动可量化；
-- `[[bench]] name = "algorithms"`（`benches/algorithms.rs`）：发号 / 限流 / 认证缓存热路径（Lane W1 T009），覆盖 Snowflake 单条与批量、路由链路、令牌桶与认证缓存命中。
+- `[[bench]] name = "i18n"`（`benches/i18n.rs`）：i18n 热路径，钉住性能修复的基线，保证后续 i18n 改动可量化；
+- `[[bench]] name = "algorithms"`（`benches/algorithms.rs`）：发号 / 限流 / 认证缓存热路径，覆盖 Snowflake 单条与批量、路由链路、令牌桶与认证缓存命中。
 
 **口径边界：两项均为算法 / 中间件层微基准，不覆盖 HTTP 全链路（认证中间件、TLS、序列化、网络），基线数字亦非 SLA 承诺。** Segment 算法未纳入基准（`SegmentAlgorithm` / `SegmentLoader` 为 `pub(crate)`，外部 bench 无法注入内存 stub 号段装载器）；端到端吞吐请以自身负载实测（见[优化建议](#优化建议)）。
 
@@ -52,7 +52,7 @@
 
 ## 基准套件（发号热路径）
 
-`benches/algorithms.rs` 定义 7 个基准函数（Lane W1 T009 + 后续补充的 batch_10000）：
+`benches/algorithms.rs` 定义 7 个基准函数（含后续补充的 batch_10000）：
 
 | 基准函数 | 用例 | 覆盖路径 |
 |----------|------|----------|

@@ -159,7 +159,7 @@ docker run -d \
 | `RUST_LOG` | info | 日志级别 (trace/debug/info/warn/error) |
 | `RUST_BACKTRACE` | 0 | 错误堆栈 (0/1/full) |
 | `DATABASE_URL` | - | 完整数据库 URL（覆盖其他配置） |
-| `NEBULA_LOCALE` | 取 `app.locale`（默认 `en`） | 进程默认 locale（T035 起生效，原 `LOCALE` 为文档虚构变量）。可选值：`en`、`zh-CN`，非法值回退 `en`。仅用于设置 `rust-i18n` 全局 locale 影响启动日志与未走 `Accept-Language` 中间件的路径；`/api/v1/*` 路由的运行时响应语言由请求 `Accept-Language` 头协商，不受此变量影响。 |
+| `NEBULA_LOCALE` | 取 `app.locale`（默认 `en`） | 进程默认 locale（T035 起生效，原 `LOCALE` 为文档虚构变量）。可选值：`en`、`zh-CN`，非法值回退 `en`。仅用于设置 `fluent-bundle` 全局 locale 影响启动日志与未走 `Accept-Language` 中间件的路径；`/api/v1/*` 路由的运行时响应语言由请求 `Accept-Language` 头协商，不受此变量影响。 |
 
 ### 4.3 NEBULA_LOCALE 与 locale 配置详解
 

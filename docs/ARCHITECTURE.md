@@ -219,7 +219,7 @@ graph LR
     Handlers -->|错误转换| Helpers[helpers.rs<br/>core_error_to_response]
     Helpers --> I18n[i18n 模块<br/>src/core/i18n.rs]
     I18n -->|translate_with_locale_args| Locales[(locales/en.yml<br/>locales/zh-CN.yml)]
-    Locales -->|rust-i18n 3.1 编译期嵌入| I18n
+    Locales -->|fluent-bundle 编译期嵌入| I18n
 
     style LocaleMW fill:#ffcc80
     style I18n fill:#ce93d8
@@ -228,11 +228,11 @@ graph LR
 
 **关键设计决策：**
 
-- **不修改全局 locale 状态**：`translate_with_locale*` 函数直接读取 `Locale` 参数并查询 `rust-i18n` 编译期嵌入的静态数据，绝不调用 `set_locale`，因此可在并发请求间安全使用（无 `Mutex` / 全局可变状态）。
+- **不修改全局 locale 状态**：`translate_with_locale*` 函数直接读取 `Locale` 参数并查询 `fluent-bundle` 编译期嵌入的静态数据，绝不调用 `set_locale`，因此可在并发请求间安全使用（无 `Mutex` / 全局可变状态）。
 - **中间件边界**：`locale_middleware` 仅作用于 `/api/v1/*` 路由（Phase 8 T041 M4 性能修复），避免 `/health` / `/ready` / `/metrics` / `/api-docs/openapi.json` 等不消费 `Locale` 的请求承担 `Accept-Language` 解析成本。
-- **fallback 链**：缺少 key 时 `rust-i18n` 先回退到默认 locale (`en`)，再回退到 key 本身（绝不返回空串），保证错误响应永远有可读消息。
-- **隐藏 API 使用**：`translate_with_locale_cow` 通过 `crate::_rust_i18n_try_translate`（`i18n!` 宏生成的 `#[doc(hidden)] pub fn`）实现按 locale 翻译。`rust-i18n` 已 pin 到 `3.1`（Major.Minor），若 4.x 暴露稳定 API 再迁移。
-- **依赖特性化（规则 28）**：`rust-i18n = { version = "3.1", default-features = false }` 禁用默认 `accept-language` 特性，因为本项目在 `locale.rs` 中提供了更严格（RFC 7231 §5.3.5 + DoS 防护）的解析器。
+- **fallback 链**：缺少 key 时 `fluent-bundle` 先回退到默认 locale (`en`)，再回退到 key 本身（绝不返回空串），保证错误响应永远有可读消息。
+- **隐藏 API 使用**：`translate_with_locale_cow` 通过 `fluent-bundle` 的 `FluentBundle::get_message()` + `FluentBundle::format_pattern()` 实现按 locale 翻译。国际化基线为 unify-rust-i18n（Fluent/ICU 栈）。
+- **依赖特性化（规则 28）**：`fluent-bundle = { version = "0.16", features = ["concurrent"] }` 使用 `concurrent` 特性（`Send+Sync` 的 `FluentBundle`），本项目在 `locale.rs` 中提供了更严格（RFC 7231 §5.3.5 + DoS 防护）的 `Accept-Language` 解析器，未使用第三方 `accept-language` 库。
 
 ## 9. EtcdClientOps trait 关系图（Phase 6）
 

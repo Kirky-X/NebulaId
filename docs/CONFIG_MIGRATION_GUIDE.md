@@ -705,7 +705,7 @@ WHERE role = 'admin' AND enabled;
 - 返回 `0`：仍可用 `POST /api-keys` 创建首个 admin key。
 - 返回 `≥ 1`：再创建被拒，`CoreError::AuthenticationError`，文案
   `An admin API key already exists; creating additional admin keys is forbidden`
-  （`locales/en.yml:53`；中文 `locales/zh-CN.yml:50`）。**这是修复后的预期行为，不是回归。**
+  （`locales/en/messages.ftl`；中文 `locales/zh/messages.ftl`）。**这是修复后的预期行为，不是回归。**
 - `role` 是 `VARCHAR(20)` 文本列（历史 ENUM 已按 `scripts/init.sql:85` 的注释移除），
   直接用字符串 `'admin'` 比较即可。
 - 把某条 admin key 置 `enabled = false` 会让它不再计入该计数，但同时也就剥夺了它的认证资格。
@@ -758,13 +758,14 @@ WHERE role = 'admin' AND enabled;
 
 ## 配置全表（全量选项与校验规则）
 
-`Config` 覆盖 `app`、`database`、`etcd`、`auth`、`algorithm`、`monitoring`、`logging`、
-`rate_limit`、`tls`、`batch_generate` 十个段，对它们都**没有**标注 `#[serde(default)]`
-（`src/core/config/app_config.rs:37-64`）。缺任一必填字段会让**整份**文件解析失败，
-**未知键**同样会被拒绝 —— 17 个配置结构体全部带 `deny_unknown_fields`。解析失败会让进程
-以退出码 1 终止（`resolve_startup_config`，`src/main.rs:542`），不再退回
+`Config` 覆盖 `app`、`database`、`redis`、`etcd`、`auth`、`algorithm`、`monitoring`、`logging`、
+`rate_limit`、`audit`、`hot_reload`、`tls`、`batch_generate` 十三个段；除 `[redis]`、`[audit]`
+与 `[hot_reload]` 三段带 `serde(default)`、可整体省略外，其余十个段对顶层都**没有**标注
+可缺省语义（`src/core/config/app_config.rs:27-57`）。缺任一必填字段会让**整份**文件解析失败，
+**未知键**同样会被拒绝 —— 18 个配置结构体全部带 `deny_unknown_fields`。解析失败会让进程
+以退出码 1 终止（`resolve_startup_config`），不再退回
 `Config::default()`；只有在既没给 `--config`、`config/config.toml` 也确实不存在时，才使用
-内置默认配置，并额外输出一条 `warn`。只有 `[redis]` 与 `[hot_reload]` 可以整体省略。
+内置默认配置，并额外输出一条 `warn`。
 
 > ⚠️ **代码事实核对**：服务端启动时 `Config::merge()` 会用
 > 「环境变量配置」的 `algorithm.segment` / `algorithm.snowflake` /
@@ -809,6 +810,10 @@ WHERE role = 'admin' AND enabled;
 | `rate_limit.enabled` | bool | `true` | ✅ | 限流总开关 |
 | `rate_limit.default_rps` | u32 | `10000` | ✅ | 每秒请求数，启用时必须 > 0 |
 | `rate_limit.burst_size` | u32 | `100` | ✅ | 启用时必须 ≤ 10 × `default_rps` |
+| `audit` | 段 | — | ➖ | 整段可省略 |
+| `audit.file_logging_enabled` | bool | `true` | ➖ | 生产默认将审计事件持久化到文件（JSON Lines，逐事件一行） |
+| `audit.file_logging_path` | String | `"logs/audit.log"` | ➖ | 审计文件路径 |
+| `audit.memory_capacity` | usize | `10000` | ➖ | 内存环形缓冲容量（条数上限，超出淘汰最旧） |
 | `hot_reload` | 段 | `auto_watch_enabled = false` | ➖ | 整段可省略 |
 | `tls.enabled` / `cert_path` / `key_path` / `http_enabled` / `grpc_enabled` | bool / String / String / bool / bool | `false` / `""` / `""` / `false` / `false` | ✅ | HTTP 与 gRPC 的 TLS |
 | `tls.ca_path` | String? | `null` | ➖ | 可选 CA |
@@ -817,7 +822,7 @@ WHERE role = 'admin' AND enabled;
 | `batch_generate.max_batch_size` | u32 | `100` | ✅ | 必须在 1..=10000 |
 
 默认值即 `Config::default()` 的取值；「文件内必填」表示该字段
-是否带 serde 默认值。17 个配置结构体全部带 `#[serde(deny_unknown_fields)]`，
+是否带 serde 默认值。18 个配置结构体全部带 `#[serde(deny_unknown_fields)]`，
 未知键的严重后果与缺必填键完全一样：两者都让**整份**文件解析失败并终止启动，
 段名拼错不再可能被静默丢弃。
 

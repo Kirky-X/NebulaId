@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🚀 Nebula ID
+<img src="docs/asserts/NebulaId.png" alt="NebulaId Logo" width="180">
 
 [![GitHub release](https://img.shields.io/github/v/release/Kirky-X/NebulaId)](https://github.com/Kirky-X/NebulaId/releases) [![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/NebulaId/ci.yml?branch=main)](https://github.com/Kirky-X/NebulaId/actions/workflows/ci.yml) [![Security](https://img.shields.io/github/actions/workflow/status/Kirky-X/NebulaId/codeql.yml?branch=main&label=security)](https://github.com/Kirky-X/NebulaId/actions/workflows/codeql.yml)
 
@@ -81,7 +81,7 @@
 <td width="50%" style="vertical-align:top; padding: 12px">🧾 <b>审计日志</b><br><span style="color:#64748B">ID 生成与密钥操作全量审计，客户端 IP 解析到真实对端连接地址</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">⚙️ <b>配置 fail-fast</b><br><span style="color:#64748B">17 个配置结构体全部 <code>deny_unknown_fields</code>，坏配置以退出码 1 终止启动；<code>${VAR}</code> 环境变量展开</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">⚙️ <b>配置 fail-fast</b><br><span style="color:#64748B">18 个配置结构体全部 <code>deny_unknown_fields</code>，坏配置以退出码 1 终止启动；<code>${VAR}</code> 环境变量展开</span></td>
 <td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>统一脚本入口</b><br><span style="color:#64748B"><code>scripts/run.sh</code> 调度 deploy / lint / redis-test / api-test / install-hooks，本地与 CI 同源</span></td>
 </tr>
 </table>
@@ -171,6 +171,7 @@ cargo build --release
 | `garrison-auth` | ✅ | garrison 接管 API key 验证（关闭后回退手写 Argon2id 路径） |
 | `etcd` | ➖ | etcd 分布式协调 |
 | `sdk` | ➖ | 嵌入式 SDK facade（`NebulaIdKit`，蕴含 `openapi`） |
+| `openapi` | ➖ | sdforge OpenAPI 镜像 feature（未启用时 `#[forge]` 不注册 OpenAPI 路由，`/api-docs/openapi.json` 的 paths 为空） |
 | `integration-tests` | ➖ | 门控需要真实数据库的 `#[ignore]` 测试 |
 | `alerting` | ➖ | 门控告警子系统（`src/core/monitoring`，生产默认不编译） |
 
@@ -268,7 +269,7 @@ Nebula ID 采用「server → core → 自研生态」三层设计：`src/server
 
 ## ⚙️ 配置
 
-`Config` 覆盖 `app`、`database`、`etcd`、`auth`、`algorithm`、`monitoring`、`logging`、`rate_limit`、`tls`、`batch_generate` 十个段，全部**必填**（仅 `[redis]` 与 `[hot_reload]` 可整体省略）；17 个配置结构体均带 `#[serde(deny_unknown_fields)]`，未知键与缺失必填键同样导致整份文件解析失败、进程以退出码 1 终止。环境变量有两种机制：`APP_HOST`、`DATABASE_URL`、`ETCD_ENDPOINTS` 等在启动时覆盖文件配置；`NEBULA_DATABASE_PASSWORD`、`NEBULA_API_KEY_SALT` 等以 `${VAR}` 形式在文件内引用、解析前展开。
+`Config` 覆盖 `app`、`database`、`redis`、`etcd`、`auth`、`algorithm`、`monitoring`、`logging`、`rate_limit`、`audit`、`hot_reload`、`tls`、`batch_generate` 十三个段；除带 `serde(default)`、可整体省略的 `[redis]`、`[audit]` 与 `[hot_reload]` 外，其余十段**必填**。18 个配置结构体均带 `#[serde(deny_unknown_fields)]`，未知键与缺失必填键同样导致整份文件解析失败、进程以退出码 1 终止。环境变量有两种机制：`APP_HOST`、`DATABASE_URL`、`ETCD_ENDPOINTS` 等在启动时覆盖文件配置；`NEBULA_DATABASE_PASSWORD`、`NEBULA_API_KEY_SALT` 等以 `${VAR}` 形式在文件内引用、解析前展开。
 
 能被完整解析的最小配置见 [`config/config.toml`](config/config.toml)，形如：
 
@@ -342,12 +343,12 @@ max_batch_size = 100        # validate(): 1..=10000
 
 ## 🌐 国际化
 
-Nebula ID 自 v0.2.0 起内置 ICU 国际化（unify-rust-i18n，Fluent/ICU 栈），覆盖错误消息与日志的运行时翻译：
+Nebula ID 自 v0.2.0 起内置国际化，现基于 unify-rust-i18n（Fluent/ICU 栈，0.3.0 起替换 rust-i18n YAML 后端），覆盖错误消息与日志的运行时翻译：
 
 | Locale 标签 | 语言 | locales 文件 | 状态 |
 |-------------|------|--------------|------|
-| `en` | English（默认） | `locales/en.yml` | ✅ 完整 |
-| `zh-CN` | 简体中文 | `locales/zh-CN.yml` | ✅ 完整 |
+| `en` | English（默认） | `locales/en/messages.ftl` | ✅ 完整 |
+| `zh-CN` | 简体中文 | `locales/zh/messages.ftl` | ✅ 完整 |
 
 协商机制：`locale_middleware` 解析 HTTP `Accept-Language` 头（RFC 7231 §5.3.5），按 q-value 降序匹配首个受支持 locale（精确优先、其次前缀匹配），缺失时回退 `en`；业务 handler 经 `Extension<Locale>` 读取并翻译错误响应。`Locale` 派生自用户输入、可被伪造，**不得**用于认证、授权或任何安全决策。
 
@@ -381,7 +382,7 @@ CI（`ci.yml` / `release.yml` / `health-check.yml`）也通过同一入口调用
 
 ### 🎯 测试策略
 
-测试分层覆盖：`src/` 内联单元测试（`#[cfg(test)]`）、`src/core/tests/` 下按层组织的 E2E 模块（算法、认证、缓存、降级、gRPC 监控、基础设施、服务层等 13 个文件）、`tests/i18n_e2e.rs` 端到端 i18n 测试、`tests/*.sh` shell 端到端脚本（API、降级、分布式、数据库并发）与 Criterion 基准（`benches/i18n.rs`、`benches/algorithms.rs`）。逐域场景矩阵与文件映射见 [🧪 测试场景文档](docs/TEST_SCENARIOS.md)。
+测试分层覆盖：`src/` 内联单元测试（`#[cfg(test)]`）、`src/core/tests/` 下按层组织的 E2E 模块（算法、认证、缓存、降级、gRPC 监控、基础设施、服务层等 11 个文件）、`tests/i18n_e2e.rs` 端到端 i18n 测试、`tests/*.sh` shell 端到端脚本（API、降级、分布式、数据库并发）与 Criterion 基准（`benches/i18n.rs`、`benches/algorithms.rs`）。逐域场景矩阵与文件映射见 [🧪 测试场景文档](docs/TEST_SCENARIOS.md)。
 
 ### ▶️ 运行命令（与 CI 一致）
 
@@ -410,7 +411,7 @@ cargo bench --bench algorithms
 
 ### 📊 测试规模
 
-截至 v0.2.x 工作区：约 1780 个 Rust 测试函数（`src/` 内联 + `src/core/tests/` E2E 模块 + `tests/i18n_e2e.rs`）、4 个 shell 端到端脚本、2 组 Criterion 基准（i18n 热路径 4 个基准函数 + 发号 / 限流 / 认证缓存热路径 7 个基准函数）。CI 覆盖率门禁为行覆盖率 ≥ 95%，pre-push 钩子另执行 ≥ 80% 的本地门禁；v0.2.0 发布时实际行覆盖率 89.91%。逐模块统计与统计口径见 [🧪 测试场景文档 · 统计汇总](docs/TEST_SCENARIOS.md#统计汇总)。
+截至 0.3.0-rc.1 工作区：约 1900 个 Rust 测试函数（`src/` 内联 + `src/core/tests/` E2E 模块 + `tests/i18n_e2e.rs`）、4 个 shell 端到端脚本、2 组 Criterion 基准（i18n 热路径 4 个基准函数 / 12 用例 + 发号 / 限流 / 认证缓存热路径 6 个基准函数 / 7 用例）。CI 覆盖率门禁为行覆盖率 ≥ 95%，pre-push 钩子另执行 ≥ 90% 的本地门禁；v0.2.0 发布时实际行覆盖率 89.91%。逐模块统计与统计口径见 [🧪 测试场景文档 · 统计汇总](docs/TEST_SCENARIOS.md#统计汇总)。
 
 ---
 
@@ -443,7 +444,7 @@ CI 五阶段门禁（fmt + clippy → cargo-deny → cargo-audit `--deny warning
 <tr><td align="center">✅</td><td>核心算法</td><td>Segment 双缓冲与动态步长、Snowflake、UUID v8、算法路由与降级链</td></tr>
 <tr><td align="center">✅</td><td>服务与协议</td><td>HTTP + gRPC 双协议、OpenAPI 文档、TLS、限流、garrison API key 认证、审计日志</td></tr>
 <tr><td align="center">✅</td><td>可观测与国际化</td><td>逐算法 p50/p99/p999 指标、健康检查、OTLP tracing、en / zh-CN i18n</td></tr>
-<tr><td align="center">✅</td><td>质量门禁</td><td>CI 五阶段门禁、覆盖率 ≥ 95%、cargo-deny / cargo-audit / CodeQL、约 1780 个测试</td></tr>
+<tr><td align="center">✅</td><td>质量门禁</td><td>CI 五阶段门禁、覆盖率 ≥ 95%、cargo-deny / cargo-audit / CodeQL、约 1900 个测试</td></tr>
 <tr><td align="center">🚧</td><td>SDK 与分布式协调</td><td><code>sdk</code> facade（trait-kit 装配）持续强化；<code>etcd</code> 协调的生产化验证（feature 默认关闭）</td></tr>
 <tr><td align="center">🚧</td><td>性能工程</td><td>批量生成调优、Segment 路由基准接入（ID 生成吞吐基准框架与发布基线已落地，见 [📈 性能指南](docs/PERFORMANCE.md)）</td></tr>
 <tr><td align="center">📋</td><td>云原生与容灾</td><td>Kubernetes Operator、多数据中心与自动故障转移、动态算法切换</td></tr>
@@ -498,7 +499,7 @@ CI 五阶段门禁（fmt + clippy → cargo-deny → cargo-audit `--deny warning
 
 | 版本 | 日期 | 要点 |
 |------|------|------|
-| Unreleased | — | SDK 迁移 trait-kit 装配（`NebulaIdKit`）、gRPC 全 RPC 认证、限流真实挂载、TLS fail-fast、配置 `deny_unknown_fields` + 退出码 1、密钥轮换宽限期 |
+| 0.3.0-rc.1 | 2026-09-22 | 自研生态全面切 crates.io registry（RC 波次对齐）、i18n 迁移 unify-rust-i18n（Fluent/ICU）、SDK 迁移 trait-kit 装配（`NebulaIdKit`）、gRPC 全 RPC 认证、限流真实挂载、TLS fail-fast、配置 `deny_unknown_fields` + 退出码 1、密钥轮换宽限期 |
 | 0.2.0 | 2026-07-23 | garrison DAO 基础设施、e2e 套件扩充（95% 模块覆盖）、dbnexus / sdforge / confers 架构接管、3 项 strix 安全修复 |
 
 ---

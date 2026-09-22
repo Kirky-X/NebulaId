@@ -282,14 +282,14 @@ lefthook install              # 推荐：使用 lefthook
 cargo fmt --all
 
 # 运行 Clippy 静态分析 (必须无警告)
-cargo clippy --package nebulaid --features etcd -- -D warnings
+cargo clippy --package nebulaid --all-features -- -D warnings
 
 # 运行所有测试
-cargo test --package nebulaid --features etcd
+cargo test --package nebulaid --all-features
 
 # 运行特定模块的测试
-cargo test --package nebulaid --features etcd --lib algorithm::segment
-cargo test --package nebulaid --features etcd --lib algorithm::snowflake
+cargo test --package nebulaid --all-features --lib algorithm::segment
+cargo test --package nebulaid --all-features --lib algorithm::snowflake
 ```
 
 **预提交检查脚本**会自动执行以下检查：
@@ -405,15 +405,16 @@ git push origin feature/ALGORITHM-id-generation
 3. **E2E 测试**: 验证关键业务流程。
 
 ### 覆盖率要求
-- **新代码覆盖率**: ≥ 80%。
+- **新代码覆盖率**: ≥ 90%（与本地 pre-push 覆盖率门禁同口径）。
 - **核心业务逻辑**: 100% 覆盖。
 
 ```bash
-# 生成覆盖率报告
-cargo tarpaulin --out Html
+# 生成覆盖率报告（仓库门禁统一使用 cargo-llvm-cov）
+cargo llvm-cov --package nebulaid --fail-under-lines 90
 
-# 查看特定 crate 的覆盖率
-cargo tarpaulin --package nebula-id-core --out Html
+# CI 权威门禁（default leg，排除 server/proto/ 生成代码，≥ 95%）
+cargo llvm-cov --package nebulaid \
+  --fail-under-lines 95 --ignore-filename-regex "server/proto/"
 ```
 
 ---

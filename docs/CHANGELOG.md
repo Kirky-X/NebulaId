@@ -12,14 +12,40 @@
 ## 📋 目录
 
 - [Unreleased](#unreleased)
+- [0.3.0-rc.1 - 2026-09-22](#030-rc1---2026-09-22)
 - [0.2.0 - 2026-07-23](#020---2026-07-23)
 
 ---
 
 ## [Unreleased]
 
-接线修复与 SDK 强化（specmark change `wiring-and-sdk-hardening`）＋ 密钥轮换宽限期与配置
-fail-fast（change `key-rotation-and-config-failfast`）。**含多项行为变更，部署方需注意。**
+暂无内容。
+
+## [0.3.0-rc.1] - 2026-09-22
+
+面向 0.3.0 的首个候选发布。自 v0.2.0 以来累积的全部变更随本版本发布：除下方详列的接线修复、
+SDK 强化、密钥轮换宽限期与配置 fail-fast（**含多项行为变更，部署方需注意**）外，发布前最后
+一批「生态 RC 波次对齐」变更概述如下。
+
+### RC 波次对齐（发布前收口）
+
+- **自研生态全面切换 crates.io registry**：移除 `../base`、`../garrison` 等兄弟仓库 path
+  依赖，confers `0.6.0-rc.5` / oxcache `0.5.0-rc.4` / dbnexus `0.6.0-rc.5` / sdforge
+  `0.5.0-rc.5` / inklog `0.3.0-rc.5` / garrison `0.9.0-rc.1` / trait-kit `0.5.0-rc.6` /
+  limiteron `0.3.0-rc.4` 统一对齐同一 RC 波次；本仓库自此可独立构建，CI 无需 checkout
+  兄弟目录，pre-release 语义下各依赖按 semver 自动上浮。
+- **i18n 技术栈迁移到 unify-rust-i18n（Fluent/ICU 栈）**：rust-i18n 的 YAML 资源
+  `locales/en.yml` / `locales/zh-CN.yml` 替换为 `locales/{en,zh}/messages.ftl`（经
+  `include_str!` 编译期内嵌，键集对齐守卫改为作用于 FTL 资源）；进程默认 locale 可配置
+  （检测链 `NEBULA_LOCALE` → `[app].locale` → `LC_ALL`/`LC_MESSAGES`/`LANG` →
+  sys-locale → `en`）；OpenAPI 文档描述随语言本地化。
+- **validator 直接依赖移除**：经 `sdforge::validator` re-export 消费；sdforge 升
+  `0.5.0-rc.5`，swagger UI 切回 sdforge re-export。
+- **连接建立迁移至 dbnexus `DbPool` 统一连接池**（收编并行会话改动）。
+- **CI 修复**：修复 etcd feature 腿的 8 处 rustc 1.98 clippy lint；no-default 构建下
+  gate sdforge 路由计数测试；启用 lefthook pre-commit 钩子前清理存量 fmt 违规。
+- **文档与工程收口**：清理文档中的内部任务编号（T0xx/Phase N/Lane）引用；LICENSE
+  标题区与 proto 模块声明文件版权头规范化。
 
 ### Breaking（破坏性 API 变更）
 
@@ -261,7 +287,8 @@ fail-fast（change `key-rotation-and-config-failfast`）。**含多项行为变�
   （sdforge 将 message 原样下发）；改为对外固定概要 + `error_id`，内部细节只进日志。
 - **locale 键集对齐守卫**：新增测试断言 `locales/en.yml` 与 `locales/zh-CN.yml`
   顶层键完全一致（单侧缺键只会在该语言下静默回退）；同时删除 `min_tls_version`
-  改造后成为孤儿的三个键（en + zh）。
+  改造后成为孤儿的三个键（en + zh）。该守卫随后随 i18n 栈迁移改作用于
+  `locales/{en,zh}/messages.ftl`（见上文「RC 波次对齐」）。
 - **snowflake 并发重复 ID 竞态**：串行化 `(last_timestamp, sequence)` 迁移，
   并发下不再产生重复。
 - **降级链去重**：fallback 链 `[Snowflake, UuidV8]`（去除重复占位）。

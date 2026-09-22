@@ -30,26 +30,25 @@
 
 ## 测试分层总览
 
-| 层 | 位置 | 规模（截至 0.2.x 工作区） | 运行方式 |
+| 层 | 位置 | 规模（截至 0.3.0-rc.1 工作区） | 运行方式 |
 |----|------|---------------------------|----------|
-| 内联单元测试 | `src/` 各模块 `#[cfg(test)]` | 约 1560 个测试函数 | `cargo test --package nebulaid` |
-| E2E 测试模块 | `src/core/tests/`（13 个文件，经 `mod.rs` 注册） | 221 个测试函数 | `cargo test --package nebulaid --features etcd` |
+| 内联单元测试 | `src/` 各模块 `#[cfg(test)]` | 约 1700 个测试函数 | `cargo test --package nebulaid` |
+| E2E 测试模块 | `src/core/tests/`（11 个测试模块 + `mod.rs`） | 226 个测试函数 | `cargo test --package nebulaid --all-features` |
 | i18n 端到端 | `tests/i18n_e2e.rs` | 1 个文件（middleware → Extension → 翻译响应全链） | 同上 |
 | 审计管道阻塞回归 | `tests/audit_ring_stall_repro.rs` | 1 个测试（灌满 inklog async 通道后断言审计 log() 不阻塞） | 同上 |
 | Shell 端到端 | `tests/*.sh` | 4 个脚本（见下节） | `./scripts/run.sh api-test` 等 |
 | Criterion 基准（i18n 热路径） | `benches/i18n.rs` | 1 组（4 基准函数 / 12 用例） | `cargo bench --bench i18n` |
-| Criterion 基准（发号热路径） | `benches/algorithms.rs` | 1 组（7 基准函数 / 7 用例） | `cargo bench --bench algorithms` |
-| 仓库文本守卫 | `src/core/tests/repo_docs_guards_tests.rs` | 1 个测试 | 随 `cargo test` 运行 |
+| Criterion 基准（发号热路径） | `benches/algorithms.rs` | 1 组（6 基准函数 / 7 用例） | `cargo bench --bench algorithms` |
 
 `src/core/tests/` 内的 E2E 模块按层组织，计数如下（`grep -c` 口径）：
 
 | 模块 | 测试函数 | 覆盖域 |
 |------|:--------:|--------|
-| `server_layer_e2e_tests.rs` | 55 | HTTP 服务层端到端 |
+| `server_layer_e2e_tests.rs` | 56 | HTTP 服务层端到端 |
 | `auth_handlers_e2e_tests.rs` | 35 | 认证 handlers |
-| `grpc_monitoring_e2e_tests.rs` | 34 | gRPC 与监控 |
+| `grpc_monitoring_e2e_tests.rs` | 40 | gRPC 与监控 |
 | `supporting_layer_e2e_tests.rs` | 28 | 支撑层（配置 / 日志 / 缓存装配） |
-| `infra_e2e_tests.rs` | 22 | 基础设施（数据库连接 / 迁移） |
+| `infra_e2e_tests.rs` | 21 | 基础设施（数据库连接 / 迁移） |
 | `degradation_tests.rs` | 12 | 降级链 |
 | `remaining_e2e_tests.rs` | 12 | 收尾场景 |
 | `algorithm_e2e_tests.rs` | 11 | 算法端到端 |
@@ -111,7 +110,7 @@
 
 | 编号 | 场景 | 验证点 | 覆盖位置 |
 |------|------|--------|----------|
-| CFG-01 | 未知键拒绝 | 17 个结构体 `deny_unknown_fields`，拼错段名启动失败 | `src/core/config/` 内联测试 |
+| CFG-01 | 未知键拒绝 | 18 个结构体 `deny_unknown_fields`，拼错段名启动失败 | `src/core/config/` 内联测试 |
 | CFG-02 | 坏配置 fail-fast | 解析失败退出码 1，不再回退 `Config::default()`；仅「未给 `--config` 且默认路径不存在」回落默认 + warn | `app_config.rs`（`resolve_startup_config`） |
 | CFG-03 | 校验规则全集 | `Config::validate` 的 10 条规则逐条触发（见[配置迁移指南 · 校验规则](CONFIG_MIGRATION_GUIDE.md#校验规则)） | `app_config.rs` 内联测试 |
 | CFG-04 | 非 ASCII 配置不 panic | 含中文注释/值的配置文件解析不 panic（字节切片回归） | `load_from_file_with_non_ascii_comments_does_not_panic` |
@@ -123,7 +122,7 @@
 | 编号 | 场景 | 验证点 | 覆盖位置 |
 |------|------|--------|----------|
 | OBS-01 | Accept-Language 全链 | header → `locale_middleware` → `Extension<Locale>` → 翻译响应 | `tests/i18n_e2e.rs` |
-| OBS-02 | locale 键集对齐 | `en.yml` 与 `zh-CN.yml` 顶层键完全一致（守卫测试） | i18n 模块内联测试 |
+| OBS-02 | locale 键集对齐 | `locales/{en,zh}/messages.ftl` 键集合一致（`-`→`.` 映射后比较，守卫测试） | i18n 模块内联测试 |
 | OBS-03 | 逐算法分位数 | p50/p99/p999 取自 1024 样本环形缓冲（真实分位数口径） | `src/core/types/metrics.rs` 内联测试 |
 | OBS-04 | 时钟回拨可观测 | `clock_backwards` 真实计数驱动告警（非「有延迟样本即真」） | `grpc_monitoring_e2e_tests.rs` |
 | OBS-05 | 健康与指标端点 | `/health`、`/health/sdforge`、`/metrics` 语义 | `server_layer_e2e_tests.rs` |
@@ -162,43 +161,41 @@
 ## 运行命令与门禁
 
 ```bash
-# 全量测试（CI 矩阵按 default / postgresql / etcd 三档运行）
-cargo test --package nebulaid --features etcd
+# 全量测试（CI 矩阵按 default / all（--all-features）两档运行）
+cargo test --package nebulaid --all-features
 
-# SDK 特性面（独立 CI job：clippy + test）
-cargo clippy --package nebulaid --features sdk -- -D warnings
-cargo test --package nebulaid --features sdk
+# 轻量编译检查（CI fmt-clippy job 同款：no-default 路径参与编译）
+cargo check --package nebulaid --no-default-features --lib --bins
 
-# 覆盖率门禁：CI ≥ 95%（排除 server/proto/ 生成代码）
-cargo llvm-cov --package nebulaid --features etcd \
+# 覆盖率门禁：CI ≥ 95%（default leg，排除 server/proto/ 生成代码）
+cargo llvm-cov --package nebulaid \
   --fail-under-lines 95 --ignore-filename-regex "server/proto/"
 
-# 本地门禁：pre-commit（fmt + clippy + gitleaks）与 pre-push（test + 覆盖率 ≥ 80%）
+# 本地门禁：pre-commit（fmt + clippy + gitleaks）与 pre-push（test + 覆盖率 ≥ 90%）
 ./scripts/run.sh pre-commit
 
 # 基准
 cargo bench --bench i18n
 ```
 
-门禁归属：CI 五阶段（fmt-clippy → deny → audit → test 矩阵 → gate）见 `.github/workflows/ci.yml`；pre-commit / pre-push 钩子见 `lefthook.yml`；pre-push 覆盖率阈值为 ≥ 80%（`scripts/_coverage_gate.sh`），CI 为 ≥ 95%。
+门禁归属：CI 五阶段（fmt-clippy → deny → audit → test 矩阵 → gate）见 `.github/workflows/ci.yml`；pre-commit / pre-push 钩子见 `lefthook.yml`；pre-push 覆盖率阈值为 ≥ 90%（`scripts/_coverage_gate.sh`），CI 为 ≥ 95%。
 
 ---
 
 ## 统计汇总
 
-截至 0.2.x 工作区（口径：`grep -rc '#\[test\]\|#\[tokio::test'` 于 `src/` 与 `tests/`）：
+截至 0.3.0-rc.1 工作区（口径：`grep -rc '#\[test\]\|#\[tokio::test'` 于 `src/` 与 `tests/`）：
 
 | 类别 | 数量 |
 |------|-----:|
-| Rust 测试函数合计 | 约 1780 |
-| ├─ `src/` 内联单元测试 | 约 1560 |
-| ├─ `src/core/tests/` E2E 模块 | 221 |
-| └─ `tests/i18n_e2e.rs` | 少量（全链 i18n） |
+| Rust 测试函数合计 | 约 1930 |
+| ├─ `src/` 内联单元测试 | 约 1700 |
+| ├─ `src/core/tests/` E2E 模块 | 226 |
+| └─ `tests/i18n_e2e.rs` | 8（全链 i18n） |
 | Shell 端到端脚本 | 4（另有 1 个共用库） |
-| Criterion 基准组 | 2（i18n：4 函数 / 12 用例；发号热路径：7 函数 / 7 用例） |
-| 仓库文本守卫 | 1 |
+| Criterion 基准组 | 2（i18n：4 函数 / 12 用例；发号热路径：6 函数 / 7 用例） |
 
-覆盖率：CI 门禁为行覆盖率 ≥ 95%（`ci.yml`），pre-push 本地门禁 ≥ 80%（`_coverage_gate.sh`）；v0.2.0 发布时实际行覆盖率 89.91%（门禁值是下限，非当前值）。历史口径：v0.2.0 发布时 e2e 套件曾报 1829 条（见 [CHANGELOG](CHANGELOG.md)），后续演进以上表 grep 口径为准。
+覆盖率：CI 门禁为行覆盖率 ≥ 95%（`ci.yml`），pre-push 本地门禁 ≥ 90%（`_coverage_gate.sh`）；v0.2.0 发布时实际行覆盖率 89.91%（门禁值是下限，非当前值）。历史口径：v0.2.0 发布时 e2e 套件曾报 1829 条（见 [CHANGELOG](CHANGELOG.md)），后续演进以上表 grep 口径为准。
 
 ---
 

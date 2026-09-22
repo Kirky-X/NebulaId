@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🚀 Nebula ID
+<img src="docs/asserts/NebulaId.png" alt="NebulaId Logo" width="180">
 
 [![GitHub release](https://img.shields.io/github/v/release/Kirky-X/NebulaId)](https://github.com/Kirky-X/NebulaId/releases) [![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/NebulaId/ci.yml?branch=main)](https://github.com/Kirky-X/NebulaId/actions/workflows/ci.yml) [![Security](https://img.shields.io/github/actions/workflow/status/Kirky-X/NebulaId/codeql.yml?branch=main&label=security)](https://github.com/Kirky-X/NebulaId/actions/workflows/codeql.yml)
 
@@ -81,7 +81,7 @@ Double-buffered segments, drift-guarded bit slicing, custom UUID v8 layouts — 
 <td width="50%" style="vertical-align:top; padding: 12px">🧾 <b>Audit Logging</b><br><span style="color:#64748B">Full audit trail for ID generation and key operations, with client IPs resolved to real peer connection addresses</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">⚙️ <b>Config fail-fast</b><br><span style="color:#64748B">All 17 config structs carry <code>deny_unknown_fields</code>; a bad config aborts startup with exit code 1; <code>${VAR}</code> environment expansion built in</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">⚙️ <b>Config fail-fast</b><br><span style="color:#64748B">All 18 config structs carry <code>deny_unknown_fields</code>; a bad config aborts startup with exit code 1; <code>${VAR}</code> environment expansion built in</span></td>
 <td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>Unified Script Entry</b><br><span style="color:#64748B"><code>scripts/run.sh</code> dispatches deploy / lint / redis-test / api-test / install-hooks, identical locally and in CI</span></td>
 </tr>
 </table>
@@ -171,6 +171,7 @@ cargo build --release
 | `garrison-auth` | ✅ | garrison takes over API key verification (falling back to the hand-written Argon2id path when disabled) |
 | `etcd` | ➖ | etcd distributed coordination |
 | `sdk` | ➖ | Embedded SDK facade (`NebulaIdKit`, implies `openapi`) |
+| `openapi` | ➖ | sdforge OpenAPI mirror feature (without it, `#[forge]` registers no OpenAPI routes and `/api-docs/openapi.json` has empty paths) |
 | `integration-tests` | ➖ | Gates `#[ignore]` tests that need a real database |
 | `alerting` | ➖ | Gates the alerting subsystem (`src/core/monitoring`, not compiled into production builds by default) |
 
@@ -269,7 +270,7 @@ For the architecture diagram, module dependencies, external library roles, the `
 
 ## ⚙️ Configuration
 
-`Config` spans the ten sections `app`, `database`, `etcd`, `auth`, `algorithm`, `monitoring`, `logging`, `rate_limit`, `tls`, and `batch_generate`, all **required** (only `[redis]` and `[hot_reload]` may be omitted entirely); all 17 config structs carry `#[serde(deny_unknown_fields)]`, so unknown keys and missing required keys alike fail the whole file and abort startup with exit code 1. Environment variables work in two ways: `APP_HOST`, `DATABASE_URL`, `ETCD_ENDPOINTS`, and friends override the file config at startup, while `NEBULA_DATABASE_PASSWORD`, `NEBULA_API_KEY_SALT`, and friends are referenced inside the file as `${VAR}` and expanded before parsing.
+`Config` spans the thirteen sections `app`, `database`, `redis`, `etcd`, `auth`, `algorithm`, `monitoring`, `logging`, `rate_limit`, `audit`, `hot_reload`, `tls`, and `batch_generate`; apart from `[redis]`, `[audit]`, and `[hot_reload]` — which carry `serde(default)` and may be omitted entirely — the remaining ten sections are **required**. All 18 config structs carry `#[serde(deny_unknown_fields)]`, so unknown keys and missing required keys alike fail the whole file and abort startup with exit code 1. Environment variables work in two ways: `APP_HOST`, `DATABASE_URL`, `ETCD_ENDPOINTS`, and friends override the file config at startup, while `NEBULA_DATABASE_PASSWORD`, `NEBULA_API_KEY_SALT`, and friends are referenced inside the file as `${VAR}` and expanded before parsing.
 
 The smallest fully parseable config ships as [`config/config.toml`](config/config.toml) and looks like:
 
@@ -341,12 +342,12 @@ max_batch_size = 100        # validate(): 1..=10000
 
 ## 🌐 Internationalization
 
-Since v0.2.0 Nebula ID ships built-in ICU internationalization (unify-rust-i18n, Fluent/ICU stack) covering runtime translation of error messages and logs:
+Since v0.2.0 Nebula ID ships built-in internationalization, now on the unify-rust-i18n stack (Fluent/ICU, replacing the rust-i18n YAML backend in 0.3.0) covering runtime translation of error messages and logs:
 
 | Locale tag | Language | Locales file | Status |
 |------------|----------|--------------|--------|
-| `en` | English (default) | `locales/en.yml` | ✅ Complete |
-| `zh-CN` | Simplified Chinese | `locales/zh-CN.yml` | ✅ Complete |
+| `en` | English (default) | `locales/en/messages.ftl` | ✅ Complete |
+| `zh-CN` | Simplified Chinese | `locales/zh/messages.ftl` | ✅ Complete |
 
 Negotiation: `locale_middleware` parses the HTTP `Accept-Language` header (RFC 7231 §5.3.5), matches the first supported locale by descending q-value (exact match wins, then prefix match), and falls back to `en` when the header is missing; business handlers read the result via `Extension<Locale>` and translate error responses. `Locale` derives from user input and is forgeable — do **not** use it for authentication, authorization, or any security decision.
 
@@ -380,7 +381,7 @@ CI (`ci.yml` / `release.yml` / `health-check.yml`) calls the same entry point, k
 
 ### 🎯 Test Strategy
 
-Testing is layered: inline unit tests in `src/` (`#[cfg(test)]`), E2E modules under `src/core/tests/` organized by layer (algorithms, auth, cache, degradation, gRPC monitoring, infrastructure, server layer, and more — 13 files), the end-to-end i18n test in `tests/i18n_e2e.rs`, shell end-to-end scripts in `tests/*.sh` (API, degradation, distributed, database concurrency), and Criterion benchmarks (`benches/i18n.rs`, `benches/algorithms.rs`). For the per-domain scenario matrix and file mapping, see the [test scenario doc](docs/TEST_SCENARIOS.md).
+Testing is layered: inline unit tests in `src/` (`#[cfg(test)]`), E2E modules under `src/core/tests/` organized by layer (algorithms, auth, cache, degradation, gRPC monitoring, infrastructure, server layer, and more — 11 files), the end-to-end i18n test in `tests/i18n_e2e.rs`, shell end-to-end scripts in `tests/*.sh` (API, degradation, distributed, database concurrency), and Criterion benchmarks (`benches/i18n.rs`, `benches/algorithms.rs`). For the per-domain scenario matrix and file mapping, see the [test scenario doc](docs/TEST_SCENARIOS.md).
 
 ### ▶️ Commands (matching CI)
 
@@ -410,7 +411,7 @@ cargo bench --bench algorithms
 
 ### 📊 Test Scale
 
-As of the v0.2.x workspace: about 1780 Rust test functions (inline in `src/` plus the `src/core/tests/` E2E modules plus `tests/i18n_e2e.rs`), 4 shell end-to-end scripts, and 2 Criterion benchmark groups (i18n hot paths with 4 benchmark functions plus ID-generation / rate-limit / auth-cache hot paths with 7 benchmark functions). The CI coverage gate requires at least 95% line coverage, and the pre-push hook enforces a local 80% gate; actual line coverage at the v0.2.0 release was 89.91%. For per-module counts and methodology, see the [test scenario doc · statistics](docs/TEST_SCENARIOS.md#统计汇总).
+As of the 0.3.0-rc.1 workspace: about 1900 Rust test functions (inline in `src/` plus the `src/core/tests/` E2E modules plus `tests/i18n_e2e.rs`), 4 shell end-to-end scripts, and 2 Criterion benchmark groups (i18n hot paths with 4 benchmark functions / 12 cases plus ID-generation / rate-limit / auth-cache hot paths with 6 benchmark functions / 7 cases). The CI coverage gate requires at least 95% line coverage, and the pre-push hook enforces a local 90% gate; actual line coverage at the v0.2.0 release was 89.91%. For per-module counts and methodology, see the [test scenario doc · statistics](docs/TEST_SCENARIOS.md#统计汇总).
 
 ---
 
@@ -443,7 +444,7 @@ Please do not report security vulnerabilities through public issues. Use the pri
 <tr><td align="center">✅</td><td>Core algorithms</td><td>Segment double buffering with dynamic step, Snowflake, UUID v8, algorithm router and degradation chain</td></tr>
 <tr><td align="center">✅</td><td>Service and protocols</td><td>HTTP + gRPC dual protocol, OpenAPI docs, TLS, rate limiting, garrison API key auth, audit logging</td></tr>
 <tr><td align="center">✅</td><td>Observability and i18n</td><td>Per-algorithm p50/p99/p999 metrics, health checks, OTLP tracing, en / zh-CN i18n</td></tr>
-<tr><td align="center">✅</td><td>Quality gates</td><td>Five-stage CI gate, coverage ≥ 95%, cargo-deny / cargo-audit / CodeQL, ~1780 tests</td></tr>
+<tr><td align="center">✅</td><td>Quality gates</td><td>Five-stage CI gate, coverage ≥ 95%, cargo-deny / cargo-audit / CodeQL, ~1900 tests</td></tr>
 <tr><td align="center">🚧</td><td>SDK and distributed coordination</td><td>Continued hardening of the <code>sdk</code> facade (trait-kit assembly); production validation of <code>etcd</code> coordination (feature off by default)</td></tr>
 <tr><td align="center">🚧</td><td>Performance engineering</td><td>Batch generation tuning, Segment routing benchmark integration (the ID-generation throughput benchmark harness and release baselines have landed — see the [Performance Guide](docs/PERFORMANCE.md))</td></tr>
 <tr><td align="center">📋</td><td>Cloud native and DR</td><td>Kubernetes operator, multi-datacenter with automatic failover, dynamic algorithm switching</td></tr>
@@ -498,7 +499,7 @@ For the full version history, see the [📋 Changelog](docs/CHANGELOG.md) (follo
 
 | Version | Date | Highlights |
 |------|------|------|
-| Unreleased | — | SDK migrated to trait-kit assembly (`NebulaIdKit`), gRPC auth on all RPCs, rate limiting genuinely mounted, TLS fail-fast, config `deny_unknown_fields` + exit code 1, key rotation grace period |
+| 0.3.0-rc.1 | 2026-09-22 | Ecosystem fully switched to the crates.io registry (RC-wave alignment), i18n migrated to unify-rust-i18n (Fluent/ICU), SDK migrated to trait-kit assembly (`NebulaIdKit`), gRPC auth on all RPCs, rate limiting genuinely mounted, TLS fail-fast, config `deny_unknown_fields` + exit code 1, key rotation grace period |
 | 0.2.0 | 2026-07-23 | garrison DAO infrastructure, expanded e2e suite (95% module coverage), dbnexus / sdforge / confers architecture takeover, 3 strix security fixes |
 
 ---

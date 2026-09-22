@@ -218,7 +218,7 @@ graph LR
     V1Routes --> Handlers[业务 Handlers<br/>src/server/handlers/*.rs]
     Handlers -->|错误转换| Helpers[helpers.rs<br/>core_error_to_response]
     Helpers --> I18n[i18n 模块<br/>src/core/i18n.rs]
-    I18n -->|translate_with_locale_args| Locales[(locales/en.yml<br/>locales/zh-CN.yml)]
+    I18n -->|translate_with_locale_args| Locales[(locales/en/messages.ftl<br/>locales/zh/messages.ftl)]
     Locales -->|fluent-bundle 编译期嵌入| I18n
 
     style LocaleMW fill:#ffcc80

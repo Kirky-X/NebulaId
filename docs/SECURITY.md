@@ -73,7 +73,7 @@
 
 ### 配置面安全
 
-- 17 个配置结构体全部 `#[serde(deny_unknown_fields)]`；坏配置（读失败、解析失败、校验失败）一律退出码 1 终止启动，不再静默降级默认值。
+- 18 个配置结构体全部 `#[serde(deny_unknown_fields)]`；坏配置（读失败、解析失败、校验失败）一律退出码 1 终止启动，不再静默降级默认值。
 - 敏感信息经 `${VAR}` 环境变量展开注入（`NEBULA_DATABASE_PASSWORD`、`NEBULA_API_KEY_SALT`）；`algorithm_type` 数据库 ENUM 与代码对齐的迁移操作见[配置迁移指南](CONFIG_MIGRATION_GUIDE.md#algorithm_type-enum-迁移uuid_v7--uuid_v4---uuid_v8)。
 
 ---

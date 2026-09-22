@@ -1087,7 +1087,7 @@ Content-Type: application/json
 > 5xx 响应经 `core_error_to_response` 消毒：`message` 收敛为通用文案，
 > 原始错误细节只进服务端日志，避免向客户端泄露内部实现。
 
-翻译键位于 `locales/en.yml` 与 `locales/zh-CN.yml` 中，归属于
+翻译键位于 `locales/en/messages.ftl` 与 `locales/zh/messages.ftl` 中，归属于
 `error.*` 命名空间。缺失的键会先回退到默认语言（`en`），
 再回退到键本身（绝不会是空字符串）。
 
@@ -1157,8 +1157,8 @@ Nebula ID 遵循 HTTP `Accept-Language` 请求头（参见
 
 | 语言标签 | 语言 | 语言文件 | 状态 |
 |----------|------|----------|------|
-| `en` | 英语（默认） | `locales/en.yml` | ✅ 完整 |
-| `zh-CN` | 简体中文 | `locales/zh-CN.yml` | ✅ 完整 |
+| `en` | 英语（默认） | `locales/en/messages.ftl` | ✅ 完整 |
+| `zh-CN` | 简体中文 | `locales/zh/messages.ftl` | ✅ 完整 |
 
 **协商规则：**
 

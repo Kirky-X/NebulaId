@@ -474,7 +474,7 @@ init_observability → init_sdforge(防inventory剥离) → load_config(fail-fas
 | I18N-01 | Accept-Language 协商 | zh-CN / en / 无头 / fr,ja（不支持）/ q=0 / `*` / >4KiB | 对应语言 / 默认 en / 回退 en / q=0 丢弃 / `*` 永不匹配 / 整头拒绝→en | locale 内联 32 例 + i18n_e2e 7 例 | ✅ |
 | I18N-02 | 错误信封翻译 | 同一错误双头请求 | en/zh-CN 双语正确；`%{name}` 参数替换 | i18n_e2e + error.rs | ✅ |
 | I18N-03 | fallback 链 | 缺键 | en→仍缺→返回键名本身（永不为空） | 内联 | ✅ |
-| I18N-04 | 键集对齐 | en.yml vs zh-CN.yml | 键集一致守卫（防漏翻） | 内联守卫 | ✅ |
+| I18N-04 | 键集对齐 | `locales/{en,zh}/messages.ftl` | 键集一致守卫（防漏翻） | 内联守卫 | ✅ |
 | I18N-05 | locale 不参与鉴权 | 伪造 Accept-Language | 不影响认证/授权决策（安全边界） | ⚠️ 设计注释在，无显式负例测试 | ⚠️ |
 
 ### 3.14 SEC — 恶意输入与防护域
@@ -577,8 +577,8 @@ export ADMIN_API_KEY_ID=... ADMIN_API_KEY_SECRET=...
 ./tests/degradation_test.sh                             # 健康路径观察（注意：不注入真故障）
 ./tests/distributed_test.sh                             # 分布式唯一/时序/位结构
 
-# 覆盖率门禁（pre-push 80%；CI 95% 且排除 server/proto/）
-cargo llvm-cov --package nebulaid --features etcd --fail-under-lines 80
+# 覆盖率门禁（pre-push 90%；CI 95% 且排除 server/proto/）
+cargo llvm-cov --package nebulaid --fail-under-lines 90
 
 # 基准
 cargo bench --bench i18n

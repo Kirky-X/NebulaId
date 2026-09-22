@@ -52,13 +52,12 @@
 
 ## 基准套件（发号热路径）
 
-`benches/algorithms.rs` 定义 7 个基准函数（含后续补充的 batch_10000）：
+`benches/algorithms.rs` 定义 6 个基准函数、共 7 个基准用例（含后续补充的 batch_10000）：
 
 | 基准函数 | 用例 | 覆盖路径 |
 |----------|------|----------|
 | `bench_snowflake_generate` | `snowflake/generate` | Snowflake 单条生成——经公开 `SnowflakeFactory` 构建的 `Box<dyn IdAlgorithm>`，与生产 `AlgorithmBuilder::build` 完全同一路径 |
-| `bench_snowflake_batch_generate` | `snowflake/batch_generate_100` | 批量生成（单批 100 个 ID） |
-| `bench_snowflake_batch_generate_10000` | `snowflake/batch_generate_10000` | 超大批量（单批 10000 = `[batch_generate].max_batch_size` 上限）；单次 `block_on` 摊薄到 10k 个 ID，近似「纯 reserve 路径」下限口径 |
+| `bench_snowflake_batch_generate` | `snowflake/batch_generate_100`、`snowflake/batch_generate_10000` | 批量生成（单批 100 个 ID）；超大批量（单批 10000 = `[batch_generate].max_batch_size` 上限），单次 `block_on` 摊薄到 10k 个 ID，近似「纯 reserve 路径」下限口径 |
 | `bench_router_generate` | `router/generate_snowflake_primary` | 路由链路：默认算法 snowflake + fallback 链 `[UuidV8]`，含查表、观测面记录与分发的完整开销 |
 | `bench_router_generate_uuid` | `router/generate_with_algorithm_uuid_v8` | 路由直选 UUID v8 |
 | `bench_rate_limiter` | `rate_limiter/check_rate_limit` | 令牌桶命中路径 |

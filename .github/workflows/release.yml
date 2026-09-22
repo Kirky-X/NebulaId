@@ -107,15 +107,13 @@ jobs:
         # 发布前以最大特性集验证包完整性
         run: cargo check --package nebulaid --all-features
 
-      - name: Get crates.io Auth Token
-        uses: rust-lang/crates-io-auth-action@v1
-        id: auth
-
       - name: Publish to crates.io
-        # 发布使用默认特性集：下游按需叠加 etcd/sdk
+        # 发布使用默认特性集：下游按需叠加 etcd/sdk。
+        # 与工作区其余仓库一致走 CARGO_REGISTRY_TOKEN（OIDC trusted publishing
+        # 需在 crates.io 预先配置,新 crate 首发不适用,曾致 400 静默失败）。
         run: cargo publish -p nebulaid
         env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       # 发布成功后必须可在 crates.io 查询到（索引传播有延迟，轮询重试）。
       # crates.io API 强制要求 User-Agent 头，缺失时返回 403。

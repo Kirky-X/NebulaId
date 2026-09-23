@@ -1005,6 +1005,33 @@ mod mock_tests {
         }
     }
 
+    /// 语句级钉子：update_segment 生成的 UPDATE 必须在 WHERE 中携带 dc_id
+    /// 过滤（R-segment-005）。无此过滤时多 DC 部署的管理更新会把所有 DC 行
+    /// 的 current_id 改成同一值，随后各 DC 分配出重叠区间 → 跨 DC 重复 ID。
+    #[tokio::test]
+    async fn test_segment_update_statement_filters_by_dc_id() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+        let repo = make_repo(db);
+
+        repo.update_segment("ws1", "t1", 3, 500, 1000)
+            .await
+            .unwrap();
+
+        let log = repo.get_db_connection().clone().into_transaction_log();
+        assert!(!log.is_empty(), "事务日志不得为空");
+        let sql = log[0].statements()[0].sql.to_lowercase();
+        assert!(
+            sql.contains("dc_id"),
+            "update_segment 的 WHERE 必须包含 dc_id 过滤，实际 SQL：{}",
+            sql
+        );
+    }
+
     #[tokio::test]
     async fn test_segment_update_propagates_db_error() {
         let db = MockDatabase::new(DatabaseBackend::Postgres)

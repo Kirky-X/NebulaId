@@ -547,9 +547,10 @@ impl AlgorithmRouter {
     /// 遍历 fallback 链：对链上每个已注册算法执行指定操作，记录成功/失败到
     /// DegradationManager，返回首个成功结果；链遍历完仍无成功则返回 None。
     ///
-    /// `announce_hits` 控制 fallback 命中时是否输出 info 日志——保留原实现的
-    /// 日志不对称："主算法失败后回退"（true）会广播命中，"主算法未注册直接
-    /// 回退"（false）静默。批量路径两侧均为 false（与原行为一致）。
+    /// `announce_hits` 控制 fallback 命中时是否输出 info 日志：两条路径的
+    /// "主算法失败后回退"（true）都广播命中；"主算法未注册直接回退"（false）
+    /// 两处均静默。（fix-audit-defects-r1 前批量失败回退恒为 false，已翻转
+    /// 对齐单条路径。）
     async fn try_fallback_chain<R: FallbackRunner>(
         &self,
         algorithms: &HashMap<AlgorithmType, Arc<dyn IdAlgorithm>>,

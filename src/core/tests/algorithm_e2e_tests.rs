@@ -178,6 +178,14 @@ impl IdAlgorithm for MockIdAlgorithm {
 /// 算法实现的协作链路完整可用。
 #[tokio::test]
 async fn e2e_snowflake_full_lifecycle_via_builder() {
+    // Builder 路径无法注入状态目录（with_state_dir 是 snowflake 模块私有
+    // 测试方法）：state_guard 默认开启，本测试经默认 `./data` 落守卫文件。
+    // 运行前后清理——残留文件（含上次运行的更高时间戳）会让本测试在时钟
+    // 略微回拨的环境（WSL2/NTP 校正）下假性失败，也会覆盖同目录真实服务
+    // 的守卫基准。
+    let guard_file = std::path::Path::new("./data/snowflake_state_0_0.json");
+    let _ = std::fs::remove_file(guard_file);
+
     let config = Config::default();
     let algorithm: Box<dyn IdAlgorithm> = AlgorithmBuilder::new(AlgorithmType::Snowflake)
         .build(&config)
@@ -229,6 +237,8 @@ async fn e2e_snowflake_full_lifecycle_via_builder() {
         .shutdown()
         .await
         .expect("E2E: shutdown should succeed");
+
+    let _ = std::fs::remove_file(guard_file);
 }
 
 // Snowflake 时钟回拨 → health_check Unhealthy 路径已由单元测试覆盖。

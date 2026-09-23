@@ -1203,6 +1203,7 @@ mod tests {
                 &self,
                 _workspace_id: &str,
                 _biz_tag: &str,
+                _dc_id: i32,
                 _current_id: i64,
                 _max_id: i64,
             ) -> Result<()> {

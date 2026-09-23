@@ -252,7 +252,7 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
             NEBULA_SCHEMA,
             r#"
         DO $$ BEGIN
-            CREATE TYPE {}.id_format AS ENUM ('numeric', 'prefixed', 'uuid');
+            CREATE TYPE {}.id_format AS ENUM ('numeric', 'prefixed', 'uuid', 'obfuscated');
         EXCEPTION
             WHEN duplicate_object THEN null;
         END $$"#,
@@ -264,6 +264,26 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
             tracing::error!(event = "db_create_enum_type_failed", error = %e, "enum type creation failed");
             return Err(CoreError::DatabaseError(
                 "Failed to create enum type (see server logs for details)".to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            ));
+        }
+    }
+
+    // 存量库幂等升级（与 scripts/migrations/001 对齐）：
+    // - id_format 枚举补 'obfuscated'（9.3+ 支持 ADD VALUE IF NOT EXISTS；
+    //   PG<12 需在事务块外执行——本函数逐条 execute_unprepared，无显式事务）
+    // - nebula_segments 补 ceiling 列（分配热路径 UPDATE 引用，缺列即坏）
+    let upgrade_sqls = [
+        format!("ALTER TYPE {NEBULA_SCHEMA}.id_format ADD VALUE IF NOT EXISTS 'obfuscated'"),
+        format!(
+            "ALTER TABLE {NEBULA_SCHEMA}.nebula_segments ADD COLUMN IF NOT EXISTS ceiling BIGINT"
+        ),
+    ];
+    for sql in &upgrade_sqls {
+        if let Err(e) = db.execute_unprepared(sql).await {
+            tracing::error!(event = "db_upgrade_statement_failed", error = %e, "schema upgrade statement failed");
+            return Err(CoreError::DatabaseError(
+                "Failed to apply schema upgrade (see server logs for details)".to_string(),
                 Some(crate::core::types::ErrorSource::new(e)),
             ));
         }
@@ -366,6 +386,9 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
             step INT NOT NULL DEFAULT 1000,
             delta INT NOT NULL DEFAULT 1,
             dc_id INT NOT NULL DEFAULT 0,
+            -- 发号封顶（NULL = 不封顶）：与 scripts/init.sql 保持一致——
+            -- 分配热路径 UPDATE 引用该列，缺列则号段分配开箱即坏。
+            ceiling BIGINT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             -- 号段原子分配（单语句 UPDATE ... RETURNING）依赖此约束：
@@ -748,9 +771,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_succeeds_when_all_executes_succeed() {
-        // 1 schema + 2 enum types + 5 tables + 1 constraint backfill
-        //   + 1 grace-column ALTER = 10 successful executes.
-        let db = mock_db_with_n_ok(10);
+        // 1 schema + 2 enum types + 2 upgrade ALTERs + 5 tables
+        //   + 1 constraint backfill + 1 grace-column ALTER = 12 successful executes.
+        let db = mock_db_with_n_ok(12);
         let result = run_migrations(&db).await;
         assert!(
             result.is_ok(),
@@ -760,13 +783,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_logs_warn_but_continues_when_schema_create_fails() {
-        // Schema create fails (logged as warn), enum types + tables + constraint
-        // backfill + grace-column ALTER still succeed.
+        // Schema create fails (logged as warn), enum types + upgrade ALTERs +
+        // tables + constraint backfill + grace-column ALTER still succeed.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "schema creation permission denied".to_string(),
             ))])
-            .append_exec_results(ok_exec_results(9))
+            .append_exec_results(ok_exec_results(11))
             .into_connection();
         let result = run_migrations(&db).await;
         assert!(
@@ -777,9 +800,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_returns_database_error_when_table_create_fails() {
-        // Schema + 2 enum types succeed, first table fails with non-"already exists".
+        // Schema + 2 enum types + 2 upgrade ALTERs succeed, first table fails
+        // with non-"already exists".
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_exec_results(vec![
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
                 MockExecResult {
                     last_insert_id: 0,
                     rows_affected: 0,
@@ -815,11 +847,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_treats_already_exists_as_info_not_error() {
-        // Schema + 2 enum types + first table succeed, second table fails with
-        // "already exists", remaining tables + constraint backfill + the
-        // grace-column ALTER succeed.
+        // Schema + 2 enum types + 2 upgrade ALTERs + first table succeed,
+        // second table fails with "already exists", remaining tables +
+        // constraint backfill + the grace-column ALTER succeed.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_exec_results(ok_exec_results(4))
+            .append_exec_results(ok_exec_results(6))
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "relation already exists".to_string(),
             ))])
@@ -834,11 +866,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_treats_duplicate_as_info_not_error() {
-        // Schema + 2 enum types + 2 tables succeed, third table fails with
-        // "duplicate", remaining 2 tables + constraint backfill + the
-        // grace-column ALTER succeed.
+        // Schema + 2 enum types + 2 upgrade ALTERs + 2 tables succeed, third
+        // table fails with "duplicate", remaining 2 tables + constraint
+        // backfill + the grace-column ALTER succeed.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_exec_results(ok_exec_results(5))
+            .append_exec_results(ok_exec_results(7))
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "duplicate table name".to_string(),
             ))])
@@ -905,7 +937,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_migrations_returns_error_when_grace_column_alter_fails() {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_exec_results(ok_exec_results(9))
+            .append_exec_results(ok_exec_results(11))
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "permission denied for table api_keys".to_string(),
             ))])

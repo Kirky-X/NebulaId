@@ -250,6 +250,16 @@ impl SnowflakeAlgorithm {
         // 超界 dc_id/worker_id 会在 construct_id 的 OR 组装中污染高位时间戳位，
         // 造成跨 DC/worker 组合碰撞（重复 ID），必须 fail-closed。
         // 移位守卫：u8 域下位宽 ≥ 8 时全域合法，位宽 < 8 时移位量 ≤ 7 安全。
+        // 位宽合计校验同样兜底：sum ≥ 64 时 timestamp_bits() 会下溢、
+        // construct_id 的高位移位会回绕。
+        let total_bits = u32::from(self.config.datacenter_id_bits)
+            + u32::from(self.config.worker_id_bits)
+            + u32::from(self.config.sequence_bits);
+        if total_bits >= 64 {
+            return Err(CoreError::ConfigurationError(format!(
+                "snowflake total bits ({total_bits}) must be less than 64"
+            )));
+        }
         let dc_bits = self.config.datacenter_id_bits;
         if dc_bits < 8 && self.datacenter_id >= (1u8 << dc_bits) {
             return Err(CoreError::ConfigurationError(format!(
@@ -1278,6 +1288,23 @@ mod tests {
         }
     }
 
+    /// 位宽二次校验：位宽合计 ≥ 64 时拒绝（SDK 直构绕过 Config::validate
+    /// 的兜底——timestamp_bits() 会下溢、construct_id 高位移位会回绕）。
+    #[tokio::test]
+    async fn test_initialize_rejects_total_bits_overflow() {
+        let mut algo = SnowflakeAlgorithm::new(0, 0);
+        let mut config = Config::default();
+        config.algorithm.snowflake.datacenter_id_bits = 32;
+        config.algorithm.snowflake.worker_id_bits = 16;
+        config.algorithm.snowflake.sequence_bits = 16; // 合计 64
+        match algo.initialize(&config).await {
+            Err(CoreError::ConfigurationError(msg)) => {
+                assert!(msg.contains("total bits (64)"), "实际：{msg}");
+            }
+            other => panic!("expected ConfigurationError, got {:?}", other),
+        }
+    }
+
     /// 位宽二次校验：worker_id 超出 worker_id_bits 位宽时同样拒绝。
     #[tokio::test]
     async fn test_initialize_rejects_worker_id_overflowing_bits() {
@@ -1304,6 +1331,18 @@ mod tests {
         assert!(algo.shutdown().await.is_ok());
     }
 
+    /// 重复 shutdown 必须安全：守卫任务句柄幂等取空、watch 发送失败被
+    /// 忽略、最终落盘幂等（initialize 后连调两次 shutdown）。
+    #[tokio::test]
+    async fn test_shutdown_twice_is_safe() {
+        let mut algo = SnowflakeAlgorithm::new(0, 0)
+            .with_state_dir(std::env::temp_dir().join("nebulaid-sf-twice"));
+        algo.initialize(&Config::default()).await.unwrap();
+        let _ = algo.generate_id().await.unwrap();
+        algo.shutdown().await.unwrap();
+        algo.shutdown().await.unwrap();
+    }
+
     /// SnowflakeAlgorithm 通过 IdAlgorithm::generate trait 方法应正常生成 ID。
     #[tokio::test]
     async fn test_snowflake_generate_via_trait() {
@@ -1314,6 +1353,18 @@ mod tests {
             .await
             .expect("generate via trait should succeed");
         assert!(id.as_u128() > 0);
+    }
+
+    /// TOML 缺省 state_guard 必须反序列化为 true（守卫默认开启的配置层
+    /// 钉子——serde default 函数被误删时此处先红）。
+    #[test]
+    fn test_snowflake_config_state_guard_defaults_true() {
+        let cfg: crate::core::config::SnowflakeAlgorithmConfig =
+            toml::from_str(
+                "datacenter_id_bits = 3\nworker_id_bits = 8\nsequence_bits = 10\nclock_drift_threshold_ms = 1000\n",
+            )
+            .expect("缺省 state_guard 的最小配置必须可解析");
+        assert!(cfg.state_guard, "state_guard 缺省必须为 true");
     }
 
     #[test]

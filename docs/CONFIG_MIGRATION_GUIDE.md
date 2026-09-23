@@ -812,6 +812,10 @@ key_hex = "0011223344556677"
 
 `biz_tag.format` 的 DB 枚举同步新增 `'obfuscated'`（迁移脚本第 2 段）。
 
+> **当前生效范围**：混淆渲染入口在 core/SDK 层（`Id::render`）。HTTP generate
+> 接口目前不按 `biz_tag.format` 做响应渲染（存量行为，`prefixed` 同样不生效）——
+> 配置 `key_hex` 后需经 SDK/core 层调用才会得到混淆 ID。
+
 ---
 
 ## 配置全表（全量选项与校验规则）

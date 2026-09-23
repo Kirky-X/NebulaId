@@ -163,6 +163,14 @@ fn e2e_config_validate_dc_id_within_width_passes() {
     let mut config = Config::default();
     config.app.dc_id = 7;
     assert!(config.validate().is_ok());
+
+    let mut wide = Config::default();
+    wide.algorithm.snowflake.datacenter_id_bits = 5;
+    wide.app.dc_id = 31;
+    assert!(
+        wide.validate().is_ok(),
+        "位宽放宽到 5 位后 dc_id=31 必须合法"
+    );
 }
 
 /// Config::validate 在 min_connections > max_connections 时失败。

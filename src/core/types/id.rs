@@ -130,11 +130,14 @@ impl Id {
         let body = match format {
             IdFormat::Numeric => return Ok(self.to_string()),
             IdFormat::Uuid => return Ok(Uuid::from_u128(self.0).to_string()),
+            // 注意：与 `to_prefixed`（恒十进制）在 UUID 形态 ID 上语义不同——
+            // 本分支走 Display（UUID 形态渲染为 UUID 字符串）。两入口未来
+            // 接线时须统一口径。
             IdFormat::Prefixed => self.to_string(),
             IdFormat::Obfuscated => {
                 let obf = obfuscator.ok_or_else(|| {
                     CoreError::ConfigurationError(
-                        "obfuscated id format requested but obfuscation.key_hex is not                          configured"
+                        "obfuscated id format requested but obfuscation.key_hex is not configured"
                             .to_string(),
                     )
                 })?;

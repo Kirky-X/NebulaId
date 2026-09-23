@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn test_encode_is_total_over_u64() {
         let obf = obfuscator();
-        // 任意输入都可得任意输出，此性质由轮trip测试覆盖；此处钉住
+        // 任意输入都可得任意输出，此性质由轮往返（roundtrip）测试覆盖；此处钉住
         // encode 自身恒为全 u64 域上的函数（抽样 + roundtrip 即可）。
         for x in pseudo_random_seq(7, 1_000) {
             let _ = obf.encode(x);

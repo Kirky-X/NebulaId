@@ -356,6 +356,18 @@ impl DoubleBuffer {
     }
 }
 
+/// loading 标志的 RAII 释放守卫：持有期间 `is_loading == true`，drop 时
+/// 复位。保证错误与 panic 路径都不会把加载者卡死。
+struct LoadingGuard {
+    buffer: Arc<DoubleBuffer>,
+}
+
+impl Drop for LoadingGuard {
+    fn drop(&mut self) {
+        self.buffer.finish_loading();
+    }
+}
+
 /// 最近一次号段加载结果快照（loader 调用点写入，`health_check` 反映）。
 ///
 /// 「最近一次」语义：新结果覆盖旧结果——失败后再次成功即视为恢复，
@@ -583,8 +595,15 @@ impl SegmentAlgorithm {
 
         if buffer.try_start_loading() {
             self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
+            // RAII 释放 loading：成功、错误（`?` 回收 guard）乃至 panic 路径
+            // 都保证复位，杜绝「加载者挂掉后 loading 恒 true、等待方无限
+            // 轮询」的悬挂。guard 在 set_next 之后 drop——loading 释放时
+            // next 已就绪，等待方醒来即可取到，同时收窄了 finish→set_next
+            // 之间唤醒他人重复取段的窗口。
+            let _guard = LoadingGuard {
+                buffer: Arc::clone(buffer),
+            };
             let load_result = self.segment_loader.load_segment(ctx, 0).await;
-            buffer.finish_loading();
             self.record_load_result(&load_result);
             let new_seg = load_result?;
             buffer.set_next(Arc::new(AtomicSegment::new(

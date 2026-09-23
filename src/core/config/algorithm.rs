@@ -52,12 +52,19 @@ impl std::fmt::Debug for ObfuscationConfig {
 
 impl ObfuscationConfig {
     /// 解析密钥为 [`crate::core::types::obfuscation::IdObfuscator`]。
-    /// 未配置返回 `None`；hex 非法返回 `None`（配置校验已前置拦截，
-    /// 此处兜底不 panic）。
-    pub fn obfuscator(&self) -> Option<crate::core::types::obfuscation::IdObfuscator> {
-        let hex = self.key_hex.as_deref()?;
-        let key = u64::from_str_radix(hex, 16).ok()?;
-        Some(crate::core::types::obfuscation::IdObfuscator::new(key))
+    /// 未配置返回 `Ok(None)`；hex 非法返回 `Err`（SDK 直构路径绕过
+    /// `Config::validate` 时，不得把"配错格式"伪装成"未配置"）。
+    pub fn obfuscator(
+        &self,
+    ) -> Result<Option<crate::core::types::obfuscation::IdObfuscator>, String> {
+        let Some(hex) = self.key_hex.as_deref() else {
+            return Ok(None);
+        };
+        let key = u64::from_str_radix(hex, 16)
+            .map_err(|_| "algorithm.obfuscation.key_hex must be 16 hex characters".to_string())?;
+        Ok(Some(crate::core::types::obfuscation::IdObfuscator::new(
+            key,
+        )))
     }
 }
 
@@ -78,6 +85,10 @@ pub struct SnowflakeAlgorithmConfig {
     /// 只剩运行中阈值机制，跨重启重复 ID 风险自负。
     #[serde(default = "default_true")]
     pub state_guard: bool,
+    /// 守卫状态文件目录（缺省 `./data`，相对进程 CWD——容器化部署请给
+    /// 绝对路径；只读文件系统需配合 state_guard=false 或指定可写目录）。
+    #[serde(default)]
+    pub state_dir: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -110,6 +121,7 @@ impl Default for SnowflakeAlgorithmConfig {
             sequence_bits: 10,
             clock_drift_threshold_ms: 1000,
             state_guard: true,
+            state_dir: None,
         }
     }
 }

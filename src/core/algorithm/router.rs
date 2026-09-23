@@ -408,7 +408,7 @@ impl AlgorithmRouter {
 
         #[cfg(not(test))]
         {
-            Self::self_provisioned_segment_loader(&self.config).await
+            Self::self_provisioned_segment_loader(&self.config, self.cpu_monitor.clone()).await
         }
         #[cfg(test)]
         {
@@ -425,6 +425,7 @@ impl AlgorithmRouter {
     #[cfg(not(test))]
     async fn self_provisioned_segment_loader(
         config: &Config,
+        cpu_monitor: Option<Arc<crate::core::algorithm::segment::CpuMonitor>>,
     ) -> Option<Arc<dyn crate::core::algorithm::SegmentLoader + Send + Sync>> {
         use crate::core::algorithm::{DbSegmentLoader, SegmentLoader};
         use crate::core::database::SeaOrmRepository;
@@ -443,14 +444,18 @@ impl AlgorithmRouter {
                                     config.database.statement_timeout_secs,
                                 )),
                         );
-                        // 动态步长装配：CPU 监视器 + Segment 配置的
-                        // min/base/max 三参数一起注入（README「动态步长」
-                        // 由此成为真实行为）。
+                        // 动态步长装配：复用与 main.rs 采样任务（5s 读
+                        // /proc/stat）同一实例的 CpuMonitor——此前此处 new
+                        // 了一个无人采样新实例，读数恒为默认 0.1，「动态」
+                        // 实为常量。无采样器时才退回新建（等效固定步长）。
+                        let monitor = cpu_monitor
+                            .clone()
+                            .unwrap_or_else(|| Arc::new(crate::core::algorithm::CpuMonitor::new()));
                         let loader: Arc<dyn SegmentLoader + Send + Sync> = Arc::new(
                             DbSegmentLoader::with_dynamic_step(
                                 Arc::new(DynSegmentRepository(repository)),
                                 config.algorithm.segment.clone(),
-                                Arc::new(crate::core::algorithm::CpuMonitor::new()),
+                                monitor,
                             ),
                         );
                         info!(

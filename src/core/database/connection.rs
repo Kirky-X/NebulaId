@@ -269,26 +269,6 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
         }
     }
 
-    // 存量库幂等升级（与 scripts/migrations/001 对齐）：
-    // - id_format 枚举补 'obfuscated'（9.3+ 支持 ADD VALUE IF NOT EXISTS；
-    //   PG<12 需在事务块外执行——本函数逐条 execute_unprepared，无显式事务）
-    // - nebula_segments 补 ceiling 列（分配热路径 UPDATE 引用，缺列即坏）
-    let upgrade_sqls = [
-        format!("ALTER TYPE {NEBULA_SCHEMA}.id_format ADD VALUE IF NOT EXISTS 'obfuscated'"),
-        format!(
-            "ALTER TABLE {NEBULA_SCHEMA}.nebula_segments ADD COLUMN IF NOT EXISTS ceiling BIGINT"
-        ),
-    ];
-    for sql in &upgrade_sqls {
-        if let Err(e) = db.execute_unprepared(sql).await {
-            tracing::error!(event = "db_upgrade_statement_failed", error = %e, "schema upgrade statement failed");
-            return Err(CoreError::DatabaseError(
-                "Failed to apply schema upgrade (see server logs for details)".to_string(),
-                Some(crate::core::types::ErrorSource::new(e)),
-            ));
-        }
-    }
-
     // Define all tables with their CREATE statements
     // All tables are created in the nebula_id schema
     let tables = vec![
@@ -464,6 +444,28 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
             );
             return Err(CoreError::DatabaseError(
                 "Failed to alter table (see server logs for details)".to_string(),
+                Some(crate::core::types::ErrorSource::new(e)),
+            ));
+        }
+    }
+
+    // 存量库幂等升级（与 scripts/migrations/001 对齐）——必须位于 CREATE TABLE
+    // 之后：ALTER TABLE IF NOT EXISTS 列级豁免不覆盖"表不存在"，全新空库上
+    // 先执行会报 relation does not exist 并硬失败启动。
+    // - id_format 枚举补 'obfuscated'（9.3+ 支持 ADD VALUE IF NOT EXISTS；
+    //   PG<12 需在事务块外执行——本函数逐条 execute_unprepared，无显式事务）
+    // - nebula_segments 补 ceiling 列（分配热路径 UPDATE 引用，缺列即坏）
+    let upgrade_sqls = [
+        format!("ALTER TYPE {NEBULA_SCHEMA}.id_format ADD VALUE IF NOT EXISTS 'obfuscated'"),
+        format!(
+            "ALTER TABLE {NEBULA_SCHEMA}.nebula_segments ADD COLUMN IF NOT EXISTS ceiling BIGINT"
+        ),
+    ];
+    for sql in &upgrade_sqls {
+        if let Err(e) = db.execute_unprepared(sql).await {
+            tracing::error!(event = "db_upgrade_statement_failed", error = %e, "schema upgrade statement failed");
+            return Err(CoreError::DatabaseError(
+                "Failed to apply schema upgrade (see server logs for details)".to_string(),
                 Some(crate::core::types::ErrorSource::new(e)),
             ));
         }

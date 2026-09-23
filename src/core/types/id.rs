@@ -143,10 +143,11 @@ impl Id {
                 })?;
                 let raw = self.0;
                 if raw > u64::MAX as u128 {
-                    return Err(CoreError::InvalidInput(format!(
-                        "id {} exceeds u64 range and cannot be obfuscated",
-                        raw
-                    )));
+                    // 不回显明文 ID：防枚举格式的失败路径不得把原值交给
+                    // 错误消费方（CWE-209 变体）。
+                    return Err(CoreError::InvalidInput(
+                        "id exceeds u64 range and cannot be obfuscated".to_string(),
+                    ));
                 }
                 obf.encode(raw as u64).to_string()
             }

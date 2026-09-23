@@ -283,11 +283,14 @@ impl SnowflakeAlgorithm {
         // 停机期间时钟被回拨——此刻发号会与回拨前的历史 ID 撞车，必须
         // fail-closed 拒绝启动（与 worker_id 分配失败同语义）。
         if self.config.state_guard {
-            let path = snowflake_state::state_file_path(
-                &self.state_dir,
-                self.datacenter_id,
-                self.worker_id,
-            );
+            // 目录优先级：显式配置 > 测试注入(with_state_dir) > 默认 ./data
+            let dir = self
+                .config
+                .state_dir
+                .as_ref()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| self.state_dir.clone());
+            let path = snowflake_state::state_file_path(&dir, self.datacenter_id, self.worker_id);
             if let Some(saved) = snowflake_state::load(&path) {
                 let now = Self::get_timestamp();
                 if saved.last_issued_ts > now {

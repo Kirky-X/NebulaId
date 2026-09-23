@@ -178,15 +178,15 @@ impl IdAlgorithm for MockIdAlgorithm {
 /// 算法实现的协作链路完整可用。
 #[tokio::test]
 async fn e2e_snowflake_full_lifecycle_via_builder() {
-    // Builder 路径无法注入状态目录（with_state_dir 是 snowflake 模块私有
-    // 测试方法）：state_guard 默认开启，本测试经默认 `./data` 落守卫文件。
-    // 运行前后清理——残留文件（含上次运行的更高时间戳）会让本测试在时钟
-    // 略微回拨的环境（WSL2/NTP 校正）下假性失败，也会覆盖同目录真实服务
-    // 的守卫基准。
-    let guard_file = std::path::Path::new("./data/snowflake_state_0_0.json");
-    let _ = std::fs::remove_file(guard_file);
+    // Builder 路径不注入模块私有状态目录：改为配置级 state_dir 指向本测试
+    // 专属临时目录——避免向默认 `./data` 落守卫文件（残留文件会让后续运行
+    // 在时钟回拨环境下假性失败，也会覆盖同目录真实服务的守卫基准）。
+    let state_dir =
+        std::env::temp_dir().join(format!("nebulaid-e2e-sf-state-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&state_dir);
 
-    let config = Config::default();
+    let mut config = Config::default();
+    config.algorithm.snowflake.state_dir = Some(state_dir.to_string_lossy().into_owned());
     let algorithm: Box<dyn IdAlgorithm> = AlgorithmBuilder::new(AlgorithmType::Snowflake)
         .build(&config)
         .await
@@ -238,7 +238,7 @@ async fn e2e_snowflake_full_lifecycle_via_builder() {
         .await
         .expect("E2E: shutdown should succeed");
 
-    let _ = std::fs::remove_file(guard_file);
+    let _ = std::fs::remove_dir_all(&state_dir);
 }
 
 // Snowflake 时钟回拨 → health_check Unhealthy 路径已由单元测试覆盖。

@@ -23,7 +23,7 @@ EXCEPTION
 END $$;
 
 DO $$ BEGIN
-    CREATE TYPE nebula_id.id_format AS ENUM ('numeric', 'prefixed', 'uuid');
+    CREATE TYPE nebula_id.id_format AS ENUM ('numeric', 'prefixed', 'uuid', 'obfuscated');
 EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
@@ -104,6 +104,12 @@ CREATE TABLE IF NOT EXISTS nebula_id.nebula_segments (
     step INT NOT NULL DEFAULT 1000,
     delta INT NOT NULL DEFAULT 1,
     dc_id INT NOT NULL DEFAULT 0,
+    -- 发号封顶（NULL = 不封顶）：原子分配 UPDATE 携带
+    -- `ceiling IS NULL OR current_id + step <= ceiling` 守卫，游标到顶返回
+    -- SegmentExhausted。存量部署必须执行
+    -- scripts/migrations/001_add_segments_ceiling.sql 后再升级服务——
+    -- 分配 SQL 引用此列，未迁移的库会直接报错。
+    ceiling BIGINT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     -- 号段原子分配（单语句 UPDATE ... RETURNING）依赖此约束：

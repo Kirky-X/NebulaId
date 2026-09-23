@@ -141,7 +141,7 @@ let uuid = id.to_uuid_v8();
 
 ### ⚡ High-Throughput Batch Generation
 
-Segment's double buffering is internal — from the outside you just ask for N ids in one call (`IdAlgorithm::batch_generate`):
+Segment's double buffering and dynamic step are internal — the step size scales with CPU usage within `[min_step, max_step]` as `step = clamp(base_step × (1 + 2 × cpu), min_step, max_step)` (busier CPU → larger segments → fewer segment fetches); from the outside you just ask for N ids in one call (`IdAlgorithm::batch_generate`):
 
 ```rust
 let batch = generator.batch_generate("prod", "core", "order", 1000).await?;

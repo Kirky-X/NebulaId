@@ -13,6 +13,9 @@ pub enum IdFormat {
     Numeric,
     Prefixed,
     Uuid,
+    /// 防猜测混淆格式：Feistel u64 双射编码（`obfuscation` 模块）。
+    /// 密钥未配置或 ID 超 u64 域时渲染显性报错（见 [`Id::render`]）。
+    Obfuscated,
 }
 
 impl fmt::Display for IdFormat {
@@ -21,6 +24,7 @@ impl fmt::Display for IdFormat {
             IdFormat::Numeric => write!(f, "numeric"),
             IdFormat::Prefixed => write!(f, "prefixed"),
             IdFormat::Uuid => write!(f, "uuid"),
+            IdFormat::Obfuscated => write!(f, "obfuscated"),
         }
     }
 }
@@ -33,6 +37,7 @@ impl FromStr for IdFormat {
             "numeric" => Ok(IdFormat::Numeric),
             "prefixed" => Ok(IdFormat::Prefixed),
             "uuid" => Ok(IdFormat::Uuid),
+            "obfuscated" => Ok(IdFormat::Obfuscated),
             _ => Err(CoreError::InvalidIdFormat(s.to_string())),
         }
     }
@@ -103,6 +108,50 @@ impl Id {
 
     pub fn to_hex(&self) -> String {
         format!("{:032x}", self.0)
+    }
+
+    /// 按目标格式渲染 ID 字符串。
+    ///
+    /// - `Numeric`：十进制原值（与 [`Display`] 一致）；
+    /// - `Prefixed`：前缀 + 十进制（前缀缺省视为空前缀）；
+    /// - `Uuid`：标准 UUID 字符串；
+    /// - `Obfuscated`：Feistel 双射编码后的十进制，可组合前缀。
+    ///   混淆器未提供（密钥未配置）→ `ConfigurationError`（fail-closed，
+    ///   不静默退回明文——那会让「已按防猜测部署」的调用方拿到裸 ID）；
+    ///   ID 超 u64 域（UUID 类）→ `InvalidInput`。
+    ///
+    /// 内部存储与 `as_u128` 原值不变：混淆只是展示层编解码。
+    pub fn render(
+        &self,
+        format: &IdFormat,
+        prefix: Option<&str>,
+        obfuscator: Option<&crate::core::types::obfuscation::IdObfuscator>,
+    ) -> Result<String, CoreError> {
+        let body = match format {
+            IdFormat::Numeric => return Ok(self.to_string()),
+            IdFormat::Uuid => return Ok(Uuid::from_u128(self.0).to_string()),
+            IdFormat::Prefixed => self.to_string(),
+            IdFormat::Obfuscated => {
+                let obf = obfuscator.ok_or_else(|| {
+                    CoreError::ConfigurationError(
+                        "obfuscated id format requested but obfuscation.key_hex is not                          configured"
+                            .to_string(),
+                    )
+                })?;
+                let raw = self.0;
+                if raw > u64::MAX as u128 {
+                    return Err(CoreError::InvalidInput(format!(
+                        "id {} exceeds u64 range and cannot be obfuscated",
+                        raw
+                    )));
+                }
+                obf.encode(raw as u64).to_string()
+            }
+        };
+        Ok(match prefix {
+            Some(p) => format!("{}{}", p, body),
+            None => body,
+        })
     }
 
     pub fn to_base36(&self) -> String {
@@ -256,6 +305,83 @@ mod tests {
         let id = Id::from_u128(12345);
         let prefixed = id.to_prefixed("order_");
         assert_eq!(prefixed, "order_12345");
+    }
+
+    /// render：Numeric/Prefixed/Uuid 三种既有格式行为与 Display/prefixed 一致。
+    #[test]
+    fn test_render_legacy_formats() {
+        let id = Id::from_u128(12345);
+        assert_eq!(id.render(&IdFormat::Numeric, None, None).unwrap(), "12345");
+        assert_eq!(
+            id.render(&IdFormat::Prefixed, Some("order_"), None)
+                .unwrap(),
+            "order_12345"
+        );
+        assert_eq!(
+            id.render(&IdFormat::Prefixed, None, None).unwrap(),
+            "12345",
+            "前缀缺省视为空前缀"
+        );
+        let uuid_like = Id::from_u128(0x0000_0000_0000_8000_8000_0000_0000_0000);
+        let rendered = uuid_like.render(&IdFormat::Uuid, None, None).unwrap();
+        assert_eq!(rendered.matches('-').count(), 4, "UUID 渲染必须是标准格式");
+    }
+
+    /// render Obfuscated：配置密钥后编码输出，且 decode 可还原原值；
+    /// 支持与前缀组合。
+    #[test]
+    fn test_render_obfuscated_encodes_and_roundtrips() {
+        let obf = crate::core::types::obfuscation::IdObfuscator::new(0x0011_2233_4455_6677);
+        let id = Id::from_u128(12345);
+
+        let rendered = id
+            .render(&IdFormat::Obfuscated, None, Some(&obf))
+            .expect("已配置密钥必须渲染成功");
+        assert_ne!(rendered, "12345", "混淆输出不得等于明文");
+        assert_eq!(
+            obf.decode(rendered.parse::<u64>().unwrap()),
+            12345,
+            "渲染值必须可按密钥还原"
+        );
+
+        let prefixed = id
+            .render(&IdFormat::Obfuscated, Some("order_"), Some(&obf))
+            .unwrap();
+        assert!(prefixed.starts_with("order_"), "混淆格式必须支持前缀组合");
+    }
+
+    /// render Obfuscated：密钥未配置必须显性报错（fail-closed，不得静默
+    /// 退回明文——那会让调用方误以为拿到的是混淆 ID）。
+    #[test]
+    fn test_render_obfuscated_without_key_fails_closed() {
+        let id = Id::from_u128(12345);
+        match id.render(&IdFormat::Obfuscated, None, None) {
+            Err(CoreError::ConfigurationError(msg)) => {
+                assert!(msg.contains("obfuscation.key_hex"), "实际：{msg}");
+            }
+            other => panic!("expected ConfigurationError, got {:?}", other),
+        }
+    }
+
+    /// render Obfuscated：超 u64 域的 ID（UUID 类）必须 InvalidInput，不得截断。
+    #[test]
+    fn test_render_obfuscated_rejects_over_u64() {
+        let obf = crate::core::types::obfuscation::IdObfuscator::new(1);
+        let id = Id::from_u128(u128::from(u64::MAX) + 1);
+        assert!(matches!(
+            id.render(&IdFormat::Obfuscated, None, Some(&obf)),
+            Err(CoreError::InvalidInput(_))
+        ));
+    }
+
+    /// from_str("obfuscated") 解析成功（格式名全称闭环）。
+    #[test]
+    fn test_id_format_from_str_obfuscated() {
+        assert_eq!(
+            IdFormat::from_str("obfuscated").unwrap(),
+            IdFormat::Obfuscated
+        );
+        assert_eq!(IdFormat::Obfuscated.to_string(), "obfuscated");
     }
 
     #[test]

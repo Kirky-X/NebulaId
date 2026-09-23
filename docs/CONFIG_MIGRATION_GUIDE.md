@@ -5,6 +5,7 @@
 - [安全加固更新 (v0.1.2)](#安全加固更新-v012)
 - [algorithm_type ENUM 迁移（uuid_v7 / uuid_v4 -> uuid_v8）](#algorithm_type-enum-迁移uuid_v7--uuid_v4---uuid_v8)
 - [密钥轮换宽限期与配置 fail-fast（未发布版本）](#密钥轮换宽限期与配置-fail-fast未发布版本)
+- [审计修复轮迁移（fix-audit-defects-r1）](#审计修复轮迁移fix-audit-defects-r1)
 - [配置全表（全量选项与校验规则）](#配置全表全量选项与校验规则)
 
 ---
@@ -756,6 +757,63 @@ WHERE role = 'admin' AND enabled;
 
 ---
 
+## 审计修复轮迁移（fix-audit-defects-r1）
+
+2026-09-24 审计修复轮引入三项部署方需关注的变更：
+
+### 1. ceiling 迁移（存量部署硬前提）
+
+号段表新增 `ceiling BIGINT` 封顶列（NULL = 不封顶）。**分配热路径 SQL 引用该列，
+存量部署必须先执行迁移再滚动升级服务**，否则号段分配直接报错（列不存在）：
+
+```bash
+psql -f scripts/migrations/001_add_segments_ceiling.sql
+```
+
+脚本幂等（`ADD COLUMN IF NOT EXISTS` + 枚举值判存在），可安全重复执行。
+新建部署直接使用最新 `scripts/init.sql`，无需单独迁移。
+
+设置封顶（可选，按 workspace/biz_tag/dc 行）：
+
+```sql
+UPDATE nebula_id.nebula_segments SET ceiling = 10000000000
+WHERE workspace_id = 'ws1' AND biz_tag = 'order' AND dc_id = 0;
+```
+
+到顶后分配返回 `SegmentExhausted`（`max_id` 字段携带 ceiling 值）。
+
+### 2. 雪花重启时钟守卫（默认开启）
+
+新增配置 `algorithm.snowflake.state_guard`（默认 `true`）：
+
+- 运行期每 30s 把最后发号毫秒时间戳写入 `./data/snowflake_state_{dc}_{worker}.json`；
+- 启动时若状态文件中的时间戳晚于当前墙钟（跨重启时钟回拨），进程拒绝启动
+  （fail-closed，防止重启后发出与历史撞车的重复 ID）。
+
+只读文件系统部署可显式关闭（风险自负）：
+
+```toml
+[algorithm.snowflake]
+state_guard = false
+```
+
+### 3. 防猜测混淆（可选启用）
+
+新增 `algorithm.obfuscation.key_hex`（16 个 hex 字符 = u64 部署密钥）。
+配置后 `IdFormat::Obfuscated` 渲染走 4 轮 Feistel 双射编码（`Id::render`），
+连号 ID 在输出空间离散，防枚举/防规模推断；内部存储不变，按密钥可逆。
+未配置时 Obfuscated 格式显性报错（不生成默认弱密钥）。同一部署所有实例
+必须持同一密钥：
+
+```toml
+[algorithm.obfuscation]
+key_hex = "0011223344556677"
+```
+
+`biz_tag.format` 的 DB 枚举同步新增 `'obfuscated'`（迁移脚本第 2 段）。
+
+---
+
 ## 配置全表（全量选项与校验规则）
 
 `Config` 覆盖 `app`、`database`、`redis`、`etcd`、`auth`、`algorithm`、`monitoring`、`logging`、
@@ -867,6 +925,8 @@ HTTP port must be between 1 and 65535`）：
 | `0.0 <= segment.switch_threshold <= 1.0` | `Config::validate` |
 | `snowflake.datacenter_id_bits + worker_id_bits + sequence_bits < 64`（默认 ⇒ 43 位时间戳） | `Config::validate` |
 | `snowflake.clock_drift_threshold_ms > 0` | `Config::validate` |
+| `app.dc_id < 2^snowflake.datacenter_id_bits`、`app.worker_id < 2^snowflake.worker_id_bits` | `Config::validate` |
+| `obfuscation.key_hex` 为 None 或恰 16 个 hex 字符 | `Config::validate` |
 | `1 <= batch_generate.max_batch_size <= 10000` | `Config::validate` |
 
 > 完整参考：[`config/config.toml`](../config/config.toml)。

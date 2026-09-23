@@ -19,7 +19,28 @@
 
 ## [Unreleased]
 
-暂无内容。
+### fix-audit-defects-r1（2026-09-24 审计修复轮）
+
+对照「分布式 ID 面试题清单」审计发现 10 项缺陷（FMEA 排序 RPN 60–320），本轮全部修复：
+
+**正确性（P1）**
+- **雪花位宽校验**：`dc_id`/`worker_id` 超出配置位宽时启动即拒（此前 `dc_id ≤ 31` 的旧校验既放行 8..=31 的位溢出配置、又在宽位宽下误拒合法值；超界值会在 ID 组装时污染高位时间戳，造成跨 DC 组合碰撞）。`Config::validate` 与 `SnowflakeAlgorithm::initialize` 双层拦截。
+- **号段批量补满**：`try_consume` 改为「至多消费」语义，`batch_generate` 循环跨段补满，`Ok` 响应满足 `ids.len() == size` 硬不变量（此前存在静默短批出口）。
+- **重启时钟守卫**（`algorithm.snowflake.state_guard`，默认开启）：运行期每 30s 把最后发号时间戳持久化到 `./data/snowflake_state_{dc}_{worker}.json`，启动时检测跨重启时钟回拨并 fail-closed 拒绝启动。
+- **update_segment 增加 dc_id 过滤**：多 DC 行互不踩踏（破坏性签名变更，仅仓内调用点受影响）。
+
+**并发健康（P2）**
+- 号段 loading 等待由同步自旋改为异步 1ms 轮询（消除 current_thread runtime 死锁风险）。
+- 单条/批量路径统一 `ensure_next_segment`（批量路径此前无 loading CAS，并发取段相互覆盖浪费整段号段）。
+
+**DB 层（P2/P3）**
+- 原子分配 UPDATE 同步维护 `max_id` 列（此前只在 INSERT 写一次，观测失真）。
+- 新增 `ceiling` 封顶列（NULL = 不封顶）：分配 SQL 携带守卫，游标到顶返回 `SegmentExhausted`。**存量部署必须先执行 `scripts/migrations/001_add_segments_ceiling.sql` 再升级**（分配 SQL 引用该列）。
+
+**能力补全（P3）**
+- **防猜测混淆**：新增 `IdFormat::Obfuscated`（4 轮 Feistel u64 双射，`algorithm.obfuscation.key_hex` 16 hex 配置，未配置显性报错；`Id::render` 为渲染入口，内部存储不变）。
+- **动态步长真实接线**：`DbSegmentLoader::with_dynamic_step` 按 CPU 使用率在 `[min_step, max_step]` 内计算步长（此前 CpuMonitor 采样无人消费，README 宣称与实现不符）。
+- **批量 fallback 日志对称**：批量路径 fallback 命中输出 info 日志（与单条路径一致）。
 
 ## [0.3.0-rc.1] - 2026-09-22
 

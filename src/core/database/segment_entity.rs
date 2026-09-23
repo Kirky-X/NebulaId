@@ -15,6 +15,10 @@ pub struct Model {
     pub step: i32,
     pub delta: i32,
     pub dc_id: i32,
+    /// 发号封顶（NULL = 不封顶）：原子分配 UPDATE 携带
+    /// `ceiling IS NULL OR current_id + step <= ceiling` 守卫，
+    /// 到顶返回 SegmentExhausted，防止游标无限推进。
+    pub ceiling: Option<i64>,
     pub created_at: DateTime,
     pub updated_at: DateTime,
 }

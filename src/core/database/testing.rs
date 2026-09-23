@@ -142,6 +142,7 @@ pub(crate) fn sample_segment_model(id: i64, workspace_id: &str, biz_tag: &str) -
         step: 100,
         delta: 1,
         dc_id: 0,
+        ceiling: None,
         created_at: fixed_datetime(1_600_000_000),
         updated_at: fixed_datetime(1_700_000_000),
     }

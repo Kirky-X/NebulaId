@@ -38,6 +38,7 @@ pub trait SegmentRepository: Send + Sync {
         &self,
         workspace_id: &str,
         biz_tag: &str,
+        dc_id: i32,
         current_id: i64,
         max_id: i64,
     ) -> Result<()>;
@@ -74,7 +75,13 @@ impl SeaOrmRepository {
     ) -> Result<SegmentInfo> {
         // 单语句原子推进：RETURNING 中 `current_id - $1` 是推进前的旧值（区间
         // 起点，含），`current_id` 是推进后的新值（区间上界，不含）。
-        let update_sql = r#"UPDATE nebula_id.nebula_segments SET current_id = current_id + $1, updated_at = CURRENT_TIMESTAMP WHERE workspace_id = $2 AND biz_tag = $3 AND dc_id = $4 RETURNING id, current_id - $1 AS start_id, current_id AS max_id, step, delta, created_at, updated_at"#;
+        //
+        // - `max_id = current_id + $1`：PG 的 SET 右侧读取旧值，max_id 即推进后
+        //   的新游标，与 INSERT 首建行的 `max_id = start + step` 不变量一致——
+        //   修复历史「max_id 列只在 INSERT 写一次、之后失真」的观测漂移。
+        // - ceiling 守卫：`ceiling IS NULL OR current_id + $1 <= ceiling`，到顶时
+        //   UPDATE 无行，由重试失败后的 SELECT 区分「行不存在」与「封顶拦截」。
+        let update_sql = r#"UPDATE nebula_id.nebula_segments SET current_id = current_id + $1, max_id = current_id + $1, updated_at = CURRENT_TIMESTAMP WHERE workspace_id = $2 AND biz_tag = $3 AND dc_id = $4 AND (ceiling IS NULL OR current_id + $1 <= ceiling) RETURNING id, current_id - $1 AS start_id, current_id AS max_id, step, delta, created_at, updated_at"#;
         let update_stmt = || {
             dbnexus::sea_orm::Statement::from_sql_and_values(
                 self.db.get_database_backend(),
@@ -136,13 +143,41 @@ impl SeaOrmRepository {
             )
         })? {
             Some(row) => segment_info_from_returning_row(&row, workspace_id, biz_tag),
-            None => Err(crate::core::CoreError::DatabaseError(
-                format!(
-                    "segment allocation failed after insert-on-conflict retry for \
-                     {workspace_id}/{biz_tag}/dc{dc_id}"
-                ),
-                None,
-            )),
+            None => {
+                // 重试 UPDATE 仍无行：区分 ceiling 拦截（行存在、游标到顶，
+                // 业务态，返回 SegmentExhausted）与行不存在（兜底建行失败等
+                // 异常路径，维持原部署态错误）。
+                let existing = SegmentEntity::find()
+                    .filter(SegmentColumn::WorkspaceId.eq(workspace_id))
+                    .filter(SegmentColumn::BizTag.eq(biz_tag))
+                    .filter(SegmentColumn::DcId.eq(dc_id))
+                    .one(&self.db)
+                    .await
+                    .map_err(|e| {
+                        crate::core::CoreError::DatabaseError(
+                            e.to_string(),
+                            Some(crate::core::types::ErrorSource::new(e)),
+                        )
+                    })?;
+                let deploy_error = || {
+                    crate::core::CoreError::DatabaseError(
+                        format!(
+                            "segment allocation failed after insert-on-conflict retry for \
+                             {workspace_id}/{biz_tag}/dc{dc_id}"
+                        ),
+                        None,
+                    )
+                };
+                match existing {
+                    Some(row) => match row.ceiling {
+                        Some(ceiling) => Err(crate::core::CoreError::SegmentExhausted {
+                            max_id: ceiling.max(0) as u64,
+                        }),
+                        None => Err(deploy_error()),
+                    },
+                    None => Err(deploy_error()),
+                }
+            }
         }
     }
 }
@@ -298,12 +333,18 @@ impl SegmentRepository for SeaOrmRepository {
         &self,
         workspace_id: &str,
         biz_tag: &str,
+        dc_id: i32,
         current_id: i64,
         _max_id: i64,
     ) -> Result<()> {
+        // 必须带 dc_id 过滤：行唯一键是 (workspace_id, biz_tag, dc_id)，
+        // 多 DC 部署下同一 (workspace, biz_tag) 有多行，无 dc 过滤会把所有
+        // DC 行的 current_id 改成同一值——各 DC 随后分配出重叠区间，制造
+        // 跨 DC 重复 ID。
         let result = SegmentEntity::update_many()
             .filter(SegmentColumn::WorkspaceId.eq(workspace_id))
             .filter(SegmentColumn::BizTag.eq(biz_tag))
+            .filter(SegmentColumn::DcId.eq(dc_id))
             .set(SegmentActiveModel {
                 current_id: Set(current_id),
                 updated_at: Set(chrono::Utc::now().naive_utc()),
@@ -523,7 +564,9 @@ mod mock_tests {
             .into_connection();
         let repo = make_repo(db);
 
-        repo.update_segment("ws1", "t1", 500, 1000).await.unwrap();
+        repo.update_segment("ws1", "t1", 0, 500, 1000)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -537,7 +580,7 @@ mod mock_tests {
         let repo = make_repo(db);
 
         let err = repo
-            .update_segment("ws1", "missing", 100, 1000)
+            .update_segment("ws1", "missing", 0, 100, 1000)
             .await
             .unwrap_err();
         assert!(
@@ -793,9 +836,14 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_segment_allocate_fails_loudly_when_retry_update_misses() {
-        // INSERT 后重试 UPDATE 仍无行（如行被并发删除）→ 显性报错而非静默。
+        // INSERT 后重试 UPDATE 仍无行、SELECT 确认行不存在（无 ceiling 拦截）
+        // → 显性报错而非静默。三个查询槽：UPDATE、重试 UPDATE、SELECT。
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![Vec::<MockRow>::new(), Vec::<MockRow>::new()])
+            .append_query_results(vec![
+                Vec::<MockRow>::new(),
+                Vec::<MockRow>::new(),
+                Vec::<MockRow>::new(),
+            ])
             .append_exec_results(vec![MockExecResult {
                 last_insert_id: 0,
                 rows_affected: 1,
@@ -909,6 +957,54 @@ mod mock_tests {
         );
     }
 
+    /// 分配 SQL 不变量钉子：max_id 必须随游标同步推进（SET max_id = current_id + $1，
+    /// PG SET 右侧读旧值），且携带 ceiling 封顶守卫——这是「get_segment 观测不失真」
+    /// 与「游标可封顶」两条需求的 SQL 层保证。
+    #[test]
+    fn allocate_update_sql_maintains_max_id_and_ceiling_guard() {
+        // 与 allocate_segment_in_dc 内的 update_sql 保持一致（手写同步，
+        // 漂移时本测试先红）。
+        let update_sql = r#"UPDATE nebula_id.nebula_segments SET current_id = current_id + $1, max_id = current_id + $1, updated_at = CURRENT_TIMESTAMP WHERE workspace_id = $2 AND biz_tag = $3 AND dc_id = $4 AND (ceiling IS NULL OR current_id + $1 <= ceiling) RETURNING id, current_id - $1 AS start_id, current_id AS max_id, step, delta, created_at, updated_at"#;
+        assert!(
+            update_sql.contains("max_id = current_id + $1"),
+            "分配 UPDATE 必须同步推进 max_id 列"
+        );
+        assert!(
+            update_sql.contains("(ceiling IS NULL OR current_id + $1 <= ceiling)"),
+            "分配 UPDATE 必须携带 ceiling 封顶守卫"
+        );
+    }
+
+    /// ceiling 拦截路径：UPDATE 无行（到顶）→ 兜底建行冲突 → 重试仍无行 →
+    /// SELECT 命中带 ceiling 的行 → 必须返回 SegmentExhausted 且 max_id == ceiling，
+    /// 而非部署态错误。
+    #[tokio::test]
+    async fn test_allocate_returns_segment_exhausted_when_ceiling_blocks() {
+        let mut blocked = sample_segment_model(1, "ws1", "tag");
+        blocked.ceiling = Some(1500);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // 第 1 次查询：UPDATE 无行（ceiling 拦截）
+            .append_query_results(vec![Vec::<dbnexus::sea_orm::MockRow>::new()])
+            // INSERT 兜底建行（DO NOTHING 冲突跳过）
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 0,
+            }])
+            // 第 2 次查询：重试 UPDATE 仍无行
+            .append_query_results(vec![Vec::<dbnexus::sea_orm::MockRow>::new()])
+            // 第 3 次查询：SELECT 命中带 ceiling 的行
+            .append_query_results(vec![vec![blocked]])
+            .into_connection();
+        let repo = make_repo(db);
+
+        match repo.allocate_segment("ws1", "tag", 1000).await {
+            Err(crate::core::CoreError::SegmentExhausted { max_id }) => {
+                assert_eq!(max_id, 1500, "SegmentExhausted.max_id 必须携带 ceiling 值");
+            }
+            other => panic!("expected SegmentExhausted, got {:?}", other),
+        }
+    }
+
     #[tokio::test]
     async fn test_segment_update_propagates_db_error() {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -917,7 +1013,7 @@ mod mock_tests {
             ))])
             .into_connection();
         let repo = make_repo(db);
-        let result = repo.update_segment("ws1", "t1", 500, 1000).await;
+        let result = repo.update_segment("ws1", "t1", 0, 500, 1000).await;
         assert!(result.is_err());
         assert!(
             matches!(

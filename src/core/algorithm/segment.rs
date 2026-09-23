@@ -255,18 +255,24 @@ impl AtomicSegment {
         }
     }
 
+    /// 至多消费 `count` 个：`left = max - current`，`left == 0` 返回 `None`，
+    /// 否则消费 `min(count, left)` 返回区间 `[start, start + taken)`。
+    ///
+    /// 「至多消费」语义是批量补满的前提：旧实现的「不足即整单失败」会让
+    /// `batch_generate` 在段尾无法部分收割剩余号段，只能整批放弃（静默短批
+    /// 的根源）；改为部分收割后，调用方循环续段即可精确补满请求量。
     pub fn try_consume(&self, count: u64) -> Option<(u64, u64)> {
         let segment = self.inner.lock();
         let current = segment.current_id.load(Ordering::Relaxed);
         let max = segment.max_id.load(Ordering::Relaxed);
 
-        if current + count > max {
+        let left = max.saturating_sub(current);
+        if left == 0 {
             return None;
         }
-
-        let start_id = current;
-        segment.current_id.store(current + count, Ordering::Relaxed);
-        Some((start_id, current + count))
+        let taken = count.min(left);
+        segment.current_id.store(current + taken, Ordering::Relaxed);
+        Some((current, current + taken))
     }
 }
 
@@ -557,6 +563,46 @@ impl SegmentAlgorithm {
             Err(e) => *last = LastLoadResult::Err(e.to_string()),
         }
     }
+
+    /// 取段公共流程（单条/批量路径统一入口）：确保 next 号段就绪并 swap
+    /// 到 current。CAS `try_start_loading` 抢占加载权——成功方负责
+    /// `load_segment` 并无论成败 `finish_loading`；失败方异步轮询等待
+    /// 释放后重读 next（sleep 让出执行权，见单条路径的死锁注释）。
+    /// 批量路径此前不走 CAS：并发批量会各自打 DB 取段并 `set_next`
+    /// 相互覆盖，被覆盖的号段整段作废（跳号放大）。返回 `Ok` 表示已
+    /// 尽力推进（调用方继续循环重试消费），`Err` 仅透传 loader 错误。
+    async fn ensure_next_segment(
+        &self,
+        buffer: &Arc<DoubleBuffer>,
+        ctx: &GenerateContext,
+    ) -> Result<()> {
+        if buffer.get_next().is_some() {
+            buffer.swap();
+            return Ok(());
+        }
+
+        if buffer.try_start_loading() {
+            self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
+            let load_result = self.segment_loader.load_segment(ctx, 0).await;
+            buffer.finish_loading();
+            self.record_load_result(&load_result);
+            let new_seg = load_result?;
+            buffer.set_next(Arc::new(AtomicSegment::new(
+                new_seg.start_id,
+                new_seg.max_id,
+            )));
+            buffer.swap();
+            return Ok(());
+        }
+
+        while buffer.is_loading() {
+            sleep(Duration::from_millis(1)).await;
+        }
+        if buffer.get_next().is_some() {
+            buffer.swap();
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -576,32 +622,7 @@ impl IdAlgorithm for SegmentAlgorithm {
             }
 
             if buffer.need_switch() {
-                let next = buffer.get_next();
-                if next.is_some() {
-                    buffer.swap();
-                } else {
-                    // 修复：CAS 防止多线程同时 load_segment
-                    if buffer.try_start_loading() {
-                        self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
-                        let load_result = self.segment_loader.load_segment(ctx, 0).await;
-                        buffer.finish_loading(); // 无论成功失败都重置 loading
-                        self.record_load_result(&load_result);
-                        let new_seg = load_result?;
-                        let atomic_seg =
-                            Arc::new(AtomicSegment::new(new_seg.start_id, new_seg.max_id));
-                        buffer.set_next(atomic_seg);
-                        buffer.swap();
-                    } else {
-                        // 另一线程正在加载，spin-wait 直到 loading 释放
-                        while buffer.is_loading() {
-                            std::hint::spin_loop();
-                        }
-                        // loading 释放后 next 可能已被设置，直接 swap；若仍未设置则重试循环
-                        if buffer.get_next().is_some() {
-                            buffer.swap();
-                        }
-                    }
-                }
+                self.ensure_next_segment(&buffer, ctx).await?;
             }
         }
 
@@ -613,49 +634,54 @@ impl IdAlgorithm for SegmentAlgorithm {
     }
 
     async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result<IdBatch> {
+        // size=0：空批次直接返回（与雪花批量语义一致，不进循环）。
+        if size == 0 {
+            return Ok(IdBatch::new(
+                Vec::new(),
+                AlgorithmType::Segment,
+                ctx.biz_tag.clone(),
+            ));
+        }
+
         let mut ids = Vec::with_capacity(size);
         let key = format!("{}:{}", ctx.workspace_id, ctx.biz_tag);
         let buffer = self.get_or_create_buffer(&key);
 
+        // 连续无进展轮次：try_consume 仅在段耗尽（left==0）时失败，正常
+        // 取段-消费循环每轮都有进展；只有 loader 恒定返回空段这类异常
+        // 才会连续无进展，连续 MAX_BATCH_STALE_ROUNDS 轮即显性报错，
+        // 不静默返回短批。跨段补满属于有进展轮次，不受此上限约束。
+        const MAX_BATCH_STALE_ROUNDS: u32 = 8;
+        let mut stale_rounds: u32 = 0;
+
+        // 批量硬不变量：返回 Ok 时 ids.len() == size。旧实现「非空即 Ok」
+        // 的短批出口已删除——调用方不检查 ids.len() 会误以为拿满。
         while ids.len() < size {
             let current = buffer.get_current();
-            let remaining_needed = size - ids.len();
+            let remaining_needed = (size - ids.len()) as u64;
 
-            if let Some((start, end)) = current.try_consume(remaining_needed as u64) {
+            if let Some((start, end)) = current.try_consume(remaining_needed) {
                 let count = (end - start) as usize;
-                // ids.reserve(count) 已冗余：Vec::with_capacity(size) 已预分配，
-                // 且 count <= remaining_needed = size - ids.len()
                 ids.extend((start..end).map(|id| Id::from_u128(id.into())));
                 self.metrics
                     .total_generated
                     .fetch_add(count as u64, Ordering::Relaxed);
-                break;
+                stale_rounds = 0;
+                continue;
+            }
+
+            stale_rounds += 1;
+            if stale_rounds > MAX_BATCH_STALE_ROUNDS {
+                let segment = current.inner.lock();
+                let max_id = segment.max_id.load(Ordering::Relaxed);
+                drop(segment);
+                self.metrics.total_failed.fetch_add(1, Ordering::Relaxed);
+                return Err(CoreError::SegmentExhausted { max_id });
             }
 
             if buffer.need_switch() {
-                let next = buffer.get_next();
-                if next.is_none() {
-                    self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
-                    let load_result = self.segment_loader.load_segment(ctx, 0).await;
-                    self.record_load_result(&load_result);
-                    let new_seg = load_result?;
-                    let atomic_seg = Arc::new(AtomicSegment::new(new_seg.start_id, new_seg.max_id));
-                    buffer.set_next(atomic_seg);
-                }
-                buffer.swap();
-            } else {
-                break;
+                self.ensure_next_segment(&buffer, ctx).await?;
             }
-        }
-
-        if ids.is_empty() {
-            let current = buffer.get_current();
-            let segment = current.inner.lock();
-            let max_id = segment.max_id.load(Ordering::Relaxed);
-            drop(segment);
-
-            self.metrics.total_failed.fetch_add(1, Ordering::Relaxed);
-            return Err(CoreError::SegmentExhausted { max_id });
         }
 
         Ok(IdBatch::new(
@@ -759,10 +785,31 @@ impl SegmentLoader for UnconfiguredSegmentLoader {
 ///
 /// `dead_code` 豁免：本类型由**后续装配 lane** 在组装处注入（本 lane 不改
 /// main.rs / mod.rs），在此之前生产构建尚无构造点。
+/// 动态步长：`clamp(base × (1 + 2×cpu), min, max)`。
+///
+/// CPU 越忙步长越大——单次取段的 DB 往返成本被更多号段摊薄，降低
+/// 高压下的取段频次；`min/max` 来自 Segment 配置的既有字段（此前闲置）。
+/// 纯函数，确定性可测。结果收敛到 i32 值域（DB step 列类型）。
+pub fn dynamic_step(base_step: u64, min_step: u64, max_step: u64, cpu_usage: f64) -> i32 {
+    let scaled = base_step as f64 * (1.0 + 2.0 * cpu_usage.clamp(0.0, 1.0));
+    let clamped = scaled.clamp(min_step as f64, max_step as f64) as u64;
+    clamped.min(i32::MAX as u64) as i32
+}
+
 #[allow(dead_code)]
 pub struct DbSegmentLoader<R: SegmentRepository> {
     repository: Arc<R>,
     step: i32,
+    /// 动态步长策略（Some 时覆盖固定 `step`）。
+    dynamic: Option<DynamicStepPolicy>,
+}
+
+/// 动态步长策略参数快照（来自 Segment 配置 + CPU 监视器）。
+struct DynamicStepPolicy {
+    base_step: u64,
+    min_step: u64,
+    max_step: u64,
+    cpu_monitor: Arc<CpuMonitor>,
 }
 
 #[allow(dead_code)]
@@ -775,22 +822,56 @@ impl<R: SegmentRepository> DbSegmentLoader<R> {
         Self {
             repository,
             step: Self::DEFAULT_STEP,
+            dynamic: None,
         }
     }
 
     /// 以指定步长构建装载器（步长应落在 biz_tag 的 base_step～max_step 约束内，
     /// 超大步长会放大 DB 崩溃时的号段空洞）。
     pub fn with_step(repository: Arc<R>, step: i32) -> Self {
-        Self { repository, step }
+        Self {
+            repository,
+            step,
+            dynamic: None,
+        }
+    }
+
+    /// 动态步长装载器：每次取段按 CPU 使用率在 [min_step, max_step] 内
+    /// 计算步长（此前 README 宣称「动态步长」但 CpuMonitor 采样无人消费，
+    /// 本构造器把宣称变成真实接线）。
+    pub fn with_dynamic_step(
+        repository: Arc<R>,
+        segment_config: SegmentAlgorithmConfig,
+        cpu_monitor: Arc<CpuMonitor>,
+    ) -> Self {
+        Self {
+            repository,
+            step: Self::DEFAULT_STEP,
+            dynamic: Some(DynamicStepPolicy {
+                base_step: segment_config.base_step,
+                min_step: segment_config.min_step,
+                max_step: segment_config.max_step,
+                cpu_monitor,
+            }),
+        }
     }
 }
 
 #[async_trait]
 impl<R: SegmentRepository + 'static> SegmentLoader for DbSegmentLoader<R> {
     async fn load_segment(&self, ctx: &GenerateContext, _worker_id: u8) -> Result<SegmentData> {
+        let step = match &self.dynamic {
+            Some(policy) => dynamic_step(
+                policy.base_step,
+                policy.min_step,
+                policy.max_step,
+                policy.cpu_monitor.get_usage(),
+            ),
+            None => self.step,
+        };
         let info = self
             .repository
-            .allocate_segment(&ctx.workspace_id, &ctx.biz_tag, self.step)
+            .allocate_segment(&ctx.workspace_id, &ctx.biz_tag, step)
             .await?;
 
         // i64 → u64 防御性转换：正常路径两者恒为正（allocate_segment 从 1 起
@@ -871,7 +952,61 @@ mod tests {
         assert_eq!(start, 11);
         assert_eq!(end, 16);
 
+        // 至多消费语义：剩余 984 请求 1000 → 部分收割 984 个（旧实现整单 None）。
+        let (start, end) = segment.try_consume(1000).unwrap();
+        assert_eq!(start, 16);
+        assert_eq!(end, 1000);
+
+        // 剩余归零后返回 None。
+        assert!(segment.try_consume(1).is_none());
         assert!(segment.try_consume(1000).is_none());
+    }
+
+    /// 剩余为 0 时无论请求多少都返回 None（含 count=0 的退化输入）。
+    #[test]
+    fn test_atomic_segment_try_consume_exhausted_returns_none() {
+        let segment = AtomicSegment::new(0, 0);
+        assert!(segment.try_consume(1).is_none());
+        assert!(segment.try_consume(0).is_none());
+
+        let segment = AtomicSegment::new(5, 5);
+        assert!(segment.try_consume(1).is_none());
+    }
+
+    /// count=0 在剩余充足时返回空区间（不发号也不报错，调用方循环的
+    /// 惰性推进场景依赖此行为）。
+    #[test]
+    fn test_atomic_segment_try_consume_zero_count_returns_empty_range() {
+        let segment = AtomicSegment::new(1, 1000);
+        let (start, end) = segment.try_consume(0).unwrap();
+        assert_eq!((start, end), (1, 1));
+    }
+
+    /// 并发消费总量恰等于段容量：16 任务并发循环 try_consume(每次至多 37 个)
+    /// 直到段耗尽，收割总数 == 段容量（部分收割不丢号、不重号）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_atomic_segment_concurrent_consume_no_overlap() {
+        let segment = Arc::new(AtomicSegment::new(0, 1000));
+        const TASKS: usize = 16;
+        let handles: Vec<_> = (0..TASKS)
+            .map(|_| {
+                let segment = Arc::clone(&segment);
+                tokio::spawn(async move {
+                    let mut taken: u64 = 0;
+                    while let Some((start, end)) = segment.try_consume(37) {
+                        assert!(start < end, "部分收割不得返回空区间");
+                        taken += end - start;
+                    }
+                    taken
+                })
+            })
+            .collect();
+
+        let mut total: u64 = 0;
+        for h in handles {
+            total += h.await.unwrap();
+        }
+        assert_eq!(total, 1000, "并发收割总量必须恰等于段容量");
     }
 
     #[tokio::test]
@@ -1022,16 +1157,117 @@ mod tests {
         assert_eq!(batch.biz_tag, "tag");
     }
 
+    /// size=0 直接返回空批次（与雪花批量语义一致，不进循环不报错）。
     #[tokio::test]
-    async fn test_segment_algorithm_batch_generate_empty_returns_exhausted_error() {
+    async fn test_segment_algorithm_batch_generate_empty_returns_empty_batch() {
         let algo =
             SegmentAlgorithm::new(0).with_segment_loader(Arc::new(TestSegmentLoader::default()));
         let ctx = sample_ctx();
-        let result = algo.batch_generate(&ctx, 0).await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            CoreError::SegmentExhausted { max_id: _ } => {}
-            other => panic!("expected SegmentExhausted, got {:?}", other),
+        let batch = algo.batch_generate(&ctx, 0).await.unwrap();
+        assert!(batch.ids.is_empty());
+        assert_eq!(batch.algorithm, AlgorithmType::Segment);
+    }
+
+    /// 计数造段器：按调用次序发放互接续的 [n*1000+1, n*1000+1001) 号段，
+    /// 记录调用次数（供跨段补满与并发合并断言）。
+    struct CountingSegmentLoader {
+        calls: std::sync::atomic::AtomicU64,
+    }
+
+    impl CountingSegmentLoader {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::atomic::AtomicU64::new(0),
+            }
+        }
+
+        fn call_count(&self) -> u64 {
+            self.calls.load(Ordering::Relaxed)
+        }
+    }
+
+    #[async_trait]
+    impl SegmentLoader for CountingSegmentLoader {
+        async fn load_segment(
+            &self,
+            _ctx: &GenerateContext,
+            _worker_id: u8,
+        ) -> Result<SegmentData> {
+            let n = self.calls.fetch_add(1, Ordering::Relaxed);
+            let start = n * 1000 + 1;
+            Ok(SegmentData {
+                start_id: start,
+                max_id: start + 1000,
+            })
+        }
+    }
+
+    /// 批量硬不变量：请求 2500、单段步长 1000 → 跨 ≥3 个号段补满，
+    /// ID 连续、无重复、数量精确等于请求量（不静默短批）。
+    #[tokio::test]
+    async fn test_batch_generate_fills_across_multiple_segments() {
+        let loader = Arc::new(CountingSegmentLoader::new());
+        let algo = SegmentAlgorithm::new(0).with_segment_loader(loader.clone());
+        let ctx = sample_ctx();
+
+        let batch = algo.batch_generate(&ctx, 2500).await.unwrap();
+
+        assert_eq!(batch.ids.len(), 2500, "批量必须精确补满请求量");
+        let mut seen = std::collections::HashSet::new();
+        for (i, id) in batch.ids.iter().enumerate() {
+            let v = id.as_u128();
+            assert!(seen.insert(v), "ID 重复：{v}");
+            if i > 0 {
+                assert_eq!(v, batch.ids[i - 1].as_u128() + 1, "批量内 ID 必须连续");
+            }
+        }
+        assert!(
+            loader.call_count() >= 3,
+            "2500 个 ID 至少跨 3 个步长 1000 的号段，实际取段 {} 次",
+            loader.call_count()
+        );
+    }
+
+    /// 并发批量取段合并：8 任务并发对同一 key 各批量 200（总需求 1600、
+    /// 步长 1000 → 至少 2 段才够），CAS 合并下 loader 实际调用数必须
+    /// 严格小于任务数（旧批量路径无 CAS 时 8 任务会各自打 DB、set_next
+    /// 相互覆盖浪费整段），且每个批量都精确补满。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_concurrent_batch_generate_merges_segment_loads() {
+        let loader = Arc::new(CountingSegmentLoader::new());
+        let algo = Arc::new(SegmentAlgorithm::new(0).with_segment_loader(loader.clone()));
+        let ctx = sample_ctx();
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let algo = Arc::clone(&algo);
+                let ctx = ctx.clone();
+                tokio::spawn(async move { algo.batch_generate(&ctx, 200).await })
+            })
+            .collect();
+
+        for h in handles {
+            let batch = h.await.unwrap().expect("并发批量必须成功");
+            assert_eq!(batch.ids.len(), 200, "每个批量必须精确补满");
+        }
+        let calls = loader.call_count();
+        assert!(
+            calls < 8,
+            "CAS 合并下 loader 调用数必须小于并发任务数，实际 {}",
+            calls
+        );
+    }
+
+    /// loader 恒错时批量把原始错误透传（不吞成 SegmentExhausted，也不短批）。
+    #[tokio::test]
+    async fn test_batch_generate_loader_error_passthrough() {
+        let algo = SegmentAlgorithm::new(0).with_segment_loader(Arc::new(FailingSegmentLoader));
+        let ctx = sample_ctx();
+        match algo.batch_generate(&ctx, 3).await {
+            Err(CoreError::DatabaseError(msg, _)) => {
+                assert!(msg.contains("segment db unreachable"));
+            }
+            other => panic!("expected DatabaseError passthrough, got {:?}", other),
         }
     }
 
@@ -1130,6 +1366,40 @@ mod tests {
             }
             other => panic!("expected Degraded after load failure, got {other:?}"),
         }
+    }
+
+    /// 延迟造段器：等待指定毫秒后返回有效号段（模拟 DB 往返延迟）。
+    struct SlowSegmentLoader {
+        delay_ms: u64,
+    }
+
+    #[async_trait]
+    impl SegmentLoader for SlowSegmentLoader {
+        async fn load_segment(
+            &self,
+            _ctx: &GenerateContext,
+            _worker_id: u8,
+        ) -> Result<SegmentData> {
+            tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+            Ok(SegmentData {
+                start_id: 1,
+                max_id: 10_000,
+            })
+        }
+    }
+
+    /// loading 等待必须异步让出执行权：current_thread runtime（#[tokio::test]
+    /// 默认）下并发生成、loader 延迟 50ms——等待方若用同步自旋会占死唯一
+    /// 线程，loader 任务永远得不到调度而死锁；改为 sleep 轮询后两个请求
+    /// 都必须成功。
+    #[tokio::test]
+    async fn test_generate_loading_wait_yields_on_current_thread_runtime() {
+        let algo = SegmentAlgorithm::new(0)
+            .with_segment_loader(Arc::new(SlowSegmentLoader { delay_ms: 50 }));
+        let ctx = sample_ctx();
+        let (a, b) = tokio::join!(algo.generate(&ctx), algo.generate(&ctx));
+        assert!(a.is_ok(), "首个请求必须成功: {:?}", a.err());
+        assert!(b.is_ok(), "等待方不得死锁: {:?}", b.err());
     }
 
     /// loader 恢复成功后：最近一次成功加载覆盖失败记录，health_check 恢复 Healthy。
@@ -1349,6 +1619,7 @@ mod tests {
             &self,
             _workspace_id: &str,
             _biz_tag: &str,
+            _dc_id: i32,
             _current_id: i64,
             _max_id: i64,
         ) -> Result<()> {
@@ -1374,6 +1645,44 @@ mod tests {
         async fn delete_segment(&self, _workspace_id: &str, _biz_tag: &str) -> Result<()> {
             unimplemented!("DbSegmentLoader 单测只走 allocate_segment");
         }
+    }
+
+    /// 动态步长公式：cpu=0 → base；cpu=1 → 3×base；min/max 双边界 clamp；
+    /// 越界 cpu 输入（>1 / <0）收敛到 [0,1]。
+    #[test]
+    fn test_dynamic_step_formula_and_clamps() {
+        assert_eq!(dynamic_step(1000, 500, 100_000, 0.0), 1000);
+        assert_eq!(dynamic_step(1000, 500, 100_000, 0.1), 1200);
+        assert_eq!(dynamic_step(1000, 500, 100_000, 1.0), 3000);
+        assert_eq!(dynamic_step(1000, 2000, 100_000, 0.0), 2000, "下界 clamp");
+        assert_eq!(dynamic_step(1000, 500, 2500, 1.0), 2500, "上界 clamp");
+        assert_eq!(dynamic_step(1000, 500, 100_000, 5.0), 3000, "cpu>1 收敛");
+        assert_eq!(dynamic_step(1000, 500, 100_000, -1.0), 1000, "cpu<0 收敛");
+    }
+
+    /// 动态装载器：cpu=1.0 时取段步长应为 max_step（CpuMonitor 采样真正
+    /// 参与了取段决策）。
+    #[tokio::test]
+    async fn test_dynamic_loader_computes_step_from_cpu_monitor() {
+        let monitor = Arc::new(CpuMonitor::new());
+        monitor.update_usage(1.0);
+        let cfg = SegmentAlgorithmConfig {
+            base_step: 1000,
+            min_step: 500,
+            max_step: 2500,
+            switch_threshold: 0.1,
+        };
+        let repo = Arc::new(MockSegmentRepository::returning(Ok(sample_segment_info(
+            1000, 2000,
+        ))));
+        let loader = DbSegmentLoader::with_dynamic_step(repo.clone(), cfg, monitor);
+
+        let _ = loader.load_segment(&sample_ctx(), 0).await.unwrap();
+        assert_eq!(
+            repo.recorded_calls()[0].2,
+            2500,
+            "cpu=1.0 时取段步长必须是 max_step"
+        );
     }
 
     #[tokio::test]

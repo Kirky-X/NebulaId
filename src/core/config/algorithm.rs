@@ -31,6 +31,36 @@ impl Default for SegmentAlgorithmConfig {
     }
 }
 
+/// 防猜测混淆配置（change: fix-audit-defects-r1）。
+#[derive(Clone, Default, Deserialize, Serialize)]
+pub struct ObfuscationConfig {
+    /// 部署混淆密钥：16 个 hex 字符 = u64。None 时 `IdFormat::Obfuscated`
+    /// 渲染显性报错（fail-closed，不生成默认弱密钥）。同一部署所有实例
+    /// 必须持同一密钥，否则编码结果互不一致。
+    #[serde(default)]
+    pub key_hex: Option<String>,
+}
+
+impl std::fmt::Debug for ObfuscationConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 手写 Debug：密钥与 api_key_salt 同级敏感，必须 REDACTED。
+        f.debug_struct("ObfuscationConfig")
+            .field("key_hex", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl ObfuscationConfig {
+    /// 解析密钥为 [`crate::core::types::obfuscation::IdObfuscator`]。
+    /// 未配置返回 `None`；hex 非法返回 `None`（配置校验已前置拦截，
+    /// 此处兜底不 panic）。
+    pub fn obfuscator(&self) -> Option<crate::core::types::obfuscation::IdObfuscator> {
+        let hex = self.key_hex.as_deref()?;
+        let key = u64::from_str_radix(hex, 16).ok()?;
+        Some(crate::core::types::obfuscation::IdObfuscator::new(key))
+    }
+}
+
 /// Snowflake algorithm configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -43,6 +73,15 @@ pub struct SnowflakeAlgorithmConfig {
     pub sequence_bits: u8,
     /// Clock drift threshold (milliseconds)
     pub clock_drift_threshold_ms: u64,
+    /// 重启时钟守卫：运行期把最后发号时间戳持久化到 `./data/`，启动时
+    /// 检测跨重启时钟回拨并 fail-closed（默认开启）。关闭后回拨检测
+    /// 只剩运行中阈值机制，跨重启重复 ID 风险自负。
+    #[serde(default = "default_true")]
+    pub state_guard: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl SnowflakeAlgorithmConfig {
@@ -70,6 +109,7 @@ impl Default for SnowflakeAlgorithmConfig {
             worker_id_bits: 8,
             sequence_bits: 10,
             clock_drift_threshold_ms: 1000,
+            state_guard: true,
         }
     }
 }
@@ -100,6 +140,9 @@ pub struct AlgorithmConfig {
     pub snowflake: SnowflakeAlgorithmConfig,
     /// UUID v8 settings
     pub uuid_v8: UuidV8Config,
+    /// 防猜测混淆设置
+    #[serde(default)]
+    pub obfuscation: ObfuscationConfig,
 }
 
 impl Default for AlgorithmConfig {
@@ -109,6 +152,7 @@ impl Default for AlgorithmConfig {
             segment: SegmentAlgorithmConfig::default(),
             snowflake: SnowflakeAlgorithmConfig::default(),
             uuid_v8: UuidV8Config::default(),
+            obfuscation: ObfuscationConfig::default(),
         }
     }
 }

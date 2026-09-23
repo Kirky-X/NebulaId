@@ -218,11 +218,12 @@ impl SegmentRepository for DynSegmentRepository {
         &self,
         workspace_id: &str,
         biz_tag: &str,
+        dc_id: i32,
         current_id: i64,
         max_id: i64,
     ) -> Result<()> {
         self.0
-            .update_segment(workspace_id, biz_tag, current_id, max_id)
+            .update_segment(workspace_id, biz_tag, dc_id, current_id, max_id)
             .await
     }
     async fn create_segment(
@@ -442,11 +443,14 @@ impl AlgorithmRouter {
                                     config.database.statement_timeout_secs,
                                 )),
                         );
-                        // 步长取 Segment 配置的 base_step（与动态步长基准一致）。
+                        // 动态步长装配：CPU 监视器 + Segment 配置的
+                        // min/base/max 三参数一起注入（README「动态步长」
+                        // 由此成为真实行为）。
                         let loader: Arc<dyn SegmentLoader + Send + Sync> = Arc::new(
-                            DbSegmentLoader::with_step(
+                            DbSegmentLoader::with_dynamic_step(
                                 Arc::new(DynSegmentRepository(repository)),
-                                config.algorithm.segment.base_step as i32,
+                                config.algorithm.segment.clone(),
+                                Arc::new(crate::core::algorithm::CpuMonitor::new()),
                             ),
                         );
                         info!(
@@ -758,7 +762,10 @@ impl AlgorithmRouter {
                         .record_generation_result(effective_algorithm, false)
                         .await;
                     if let Some(res) = self
-                        .try_fallback_chain(&algorithms, ctx, false, BatchGenerateRun(size))
+                        // 批量与单条路径日志对称：主算法失败回退命中必须
+                        // 广播（此前批量恒静默，调用方只能从响应的 algorithm
+                        // 字段事后发现 ID 形态变了）。
+                        .try_fallback_chain(&algorithms, ctx, true, BatchGenerateRun(size))
                         .await
                     {
                         return res;
@@ -2180,6 +2187,7 @@ mod tests {
             &self,
             _workspace_id: &str,
             _biz_tag: &str,
+            _dc_id: i32,
             _current_id: i64,
             _max_id: i64,
         ) -> Result<()> {

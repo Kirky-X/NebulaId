@@ -144,6 +144,8 @@ pub enum IdFormatDb {
     Prefixed,
     #[sea_orm(string_value = "uuid")]
     Uuid,
+    #[sea_orm(string_value = "obfuscated")]
+    Obfuscated,
 }
 
 impl From<AlgorithmTypeDb> for AlgorithmType {
@@ -172,6 +174,7 @@ impl From<IdFormatDb> for IdFormat {
             IdFormatDb::Numeric => IdFormat::Numeric,
             IdFormatDb::Prefixed => IdFormat::Prefixed,
             IdFormatDb::Uuid => IdFormat::Uuid,
+            IdFormatDb::Obfuscated => IdFormat::Obfuscated,
         }
     }
 }
@@ -182,6 +185,7 @@ impl From<IdFormat> for IdFormatDb {
             IdFormat::Numeric => IdFormatDb::Numeric,
             IdFormat::Prefixed => IdFormatDb::Prefixed,
             IdFormat::Uuid => IdFormatDb::Uuid,
+            IdFormat::Obfuscated => IdFormatDb::Obfuscated,
         }
     }
 }
@@ -213,7 +217,12 @@ mod tests {
 
     #[test]
     fn test_id_format_db_roundtrip() {
-        for variant in [IdFormat::Numeric, IdFormat::Prefixed, IdFormat::Uuid] {
+        for variant in [
+            IdFormat::Numeric,
+            IdFormat::Prefixed,
+            IdFormat::Uuid,
+            IdFormat::Obfuscated,
+        ] {
             let db_value = IdFormatDb::from(variant.clone());
             assert_eq!(IdFormat::from(db_value), variant);
         }

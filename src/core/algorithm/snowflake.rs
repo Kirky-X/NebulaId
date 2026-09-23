@@ -7,18 +7,26 @@
 //! implementation. UUID-style generation lives in the dedicated
 //! `uuid_v8.rs` module; the previously test-only UUID generators and
 //! DI builder that lived here were removed as dead code.
+use crate::core::algorithm::snowflake_state::{self, SnowflakeStateFile};
 use crate::core::algorithm::{
     AlgorithmMetricsSnapshot, GenerateContext, HealthStatus, IdAlgorithm,
 };
 use crate::core::config::{Config, SnowflakeAlgorithmConfig};
 use crate::core::types::{AlgorithmType, CoreError, Id, IdBatch, Result};
 use async_trait::async_trait;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 use tracing::info;
 
 const DEFAULT_START_TIME: u64 = 1704067200000;
+
+/// 重启时钟守卫状态文件目录（与 etcd cache 同一目录约定）。
+const STATE_DIR: &str = "./data";
+
+/// 状态文件持久化周期（秒）。
+const STATE_PERSIST_INTERVAL_SECS: u64 = 30;
 
 /// clock drift 衰减阈值：距最近一次回拨事件持续无新事件达到该毫秒数后，
 /// `clock_drift_ms` 衰减清零、health_check 恢复 Healthy。
@@ -125,7 +133,10 @@ pub struct SnowflakeAlgorithm {
     /// 序列号域为 `[0, sequence_mask]`，`sequence_mask` 本身保留为耗尽哨兵
     /// 不发号：`seq + take` 必须落在 `[0, mask]` 内，否则原子加会溢出污染
     /// 高位时间戳。故单毫秒可发号容量为 `sequence_mask`（10 位 → 1023 个）。
-    state: AtomicU64,
+    ///
+    /// Arc 包装：重启时钟守卫的 30s 持久化任务需要跨任务持有同一状态字
+    /// （`initialize` 时算法本体尚未进入 `Arc<dyn IdAlgorithm>`）。
+    state: Arc<AtomicU64>,
     rotation_count: AtomicU8,
     metrics: Arc<SnowflakeMetrics>,
     clock_drift_ms: AtomicU64,
@@ -134,6 +145,35 @@ pub struct SnowflakeAlgorithm {
     last_drift_at_ms: AtomicU64,
     /// drift 衰减阈值（毫秒）。默认 60_000；测试可改小以模拟时间推进。
     drift_decay_after_ms: u64,
+    /// 守卫状态文件基础目录（默认 `./data`，测试可注入）。
+    state_dir: PathBuf,
+    /// 守卫状态文件完整路径（state_guard 开启时由 initialize 填充）。
+    state_file: Option<PathBuf>,
+    /// 持久化任务关停信号。
+    persist_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    /// 持久化任务句柄（shutdown 等待收尾）。
+    persist_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+}
+
+/// 落盘一次守卫状态。`last_issued_ts == 0`（本进程尚未发号）时跳过——
+/// 用 0 覆盖会抹掉上一次进程留下的有效守卫基准，反而打开重复窗口。
+fn persist_state(path: &std::path::Path, dc_id: u8, worker_id: u8, last_issued_ts: u64) {
+    if last_issued_ts == 0 {
+        return;
+    }
+    let state = SnowflakeStateFile {
+        last_issued_ts,
+        dc_id,
+        worker_id,
+        saved_at: chrono::Utc::now().to_rfc3339(),
+    };
+    if let Err(e) = snowflake_state::save(path, &state) {
+        tracing::warn!(
+            event = "snowflake_state_persist_failed",
+            path = %path.display(),
+            error = %e
+        );
+    }
 }
 
 struct SnowflakeMetrics {
@@ -160,12 +200,16 @@ impl SnowflakeAlgorithm {
             config: SnowflakeAlgorithmConfig::default(),
             datacenter_id,
             worker_id,
-            state: AtomicU64::new(0),
+            state: Arc::new(AtomicU64::new(0)),
             rotation_count: AtomicU8::new(0),
             metrics: Arc::new(SnowflakeMetrics::new()),
             clock_drift_ms: AtomicU64::new(0),
             last_drift_at_ms: AtomicU64::new(0),
             drift_decay_after_ms: DEFAULT_DRIFT_DECAY_AFTER_MS,
+            state_dir: PathBuf::from(STATE_DIR),
+            state_file: None,
+            persist_shutdown_tx: None,
+            persist_task: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -202,6 +246,78 @@ impl SnowflakeAlgorithm {
         self.datacenter_id = config.app.dc_id;
         self.worker_id = config.app.worker_id;
 
+        // 位宽二次校验：SDK 直接构造 Config 可能绕过 Config::validate。
+        // 超界 dc_id/worker_id 会在 construct_id 的 OR 组装中污染高位时间戳位，
+        // 造成跨 DC/worker 组合碰撞（重复 ID），必须 fail-closed。
+        // 移位守卫：u8 域下位宽 ≥ 8 时全域合法，位宽 < 8 时移位量 ≤ 7 安全。
+        let dc_bits = self.config.datacenter_id_bits;
+        if dc_bits < 8 && self.datacenter_id >= (1u8 << dc_bits) {
+            return Err(CoreError::ConfigurationError(format!(
+                "datacenter_id {} exceeds datacenter_id_bits={} range (max {})",
+                self.datacenter_id,
+                dc_bits,
+                (1u16 << dc_bits) - 1
+            )));
+        }
+        let worker_bits = self.config.worker_id_bits;
+        if worker_bits < 8 && self.worker_id >= (1u8 << worker_bits) {
+            return Err(CoreError::ConfigurationError(format!(
+                "worker_id {} exceeds worker_id_bits={} range (max {})",
+                self.worker_id,
+                worker_bits,
+                (1u16 << worker_bits) - 1
+            )));
+        }
+
+        // 重启时钟守卫：读回上次进程的最后发号时间戳，若晚于当前墙钟说明
+        // 停机期间时钟被回拨——此刻发号会与回拨前的历史 ID 撞车，必须
+        // fail-closed 拒绝启动（与 worker_id 分配失败同语义）。
+        if self.config.state_guard {
+            let path = snowflake_state::state_file_path(
+                &self.state_dir,
+                self.datacenter_id,
+                self.worker_id,
+            );
+            if let Some(saved) = snowflake_state::load(&path) {
+                let now = Self::get_timestamp();
+                if saved.last_issued_ts > now {
+                    return Err(CoreError::ConfigurationError(format!(
+                        "snowflake state guard: last issued timestamp {} is ahead of \
+                         current clock {} (clock moved backward across restart by {}ms); \
+                         refuse to generate duplicate IDs — resolve clock sync and remove \
+                         the state file only if the previous run is confirmed discarded",
+                        saved.last_issued_ts,
+                        now,
+                        saved.last_issued_ts - now
+                    )));
+                }
+            }
+            self.state_file = Some(path.clone());
+
+            // 30s 周期持久化任务：快照状态字高位时间戳落盘，给下次重启的
+            // 守卫检查提供基准（与 etcd worker lease 的 30s TTL 同量级，
+            // 双层防护收窄重复窗口）。
+            let state = Arc::clone(&self.state);
+            let seq_bits = self.config.sequence_bits;
+            let (dc_id, worker_id) = (self.datacenter_id, self.worker_id);
+            let (tx, mut rx) = tokio::sync::watch::channel(false);
+            let handle = tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = rx.changed() => break,
+                        _ = tokio::time::sleep(Duration::from_secs(
+                            STATE_PERSIST_INTERVAL_SECS,
+                        )) => {
+                            let ts = state.load(Ordering::Relaxed) >> seq_bits;
+                            persist_state(&path, dc_id, worker_id, ts);
+                        }
+                    }
+                }
+            });
+            self.persist_shutdown_tx = Some(tx);
+            *self.persist_task.lock().await = Some(handle);
+        }
+
         info!(
             "{}",
             t!(
@@ -211,6 +327,13 @@ impl SnowflakeAlgorithm {
             )
         );
         Ok(())
+    }
+
+    /// 测试注入状态文件目录（生产固定 `./data`）。
+    #[cfg(test)]
+    fn with_state_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.state_dir = dir;
+        self
     }
 
     fn get_timestamp() -> u64 {
@@ -503,6 +626,18 @@ impl IdAlgorithm for SnowflakeAlgorithm {
     // 修复：`initialize` 已移到 inherent impl（`impl SnowflakeAlgorithm`）。
 
     async fn shutdown(&self) -> Result<()> {
+        // 停掉守卫持久化任务并最终落盘一次：shutdown 时进程持有权威的
+        // 最后发号时间戳，这是下次重启守卫检查的基准。
+        if let Some(tx) = &self.persist_shutdown_tx {
+            let _ = tx.send(true);
+        }
+        if let Some(task) = self.persist_task.lock().await.take() {
+            let _ = task.await;
+        }
+        if let Some(path) = &self.state_file {
+            let ts = self.state.load(Ordering::Relaxed) >> self.config.sequence_bits;
+            persist_state(path, self.datacenter_id, self.worker_id, ts);
+        }
         Ok(())
     }
 }
@@ -1023,9 +1158,10 @@ mod tests {
     /// initialize 应从 Config 加载 datacenter_id、worker_id 和 snowflake 配置。
     #[tokio::test]
     async fn test_initialize_updates_config_and_ids() {
-        let mut algo = SnowflakeAlgorithm::new(0, 0);
+        let mut algo = SnowflakeAlgorithm::new(0, 0)
+            .with_state_dir(std::env::temp_dir().join("nebulaid-sf-init-cfg"));
         let mut config = Config::default();
-        config.app.dc_id = 5;
+        config.app.dc_id = 2;
         config.app.worker_id = 7;
         config.algorithm.snowflake.datacenter_id_bits = 2;
         config.algorithm.snowflake.worker_id_bits = 4;
@@ -1035,11 +1171,130 @@ mod tests {
         algo.initialize(&config)
             .await
             .expect("initialize should succeed");
+        algo.shutdown().await.expect("shutdown should succeed");
 
         assert_eq!(algo.config.datacenter_id_bits, 2);
         assert_eq!(algo.config.worker_id_bits, 4);
         assert_eq!(algo.config.sequence_bits, 8);
         assert_eq!(algo.config.clock_drift_threshold_ms, 500);
+    }
+
+    /// 重启时钟守卫：状态文件里 last_issued_ts 晚于当前墙钟（跨重启时钟
+    /// 回拨）时，initialize 必须 fail-closed 返回 ConfigurationError。
+    #[tokio::test]
+    async fn test_initialize_state_guard_rejects_clock_backward_across_restart() {
+        let dir = std::env::temp_dir().join(format!("nebulaid-sf-guard-{}", std::process::id()));
+        let path = snowflake_state::state_file_path(&dir, 0, 0);
+        snowflake_state::save(
+            &path,
+            &SnowflakeStateFile {
+                last_issued_ts: SnowflakeAlgorithm::get_timestamp() + 10_000,
+                dc_id: 0,
+                worker_id: 0,
+                saved_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .expect("seed state file");
+
+        let mut algo = SnowflakeAlgorithm::new(0, 0).with_state_dir(dir.clone());
+        let result = algo.initialize(&Config::default()).await;
+        match result {
+            Err(CoreError::ConfigurationError(msg)) => {
+                assert!(
+                    msg.contains("state guard") && msg.contains("clock moved backward"),
+                    "错误必须说明跨重启时钟回拨，实际：{}",
+                    msg
+                );
+            }
+            other => panic!("expected ConfigurationError, got {:?}", other),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// state_guard=false 时同样的回拨状态文件不阻断启动（显式关闭 =
+    /// 运维自担风险），且不落任何状态文件。
+    #[tokio::test]
+    async fn test_initialize_state_guard_disabled_skips_check() {
+        let dir =
+            std::env::temp_dir().join(format!("nebulaid-sf-guard-off-{}", std::process::id()));
+        let path = snowflake_state::state_file_path(&dir, 0, 0);
+        snowflake_state::save(
+            &path,
+            &SnowflakeStateFile {
+                last_issued_ts: SnowflakeAlgorithm::get_timestamp() + 10_000,
+                dc_id: 0,
+                worker_id: 0,
+                saved_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .expect("seed state file");
+
+        let mut algo = SnowflakeAlgorithm::new(0, 0).with_state_dir(dir.clone());
+        let mut config = Config::default();
+        config.algorithm.snowflake.state_guard = false;
+        algo.initialize(&config)
+            .await
+            .expect("guard disabled must not block startup");
+        algo.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// shutdown 最终落盘：发过号的实例 shutdown 后状态文件含非零
+    /// last_issued_ts，给下次重启的守卫提供基准。
+    #[tokio::test]
+    async fn test_shutdown_persists_final_state() {
+        let dir = std::env::temp_dir().join(format!("nebulaid-sf-final-{}", std::process::id()));
+        let mut algo = SnowflakeAlgorithm::new(0, 0).with_state_dir(dir.clone());
+        algo.initialize(&Config::default()).await.unwrap();
+        let _ = algo.generate_id().await.unwrap();
+        algo.shutdown().await.unwrap();
+
+        let path = snowflake_state::state_file_path(&dir, 0, 0);
+        let saved = snowflake_state::load(&path).expect("state file must exist");
+        assert!(
+            saved.last_issued_ts > 0,
+            "shutdown must persist non-zero last_issued_ts"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 位宽二次校验：dc_id 超出 datacenter_id_bits 位宽时 initialize 必须
+    /// 返回 ConfigurationError（覆盖 SDK 直接构造 Config 绕过 Config::validate
+    /// 的路径），且字段不得被部分应用为可用状态。
+    #[tokio::test]
+    async fn test_initialize_rejects_dc_id_overflowing_bits() {
+        let mut algo = SnowflakeAlgorithm::new(0, 0);
+        let mut config = Config::default();
+        config.app.dc_id = 8; // 默认 datacenter_id_bits=3，上限 7
+        match algo.initialize(&config).await {
+            Err(CoreError::ConfigurationError(msg)) => {
+                assert!(
+                    msg.contains("datacenter_id 8") && msg.contains("datacenter_id_bits=3"),
+                    "错误必须含实际值与位宽，实际：{}",
+                    msg
+                );
+            }
+            other => panic!("expected ConfigurationError, got {:?}", other),
+        }
+    }
+
+    /// 位宽二次校验：worker_id 超出 worker_id_bits 位宽时同样拒绝。
+    #[tokio::test]
+    async fn test_initialize_rejects_worker_id_overflowing_bits() {
+        let mut algo = SnowflakeAlgorithm::new(0, 0);
+        let mut config = Config::default();
+        config.algorithm.snowflake.worker_id_bits = 4; // 上限 15
+        config.app.worker_id = 20;
+        match algo.initialize(&config).await {
+            Err(CoreError::ConfigurationError(msg)) => {
+                assert!(
+                    msg.contains("worker_id 20") && msg.contains("worker_id_bits=4"),
+                    "错误必须含实际值与位宽，实际：{}",
+                    msg
+                );
+            }
+            other => panic!("expected ConfigurationError, got {:?}", other),
+        }
     }
 
     /// shutdown 应返回 Ok(())。

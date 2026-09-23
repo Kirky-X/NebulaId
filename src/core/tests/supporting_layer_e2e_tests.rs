@@ -145,9 +145,10 @@ fn e2e_config_validate_http_port_zero_fails() {
     ));
 }
 
-/// Config::validate 在 dc_id > 31 时返回 InvalidValue。
+/// Config::validate 在 dc_id 超出位宽（默认 datacenter_id_bits=3，上限 7）时
+/// 返回 InvalidValue。
 #[test]
-fn e2e_config_validate_dc_id_over_31_fails() {
+fn e2e_config_validate_dc_id_over_width_fails() {
     let mut config = Config::default();
     config.app.dc_id = 32;
     assert!(matches!(
@@ -156,11 +157,11 @@ fn e2e_config_validate_dc_id_over_31_fails() {
     ));
 }
 
-/// Config::validate 在 dc_id == 31 时通过（边界）。
+/// dc_id 在位宽内时通过；位宽放宽（≥5 位）后 31 也合法。
 #[test]
-fn e2e_config_validate_dc_id_31_passes() {
+fn e2e_config_validate_dc_id_within_width_passes() {
     let mut config = Config::default();
-    config.app.dc_id = 31;
+    config.app.dc_id = 7;
     assert!(config.validate().is_ok());
 }
 

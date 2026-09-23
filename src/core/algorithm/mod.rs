@@ -6,6 +6,7 @@ pub(crate) mod degradation_manager;
 pub mod router;
 pub(crate) mod segment;
 pub(crate) mod snowflake;
+pub(crate) mod snowflake_state;
 pub(crate) mod traits;
 pub(crate) mod uuid_v8;
 

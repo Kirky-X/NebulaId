@@ -187,12 +187,6 @@ impl Config {
             ));
         }
 
-        if self.app.dc_id > 31 {
-            return Err(ConfigError::InvalidValue(
-                "Datacenter ID must be between 0 and 31".to_string(),
-            ));
-        }
-
         if self.database.max_connections == 0 {
             return Err(ConfigError::InvalidValue(
                 "Database max_connections must be greater than 0".to_string(),
@@ -294,10 +288,52 @@ impl Config {
             ));
         }
 
+        // ID 值必须落在各自位宽的可表示域内：construct_id 直接 OR 不掩码，
+        // 超界 dc_id/worker_id 会污染高位（时间戳）位，造成跨 DC 组合碰撞。
+        // 移位量守卫：dc_id/worker_id 是 u8，位宽 ≥ 8 时全域合法；
+        // 位宽 < 8 时移位量 ≤ 7，u16 移位安全。极端位宽（如 200）已被
+        // 上面的 total_bits 求和校验拦截，但求和校验在先不依赖顺序——
+        // 此处守卫独立保证不 panic。
+        let dc_bits = self.algorithm.snowflake.datacenter_id_bits;
+        if dc_bits < 8 {
+            let dc_limit = 1u16 << dc_bits;
+            if u16::from(self.app.dc_id) >= dc_limit {
+                return Err(ConfigError::InvalidValue(format!(
+                    "app.dc_id {} exceeds datacenter_id_bits={} range (max {})",
+                    self.app.dc_id,
+                    dc_bits,
+                    dc_limit - 1
+                )));
+            }
+        }
+
+        let worker_bits = self.algorithm.snowflake.worker_id_bits;
+        if worker_bits < 8 {
+            let worker_limit = 1u16 << worker_bits;
+            if u16::from(self.app.worker_id) >= worker_limit {
+                return Err(ConfigError::InvalidValue(format!(
+                    "app.worker_id {} exceeds worker_id_bits={} range (max {})",
+                    self.app.worker_id,
+                    worker_bits,
+                    worker_limit - 1
+                )));
+            }
+        }
+
         if self.algorithm.snowflake.clock_drift_threshold_ms == 0 {
             return Err(ConfigError::InvalidValue(
                 "Snowflake clock_drift_threshold_ms must be greater than 0".to_string(),
             ));
+        }
+
+        // 混淆密钥：必须恰 16 个 hex 字符（= u64）。None 合法（未启用）。
+        if let Some(hex) = &self.algorithm.obfuscation.key_hex {
+            if hex.len() != 16 || u64::from_str_radix(hex, 16).is_err() {
+                return Err(ConfigError::InvalidValue(
+                    "algorithm.obfuscation.key_hex must be exactly 16 hex characters (= u64)"
+                        .to_string(),
+                ));
+            }
         }
 
         if self.batch_generate.max_batch_size == 0 {
@@ -895,6 +931,120 @@ mod tests {
         }
     }
 
+    /// dc_id 超出 datacenter_id_bits 位宽必须在配置校验期拒绝：
+    /// construct_id 直接 OR 不掩码，超界值会污染高位时间戳位，造成跨 DC
+    /// 组合碰撞（dc8@T 与 dc0@(T+1) 同 worker 同序列时 ID 完全相同）。
+    #[test]
+    fn validate_rejects_dc_id_overflowing_datacenter_bits() {
+        let mut config = Config::default();
+        // 默认 datacenter_id_bits = 3，上限 7；历史校验只拦 dc_id > 31，
+        // 8..=31 的配置会静默通过并在发号侧位溢出。
+        config.app.dc_id = 8;
+        match config.validate() {
+            Err(ConfigError::InvalidValue(msg)) => {
+                assert!(
+                    msg.contains("dc_id") && msg.contains("3"),
+                    "错误必须含实际值与位宽上限，实际：{}",
+                    msg
+                );
+            }
+            other => panic!("dc_id 超位宽必须 Err(InvalidValue)，实际为 {:?}", other),
+        }
+    }
+
+    /// worker_id 超出 worker_id_bits 位宽同样必须在配置校验期拒绝
+    /// （历史校验完全没有 worker_id 维度）。
+    #[test]
+    fn validate_rejects_worker_id_overflowing_worker_bits() {
+        let mut config = Config::default();
+        // 默认 worker_id_bits = 8，上限 255；把位宽降到 4（上限 15）后
+        // worker_id=300（超 u8 上限的合法输入路径不存在，取 20 即越界）。
+        config.algorithm.snowflake.worker_id_bits = 4;
+        config.app.worker_id = 20;
+        match config.validate() {
+            Err(ConfigError::InvalidValue(msg)) => {
+                assert!(
+                    msg.contains("worker_id") && msg.contains("4"),
+                    "错误必须含实际值与位宽上限，实际：{}",
+                    msg
+                );
+            }
+            other => panic!("worker_id 超位宽必须 Err(InvalidValue)，实际为 {:?}", other),
+        }
+    }
+
+    /// 位宽边界值必须放行：dc_id=7 + 3 位、worker_id=255 + 8 位
+    ///（以及位宽 ≥ 8 时任意 u8 值）都是合法配置。
+    #[test]
+    fn validate_accepts_id_at_bit_width_boundary() {
+        let mut config = Config::default();
+        config.app.dc_id = 7;
+        config.app.worker_id = 255;
+        config
+            .validate()
+            .expect("边界值 dc_id=7/worker_id=255 配默认位宽必须通过");
+
+        // 位宽 ≥ 8 时 dc_id/worker_id 的 u8 全域合法（含 255）。
+        let mut wide = Config::default();
+        wide.algorithm.snowflake.datacenter_id_bits = 8;
+        wide.algorithm.snowflake.worker_id_bits = 12;
+        wide.algorithm.snowflake.sequence_bits = 10;
+        wide.app.dc_id = 255;
+        wide.app.worker_id = 255;
+        wide.validate()
+            .expect("位宽 ≥ 8 时 u8 全域 dc_id/worker_id 必须通过");
+    }
+
+    /// 混淆密钥格式校验：16 hex 合法；长度错/非 hex 拒绝；None 放行。
+    #[test]
+    fn validate_obfuscation_key_hex_format() {
+        let mut config = Config::default();
+        config.algorithm.obfuscation.key_hex = Some("0011223344556677".to_string());
+        config.validate().expect("合法 16 hex 密钥必须通过");
+
+        let mut short = Config::default();
+        short.algorithm.obfuscation.key_hex = Some("0011".to_string());
+        assert!(matches!(
+            short.validate(),
+            Err(ConfigError::InvalidValue(ref m)) if m.contains("key_hex")
+        ));
+
+        let mut non_hex = Config::default();
+        non_hex.algorithm.obfuscation.key_hex = Some("zz11223344556677".to_string());
+        assert!(matches!(
+            non_hex.validate(),
+            Err(ConfigError::InvalidValue(ref m)) if m.contains("key_hex")
+        ));
+
+        let none = Config::default();
+        none.validate().expect("None 密钥必须放行");
+    }
+
+    /// 密钥在 Debug 输出中必须 REDACTED（与 api_key_salt 同口径）。
+    #[test]
+    fn obfuscation_key_hex_is_redacted_in_debug() {
+        let mut config = Config::default();
+        config.algorithm.obfuscation.key_hex = Some("0011223344556677".to_string());
+        let dump = format!("{:?}", config.algorithm.obfuscation);
+        assert!(
+            !dump.contains("0011223344556677"),
+            "密钥明文泄漏到 Debug: {dump}"
+        );
+        assert!(dump.contains("[REDACTED]"));
+    }
+
+    /// 极端位宽（≥ 16）下位宽校验自身的移位不得 panic：
+    /// `1u16 << 200` 会直接炸，校验逻辑必须先保证移位量合法。
+    #[test]
+    fn validate_bit_width_check_does_not_panic_on_extreme_bits() {
+        let mut config = Config::default();
+        config.algorithm.snowflake.datacenter_id_bits = 200;
+        config.algorithm.snowflake.worker_id_bits = 100;
+        config.algorithm.snowflake.sequence_bits = 60;
+        // 总和 360 >= 64 由既有的 u32 求和校验拒绝；此处只断言不 panic 且 Err。
+        assert!(config.validate().is_err());
+    }
+
     /// `burst_size > default_rps * 10` 的乘法在 `default_rps` 接近
     /// `u32::MAX` 时溢出。改为 saturating_mul 后：按真实数学关系判定，且不再 panic。
     #[test]
@@ -1226,12 +1376,17 @@ mod tests {
         assert_invalid_value(config.validate(), "gRPC port must be between 1 and 65535");
     }
 
-    /// dc_id>31 时校验失败
+    /// dc_id 超出默认位宽（datacenter_id_bits=3，上限 7）时校验失败。
+    /// 旧实现按固定上限 31 拒绝——既放行 8..=31 的位溢出配置，又在宽位宽
+    /// 下误拒合法值；位宽校验取代后按实际位宽判定。
     #[test]
-    fn validate_dc_id_over_31_fails() {
+    fn validate_dc_id_over_default_width_fails() {
         let mut config = Config::default();
         config.app.dc_id = 32;
-        assert_invalid_value(config.validate(), "Datacenter ID must be between 0 and 31");
+        assert_invalid_value(
+            config.validate(),
+            "app.dc_id 32 exceeds datacenter_id_bits=3",
+        );
     }
 
     /// database.max_connections=0 时校验失败

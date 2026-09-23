@@ -141,7 +141,9 @@ let uuid = id.to_uuid_v8();
 
 ### ⚡ 高吞吐批量发号
 
-Segment 的双缓冲是内部机制，对外一次调用申请 N 个 ID（`IdAlgorithm::batch_generate`）：
+Segment 的双缓冲与动态步长是内部机制：每次取段步长按 CPU 使用率在
+`[min_step, max_step]` 内动态伸缩——`step = clamp(base_step × (1 + 2 × cpu), min_step, max_step)`，
+CPU 越忙单段越大，取段频次随之下降；对外一次调用申请 N 个 ID（`IdAlgorithm::batch_generate`）：
 
 ```rust
 let batch = generator.batch_generate("prod", "core", "order", 1000).await?;

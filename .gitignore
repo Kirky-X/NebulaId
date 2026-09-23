@@ -241,3 +241,6 @@ grafana/log/
 
 # WorkBuddy AI local notes
 .workbuddy-ai/
+
+# 雪花重启守卫状态文件（运行期生成）
+/data/

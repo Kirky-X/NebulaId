@@ -7,11 +7,10 @@
 use crate::core::config::TlsConfig;
 use axum::extract::connect_info::Connected;
 use axum::serve::IncomingStream;
-use rustls::pki_types::PrivateKeyDer;
+use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 use rustls::SupportedProtocolVersion;
 use sdforge::tonic::transport::{Certificate, Identity, ServerTlsConfig};
 use std::fs::File;
-use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
 use thiserror::Error;
@@ -144,52 +143,19 @@ impl TlsManager {
         let key_file =
             File::open(key_path).map_err(|e| TlsError::PrivateKeyLoadError(e.to_string()))?;
 
-        let mut cert_reader = BufReader::new(cert_file);
-        let mut key_reader = BufReader::new(key_file);
-
-        // 读取证书 - rustls-pemfile 2.x API
-        let mut cert_chain = Vec::new();
-        loop {
-            match rustls_pemfile::read_one(&mut cert_reader) {
-                Ok(Some(rustls_pemfile::Item::X509Certificate(cert))) => {
-                    cert_chain.push(cert);
-                    break; // 只取第一个证书
-                }
-                Ok(Some(_)) => continue, // 跳过非证书项
-                Ok(None) => break,
-                Err(e) => return Err(TlsError::CertificateLoadError(e.to_string())),
-            }
-        }
-
-        let cert_der = cert_chain
-            .into_iter()
+        // 读取证书 - rustls-pki-types PemObject（首个证书项，非证书项跳过；
+        // 无证书项 → NoItemsFound → "Empty certificate chain"）
+        let cert_der = CertificateDer::pem_reader_iter(cert_file)
             .next()
-            .ok_or_else(|| TlsError::CertificateLoadError("Empty certificate chain".to_string()))?;
+            .ok_or_else(|| TlsError::CertificateLoadError("Empty certificate chain".to_string()))?
+            .map_err(|e| TlsError::CertificateLoadError(e.to_string()))?;
 
-        // 读取密钥 - rustls-pemfile 2.x API
-        let mut private_key_der: Option<PrivateKeyDer<'static>> = None;
-        loop {
-            match rustls_pemfile::read_one(&mut key_reader) {
-                Ok(Some(rustls_pemfile::Item::Pkcs1Key(key))) => {
-                    private_key_der = Some(PrivateKeyDer::from(key));
-                    break;
-                }
-                Ok(Some(rustls_pemfile::Item::Pkcs8Key(key))) => {
-                    private_key_der = Some(PrivateKeyDer::from(key));
-                    break;
-                }
-                Ok(Some(rustls_pemfile::Item::Sec1Key(key))) => {
-                    private_key_der = Some(PrivateKeyDer::from(key));
-                    break;
-                }
-                Ok(Some(_)) => continue, // 跳过非密钥项
-                Ok(None) => break,
-                Err(e) => return Err(TlsError::PrivateKeyLoadError(e.to_string())),
-            }
-        }
-
-        let private_key_der = private_key_der
-            .ok_or_else(|| TlsError::PrivateKeyLoadError("Empty private key".to_string()))?;
+        // 读取密钥 - PemObject（首个私钥项，Pkcs1/Pkcs8/Sec1 皆可；无密钥项 →
+        // NoItemsFound → "Empty private key"）
+        let private_key_der = PrivateKeyDer::pem_reader_iter(key_file)
+            .next()
+            .ok_or_else(|| TlsError::PrivateKeyLoadError("Empty private key".to_string()))?
+            .map_err(|e| TlsError::PrivateKeyLoadError(e.to_string()))?;
 
         // 获取 PEM 字节用于 gRPC Identity
         let cert_pem = cert_der.as_ref();
@@ -235,25 +201,14 @@ impl TlsManager {
             if let Some(ref ca_path) = self.config.ca_path {
                 let ca_file = File::open(ca_path)
                     .map_err(|e| TlsError::CertificateLoadError(e.to_string()))?;
-                let mut ca_reader = BufReader::new(ca_file);
 
-                // 读取 CA 证书
-                let mut ca_certs = Vec::new();
-                loop {
-                    match rustls_pemfile::read_one(&mut ca_reader) {
-                        Ok(Some(rustls_pemfile::Item::X509Certificate(cert))) => {
-                            ca_certs.push(cert);
-                            break;
-                        }
-                        Ok(Some(_)) => continue,
-                        Ok(None) => break,
-                        Err(e) => return Err(TlsError::CertificateLoadError(e.to_string())),
-                    }
-                }
-
-                let ca_cert = ca_certs.into_iter().next().ok_or_else(|| {
-                    TlsError::CertificateLoadError("Empty CA certificate".to_string())
-                })?;
+                // 读取 CA 证书（首个证书项，语义同上）
+                let ca_cert = CertificateDer::pem_reader_iter(ca_file)
+                    .next()
+                    .ok_or_else(|| {
+                        TlsError::CertificateLoadError("Empty CA certificate".to_string())
+                    })?
+                    .map_err(|e| TlsError::CertificateLoadError(e.to_string()))?;
 
                 let ca_cert_bytes = ca_cert.as_ref().to_vec();
                 let ca_cert_tonic = Certificate::from_pem(ca_cert_bytes);
@@ -687,7 +642,7 @@ mod tests {
         let mut manager = TlsManager::new(config);
         let result = manager.initialize().await;
         assert!(result.is_err());
-        // Empty cert file -> rustls_pemfile returns None -> "Empty certificate chain"
+        // Empty cert file -> PemObject 迭代器无匹配项 -> "Empty certificate chain"
         let err = result.unwrap_err();
         assert!(matches!(err, TlsError::CertificateLoadError(_)));
     }

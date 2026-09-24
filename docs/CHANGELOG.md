@@ -19,6 +19,10 @@
 
 ## [Unreleased]
 
+### deps（2026-09-24 rustls-pemfile 退役）
+
+- **移除 `rustls-pemfile` 依赖**（RUSTSEC-2025-0134：上游归档停维护，官方指向 rustls-pki-types 的 `PemObject` API）：TLS 证书/密钥/CA 三处加载迁移到 `rustls::pki_types::pem::PemObject` 迭代器（经 rustls 再导出，零新增依赖）。语义逐一保留：取首个目标项、非目标项跳过、解析错误映射不变，空文件错误信息不变（`Empty certificate chain` / `Empty private key` / `Empty CA certificate`）。
+
 ### fix-audit-defects-r1（2026-09-24 审计修复轮）
 
 对照「分布式 ID 面试题清单」审计发现 10 项缺陷（FMEA 排序 RPN 60–320），本轮全部修复：

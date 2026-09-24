@@ -514,10 +514,12 @@ async fn e2e_tls_initialize_with_valid_cert_succeeds() {
 fn build_test_rustls_connector(cert_file: &NamedTempFile) -> tokio_rustls::TlsConnector {
     use std::sync::Arc;
 
+    use rustls::pki_types::pem::PemObject;
+
     let _ = rustls::crypto::ring::default_provider().install_default();
     let mut roots = rustls::RootCertStore::empty();
     let cert_pem = std::fs::read(cert_file.path()).expect("read cert pem");
-    let certs: Vec<_> = rustls_pemfile::certs(&mut std::io::BufReader::new(cert_pem.as_slice()))
+    let certs: Vec<_> = rustls::pki_types::CertificateDer::pem_reader_iter(cert_pem.as_slice())
         .collect::<Result<Vec<_>, _>>()
         .expect("parse certs");
     for cert in certs {

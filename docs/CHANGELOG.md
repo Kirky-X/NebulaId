@@ -19,6 +19,11 @@
 
 ## [Unreleased]
 
+### fix（2026-09-24 uuid_v8 唯一性防线修复）
+
+- **计数器随机起点失效修复**：`UuidV8Impl::new` 的计数器种子为 `rand26 << 31 再 & 21 位掩码`，恒为 0——UUIDP「随机起点」机制实际未生效，跨重启同毫秒的碰撞防线退化到仅剩 26 位 rand。改为直接取 21 位随机初值，恢复设计保证（新增随机性测试钉住）。
+- **批量发号计数器回绕守卫**：`batch_inner` 在 size 超过单毫秒计数器空间（2^21）时以 `SequenceOverflow` 显性拒绝（最坏情况全批落同一毫秒时会回绕重复）——静态拒绝而非静默出重。
+
 ### deps（2026-09-24 rustls-pemfile 退役）
 
 - **移除 `rustls-pemfile` 依赖**（RUSTSEC-2025-0134：上游归档停维护，官方指向 rustls-pki-types 的 `PemObject` API）：TLS 证书/密钥/CA 三处加载迁移到 `rustls::pki_types::pem::PemObject` 迭代器（经 rustls 再导出，零新增依赖）。语义逐一保留：取首个目标项、非目标项跳过、解析错误映射不变，空文件错误信息不变（`Empty certificate chain` / `Empty private key` / `Empty CA certificate`）。

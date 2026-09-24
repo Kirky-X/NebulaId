@@ -97,10 +97,13 @@ impl UuidV8Impl {
     pub fn new(dc_id: u64, worker_id: u64, clock_drift_threshold_ms: u64) -> Self {
         let dc = dc_id & NODE_DC_MAX;
         let worker = worker_id & NODE_WORKER_MAX;
-        let seed = fast_rand_26() << (COUNTER_LO_BITS + NODE_WORKER_BITS + NODE_DC_BITS);
+        // UUIDP Cluster 随机起点：计数器初值取 21 位随机。此前实现为
+        // `rand << 31 再 & 21 位掩码`，恒为 0——随机起点机制失效，跨重启
+        // 同毫秒的碰撞防线退化到仅剩 26 位 rand。
+        let seed = fast_rand_26() & COUNTER_TOTAL_MASK;
         Self {
             last_timestamp: AtomicU64::new(0),
-            counter: AtomicU64::new(seed & COUNTER_TOTAL_MASK),
+            counter: AtomicU64::new(seed),
             dc_id: dc,
             worker_id: worker,
             clock_drift_threshold_ms,
@@ -190,6 +193,14 @@ impl UuidV8Impl {
     }
 
     fn batch_inner(&self, ctx: &GenerateContext, n: usize) -> Result<Vec<Id>> {
+        // 单毫秒计数器空间 21 位：批量的最坏情况是全部落在同一毫秒，超出
+        // 计数器空间会回绕产生重复——静态拒绝而非静默出重。跨毫秒 rollover
+        // 会重置计数器，但守卫以最坏情况为准，简单且安全。
+        if n as u64 > COUNTER_TOTAL_MASK {
+            return Err(CoreError::SequenceOverflow {
+                timestamp: now_unix_ms(),
+            });
+        }
         let mut out = Vec::with_capacity(n);
         for _ in 0..n {
             out.push(self.generate_inner(ctx)?);
@@ -417,6 +428,33 @@ mod tests {
             tolerant.generate_inner(&ctx()).is_ok(),
             "backward drift 50ms must be tolerated under threshold 200ms"
         );
+    }
+
+    #[test]
+    fn test_uuid_v8_counter_seed_is_random() {
+        // UUIDP Cluster 随机起点必须生效：new() 的计数器初值应为 21 位随机
+        // 非零（全零概率 2^-21，连续 8 次 new 全零 ≈ 2^-147，视为不可能）
+        for _ in 0..8 {
+            let algo = UuidV8Impl::new(0, 0, 1000);
+            if algo.counter.load(Ordering::Relaxed) != 0 {
+                return;
+            }
+        }
+        panic!("counter seed must be random: 8/8 constructions yielding 0 is impossible");
+    }
+
+    #[test]
+    fn test_uuid_v8_batch_rejects_size_exceeding_counter_space() {
+        let algo = UuidV8Impl::new(1, 1, 1000);
+        let err = algo
+            .batch_inner(&ctx(), (COUNTER_TOTAL_MASK as usize) + 1)
+            .unwrap_err();
+        assert!(
+            matches!(err, CoreError::SequenceOverflow { .. }),
+            "batch over counter space must fail loudly"
+        );
+        // 边界内仍可用
+        assert!(algo.batch_inner(&ctx(), 1_000).is_ok());
     }
 
     #[test]

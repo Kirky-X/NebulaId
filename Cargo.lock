@@ -3144,14 +3144,15 @@ dependencies = [
 
 [[package]]
 name = "limiteron"
-version = "0.3.0-rc.4"
+version = "0.3.0-rc.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc73be0cd6c8f66d28fe6897b5412a3c03827ffe9a7550de37b66e6690c85d1b"
+checksum = "c685b8ff732b1ce61180adea8bb895dea52284b231a3b59557acece62f4067f2"
 dependencies = [
  "ahash",
  "async-trait",
  "chrono",
  "dashmap",
+ "fluent-bundle",
  "ipnet",
  "log",
  "oxcache",
@@ -3160,11 +3161,13 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sys-locale",
  "thiserror",
  "tokio",
  "tokio-util",
  "toml",
  "tracing",
+ "unic-langid",
  "uuid",
 ]
 
@@ -3663,14 +3666,15 @@ checksum = "13c45bb4a6ae1280ec0803b1ef9d3455eb50f01efbbe1447ab020f1d54fba9d8"
 
 [[package]]
 name = "oxcache"
-version = "0.5.0-rc.4"
+version = "0.5.0-rc.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d6c9870fdf44705199a23baf0ecfa891ba9b4b58fe56d556fb2afacf7e507f4"
+checksum = "1306b2d6f269d6e7f406878426f3f0d13aebd8e30297ac6ebc06e85cf1531941"
 dependencies = [
  "async-trait",
  "bloomfilter",
  "chrono",
  "dashmap",
+ "fluent-bundle",
  "icu",
  "moka",
  "once_cell",
@@ -3680,6 +3684,7 @@ dependencies = [
  "serde_json",
  "serde_stacker",
  "tokio",
+ "unic-langid",
  "uuid",
  "writeable",
 ]
@@ -4304,6 +4309,7 @@ dependencies = [
  "pin-project-lite",
  "rand 0.10.2",
  "ryu",
+ "sha1_smol",
  "socket2",
  "tokio",
  "tokio-util",
@@ -5054,6 +5060,12 @@ dependencies = [
  "cpufeatures 0.3.1",
  "digest 0.11.3",
 ]
+
+[[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
 
 [[package]]
 name = "sha2"

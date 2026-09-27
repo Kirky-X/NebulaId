@@ -103,7 +103,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 
 # Derive 宏直接依赖：展开时生成 `::crate_name::` 绝对路径，必须是直接依赖。
 # 属性宏通过 `#[sdforge::crate::macro]` 调用，不受 extern prelude 限制。
-utoipa = { version = "5.5", default-features = false, features = ["macros", "uuid", "chrono"] }
+utoipa = { version = "6.0", default-features = false, features = ["macros", "uuid", "chrono"] }
 prost = { version = "0.14", default-features = false, features = ["derive"] }
 sea-orm = { version = "2.0", default-features = false, features = ["macros", "with-json", "with-uuid", "with-chrono"] }
 tonic-prost = { version = "0.14", default-features = false }

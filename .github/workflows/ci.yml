@@ -78,6 +78,18 @@ jobs:
         # --tests 同上钉住测试面。
         run: cargo check --package ${{ env.PKG }} --no-default-features --features server --lib --bins --tests
 
+      - name: Check sdk without database
+        # sdk 不蕴含 database：仓储面（RepositoryModule/with_repository/
+        # has_repository）随 database cfg 门控，纯算法嵌入组合零 DB 编译树。
+        # 本钉防止仓储引用越界泄漏回 sdk 无条件编译面使剪裁能力腐烂；
+        # snowflake+uuid-v8 覆盖 kit 测试面的算法运行时需要，--tests 钉测试面。
+        # test 行钉 Segment 显性拒绝契约的运行时执行（test matrix 两腿均含
+        # database，该 not(database) 用例仅此处执行）；sdk,database 组合的
+        # 测试面由 test job 的 all 腿与 clippy --all-features 覆盖。
+        run: |
+          cargo check --package ${{ env.PKG }} --no-default-features --features sdk,snowflake,uuid-v8 --lib --tests
+          cargo test --package ${{ env.PKG }} --no-default-features --features sdk,snowflake,uuid-v8 --lib sdk::kit::tests::test_segment_request_rejected_without_database_feature
+
   # 阶段 2：cargo-deny 检查（许可证 + 安全）
   deny:
     name: cargo-deny

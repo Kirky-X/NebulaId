@@ -40,7 +40,8 @@ required-features = ["server"]
 # - `--no-default-features` 是有效的轻量编译目标：按需启用算法特性
 #   （如 `--features uuid-v8`）即得纯算法路径；database/server/alerting
 #   未启用时对应模块经 cfg 门控排除（CI fmt-clippy job 钉住该组合）。
-#   core::database 仅随 `database`（经 segment/server/sdk 蕴含）参与编译。
+#   core::database 仅随 `database`（经 segment/server 蕴含，SDK 仓储面经
+#   sdk,database 组合）参与编译。
 default = ["server", "segment", "snowflake", "uuid-v8", "postgresql", "garrison-auth"]
 postgresql = ["dbnexus/postgres"]
 etcd = ["dep:etcd-client"]
@@ -70,11 +71,14 @@ openapi = []
 garrison-auth = ["dep:garrison"]
 # sdk: 门控嵌入式 SDK facade（src/sdk/，Kit 范式装配）。
 # 引入 trait-kit（async/lifecycle/health）：SDK 以 AsyncKit 模块化装配
-# （分布式锁/仓储/路由/ID 生成四模块），依赖图由 kit.build() 校验，
-# 取代手写顺序装配。不开 sdk 的构建不含 trait-kit（依赖树零影响）。
+# （分布式锁/仓储/路由/ID 生成，仓储模块随 `database` 门控），依赖图由
+# kit.build() 校验，取代手写顺序装配。不开 sdk 的构建不含 trait-kit
+#（依赖树零影响）。
 # 蕴含 openapi：SDK 示例（sdk_server）需产出含路径的 OpenAPI 文档。
-# 蕴含 database：sdk/kit.rs 的 RepositoryModule 依赖 SeaOrmRepository。
-sdk = ["openapi", "dep:trait-kit", "database"]
+# 不蕴含 database：仓储面（RepositoryModule/with_repository/has_repository）
+# 随 `database` 特性 cfg 门控——纯算法嵌入方开 sdk 得零 DB 编译树；
+# 需要仓储的组合显式启用 sdk,database（或经 segment/server 间接蕴含）。
+sdk = ["openapi", "dep:trait-kit"]
 
 # sdforge 宏还 emit 其他内部 feature 的 cfg gate，声明为已知 cfg 值以消除 check-cfg 警告
 [lints.rust]

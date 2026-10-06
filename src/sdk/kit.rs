@@ -17,6 +17,7 @@ use crate::core::algorithm::CpuMonitor;
 use crate::core::algorithm::{AlgorithmRouter, DynAuditLogger, GenerateContext};
 use crate::core::config::Config;
 use crate::core::coordinator::{DistributedLock, LocalDistributedLock};
+#[cfg(feature = "database")]
 use crate::core::database::SeaOrmRepository;
 use crate::core::types::{AlgorithmType, Id, IdBatch, IdFormat, Result};
 use crate::core::CoreError;
@@ -55,6 +56,7 @@ impl_async_auto_builder!(
 ///
 /// RepositoryModule 经 `kit.config::<RepositoryInput>()` 取用户注入的
 /// `SeaOrmRepository`，经 `require::<DistributedLockModule>()` 取锁并注入。
+#[cfg(feature = "database")]
 #[derive(Clone)]
 pub(crate) struct RepositoryInput(pub SeaOrmRepository);
 
@@ -62,14 +64,17 @@ pub(crate) struct RepositoryInput(pub SeaOrmRepository);
 ///
 /// 依赖 `DistributedLockModule`（硬链 Lock→Repo）；本模块由 `register_if`
 /// 条件注册——仅 builder 注入仓储时入图，纯算法零 DB 场景整个模块缺席。
+#[cfg(feature = "database")]
 pub struct RepositoryModule;
 
+#[cfg(feature = "database")]
 impl_module_meta!(
     RepositoryModule,
     "repository",
     deps = [DistributedLockModule]
 );
 
+#[cfg(feature = "database")]
 impl_async_auto_builder!(RepositoryModule, Arc<SeaOrmRepository>, CoreError, |kit| {
     Box::pin(async move {
         let RepositoryInput(repository) = kit.config::<RepositoryInput>().map_err(|e| {
@@ -120,7 +125,9 @@ impl_async_auto_builder!(RouterModule, Arc<AlgorithmRouter>, CoreError, |kit| {
         // 可选依赖拉取：RepositoryModule 缺席（纯算法零 DB）时 build 必须成功。
         // trait-kit RC 的 `optional()` 仅在 `AsyncKit<Ready>` 上可用，build 回调
         //（Unbuilt 阶段）以 `require().ok()` 实现同语义（模块缺席 →
-        // `MissingCapability` → `None`）。
+        // `MissingCapability` → `None`）。`database` 关闭时仓储面不参与编译，
+        // 本拉取点随门控消失，路由对 Segment 的拒绝由 router 承担。
+        #[cfg(feature = "database")]
         let _repository = kit.require::<RepositoryModule>().ok();
 
         let router = AlgorithmRouter::new(config, audit_logger);
@@ -212,8 +219,11 @@ impl_async_auto_builder!(IdGenModule, IdGenerator, CoreError, |kit| Box::pin(
             ))
         })?;
         // 可选依赖拉取（同 RouterModule.build 的 RC 限制处理）：RepositoryModule
-        // 缺席时 `IdGenerator.repository` 为 None，Segment 守卫在生成期显性报错。
+        // 缺席时 `IdGenerator.repository` 为 None，Segment 守卫在生成期显性报错；
+        // `database` 关闭时随门控消失（segment 亦关闭，router 显性拒绝）。
+        #[cfg(feature = "database")]
         let repository = kit.require::<RepositoryModule>().ok();
+        #[cfg(feature = "database")]
         let config = kit.config::<Config>().map_err(|e| {
             CoreError::InternalError(t!(
                 "error.sdk.module_config_missing",
@@ -223,7 +233,9 @@ impl_async_auto_builder!(IdGenModule, IdGenerator, CoreError, |kit| Box::pin(
         })?;
         Ok(IdGenerator {
             router,
+            #[cfg(feature = "database")]
             repository,
+            #[cfg(feature = "database")]
             default_algorithm: config.algorithm.get_default_algorithm(),
         })
     }
@@ -232,12 +244,17 @@ impl_async_auto_builder!(IdGenModule, IdGenerator, CoreError, |kit| Box::pin(
 /// 嵌入式 ID 生成 handle。
 ///
 /// 生成方法语义与旧 SDK 客户端完全等价（迁移非重设计）：默认算法解析、
-/// `require_repository_for_segment` 守卫、`GenerateContext { format: Numeric,
-/// prefix: None }` 构造均逐字保留。`Clone` 廉价（内部 `Arc`），可跨任务共享。
+/// `require_repository_for_segment` 守卫（随 `database` 特性编译）、
+/// `GenerateContext { format: Numeric, prefix: None }` 构造均逐字保留。
+/// `Clone` 廉价（内部 `Arc`），可跨任务共享。
 #[derive(Clone)]
 pub struct IdGenerator {
     router: Arc<AlgorithmRouter>,
+    #[cfg(feature = "database")]
     repository: Option<Arc<SeaOrmRepository>>,
+    // 唯一读者是 require_repository_for_segment 守卫（router 侧自行解析
+    // 默认算法），随仓储面同门控。
+    #[cfg(feature = "database")]
     default_algorithm: AlgorithmType,
 }
 
@@ -250,6 +267,7 @@ const _: fn() = || {
 impl IdGenerator {
     /// 按默认算法生成单个 ID。
     pub async fn generate(&self, workspace: &str, group: &str, biz_tag: &str) -> Result<Id> {
+        #[cfg(feature = "database")]
         self.require_repository_for_segment(self.default_algorithm)?;
         let ctx = Self::make_ctx(workspace, group, biz_tag);
         self.router.generate(&ctx).await
@@ -263,6 +281,7 @@ impl IdGenerator {
         biz_tag: &str,
         size: usize,
     ) -> Result<IdBatch> {
+        #[cfg(feature = "database")]
         self.require_repository_for_segment(self.default_algorithm)?;
         let ctx = Self::make_ctx(workspace, group, biz_tag);
         self.router.batch_generate(&ctx, size).await
@@ -276,6 +295,7 @@ impl IdGenerator {
         group: &str,
         biz_tag: &str,
     ) -> Result<Id> {
+        #[cfg(feature = "database")]
         self.require_repository_for_segment(algorithm)?;
         self.router
             .generate_with_algorithm(algorithm, workspace, group, biz_tag)
@@ -293,6 +313,11 @@ impl IdGenerator {
     }
 
     /// Segment 需要数据库号段分配：未注入仓储时显性报错，禁止静默降级。
+    ///
+    /// 仅随 `database` 特性编译；`database` 关闭时 `segment` 亦关闭
+    ///（蕴含关系），Segment 请求由 router 的 `cfg(not(feature = "segment"))`
+    /// 分支显性拒绝，守卫无需在场。
+    #[cfg(feature = "database")]
     fn require_repository_for_segment(&self, algorithm: AlgorithmType) -> Result<()> {
         if algorithm == AlgorithmType::Segment && self.repository.is_none() {
             return Err(CoreError::ConfigurationError(
@@ -480,6 +505,8 @@ impl NebulaIdKit {
 
     /// 是否注入了数据库仓储（决定 Segment 可用性；语义 = 旧
     /// 旧 SDK 客户端 has_repository，经 TypeMap optional 拉取判定）。
+    /// 仅随 `database` 特性编译（仓储面不扩大 sdk 无条件公共面）。
+    #[cfg(feature = "database")]
     pub fn has_repository(&self) -> bool {
         self.kit.optional::<RepositoryModule>().is_some()
     }
@@ -488,11 +515,13 @@ impl NebulaIdKit {
 /// 嵌入式 SDK Kit 构建器。
 ///
 /// 最小用法：`NebulaIdKitBuilder::new(config).build().await`（零 DB，仅纯算法
-/// 可用）。需要 Segment 时：`.with_repository(repo)` 注入（owned）仓储 ——
-/// `build()` 内部完成分布式锁注入与依赖图校验。
+/// 可用）。需要 Segment 时：`.with_repository(repo)` 注入（owned）仓储
+///（该方法随 `database` 特性编译）—— `build()` 内部完成分布式锁注入与
+/// 依赖图校验。
 pub struct NebulaIdKitBuilder {
     config: Config,
     audit_logger: Option<DynAuditLogger>,
+    #[cfg(feature = "database")]
     repository: Option<SeaOrmRepository>,
 }
 
@@ -502,6 +531,7 @@ impl NebulaIdKitBuilder {
         Self {
             config,
             audit_logger: None,
+            #[cfg(feature = "database")]
             repository: None,
         }
     }
@@ -516,7 +546,8 @@ impl NebulaIdKitBuilder {
     ///
     /// `build()` 会把分布式锁注入该仓储（etcd endpoints 已配置 →
     /// `EtcdDistributedLock`，任何失败回退 `LocalDistributedLock` 并 warn），
-    /// 使 Segment 号段分配可用。
+    /// 使 Segment 号段分配可用。仅随 `database` 特性编译。
+    #[cfg(feature = "database")]
     pub fn with_repository(mut self, repository: SeaOrmRepository) -> Self {
         self.repository = Some(repository);
         self
@@ -537,11 +568,14 @@ impl NebulaIdKitBuilder {
         })?;
 
         // 仓储条件注册：仅注入时入图（register_if）——未注入时模块缺席、
-        // build 不失败，"纯算法零 DB"这一核心卖点成立。
+        // build 不失败，"纯算法零 DB"这一核心卖点成立。`database` 关闭时
+        // 仓储面整个不参与编译（本段随门控消失）。
+        #[cfg(feature = "database")]
         kit.register_if::<RepositoryModule>(|_| self.repository.is_some())
             .map_err(|e| {
                 CoreError::InternalError(t!("error.sdk.module_register_failed", reason = e))
             })?;
+        #[cfg(feature = "database")]
         if let Some(repository) = self.repository {
             // 用户注入的仓储也要作为配置入 TypeMap（RepositoryModule build 回调读取）
             kit.set_config(RepositoryInput(repository));
@@ -641,6 +675,7 @@ mod tests {
     /// distributed_lock"，且测试构建下无锁路径静默走 `NoopLockGuard`），故断言
     /// 能力落位（contains/require）+ 仓储可用性冒烟（`get_db_connection`）；
     /// 锁注入的忠实性由实现直接调用 `with_distributed_lock(require 的锁)` 保证。
+    #[cfg(feature = "database")]
     #[tokio::test]
     async fn test_repository_module_registered_when_injected() {
         use dbnexus::sea_orm::{DatabaseBackend, MockDatabase};
@@ -668,6 +703,7 @@ mod tests {
 
     /// 未注入仓储时 `RepositoryModule` 缺席且 `build()` 不失败
     ///（`register_if` 语义——纯算法零 DB 场景成立）。
+    #[cfg(feature = "database")]
     #[tokio::test]
     async fn test_repository_module_absent_without_injection() {
         let kit = NebulaIdKitBuilder::new(local_config())
@@ -822,6 +858,7 @@ mod tests {
     /// 零仓储注入下 Segment 请求返回 `CoreError::ConfigurationError`
     /// 且消息文本含 `with_repository`（错误消息是公共 API 的一部分，经 Display
     /// 可观测）。
+    #[cfg(feature = "database")]
     #[tokio::test]
     async fn test_id_generator_segment_without_repository_returns_configuration_error() {
         // local_config()（同 Config::default()）默认算法为 segment
@@ -851,6 +888,7 @@ mod tests {
 
     /// 注入仓储后 Segment 请求通过守卫并可生成
     ///（Segment 算法自带默认 loader，无需真实 DB；守卫放行即语义达成）。
+    #[cfg(feature = "database")]
     #[tokio::test]
     async fn test_id_generator_segment_with_repository_succeeds() {
         use dbnexus::sea_orm::{DatabaseBackend, MockDatabase};
@@ -874,6 +912,29 @@ mod tests {
             .await
             .expect("注入仓储后 Segment 生成必须成功");
         assert!(id.as_u128() > 0);
+    }
+
+    /// database 关闭组合下 Segment 请求由 router 显性拒绝
+    ///（`CoreError::InvalidAlgorithmType`，router `cfg(not(feature = "segment"))`
+    /// 分支）——仓储守卫缺席时显性语义由 router 承担，sdk 零 DB 嵌入的
+    /// 组合级运行时契约：不 panic、不静默产出 ID。
+    #[cfg(not(feature = "database"))]
+    #[tokio::test]
+    async fn test_segment_request_rejected_without_database_feature() {
+        let kit = NebulaIdKitBuilder::new(local_config())
+            .build()
+            .await
+            .expect("build 必须成功（无 database 特性时仓储面不存在）");
+        let generator = kit.id_generator().expect("id_generator() 必须成功");
+
+        let err = generator
+            .generate_with_algorithm(AlgorithmType::Segment, "ws", "group", "biz")
+            .await
+            .expect_err("无 database 特性时 Segment 请求必须显性失败");
+        assert!(
+            matches!(err, CoreError::InvalidAlgorithmType(_)),
+            "期望 InvalidAlgorithmType（router 显性拒绝），实际：{err:?}"
+        );
     }
 
     /// `IdGenerator` 为 Clone handle，克隆后在独立 tokio 任务中
@@ -910,6 +971,7 @@ mod tests {
         assert!(kit.inner().contains::<DistributedLockModule>());
         assert!(kit.inner().contains::<RouterModule>());
         assert!(kit.inner().contains::<IdGenModule>());
+        #[cfg(feature = "database")]
         assert!(!kit.inner().contains::<RepositoryModule>());
     }
 
@@ -1061,6 +1123,7 @@ mod tests {
 
     /// 显式指定 Segment 算法在零仓储注入下同样被守卫拒绝
     ///（`generate_with_algorithm` 路径，旧 `client.rs` 用例覆盖）。
+    #[cfg(feature = "database")]
     #[tokio::test]
     async fn test_kit_generate_with_algorithm_segment_without_repository_returns_configuration_error(
     ) {
@@ -1154,6 +1217,9 @@ mod tests {
     /// verify 钉 —— 号段装配契约：`DbSegmentLoader`（真连仓储）经
     /// `SegmentAlgorithm::new(dc).with_segment_loader(...)` 注入后，generate
     /// 消费的就是 `allocate_segment` 返回的号段区间（生产装配的算法级语义）。
+    /// 门控用 `segment` 而非 `database`：函数体引用的 `DbSegmentLoader`/
+    /// `SegmentAlgorithm` 随 `segment` 门控编译（database 不蕴含 segment）。
+    #[cfg(feature = "segment")]
     #[tokio::test]
     async fn test_db_backed_segment_assembly_contract() {
         use crate::core::algorithm::{DbSegmentLoader, IdAlgorithm, SegmentAlgorithm};

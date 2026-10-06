@@ -229,8 +229,11 @@ impl EtcdClientOps for EtcdClientWrapper {
     async fn ping(&self) -> std::result::Result<(), EtcdError> {
         with_operation_timeout(self.operation_timeout, async {
             let mut client = self.inner.lock().await;
+            // 真实 etcd 拒绝空 key（返回 etcdserver: key is not provided），
+            // 故对命名空间内的中立探针 key 做一次 Range：服务端应答即视为存活，
+            // 空结果（key 不存在）不影响判定，也不会写入任何数据。
             client
-                .get("", None)
+                .get("/idgen/__liveness_probe__", None)
                 .await
                 .map_err(|e| EtcdError::Network(e.to_string()))?;
             Ok(())

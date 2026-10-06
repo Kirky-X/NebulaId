@@ -8,6 +8,7 @@ use crate::core::algorithm::{
 use crate::core::config::Config;
 #[cfg(feature = "etcd")]
 use crate::core::coordinator::EtcdClusterHealthMonitor;
+#[cfg(feature = "segment")]
 use crate::core::database::SegmentRepository;
 use crate::core::types::{AlgorithmType, CoreError, GlobalMetrics, Id, IdBatch, Result};
 use arc_swap::ArcSwap;
@@ -90,6 +91,7 @@ impl IdGenerator for AlgorithmRouter {
         &self.degradation_manager
     }
 
+    #[cfg(feature = "snowflake")]
     fn snowflake_layout(&self) -> Option<crate::core::algorithm::SnowflakeLayoutInfo> {
         Some(crate::core::algorithm::SnowflakeLayoutInfo::from_config(
             &self.config.algorithm.snowflake,
@@ -158,6 +160,7 @@ pub struct AlgorithmRouter {
     /// 路由层观测面：逐算法延迟环形样本、请求/错误计数与时钟回拨计数。
     /// 单一观测点覆盖 HTTP / gRPC / SDK 三条入口。
     global_metrics: Arc<GlobalMetrics>,
+    #[cfg(feature = "segment")]
     cpu_monitor: Option<Arc<crate::core::algorithm::segment::CpuMonitor>>,
     #[cfg(feature = "etcd")]
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
@@ -167,6 +170,7 @@ pub struct AlgorithmRouter {
     /// `SegmentAlgorithm`；`None` 时生产构建（非 cfg(test)）在 Segment
     /// 为默认算法的前提下按 `config.database` 自举仓储（进程级共享），
     /// 测试构建维持 `SegmentAlgorithm::new` 的内存造段器默认值。
+    #[cfg(feature = "segment")]
     segment_repository: Option<Arc<dyn SegmentRepository>>,
     // 修复：非 etcd 版本不再持有 `etcd_health_monitor: Option<()>`
     // 占位字段（类型误导）。`with_etcd_health_monitor` builder 方法也仅在
@@ -184,8 +188,10 @@ pub struct AlgorithmRouter {
 /// `DbSegmentLoader<R: SegmentRepository>`（segment.rs，本 lane 不可改）
 /// 隐式要求 `R: Sized`，无法直接以 trait 对象实例化；本 newtype 以 7 个
 /// 透传方法桥接，使 router 的对象安全仓储句柄可进入工厂装配路径。
+#[cfg(feature = "segment")]
 struct DynSegmentRepository(Arc<dyn SegmentRepository>);
 
+#[cfg(feature = "segment")]
 #[async_trait]
 impl SegmentRepository for DynSegmentRepository {
     async fn get_segment(
@@ -252,14 +258,23 @@ impl SegmentRepository for DynSegmentRepository {
 
 impl AlgorithmRouter {
     pub fn new(config: Config, audit_logger: Option<DynAuditLogger>) -> Self {
+        // 各 fallback push 均按算法特性门控：某组合下臂内全部门控关闭时
+        // 链不被变更（如仅 segment），mut 在该组合下未被使用。
+        #[allow(unused_mut)]
         let mut fallback_chain: SmallVec<[AlgorithmType; 8]> = SmallVec::new();
 
         match config.algorithm.get_default_algorithm() {
+            #[cfg(feature = "segment")]
             AlgorithmType::Segment => {
+                // 链只收已启用算法：未注册项虽会被 try_fallback_chain 跳过，
+                // 但死项会进入降级观测面（健康端点报告永不参与的候选算法）。
+                #[cfg(feature = "snowflake")]
                 fallback_chain.push(AlgorithmType::Snowflake);
+                #[cfg(feature = "uuid-v8")]
                 fallback_chain.push(AlgorithmType::UuidV8);
             }
             AlgorithmType::Snowflake => {
+                #[cfg(feature = "uuid-v8")]
                 fallback_chain.push(AlgorithmType::UuidV8);
             }
             _ => {}
@@ -278,9 +293,11 @@ impl AlgorithmRouter {
             current_algorithm: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             degradation_manager,
             global_metrics: Arc::new(GlobalMetrics::new()),
+            #[cfg(feature = "segment")]
             cpu_monitor: None,
             #[cfg(feature = "etcd")]
             etcd_health_monitor: None,
+            #[cfg(feature = "segment")]
             segment_repository: None,
         }
     }
@@ -290,11 +307,13 @@ impl AlgorithmRouter {
     /// 调用方持有现成 `SeaOrmRepository` 时传入可复用同一连接池；未传入时
     /// 生产构建在 Segment 为默认算法的前提下按 `config.database` 自举
     /// （见 [`Self::initialize`]）。
+    #[cfg(feature = "segment")]
     pub fn with_segment_repository(mut self, repository: Arc<dyn SegmentRepository>) -> Self {
         self.segment_repository = Some(repository);
         self
     }
 
+    #[cfg(feature = "segment")]
     pub fn with_cpu_monitor(
         mut self,
         monitor: Arc<crate::core::algorithm::segment::CpuMonitor>,
@@ -320,18 +339,34 @@ impl AlgorithmRouter {
             AlgorithmType::Snowflake,
             AlgorithmType::UuidV8,
         ] {
+            // 未启用算法不进构建循环：配置声明禁用算法是意图而非故障，
+            // 不应对其发 algorithm_build_failed 告警。
+            #[cfg(not(feature = "segment"))]
+            if alg_type == AlgorithmType::Segment {
+                continue;
+            }
+            #[cfg(not(feature = "snowflake"))]
+            if alg_type == AlgorithmType::Snowflake {
+                continue;
+            }
+            #[cfg(not(feature = "uuid-v8"))]
+            if alg_type == AlgorithmType::UuidV8 {
+                continue;
+            }
             #[allow(unused_mut)]
             let mut builder = AlgorithmBuilder::new(alg_type);
             #[cfg(feature = "etcd")]
             if let Some(ref monitor) = self.etcd_health_monitor {
                 builder = builder.with_etcd_health_monitor(monitor.clone());
             }
+            #[cfg(feature = "segment")]
             if let Some(ref cpu_monitor) = self.cpu_monitor {
                 builder = builder.with_cpu_monitor(cpu_monitor.clone());
             }
             // Segment 生产装配——把 DbSegmentLoader 经工厂构造参数
             // 透传给 SegmentFactory（测试构建无仓储可解析时为 None，工厂
             // 委托原始路径，SegmentAlgorithm::new 维持测试默认内存造段器）。
+            #[cfg(feature = "segment")]
             if alg_type == AlgorithmType::Segment {
                 if let Some(loader) = self.resolve_segment_loader().await {
                     builder = builder.with_segment_loader(loader);
@@ -390,6 +425,7 @@ impl AlgorithmRouter {
     ///    自举仓储（进程级只建一次，多个 router/嵌入场景共享同一连接池）；
     /// 3. 其余（测试构建 / 零 DB 嵌入 / 自举失败）→ `None`，工厂委托原始
     ///    路径，生成期由 `UnconfiguredSegmentLoader` 显性报错。
+    #[cfg(feature = "segment")]
     async fn resolve_segment_loader(
         &self,
     ) -> Option<Arc<dyn crate::core::algorithm::SegmentLoader + Send + Sync>> {
@@ -422,7 +458,7 @@ impl AlgorithmRouter {
     /// 同一结果（成功复用连接池；失败也只尝试一次，避免每次生成路径重试建连）。
     /// 失败仅 `warn` 不阻断启动——与「零 DB 也能构建 router 模块」的嵌入语义
     /// 兼容，Segment 生成期显性报错兜底。
-    #[cfg(not(test))]
+    #[cfg(all(not(test), feature = "segment"))]
     async fn self_provisioned_segment_loader(
         config: &Config,
         cpu_monitor: Option<Arc<crate::core::algorithm::segment::CpuMonitor>>,
@@ -637,6 +673,19 @@ impl AlgorithmRouter {
         algorithm: AlgorithmType,
         ctx: &GenerateContext,
     ) -> Result<Id> {
+        // 未启用算法显式报错（确定性逻辑）：不 panic、不回退到其他算法。
+        #[cfg(not(feature = "segment"))]
+        if algorithm == AlgorithmType::Segment {
+            return Err(CoreError::InvalidAlgorithmType("segment".to_string()));
+        }
+        #[cfg(not(feature = "snowflake"))]
+        if algorithm == AlgorithmType::Snowflake {
+            return Err(CoreError::InvalidAlgorithmType("snowflake".to_string()));
+        }
+        #[cfg(not(feature = "uuid-v8"))]
+        if algorithm == AlgorithmType::UuidV8 {
+            return Err(CoreError::InvalidAlgorithmType("uuid-v8".to_string()));
+        }
         let effective_algorithm = algorithm;
 
         debug!(
@@ -738,6 +787,18 @@ impl AlgorithmRouter {
         ctx: &GenerateContext,
         size: usize,
     ) -> Result<IdBatch> {
+        #[cfg(not(feature = "segment"))]
+        if algorithm == AlgorithmType::Segment {
+            return Err(CoreError::InvalidAlgorithmType("segment".to_string()));
+        }
+        #[cfg(not(feature = "snowflake"))]
+        if algorithm == AlgorithmType::Snowflake {
+            return Err(CoreError::InvalidAlgorithmType("snowflake".to_string()));
+        }
+        #[cfg(not(feature = "uuid-v8"))]
+        if algorithm == AlgorithmType::UuidV8 {
+            return Err(CoreError::InvalidAlgorithmType("uuid-v8".to_string()));
+        }
         let effective_algorithm = algorithm;
 
         // 一次性加载算法表（无锁），后续查找复用
@@ -841,7 +902,9 @@ impl AlgorithmRouter {
     }
 }
 
-#[cfg(test)]
+// 测试模块整体要求三算法特性：内部用例全部依赖 Segment/Snowflake/UuidV8
+// 至少其二，剪裁组合下整模块跳过以避免半门控的 unused 残留。
+#[cfg(all(test, feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
 mod tests {
     use super::*;
     use crate::core::algorithm::degradation_manager::{
@@ -853,6 +916,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     fn test_fallback_chain_dedup() {
         // 默认 Segment：链应为 [Snowflake, UuidV8]，每个算法至多出现一次
         let mut config = Config::default();
@@ -890,6 +954,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_algorithm_router_generate() {
         let config = Config::default();
         let router = AlgorithmRouter::new(config, None);
@@ -908,6 +973,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_algorithm_router_batch_generate() {
         let config = Config::default();
         let router = AlgorithmRouter::new(config, None);
@@ -1173,6 +1239,7 @@ mod tests {
     // ============== 路由层观测 ==============
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_router_observes_latency_and_merges_percentiles() {
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
@@ -1210,6 +1277,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_router_records_clock_backward_signal_into_snapshot() {
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
@@ -1253,6 +1321,7 @@ mod tests {
     // ============== IdGenerator trait impl 测试 ==============
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_id_generator_generate_trait_method_succeeds() {
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
@@ -1269,6 +1338,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_id_generator_generate_trait_method_fallback_when_primary_missing() {
         // 默认算法是 Segment，但 algorithms 中只有 Snowflake — 应回退到 Snowflake
         let router = AlgorithmRouter::new(Config::default(), None);
@@ -1286,6 +1356,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_id_generator_batch_generate_trait_method_succeeds() {
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
@@ -1415,6 +1486,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_id_generator_generate_with_algorithm_trait_method_succeeds() {
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
@@ -1462,6 +1534,7 @@ mod tests {
     // ============== AlgorithmRouter::new 与 builder 测试 ==============
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_new_with_segment_default_builds_full_fallback_chain() {
         // 默认 Config: default = "segment"
         // 链去重（收敛）：同一算法不得重复占位，降级候选 [Snowflake, UuidV8]
@@ -1489,6 +1562,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "segment")]
     async fn test_with_cpu_monitor_builder_sets_monitor() {
         let router = AlgorithmRouter::new(Config::default(), None)
             .with_cpu_monitor(Arc::new(crate::core::algorithm::segment::CpuMonitor::new()));
@@ -1498,6 +1572,7 @@ mod tests {
     // ============== generate_with_algorithm (inherent) 测试 ==============
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_generate_with_algorithm_inherent_success() {
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
@@ -1515,6 +1590,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_generate_with_algorithm_inherent_unknown_algorithm_falls_back() {
         // 请求 UuidV8（不在 map），fallback chain = [Snowflake, UuidV8, UuidV8]
         // Snowflake 在 map 中且成功 → 返回 Ok
@@ -1534,6 +1610,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_generate_with_algorithm_inherent_all_fail_returns_error() {
         let router = AlgorithmRouter::new(Config::default(), None);
         // 不插入任何算法 → fallback chain 中也无算法 → 返回 "All algorithms failed"
@@ -1551,6 +1628,7 @@ mod tests {
     // ============== batch_generate_with_algorithm (inherent) 测试 ==============
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_batch_generate_with_algorithm_inherent_success() {
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
@@ -1569,6 +1647,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_batch_generate_with_algorithm_inherent_unknown_algorithm_falls_back() {
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
@@ -1588,6 +1667,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_batch_generate_with_algorithm_inherent_all_fail_returns_error() {
         let router = AlgorithmRouter::new(Config::default(), None);
         let result = router
@@ -1604,6 +1684,7 @@ mod tests {
     // ============== generate_with_algorithm_internal fallback 路径测试 ==============
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_generate_internal_primary_succeeds_no_fallback() {
         // 主算法成功 → 不应触发 fallback
         let router = AlgorithmRouter::new(Config::default(), None);
@@ -1628,6 +1709,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_generate_internal_primary_fails_first_fallback_succeeds() {
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
@@ -1650,6 +1732,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_generate_internal_primary_fails_all_fallbacks_fail_returns_original_error() {
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
@@ -1683,6 +1766,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_generate_internal_primary_not_in_map_fallback_succeeds() {
         // Segment 不在 algorithms 中（map 只有 Snowflake），fallback 应成功
         let router = AlgorithmRouter::new(Config::default(), None);
@@ -1699,6 +1783,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_generate_internal_primary_not_in_map_all_fallbacks_fail() {
         // Segment 不在 map，fallback chain 中的算法也都不在 map → "All algorithms failed"
         let router = AlgorithmRouter::new(Config::default(), None);
@@ -1713,6 +1798,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_generate_internal_primary_not_in_map_some_fallbacks_missing() {
         // Segment 不在 map，Snowflake 在 map 但失败，UuidV8 在 map 且成功
         let router = AlgorithmRouter::new(Config::default(), None);
@@ -1738,6 +1824,7 @@ mod tests {
     // ============== batch_generate_with_algorithm_internal fallback 路径测试 ==============
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_batch_internal_primary_succeeds_no_fallback() {
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
@@ -1754,6 +1841,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_batch_internal_primary_fails_first_fallback_succeeds() {
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
@@ -1775,6 +1863,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_batch_internal_primary_fails_all_fallbacks_fail_returns_original_error() {
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
@@ -1808,6 +1897,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_batch_internal_primary_not_in_map_fallback_succeeds() {
         let router = AlgorithmRouter::new(Config::default(), None);
         insert_mock(
@@ -1824,6 +1914,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_batch_internal_primary_not_in_map_all_fallbacks_fail() {
         let router = AlgorithmRouter::new(Config::default(), None);
         let ctx = make_ctx("bt");
@@ -1940,6 +2031,7 @@ mod tests {
     /// 3. HalfOpen 探测成功数未达 `half_open_success_threshold` → 保持 HalfOpen 并累计；
     /// 4. 达到阈值 → Closed + 清除降级标记，整体状态回到 Normal。
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_check_health_and_update_degradation_full_circuit_breaker_lifecycle() {
         let mut router = AlgorithmRouter::new(Config::default(), None);
         // 生产默认 circuit_breaker_timeout_ms=60_000 无法在用例内跨越探测窗口，
@@ -2107,6 +2199,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake"))]
     async fn test_initialize_with_cpu_monitor_and_layout() {
         let config = Config::default();
         let router = AlgorithmRouter::new(config, None)
@@ -2124,11 +2217,13 @@ mod tests {
 
     /// 最小 SegmentRepository mock：`allocate_segment` 顺序发号并记录步长，
     /// 其余方法按「不参与本用例」语义返回空/缺省。
+    #[cfg(feature = "segment")]
     struct MockSegmentRepo {
         counter: std::sync::atomic::AtomicI64,
         last_step: std::sync::atomic::AtomicI32,
     }
 
+    #[cfg(feature = "segment")]
     impl MockSegmentRepo {
         fn new() -> Self {
             Self {
@@ -2138,6 +2233,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "segment")]
     fn fake_segment_info(
         workspace_id: &str,
         biz_tag: &str,
@@ -2157,6 +2253,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "segment")]
     #[async_trait]
     impl crate::core::database::SegmentRepository for MockSegmentRepo {
         async fn get_segment(
@@ -2226,6 +2323,7 @@ mod tests {
     /// 工厂装配契约：`AlgorithmBuilder` 携带 `DbSegmentLoader` 构建的
     /// Segment 算法，generate 必须消费 `allocate_segment` 返回的区间，
     /// 且注入步长透传到位。
+    #[cfg(feature = "segment")]
     #[tokio::test]
     async fn test_segment_factory_injects_db_loader_and_consumes_allocation() {
         let repo = Arc::new(MockSegmentRepo::new());
@@ -2250,6 +2348,7 @@ mod tests {
     /// router 装配契约：`with_segment_repository` 注入仓储后，`initialize`
     /// 经工厂路径为 Segment 装上 `DbSegmentLoader`，generate 真消费 mock
     /// 仓储的分配区间。
+    #[cfg(feature = "segment")]
     #[tokio::test]
     async fn test_router_with_segment_repository_serves_db_backed_ids() {
         let repo = Arc::new(MockSegmentRepo::new());

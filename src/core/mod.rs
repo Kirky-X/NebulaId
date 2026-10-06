@@ -5,8 +5,10 @@
 
 // Public API modules (re-exported in lib.rs)
 pub mod algorithm;
+#[cfg(feature = "database")]
 pub mod auth;
 pub mod config;
+#[cfg(feature = "database")]
 pub mod database;
 pub mod i18n;
 pub mod monitoring;
@@ -31,6 +33,7 @@ pub use types::{Id, IdBatch};
 pub use config::{Config, TlsConfig};
 
 // Re-export oxcache types for convenience
+#[cfg(feature = "server")]
 pub use oxcache::Cache;
 
 // Re-export coordinator types that need to be accessed externally

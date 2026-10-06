@@ -70,6 +70,9 @@
 <td>✅ 100 万+ ID/秒</td>
 </tr>
 <tr>
+<td colspan="4">口径限定：100 万+ ID/秒 为 Snowflake / UUID v8 微基准口径；Segment 与 HTTP e2e 吞吐见 <a href="PERFORMANCE.md">性能指南</a>。</td>
+</tr>
+<tr>
 <td>无需时钟同步</td>
 <td>✅ Segment</td>
 <td>❌ 否</td>
@@ -204,7 +207,7 @@
 <td>Segment</td>
 <td>64 位</td>
 <td>✅ 是</td>
-<td>10 万+/秒</td>
+<td>未基准化（见性能指南口径边界）</td>
 <td>数据库主键</td>
 </tr>
 <tr>

@@ -244,3 +244,6 @@ grafana/log/
 
 # 雪花重启守卫状态文件（运行期生成）
 /data/
+
+# CodeNexus 知识图谱索引产物
+.codenexus/

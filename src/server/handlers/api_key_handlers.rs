@@ -285,7 +285,6 @@ impl super::ApiHandlers {
 // 三个端点均为 Admin-only（router.rs 中位于 v1_admin_routes）。
 
 /// OpenAPI 注解载体：`POST /api/v1/api-keys`（实际 handler：`router::handle_create_api_key`，Admin-only）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     post,
     path = "/api/v1/api-keys",
@@ -304,7 +303,6 @@ impl super::ApiHandlers {
 pub fn create_api_key_docs() {}
 
 /// OpenAPI 注解载体：`GET /api/v1/api-keys`（实际 handler：`router::handle_list_api_keys`，Admin-only）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     get,
     path = "/api/v1/api-keys",
@@ -327,7 +325,6 @@ pub fn create_api_key_docs() {}
 pub fn list_api_keys_docs() {}
 
 /// OpenAPI 注解载体：`DELETE /api/v1/api-keys/{id}`（实际 handler：`router::handle_revoke_api_key`，Admin-only）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     delete,
     path = "/api/v1/api-keys/{id}",
@@ -535,7 +532,9 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+// 模块内 handlers_with 助手的签名持有 AuthCache（garrison-auth 门控），
+// 故整个模块随该特性编译。
+#[cfg(all(test, feature = "garrison-auth"))]
 mod create_guard_branches {
     //! create_api_key 守卫分支补测：User 角色缺 workspace_id、expires_at
     //! 非法格式两条错误出口（既有测试未覆盖），以及认证缓存

@@ -10,24 +10,10 @@ use crate::core::types::CoreError;
 /// Schema name for Nebula ID tables
 pub const NEBULA_SCHEMA: &str = "nebula_id";
 
-/// Redact the password component of a database connection URL before
-/// the URL is written to logs or other observability surfaces.
-///
-/// Phase 9 (CRITICAL C1 / ) — `final_url` carries
-/// the plaintext database password (e.g. `postgresql://user:pass@host/db`)
-/// and must never be recorded verbatim. Only `scheme://user@host:port/db`
-/// is emitted; the password is replaced by `***`. If the URL cannot be
-/// parsed by `url::Url`, the entire string is replaced by `<redacted>`
-/// to guarantee no password can leak.
-pub(crate) fn redact_db_url(url: &str) -> String {
-    match url::Url::parse(url) {
-        Ok(mut parsed) => {
-            let _ = parsed.set_password(Some("***"));
-            parsed.to_string()
-        }
-        Err(_) => "<redacted>".to_string(),
-    }
-}
+/// 脱敏逻辑唯一定义在 `crate::core::config::app::redact_db_url`（纯 url 解析，
+/// 零 DB 依赖）；本模块复用该实现，避免第二份逻辑（config 层在剪裁组合下
+/// 仍需可用，不能反向依赖 database）。
+pub(crate) use crate::core::config::app::redact_db_url;
 
 impl From<DbErr> for CoreError {
     fn from(e: DbErr) -> Self {
@@ -510,36 +496,6 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
     Ok(())
 }
 
-#[allow(dead_code)]
-pub struct DatabaseManager {
-    db: DatabaseConnection,
-}
-
-#[allow(dead_code)]
-impl DatabaseManager {
-    pub fn new(db: DatabaseConnection) -> Self {
-        Self { db }
-    }
-
-    pub fn get_connection(&self) -> &DatabaseConnection {
-        &self.db
-    }
-
-    pub fn into_connection(self) -> DatabaseConnection {
-        self.db
-    }
-
-    pub async fn health_check(&self) -> Result<(), CoreError> {
-        self.db.ping().await.map_err(CoreError::from)?;
-        Ok(())
-    }
-
-    pub async fn close(self) -> Result<(), CoreError> {
-        drop(self.db);
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -709,48 +665,6 @@ mod tests {
                 "expected Ok or DatabaseError (validation should be skipped for full URL), got {other:?}"
             ),
         }
-    }
-
-    // ===== DatabaseManager with MockDatabase =====
-
-    #[tokio::test]
-    async fn test_database_manager_new_stores_connection() {
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-        let manager = DatabaseManager::new(db);
-        let _conn = manager.get_connection();
-    }
-
-    #[tokio::test]
-    async fn test_database_manager_into_connection_consumes_self() {
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-        let manager = DatabaseManager::new(db);
-        let _conn = manager.into_connection();
-    }
-
-    #[tokio::test]
-    async fn test_database_manager_health_check_returns_ok_with_mock() {
-        // ConnectionTrait::ping() issues a SELECT 1 query, which consumes
-        // one exec result from the mock queue.
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_exec_results(vec![MockExecResult {
-                last_insert_id: 0,
-                rows_affected: 0,
-            }])
-            .into_connection();
-        let manager = DatabaseManager::new(db);
-        let result = manager.health_check().await;
-        assert!(
-            result.is_ok(),
-            "health_check should succeed with mock db: {result:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_database_manager_close_returns_ok_and_consumes_self() {
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-        let manager = DatabaseManager::new(db);
-        let result = manager.close().await;
-        assert!(result.is_ok(), "close should return Ok: {result:?}");
     }
 
     // ===== run_migrations with MockDatabase =====

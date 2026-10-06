@@ -1504,8 +1504,8 @@ pub(crate) mod mock_tests {
 #[cfg(test)]
 mod openapi_doc_carriers {
     //! OpenAPI 注解载体函数（`*_docs`）：`#[utoipa::path]` 宏的编译期挂载点，
-    //! 运行时零调用（`#[allow(dead_code)]`），是行覆盖率的恒定盲区。此处集中
-    //! 显式调用：既钉住「可调用、不 panic」的契约，也消除该盲区。
+    //! 生产路径经 `openapi.rs` 的 `paths(...)` 引用、运行时零调用，是行覆盖率的
+    //! 恒定盲区。此处集中显式调用：既钉住「可调用、不 panic」的契约，也消除该盲区。
 
     use crate::server::handlers::{
         api_key_handlers, biz_tag_handlers, id_handlers, system_handlers, workspace_handlers,

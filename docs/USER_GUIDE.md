@@ -14,6 +14,7 @@
   - [安装](#安装)
   - [第一步](#第一步)
 - [核心概念](#核心概念)
+- [特性组合](#特性组合)
 - [基础用法](#基础用法)
   - [Segment 算法](#segment-算法)
   - [Snowflake 算法](#snowflake-算法)
@@ -184,6 +185,32 @@ Segment 算法支持多数据中心部署，每个数据中心分配唯一的 DC
 - **健康监控**: 实时监控各数据中心状态
 - **故障检测**: 自动检测并标记失效的数据中心
 - **智能调度**: 自动将流量转移到健康的数据中心
+
+---
+
+## 特性组合
+
+`Nebula ID` 采用模块级特性门控，按消费形态裁剪依赖树（数字为 `cargo tree -e normal` 实测唯一 crate 数）：
+
+| 消费形态 | 推荐组合 | 依赖树规模 |
+|---|---|---|
+| 部署完整服务 | default（`server` + 三算法 + `postgresql` + `garrison-auth`） | 524 |
+| 嵌入式 SDK | `sdk`（蕴含 `openapi` + `database`） | 279 |
+| 仅号段算法 | `segment`（蕴含 `database`） | 278 |
+| 仅 Snowflake / UUID v8 | `snowflake` 或 `uuid-v8` | 191 |
+
+```toml
+# Cargo.toml —— 只用 UUID v8 的剪裁示例
+[dependencies]
+nebulaid = { version = "0.3", default-features = false, features = ["uuid-v8"] }
+```
+
+要点：
+
+- 请求未启用的算法时返回 `InvalidAlgorithmType` 错误，不 panic、不静默回退到其他算法。
+- `nebula-id` 二进制仅随 `server` 特性构建（`required-features`），纯算法剪裁组合自动跳过二进制目标。
+- `alerting` 特性同时门控告警子系统、webhook 分发与 `reqwest` 依赖；本地运行告警单测需 `cargo test --features alerting`（CI 经 `--all-features` 覆盖）。
+- 剪裁组合由 CI `Check feature trim` 步骤钉住，防止越界引用使剪裁能力静默腐烂。
 
 ---
 
@@ -371,7 +398,7 @@ use nebulaid::core::Config;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 通过 Config.algorithm.segment 调优 Segment 算法
     // 实际字段：base_step / min_step / max_step / switch_threshold
-    // （动态步长算法根据 QPS 在 [min_step, max_step] 之间自动切换）
+    // （动态步长算法根据 CPU 使用率在 [min_step, max_step] 之间自动切换）
     let mut config = Config::default();
     config.algorithm.segment = SegmentAlgorithmConfig {
         base_step: 10000,
@@ -492,7 +519,7 @@ cargo run --package nebulaid --example sdk_server --features sdk,http
 
 **解决方案：**
 1. 检查 `base_step`（`SegmentAlgorithmConfig`）是否过小，增加号段步长以减少数据库访问。
-2. 确认 `max_step` / `switch_threshold` 配置是否合理，让动态步长算法在高 QPS 下自动放大步长。
+2. 确认 `max_step` / `switch_threshold` 配置是否合理，让动态步长算法在高 CPU 使用率下自动放大步长。
 3. 检查数据库连接池配置，确保有足够的连接数。
 4. 考虑使用 `batch_generate(&ctx, size)` 一次性获取多个 ID，减少网络开销。
 

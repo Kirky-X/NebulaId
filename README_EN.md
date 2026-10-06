@@ -73,7 +73,7 @@ Double-buffered segments, drift-guarded bit slicing, custom UUID v8 layouts — 
 <td width="50%" style="vertical-align:top; padding: 12px">🚦 <b>Global Rate Limiting</b><br><span style="color:#64748B">Token bucket genuinely mounted on the HTTP stack, <code>burst ≤ 10 × rps</code> startup validation, <code>x-ratelimit-*</code> response headers, hot updates via the management endpoint</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">📊 <b>Observability</b><br><span style="color:#64748B">Prometheus <code>/metrics</code> exposes per-algorithm p50/p99/p999 and <code>clock_backwards</code>, plus OTLP tracing and health check endpoints</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">📊 <b>Observability</b><br><span style="color:#64748B">Prometheus <code>/metrics</code> exposes per-algorithm p50/p99/p999 and <code>clock_backwards</code>, plus inklog structured logging and health check endpoints</span></td>
 <td width="50%" style="vertical-align:top; padding: 12px">🌍 <b>ICU Internationalization</b><br><span style="color:#64748B">unify-rust-i18n (Fluent/ICU stack) with <code>Accept-Language</code> negotiation (RFC 7231 §5.3.5); full error and log translations for <code>en</code> and <code>zh-CN</code></span></td>
 </tr>
 <tr>
@@ -155,7 +155,7 @@ println!("{} ids via {:?}", batch.len(), batch.algorithm);
 ### 📦 Installation
 
 ```bash
-# Clone and build (default features: postgresql + http + grpc + garrison-auth)
+# Clone and build (default features: full server stack + all three algorithms + postgresql + garrison-auth)
 git clone https://github.com/Kirky-X/NebulaId.git
 cd NebulaId
 cargo build --release
@@ -166,16 +166,29 @@ cargo build --release
 
 | Feature | Default | Description |
 |---------|:----:|------|
+| `server` | ✅ | Full server layer (HTTP/gRPC/auth/audit/rate limiting), implies `database` + `http` + `grpc`; the `nebula-id` binary is only built with this feature |
+| `segment` | ✅ | Segment algorithm, implies `database` (segments are DB-backed by definition) |
+| `snowflake` / `uuid-v8` | ✅ | DB-free leaf algorithms, can be enabled independently |
+| `database` | ➖ | Repository-layer switch (dbnexus + sea-orm), implied by `segment` / `server` / `sdk`, never used standalone |
 | `postgresql` | ✅ | dbnexus PostgreSQL storage backend (can be turned off with `--no-default-features`; compile-only guarantee, a real PostgreSQL is needed at runtime) |
-| `http` / `grpc` | ✅ | REST and gRPC access (sdforge mirror features) |
+| `http` / `grpc` | ✅ | REST and gRPC access (sdforge mirror features, implied by `server`) |
 | `garrison-auth` | ✅ | garrison takes over API key verification (falling back to the hand-written Argon2id path when disabled) |
 | `etcd` | ➖ | etcd distributed coordination |
-| `sdk` | ➖ | Embedded SDK facade (`NebulaIdKit`, implies `openapi`) |
+| `sdk` | ➖ | Embedded SDK facade (`NebulaIdKit`, implies `openapi` + `database`) |
 | `openapi` | ➖ | sdforge OpenAPI mirror feature (without it, `#[forge]` registers no OpenAPI routes and `/api-docs/openapi.json` has empty paths) |
 | `integration-tests` | ➖ | Gates `#[ignore]` tests that need a real database |
-| `alerting` | ➖ | Gates the alerting subsystem (`src/core/monitoring`, not compiled into production builds by default) |
+| `alerting` | ➖ | Gates the alerting subsystem and webhook dispatch (`src/core/monitoring`, not compiled into production builds by default) |
 
 > 💡 `--all-features` **is buildable** (= default + etcd + alerting + sdk + integration-tests + openapi); CI and docs uniformly adopt that switch.
+
+> ✂️ **Library-consumer trimming**: when embedding the algorithms as a library (no service deployment), trim features as needed — e.g. UUID v8 only:
+>
+> ```toml
+> [dependencies]
+> nebulaid = { version = "0.3", default-features = false, features = ["uuid-v8"] }
+> ```
+>
+> That combination pulls 191 crates vs 532 for the pre-change full default (measured via `cargo tree -e normal`, about 64% fewer); the trim combination is pinned by the CI `Check feature trim` step to prevent out-of-scope imports from silently rotting it.
 
 ### 💡 Minimal Example
 
@@ -280,7 +293,7 @@ name = "nebula-id"
 host = "0.0.0.0"
 http_port = 8080            # there is no `app.port`
 grpc_port = 9091
-dc_id = 0                   # 0..=31
+dc_id = 0                   # 0..=7 with default datacenter_id_bits=3
 worker_id = 0
 
 [database]
@@ -443,7 +456,7 @@ Please do not report security vulnerabilities through public issues. Use the pri
 <tr><th style="text-align:center">Status</th><th style="text-align:left">Area</th><th style="text-align:left">Items</th></tr>
 <tr><td align="center">✅</td><td>Core algorithms</td><td>Segment double buffering with dynamic step, Snowflake, UUID v8, algorithm router and degradation chain</td></tr>
 <tr><td align="center">✅</td><td>Service and protocols</td><td>HTTP + gRPC dual protocol, OpenAPI docs, TLS, rate limiting, garrison API key auth, audit logging</td></tr>
-<tr><td align="center">✅</td><td>Observability and i18n</td><td>Per-algorithm p50/p99/p999 metrics, health checks, OTLP tracing, en / zh-CN i18n</td></tr>
+<tr><td align="center">✅</td><td>Observability and i18n</td><td>Per-algorithm p50/p99/p999 metrics, health checks, inklog structured logging, en / zh-CN i18n</td></tr>
 <tr><td align="center">✅</td><td>Quality gates</td><td>Five-stage CI gate, coverage ≥ 95%, cargo-deny / cargo-audit / CodeQL, ~1900 tests</td></tr>
 <tr><td align="center">🚧</td><td>SDK and distributed coordination</td><td>Continued hardening of the <code>sdk</code> facade (trait-kit assembly); production validation of <code>etcd</code> coordination (feature off by default)</td></tr>
 <tr><td align="center">🚧</td><td>Performance engineering</td><td>Batch generation tuning, Segment routing benchmark integration (the ID-generation throughput benchmark harness and release baselines have landed — see the [Performance Guide](docs/PERFORMANCE.md))</td></tr>

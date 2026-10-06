@@ -47,6 +47,7 @@ macro_rules! t {
 pub mod core;
 
 // Server namespace - HTTP/gRPC 服务
+#[cfg(feature = "server")]
 pub mod server;
 
 // SDK namespace - 嵌入式一等公民入口（feature `sdk` 门控）

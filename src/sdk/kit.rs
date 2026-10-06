@@ -12,7 +12,9 @@ use trait_kit::{
     AsyncReady,
 };
 
-use crate::core::algorithm::{AlgorithmRouter, CpuMonitor, DynAuditLogger, GenerateContext};
+#[cfg(feature = "segment")]
+use crate::core::algorithm::CpuMonitor;
+use crate::core::algorithm::{AlgorithmRouter, DynAuditLogger, GenerateContext};
 use crate::core::config::Config;
 use crate::core::coordinator::{DistributedLock, LocalDistributedLock};
 use crate::core::database::SeaOrmRepository;
@@ -121,8 +123,9 @@ impl_async_auto_builder!(RouterModule, Arc<AlgorithmRouter>, CoreError, |kit| {
         // `MissingCapability` → `None`）。
         let _repository = kit.require::<RepositoryModule>().ok();
 
-        let cpu_monitor = Arc::new(CpuMonitor::new());
-        let router = AlgorithmRouter::new(config, audit_logger).with_cpu_monitor(cpu_monitor);
+        let router = AlgorithmRouter::new(config, audit_logger);
+        #[cfg(feature = "segment")]
+        let router = router.with_cpu_monitor(Arc::new(CpuMonitor::new()));
         router.initialize().await.map_err(|e| {
             CoreError::InternalError(t!(
                 "error.sdk.module_init_failed",

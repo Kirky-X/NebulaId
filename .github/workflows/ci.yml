@@ -60,8 +60,23 @@ jobs:
       - name: Check no-default-features
         # 轻量编译检查：postgres 驱动可关，garrison 回退路径与 sdforge 镜像
         # feature（http/grpc/openapi）关闭路径全部参与编译，防止 fallback 腐烂。
-        # 仅保证编译——core::database 无条件编译，运行时需自备 PostgreSQL。
-        run: cargo check --package ${{ env.PKG }} --no-default-features --lib --bins
+        # 模块级特性门控后：core::database/server 随特性编译，本组合
+        # （零算法零 DB 零服务端）验证 config/types/i18n/coordinator 裸面；
+        # bins 与 server 系集成测试因 required-features 自动跳过，不报空目标错。
+        # --tests 一并钉住测试面的门控（防 lib 面干净而 test 面漏网的半门控）。
+        run: cargo check --package ${{ env.PKG }} --no-default-features --lib --bins --tests
+
+      - name: Check feature trim (uuid-v8 only)
+        # 剪裁钉：纯算法嵌入场景的最小组合（core/algorithm 仅 uuid_v8，
+        # 依赖树 191 crates vs default 524）。防止越界 use（如 lib 面引用
+        # core::database）静默腐烂剪裁能力；--tests 同上钉住测试面。
+        run: cargo check --package ${{ env.PKG }} --no-default-features --features uuid-v8 --lib --tests
+
+      - name: Check server without algorithm features
+        # server 不蕴含任何算法特性：钉住 bin 在 server-only 组合下可构建
+        # （main.rs 的 segment 专属接线已按 cfg 门控），防止越界引用复发；
+        # --tests 同上钉住测试面。
+        run: cargo check --package ${{ env.PKG }} --no-default-features --features server --lib --bins --tests
 
   # 阶段 2：cargo-deny 检查（许可证 + 安全）
   deny:

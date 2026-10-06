@@ -471,68 +471,22 @@ impl DegradationManager {
 
         for (alg_type, health_state) in health_states.iter() {
             if self.config.enable_circuit_breaker {
-                let circuit_state = health_state.get_circuit_breaker_state();
-                match circuit_state {
+                match health_state.get_circuit_breaker_state() {
                     CircuitBreakerState::Open => {
                         if health_state.is_circuit_open(self.config.circuit_breaker_timeout_ms) {
                             continue;
-                        } else {
-                            health_state.half_open_circuit_breaker();
-                            debug!(
-                                alg_type = ?alg_type,
-                                "{}",
-                                t!("log.core.algorithm.degradation_manager.circuit_breaker_timeout_half_open")
-                            );
                         }
+                        health_state.half_open_circuit_breaker();
+                        debug!(
+                            alg_type = ?alg_type,
+                            "{}",
+                            t!("log.core.algorithm.degradation_manager.circuit_breaker_timeout_half_open")
+                        );
+                        // 超时转 HalfOpen 后与 Closed 同路：穿透到本次常规健康检查。
                     }
                     CircuitBreakerState::HalfOpen => {
-                        let health = if let Some(alg) = algorithms.get(alg_type) {
-                            alg.health_check()
-                        } else {
-                            HealthStatus::Unhealthy(format!("Algorithm {:?} not found", alg_type))
-                        };
-
-                        match health {
-                            HealthStatus::Healthy => {
-                                let successes =
-                                    health_state.consecutive_successes.load(Ordering::SeqCst);
-                                if successes >= self.config.half_open_success_threshold {
-                                    health_state.close_circuit_breaker();
-                                    if health_state.is_degraded.load(Ordering::SeqCst) {
-                                        health_state.mark_recovered();
-                                        state_changed = true;
-                                    }
-                                    info!(
-                                        alg_type = ?alg_type,
-                                        "{}",
-                                        t!(
-                                            "log.core.algorithm.degradation_manager.circuit_breaker_closed_after_successes",
-                                            successes = successes
-                                        )
-                                    );
-                                } else {
-                                    health_state.record_success();
-                                }
-                            }
-                            HealthStatus::Degraded(_) => {
-                                health_state.record_failure();
-                                health_state.open_circuit_breaker();
-                                info!(
-                                    alg_type = ?alg_type,
-                                    "{}",
-                                    t!("log.core.algorithm.degradation_manager.circuit_breaker_reopened")
-                                );
-                            }
-                            HealthStatus::Unhealthy(_) => {
-                                health_state.record_failure();
-                                health_state.open_circuit_breaker();
-                                info!(
-                                    alg_type = ?alg_type,
-                                    "{}",
-                                    t!("log.core.algorithm.degradation_manager.circuit_breaker_opened_unhealthy")
-                                );
-                            }
-                        }
+                        state_changed |=
+                            self.probe_half_open_circuit(&algorithms, *alg_type, health_state);
                         continue;
                     }
                     CircuitBreakerState::Closed => {}
@@ -540,47 +494,9 @@ impl DegradationManager {
             }
 
             if !health_state.is_degraded.load(Ordering::SeqCst) {
-                let health = if let Some(alg) = algorithms.get(alg_type) {
-                    alg.health_check()
-                } else {
-                    HealthStatus::Unhealthy(format!("Algorithm {:?} not found", alg_type))
-                };
-                match health {
-                    HealthStatus::Unhealthy(reason) => {
-                        warn!(
-                            alg_type = ?alg_type,
-                            "{}",
-                            t!(
-                                "log.core.algorithm.degradation_manager.algorithm_unhealthy",
-                                reason = reason
-                            )
-                        );
-                        health_state.record_failure();
-                        if self.config.enable_circuit_breaker
-                            && health_state.should_degrade(self.config.failure_threshold)
-                        {
-                            health_state.open_circuit_breaker();
-                            self.trigger_degradation(*alg_type, health_state).await;
-                            state_changed = true;
-                        } else if health_state.should_degrade(self.config.failure_threshold) {
-                            self.trigger_degradation(*alg_type, health_state).await;
-                            state_changed = true;
-                        }
-                    }
-                    HealthStatus::Degraded(reason) => {
-                        debug!(
-                            alg_type = ?alg_type,
-                            "{}",
-                            t!(
-                                "log.core.algorithm.degradation_manager.algorithm_health_degraded",
-                                reason = reason
-                            )
-                        );
-                    }
-                    HealthStatus::Healthy => {
-                        health_state.record_success();
-                    }
-                }
+                state_changed |= self
+                    .check_algorithm_health(&algorithms, *alg_type, health_state)
+                    .await;
             }
         }
 
@@ -590,6 +506,117 @@ impl DegradationManager {
         }
 
         *self.last_check.write() = Instant::now();
+    }
+
+    /// 探测单个算法健康状态；注册表缺失视为 Unhealthy（与历史内联行为一致）。
+    fn probe_algorithm(
+        algorithms: &HashMap<AlgorithmType, Arc<dyn IdAlgorithm>>,
+        alg_type: &AlgorithmType,
+    ) -> HealthStatus {
+        if let Some(alg) = algorithms.get(alg_type) {
+            alg.health_check()
+        } else {
+            HealthStatus::Unhealthy(format!("Algorithm {:?} not found", alg_type))
+        }
+    }
+
+    /// HalfOpen 探测：连续成功达阈值则闭合熔断（有降级标记时一并恢复），
+    /// 探测失败则重新打开。返回是否发生状态变迁（需重算 effective algorithm）。
+    fn probe_half_open_circuit(
+        &self,
+        algorithms: &HashMap<AlgorithmType, Arc<dyn IdAlgorithm>>,
+        alg_type: AlgorithmType,
+        health_state: &Arc<AlgorithmHealthState>,
+    ) -> bool {
+        match Self::probe_algorithm(algorithms, &alg_type) {
+            HealthStatus::Healthy => {
+                let successes = health_state.consecutive_successes.load(Ordering::SeqCst);
+                if successes < self.config.half_open_success_threshold {
+                    health_state.record_success();
+                    return false;
+                }
+                health_state.close_circuit_breaker();
+                let was_degraded = health_state.is_degraded.load(Ordering::SeqCst);
+                if was_degraded {
+                    health_state.mark_recovered();
+                }
+                info!(
+                    alg_type = ?alg_type,
+                    "{}",
+                    t!(
+                        "log.core.algorithm.degradation_manager.circuit_breaker_closed_after_successes",
+                        successes = successes
+                    )
+                );
+                was_degraded
+            }
+            HealthStatus::Degraded(_) => {
+                health_state.record_failure();
+                health_state.open_circuit_breaker();
+                info!(
+                    alg_type = ?alg_type,
+                    "{}",
+                    t!("log.core.algorithm.degradation_manager.circuit_breaker_reopened")
+                );
+                false
+            }
+            HealthStatus::Unhealthy(_) => {
+                health_state.record_failure();
+                health_state.open_circuit_breaker();
+                info!(
+                    alg_type = ?alg_type,
+                    "{}",
+                    t!("log.core.algorithm.degradation_manager.circuit_breaker_opened_unhealthy")
+                );
+                false
+            }
+        }
+    }
+
+    /// 非降级算法的常规健康检查：Unhealthy 记失败并在达到阈值时降级
+    /// （是否同时开启熔断随 `enable_circuit_breaker`）。返回是否状态变迁。
+    async fn check_algorithm_health(
+        &self,
+        algorithms: &HashMap<AlgorithmType, Arc<dyn IdAlgorithm>>,
+        alg_type: AlgorithmType,
+        health_state: &Arc<AlgorithmHealthState>,
+    ) -> bool {
+        match Self::probe_algorithm(algorithms, &alg_type) {
+            HealthStatus::Unhealthy(reason) => {
+                warn!(
+                    alg_type = ?alg_type,
+                    "{}",
+                    t!(
+                        "log.core.algorithm.degradation_manager.algorithm_unhealthy",
+                        reason = reason
+                    )
+                );
+                health_state.record_failure();
+                if !health_state.should_degrade(self.config.failure_threshold) {
+                    return false;
+                }
+                if self.config.enable_circuit_breaker {
+                    health_state.open_circuit_breaker();
+                }
+                self.trigger_degradation(alg_type, health_state).await;
+                true
+            }
+            HealthStatus::Degraded(reason) => {
+                debug!(
+                    alg_type = ?alg_type,
+                    "{}",
+                    t!(
+                        "log.core.algorithm.degradation_manager.algorithm_health_degraded",
+                        reason = reason
+                    )
+                );
+                false
+            }
+            HealthStatus::Healthy => {
+                health_state.record_success();
+                false
+            }
+        }
     }
 
     pub async fn determine_effective_algorithm(&self) -> DegradationState {

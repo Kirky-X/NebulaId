@@ -220,42 +220,48 @@ fn localize_openapi_json(doc: &mut serde_json::Value, locale: &str) {
                 continue;
             }
             let base = format!("{method}-{slug}");
-            let Some(op) = op.as_object_mut() else {
+            if let Some(op) = op.as_object_mut() {
+                localize_openapi_operation(op, &base, locale);
+            }
+        }
+    }
+}
+
+/// 就地替换单个 operation 的 description 与 responses/parameters 的
+/// description（命中 FTL 键才替换）。
+fn localize_openapi_operation(
+    op: &mut serde_json::Map<String, serde_json::Value>,
+    base: &str,
+    locale: &str,
+) {
+    // operation 级 description（当前注解未用；键命中即替换，供后续扩展）
+    if let Some(text) = crate::core::i18n::translate_if_present(locale, base) {
+        op.insert("description".to_string(), serde_json::Value::String(text));
+    }
+    if let Some(responses) = op.get_mut("responses").and_then(|r| r.as_object_mut()) {
+        for (status, response) in responses.iter_mut() {
+            let Some(text) =
+                crate::core::i18n::translate_if_present(locale, &format!("{base}-{status}"))
+            else {
                 continue;
             };
-            // operation 级 description（当前注解未用；键命中即替换，供后续扩展）
-            if let Some(text) = crate::core::i18n::translate_if_present(locale, &base) {
-                op.insert("description".to_string(), serde_json::Value::String(text));
+            if let Some(response) = response.as_object_mut() {
+                response.insert("description".to_string(), serde_json::Value::String(text));
             }
-            if let Some(responses) = op.get_mut("responses").and_then(|r| r.as_object_mut()) {
-                for (status, response) in responses.iter_mut() {
-                    let Some(text) = crate::core::i18n::translate_if_present(
-                        locale,
-                        &format!("{base}-{status}"),
-                    ) else {
-                        continue;
-                    };
-                    if let Some(response) = response.as_object_mut() {
-                        response.insert("description".to_string(), serde_json::Value::String(text));
-                    }
-                }
-            }
-            if let Some(parameters) = op.get_mut("parameters").and_then(|p| p.as_array_mut()) {
-                for parameter in parameters.iter_mut() {
-                    let Some(parameter) = parameter.as_object_mut() else {
-                        continue;
-                    };
-                    let Some(name) = parameter.get("name").and_then(|n| n.as_str()) else {
-                        continue;
-                    };
-                    if let Some(text) = crate::core::i18n::translate_if_present(
-                        locale,
-                        &format!("{base}-param-{name}"),
-                    ) {
-                        parameter
-                            .insert("description".to_string(), serde_json::Value::String(text));
-                    }
-                }
+        }
+    }
+    if let Some(parameters) = op.get_mut("parameters").and_then(|p| p.as_array_mut()) {
+        for parameter in parameters.iter_mut() {
+            let Some(parameter) = parameter.as_object_mut() else {
+                continue;
+            };
+            let Some(name) = parameter.get("name").and_then(|n| n.as_str()) else {
+                continue;
+            };
+            if let Some(text) =
+                crate::core::i18n::translate_if_present(locale, &format!("{base}-param-{name}"))
+            {
+                parameter.insert("description".to_string(), serde_json::Value::String(text));
             }
         }
     }

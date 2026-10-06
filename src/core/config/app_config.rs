@@ -132,7 +132,12 @@ pub fn resolve_startup_config(
             },
         )),
         Err(ConfigError::FileNotFound(_)) if !explicit_path => {
-            Ok((Config::default(), StartupConfig::DefaultsBecauseMissing))
+            // 内置默认值同样过 validate：剪裁/server-only 组合下默认
+            // default_algorithm 可能未随特性启用，fail-fast 到启动期而非
+            // 第一个请求（与文件路径的 validate 口径一致）。
+            let config = Config::default();
+            config.validate()?;
+            Ok((config, StartupConfig::DefaultsBecauseMissing))
         }
         Err(e) => Err(e),
     }
@@ -167,8 +172,21 @@ impl Config {
         Ok(config)
     }
 
-    /// Validate configuration values are reasonable
+    /// Validate configuration values are reasonable.
+    ///
+    /// 按资源域拆分为子校验器；各子校验器依序执行，首个失败即返回，
+    /// 与拆分前的检查顺序逐条一致。
     pub fn validate(&self) -> ConfigResult<()> {
+        self.validate_app()?;
+        self.validate_database()?;
+        self.validate_rate_limit()?;
+        self.validate_algorithm()?;
+        self.validate_batch()?;
+        self.validate_auth_secrets()?;
+        Ok(())
+    }
+
+    fn validate_app(&self) -> ConfigResult<()> {
         if self.app.http_port == 0 {
             return Err(ConfigError::InvalidValue(
                 "HTTP port must be between 1 and 65535".to_string(),
@@ -187,6 +205,10 @@ impl Config {
             ));
         }
 
+        Ok(())
+    }
+
+    fn validate_database(&self) -> ConfigResult<()> {
         if self.database.max_connections == 0 {
             return Err(ConfigError::InvalidValue(
                 "Database max_connections must be greater than 0".to_string(),
@@ -222,6 +244,10 @@ impl Config {
             ));
         }
 
+        Ok(())
+    }
+
+    fn validate_rate_limit(&self) -> ConfigResult<()> {
         if self.rate_limit.enabled {
             if self.rate_limit.default_rps == 0 {
                 return Err(ConfigError::InvalidValue(
@@ -245,9 +271,36 @@ impl Config {
             }
         }
 
+        Ok(())
+    }
+
+    fn validate_algorithm(&self) -> ConfigResult<()> {
         if !["segment", "snowflake", "uuid_v8"].contains(&self.algorithm.default.as_str()) {
             return Err(ConfigError::InvalidValue(
                 "Default algorithm must be one of: segment, snowflake, uuid_v8".to_string(),
+            ));
+        }
+
+        // 部署形态一致性 fail-fast：默认算法必须随本构建的算法特性一起启用，
+        // 否则 server-only / 剪裁组合能正常启动、/health 正常，但所有 generate
+        // 在请求期才显性报错。错配必须暴露在启动期而非第一个请求。测试构建
+        // 允许合成组合（默认 config + 任意 feature 集），不做拦截。
+        #[cfg(all(not(test), not(feature = "segment")))]
+        if self.algorithm.get_default_algorithm() == crate::core::types::AlgorithmType::Segment {
+            return Err(ConfigError::InvalidValue(
+                "algorithm.default = \"segment\" requires the `segment` feature, which this build does not enable".to_string(),
+            ));
+        }
+        #[cfg(all(not(test), not(feature = "snowflake")))]
+        if self.algorithm.get_default_algorithm() == crate::core::types::AlgorithmType::Snowflake {
+            return Err(ConfigError::InvalidValue(
+                "algorithm.default = \"snowflake\" requires the `snowflake` feature, which this build does not enable".to_string(),
+            ));
+        }
+        #[cfg(all(not(test), not(feature = "uuid-v8")))]
+        if self.algorithm.get_default_algorithm() == crate::core::types::AlgorithmType::UuidV8 {
+            return Err(ConfigError::InvalidValue(
+                "algorithm.default = \"uuid_v8\" requires the `uuid-v8` feature, which this build does not enable".to_string(),
             ));
         }
 
@@ -273,6 +326,10 @@ impl Config {
             ));
         }
 
+        self.validate_snowflake()
+    }
+
+    fn validate_snowflake(&self) -> ConfigResult<()> {
         // u32 求和，而非 u8 相加：`datacenter_id_bits=100, worker_id_bits=100,
         // sequence_bits=60` 的 u8 和是 260 —— debug 构建直接 panic，release 构建回绕成
         // 4 并通过 `< 64` 校验，随后 `SnowflakeAlgorithmConfig::timestamp_bits()` 与
@@ -336,6 +393,10 @@ impl Config {
             }
         }
 
+        Ok(())
+    }
+
+    fn validate_batch(&self) -> ConfigResult<()> {
         if self.batch_generate.max_batch_size == 0 {
             return Err(ConfigError::InvalidValue(
                 "Batch generate max_batch_size must be greater than 0".to_string(),
@@ -348,6 +409,10 @@ impl Config {
             ));
         }
 
+        Ok(())
+    }
+
+    fn validate_auth_secrets(&self) -> ConfigResult<()> {
         // SAST- 修复：宽限期上限校验。
         // `api_key_salt` 为空是 dev/test 的安全默认值（garrison 生产路径已 panic），
         // 不在 config validate 层拒绝，避免破坏测试。宽限期 > 30 天在 handler 层被

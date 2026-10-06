@@ -214,7 +214,6 @@ impl super::ApiHandlers {
 // 本文件（system/config 资源域）。
 
 /// OpenAPI 注解载体：`GET /health`（实际 handler：`router::handle_health`，公开）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     get,
     path = "/health",
@@ -227,7 +226,6 @@ impl super::ApiHandlers {
 pub fn health_docs() {}
 
 /// OpenAPI 注解载体：`GET /ready`（实际 handler：`router::handle_ready`，公开）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     get,
     path = "/ready",
@@ -240,7 +238,6 @@ pub fn health_docs() {}
 pub fn ready_docs() {}
 
 /// OpenAPI 注解载体：`GET /metrics`（实际 handler：`router::handle_metrics`，公开）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     get,
     path = "/metrics",
@@ -253,7 +250,6 @@ pub fn ready_docs() {}
 pub fn metrics_docs() {}
 
 /// OpenAPI 注解载体：`GET /api/v1/`（实际 handler：`router::handle_api_info`，公开）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     get,
     path = "/api/v1/",
@@ -266,7 +262,6 @@ pub fn metrics_docs() {}
 pub fn api_info_docs() {}
 
 /// OpenAPI 注解载体：`GET /api/v1/config`（实际 handler：`router::handle_get_config`，需认证）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     get,
     path = "/api/v1/config",
@@ -282,7 +277,6 @@ pub fn api_info_docs() {}
 pub fn get_config_docs() {}
 
 /// OpenAPI 注解载体：`POST /api/v1/config/rate-limit`（实际 handler：`router::handle_update_rate_limit`，Admin-only）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     post,
     path = "/api/v1/config/rate-limit",
@@ -301,7 +295,6 @@ pub fn get_config_docs() {}
 pub fn update_rate_limit_docs() {}
 
 /// OpenAPI 注解载体：`POST /api/v1/config/logging`（实际 handler：`router::handle_update_logging`，Admin-only）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     post,
     path = "/api/v1/config/logging",
@@ -320,7 +313,6 @@ pub fn update_rate_limit_docs() {}
 pub fn update_logging_docs() {}
 
 /// OpenAPI 注解载体：`POST /api/v1/config/reload`（实际 handler：`router::handle_reload_config`，Admin-only）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     post,
     path = "/api/v1/config/reload",
@@ -337,7 +329,6 @@ pub fn update_logging_docs() {}
 pub fn reload_config_docs() {}
 
 /// OpenAPI 注解载体：`POST /api/v1/config/algorithm`（实际 handler：`router::handle_set_algorithm`，Admin-only）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     post,
     path = "/api/v1/config/algorithm",
@@ -566,6 +557,9 @@ mod tests {
         assert_eq!(response.failed_generations, 0);
     }
 
+    // SnowflakeAlgorithm 随 snowflake 特性门控，本用例在无该特性的
+    // 剪裁组合下不参与编译。
+    #[cfg(feature = "snowflake")]
     #[tokio::test]
     async fn test_handle_metrics_includes_registered_algorithm_degradation() {
         let gen = Arc::new(ControllableIdGenerator::new(CoreHealthStatus::Healthy));
@@ -1050,6 +1044,9 @@ mod tests {
     /// 轮换成功且认证缓存已接线：新 secret 生成后必须立即失效该 key 的
     /// 缓存条目（否则宽限期内旧凭证在缓存 TTL 内仍被放行）。覆盖轮换
     /// Ok 分支 + garrison 缓存失效调用 + shutdown 收尾的完整链路。
+    // AuthCache/with_auth_cache 随 garrison-auth 特性门控，本用例在
+    // 无该特性的组合下不参与编译。
+    #[cfg(feature = "garrison-auth")]
     #[tokio::test(flavor = "multi_thread")]
     async fn test_key_rotation_success_invalidates_auth_cache() {
         use crate::server::auth::AuthCache;

@@ -98,16 +98,6 @@ impl MockIdAlgorithm {
     fn set_should_fail(&self, fail: bool) {
         self.should_fail.store(fail as u64, Ordering::Relaxed);
     }
-
-    #[allow(dead_code)]
-    fn set_health_status(&self, status: u64) {
-        self.health_status.store(status, Ordering::Relaxed);
-    }
-
-    #[allow(dead_code)]
-    fn get_call_count(&self) -> u64 {
-        self.call_count.load(Ordering::Relaxed)
-    }
 }
 
 #[async_trait]
@@ -177,6 +167,7 @@ impl IdAlgorithm for MockIdAlgorithm {
 /// 这里走工厂注册表路径（AlgorithmBuilder + SnowflakeFactory），验证工厂与
 /// 算法实现的协作链路完整可用。
 #[tokio::test]
+#[cfg(feature = "snowflake")]
 async fn e2e_snowflake_full_lifecycle_via_builder() {
     // Builder 路径不注入模块私有状态目录：改为配置级 state_dir 指向本测试
     // 专属临时目录——避免向默认 `./data` 落守卫文件（残留文件会让后续运行
@@ -255,6 +246,7 @@ async fn e2e_snowflake_full_lifecycle_via_builder() {
 ///
 /// 覆盖功能场景穷举分析第 1 节 Snowflake 批量生成行的"size=0 返回空批次"边界。
 #[tokio::test]
+#[cfg(feature = "snowflake")]
 async fn e2e_snowflake_batch_generate_zero_size_returns_empty_batch() {
     let config = Config::default();
     let algorithm: Box<dyn IdAlgorithm> = AlgorithmBuilder::new(AlgorithmType::Snowflake)
@@ -281,6 +273,7 @@ async fn e2e_snowflake_batch_generate_zero_size_returns_empty_batch() {
 /// 中每个 Factory 都能正确构建并通过 trait 接口生成有效 ID，且跨算法不撞号。
 /// （原写"4 种"是 uuid_v4 时代的遗留，数组里 UuidV8 被重复列了两次。）
 #[tokio::test]
+#[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
 async fn e2e_all_algorithm_types_built_via_builder_generate_unique_ids() {
     let config = Config::default();
     let algorithm_types = [
@@ -341,6 +334,7 @@ async fn e2e_all_algorithm_types_built_via_builder_generate_unique_ids() {
 /// 主算法 + fallback chain 全部就绪。`AlgorithmType` 现有 Segment / Snowflake /
 /// UuidV8 三个变体（UuidV4 已按 spec 约束移除，不再兜底）。
 #[tokio::test]
+#[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
 async fn e2e_router_initialize_registers_three_algorithms() {
     let config = Config::default();
     let router = AlgorithmRouter::new(config, None);
@@ -425,6 +419,7 @@ async fn e2e_router_set_algorithm_per_biz_tag_routes_correctly() {
 /// 验证功能场景穷举分析中"主算法成功直接返回"的预期行为。
 /// 默认配置下 main=Segment，fallback chain=[Snowflake, UuidV8, UuidV8]。
 #[tokio::test]
+#[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
 async fn e2e_router_primary_succeeds_no_fallback_invoked() {
     let config = Config::default();
     let router = AlgorithmRouter::new(config, None);
@@ -458,6 +453,7 @@ async fn e2e_router_primary_succeeds_no_fallback_invoked() {
 /// 注意：生产路径中 IdGeneration 审计事件由 handlers 层调用（非 Router），
 /// 因此 Router.generate 不应触发审计日志——本测试钉住该设计契约。
 #[tokio::test]
+#[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
 async fn e2e_router_accepts_audit_logger_without_panic_and_does_not_log() {
     let capturing = Arc::new(CapturingAuditLogger::new());
     let audit_logger: DynAuditLogger = capturing.clone();
@@ -614,6 +610,7 @@ async fn e2e_degradation_manager_all_algorithms_fail_enters_critical() {
 ///
 /// 这条路径是 main.rs 启动后用户请求会经过的完整调用链。
 #[tokio::test]
+#[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
 async fn e2e_router_full_id_generator_trait_integration() {
     let config = Config::default();
     let router = AlgorithmRouter::new(config, None);
@@ -676,6 +673,7 @@ async fn e2e_router_full_id_generator_trait_integration() {
 /// 主算法 Segment 在初始化后是健康的，所有生成请求都应通过 Segment 完成。
 /// 此测试验证在正常工况下 fallback chain 不会被错误触发。
 #[tokio::test]
+#[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
 async fn e2e_router_fallback_chain_not_triggered_on_healthy_primary() {
     let config = Config::default();
     let router = AlgorithmRouter::new(config, None);

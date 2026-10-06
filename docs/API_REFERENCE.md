@@ -10,6 +10,7 @@
 
 - [概述](#-概述)
   - [🎯 API 设计原则](#-api-设计原则)
+- [🚪 Feature Gates](#-feature-gates)
 - [核心 API](#-核心-api)
   - [TLS 配置](#tls-配置)
   - [智能分段（动态步长）](#智能分段动态步长)
@@ -102,6 +103,36 @@
 
 ---
 
+## 🚪 Feature Gates
+
+模块级特性门控（feature-isolation），库消费按需裁剪依赖：
+
+| feature | 默认 | 蕴含 | 说明 |
+|---|:---:|---|---|
+| `server` | ✅ | `database` + `http` + `grpc` | 服务端整层；`nebula-id` 二进制随此特性构建 |
+| `segment` | ✅ | `database` | 号段算法（DB 号段） |
+| `snowflake` / `uuid-v8` | ✅ | — | 零 DB 叶子算法 |
+| `database` | ➖ | — | 仓储层（dbnexus + sea-orm），经 `segment` / `server` / `sdk` 蕴含 |
+| `postgresql` | ✅ | — | dbnexus PostgreSQL 驱动开关 |
+| `garrison-auth` | ✅ | — | garrison API key 认证 |
+| `sdk` | ➖ | `openapi` + `database` | 嵌入式 SDK facade |
+| `alerting` | ➖ | 拉入 `reqwest` | 告警子系统与 webhook 分发 |
+| `etcd` | ➖ | — | etcd 分布式协调 |
+| `openapi` / `integration-tests` | ➖ | — | sdforge OpenAPI 镜像 / 真实 DB 测试门控 |
+
+行为约束：
+
+- 生成/批量生成请求未启用的算法返回 `CoreError::InvalidAlgorithmType`，不 panic、不回退到其他算法。
+- `IdGenerator::snowflake_layout` 仅随 `snowflake` 特性存在；关闭时 `/parse` 对 snowflake 输入返回 `unknown` 占位元数据。
+- `nebulaid::core::Cache` 公共 re-export 仅随 `server` 特性可见。
+
+```toml
+# 只用 UUID v8 的最小依赖组合（191 个 crate；完整 default 为 524，实测 cargo tree）
+nebulaid = { version = "0.3", default-features = false, features = ["uuid-v8"] }
+```
+
+---
+
 ## 🧱 核心 API
 
 ### TLS 配置
@@ -177,52 +208,40 @@ pub async fn initialize(&mut self) -> TlsResult<()>
 
 ### 智能分段（动态步长）
 
-Nebula ID 实现了基于 QPS 与系统负载的动态步长调整。
+Nebula ID 实现了由 CPU 使用率驱动的动态步长调整：号段装载器每次从数据库取段时，
+按当前 CPU 使用率计算本次取段步长。
 
-#### `StepCalculator`
-
-基于以下公式进行动态步长计算：
+#### `dynamic_step`（步长计算）
 
 ```
-next_step = base_step × (1 + α × velocity) × (1 + β × pressure)
-
-Where:
-- velocity = current_qps / step
-- pressure = cpu_usage (0-1)
-- α = 0.5 (velocity factor)
-- β = 0.3 (pressure factor)
+step = clamp(base_step × (1 + 2 × cpu_usage), min_step, max_step)
 ```
 
-```rust
-#[derive(Debug, Clone)]
-pub struct StepCalculator {
-    velocity_factor: f64,  // α = 0.5
-    pressure_factor: f64,  // β = 0.3
-}
-```
+- `base_step` / `min_step` / `max_step`：取自 `algorithm.segment` 配置的
+  `base_step` / `min_step` / `max_step` 字段
+- `cpu_usage`：当前 CPU 使用率（0-1，超界自动截断到该区间）
+- CPU 越忙步长越大：单次取段的 DB 往返成本被更多号段摊薄，降低高压下的取段频次
+- 结果收敛到 `i32` 值域（DB step 列类型）；纯函数、确定性可测，
+  见 `src/core/algorithm/segment.rs` 的 `dynamic_step`
 
-**方法：**
+#### 接线：`DbSegmentLoader::with_dynamic_step`
 
-```rust
-pub fn new(velocity_factor: f64, pressure_factor: f64) -> Self
-pub fn calculate(&self, qps: u64, current_step: u64, config: &SegmentAlgorithmConfig) -> u64
-pub fn get_adjustment_direction(&self, qps: u64, current_step: u64, config: &SegmentAlgorithmConfig) -> &'static str
-```
-
-**调整方向：**
-- `"up"`：检测到高 QPS，增大步长
-- `"down"`：检测到低 QPS，减小步长
-- `"stable"`：QPS 稳定，保持当前步长
+动态步长经 `DbSegmentLoader::with_dynamic_step(repository, segment_config, cpu_monitor)`
+接入号段装载器（见 [DbSegmentLoader](#dbsegmentloader)）：传入 `CpuMonitor`
+后，每次 `load_segment` 采样 CPU 使用率并按上式计算本次步长。未使用该构造器时，
+装载器按固定步长取段（`new` 默认 1000，或 `with_step` 指定）。
 
 #### `QpsWindow`
 
-滑动窗口 QPS 计算器。
+滑动窗口 QPS 计算器（双缓冲无锁实现，状态全部为原子计数器）。
 
 ```rust
 #[derive(Debug, Clone)]
 pub struct QpsWindow {
     window_secs: u64,
-    timestamps: Arc<parking_lot::Mutex<Vec<std::time::Instant>>>,
+    current_second_count: Arc<std::sync::atomic::AtomicU64>,
+    last_second_count: Arc<std::sync::atomic::AtomicU64>,
+    current_second: Arc<std::sync::atomic::AtomicU64>,
 }
 ```
 
@@ -237,33 +256,43 @@ pub fn cleanup(&self)
 pub fn window_size(&self) -> u64
 ```
 
-#### `DatabaseSegmentLoader`
+#### `DbSegmentLoader`
 
-带动态步长计算的号段加载器。
+真连数据库号段表的号段装载器（泛型约束 `R: SegmentRepository`，定义于
+`src/core/algorithm/segment.rs`，经 `core::algorithm` 模块 re-export）。
 
 ```rust
-pub struct DatabaseSegmentLoader {
-    repository: Arc<dyn SegmentRepository>,
-    dc_failure_detector: Arc<DcFailureDetector>,
-    local_dc_id: u8,
-    etcd_cluster_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
-    step_calculator: StepCalculator,
-    segment_config: SegmentAlgorithmConfig,
+pub struct DbSegmentLoader<R: SegmentRepository> {
+    repository: Arc<R>,
+    step: i32,
+    dynamic: Option<DynamicStepPolicy>, // 私有策略结构：Some 时覆盖固定 step
 }
 ```
 
-**方法：**
+**构造器：**
 
 ```rust
-pub fn new(
-    repository: Arc<dyn SegmentRepository>,
-    dc_failure_detector: Arc<DcFailureDetector>,
-    local_dc_id: u8,
-    config: SegmentAlgorithmConfig,
+pub fn new(repository: Arc<R>) -> Self
+pub fn with_step(repository: Arc<R>, step: i32) -> Self
+pub fn with_dynamic_step(
+    repository: Arc<R>,
+    segment_config: SegmentAlgorithmConfig,
+    cpu_monitor: Arc<CpuMonitor>,
 ) -> Self
-pub fn with_etcd_cluster_health_monitor(mut self, monitor: Arc<EtcdClusterHealthMonitor>) -> Self
-pub fn get_current_step(&self) -> u64
 ```
+
+- `new`：以默认步长取段（`DEFAULT_STEP = 1000`，与
+  `SegmentAlgorithmConfig::default().base_step` 对齐）
+- `with_step`：以指定步长取段；步长应落在 biz_tag 的 `base_step`～`max_step`
+  约束内，超大步长会放大 DB 崩溃时的号段空洞
+- `with_dynamic_step`：动态步长策略，每次取段按 CPU 使用率在
+  `[min_step, max_step]` 内计算步长（见[智能分段（动态步长）](#智能分段动态步长)），
+  覆盖固定步长
+
+`DbSegmentLoader` 实现 `SegmentLoader` trait（`load_segment(&self, ctx, worker_id)`，
+`worker_id` 参数不参与分配键，仅为兼容 trait 签名而保留）；构建后经
+`SegmentAlgorithm::with_segment_loader`（或 `AlgorithmBuilder::with_segment_loader`）
+注入号段算法。
 
 ---
 
@@ -280,73 +309,61 @@ pub fn new(dc_id: u8) -> Self
 ```
 
 **参数：**
-- `dc_id`：数据中心 ID（0-255）
+- `dc_id`：数据中心 ID（`u8` 全域合法；配置入口的 `app.dc_id` 受
+  `datacenter_id_bits` 位宽校验，默认位宽 3 即 0-7）
 
-#### `SegmentAlgorithm::new_with_loader(dc_id: u8, dc_failure_detector: Arc<DcFailureDetector>)`
+#### `with_segment_loader(loader: Arc<dyn SegmentLoader + Send + Sync>)`
 
-创建号段算法并指定自定义的 DC 故障检测器。
+注入自定义号段装载器（builder 风格，返回 `Self`）。生产装配方以此把
+`DbSegmentLoader`（真连 DB 号段）替换掉 `new()` 的默认装载器；测试可注入
+内存造段器。
 
 ```rust
-pub fn new_with_loader(
-    dc_id: u8,
-    dc_failure_detector: Arc<DcFailureDetector>,
-) -> Self
+pub fn with_segment_loader(mut self, loader: Arc<dyn SegmentLoader + Send + Sync>) -> Self
+```
+
+#### `with_cpu_monitor(cpu_monitor: Arc<CpuMonitor>)`
+
+挂载 CPU 监视器（builder 风格）。`initialize` 阶段启动采样，供动态步长
+策略消费（见[智能分段（动态步长）](#智能分段动态步长)）。
+
+```rust
+pub fn with_cpu_monitor(mut self, cpu_monitor: Arc<CpuMonitor>) -> Self
 ```
 
 #### `with_etcd_cluster_health_monitor(monitor: Arc<EtcdClusterHealthMonitor>)`
 
-挂载 etcd 集群健康监视器，用于分布式协调。
+挂载 etcd 集群健康监视器（builder 风格），用于分布式协调。仅在 `etcd`
+feature 下存在。
 
 ```rust
+#[cfg(feature = "etcd")]
 pub fn with_etcd_cluster_health_monitor(
     mut self,
     monitor: Arc<EtcdClusterHealthMonitor>,
 ) -> Self
 ```
 
-#### `with_loader(loader: Arc<dyn SegmentLoader>)`
+#### 发号入口（`IdAlgorithm` trait）
 
-挂载自定义号段加载器，用于与数据库交互。
-
-```rust
-pub fn with_loader(mut self, loader: Arc<dyn SegmentLoader>) -> Self
-```
-
-#### `generate_id()`
-
-异步生成单个 ID。
+公开发号一律经 `IdAlgorithm` trait（完整 trait 见 [IdAlgorithm Trait](#idalgorithm-trait)）：
 
 ```rust
-pub async fn generate_id(&self) -> Result<Id>
-```
-
-**返回：** `Result<Id>` —— 生成的 ID 或错误。
-
-#### `generate_batch(size: usize)`
-
-高效地批量生成 ID。
-
-```rust
-pub async fn generate_batch(&self, size: usize) -> Result<IdBatch>
+async fn generate(&self, ctx: &GenerateContext) -> Result<Id>
+async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result<IdBatch>
 ```
 
 **参数：**
+- `ctx`：`GenerateContext`，按 `workspace_id` / `group_id` / `biz_tag` 定位号段缓冲
 - `size`：要生成的 ID 数量（核心层本身不做上限截断；上限由接入面按
   `batch_generate.max_batch_size` 配置强制，默认 100，见[参数校验](#-参数校验)）
 
-**返回：** `Result<IdBatch>` —— 生成的 ID 批次。
+**返回：** `Result<Id>` / `Result<IdBatch>` —— 生成的 ID 或 ID 批次；号段耗尽时
+返回 `CoreError::SegmentExhausted`。
 
 **注意：** 批量大小上限是**接入面策略**而非核心层硬编码：HTTP/gRPC 层按
 配置项 `batch_generate.max_batch_size`（默认 `100`，可配，校验上限 10000）
 拒绝超限请求，以防范 DoS 攻击并保证最佳性能。
-
-#### `get_dc_failure_detector()`
-
-获取 DC 故障检测器实例。
-
-```rust
-pub fn get_dc_failure_detector(&self) -> &Arc<DcFailureDetector>
-```
 
 ---
 
@@ -354,7 +371,12 @@ pub fn get_dc_failure_detector(&self) -> &Arc<DcFailureDetector>
 
 `SnowflakeAlgorithm` 实现 Twitter Snowflake 算法，数据中心、工作者与序列号的位分配均可配置。
 
-#### `SnowflakeAlgorithm::new(datacenter_id: u8, worker_id: u8)`
+> **可达性：** `SnowflakeAlgorithm` 类型本身未从 crate 公开导出（`snowflake`
+> 模块为 `pub(crate)`，仅 re-export `ParsedSnowflakeId` / `SnowflakeLayoutInfo`）。
+> 外部代码请经公开工厂构建：`AlgorithmBuilder::new(AlgorithmType::Snowflake).build(&config)`。
+> 以下方法签名供理解内部结构，构造入口以 `AlgorithmBuilder` 为准。
+
+#### `SnowflakeAlgorithm::new(datacenter_id: u8, worker_id: u8)`（crate 内部）
 
 创建新的 Snowflake 算法实例。
 
@@ -363,62 +385,36 @@ pub fn new(datacenter_id: u8, worker_id: u8) -> Self
 ```
 
 **参数：**
-- `datacenter_id`：数据中心 ID（默认 0-31）
-- `worker_id`：工作者 ID（默认 0-31）
+- `datacenter_id`：数据中心 ID（默认位宽 3，0-7）
+- `worker_id`：工作者 ID（默认位宽 8，0-255）
 
-#### `generate_id()`
+#### `generate_id()`（crate 内私有）
 
 使用 Snowflake 算法生成单个 ID。
 
 ```rust
-pub fn generate_id(&self) -> Result<Id>
+async fn generate_id(&self) -> Result<Id>
 ```
 
-**返回：** `Result<Id>` —— 生成的 64 位 ID。
+`generate_id` 是 crate 内私有 async 方法（`src/core/algorithm/snowflake.rs`），
+不构成公开 API；`IdAlgorithm::generate` 内部委托它完成单次生成。公开发号
+入口见下方「公开入口（`IdAlgorithm` trait）」。
 
 **错误：**
 - `CoreError::ClockMovedBackward` —— 系统时钟回拨
 - `CoreError::SequenceOverflow` —— 同一毫秒内序列号溢出
 
-#### `generate_id_with_timestamp(timestamp: u64, sequence_mask: u64)`
-
-以指定时间戳生成 ID（内部使用）。
+#### 公开入口（`IdAlgorithm` trait）
 
 ```rust
-fn generate_id_with_timestamp(&self, timestamp: u64, sequence_mask: u64) -> Result<Id>
+async fn generate(&self, ctx: &GenerateContext) -> Result<Id>
+async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result<IdBatch>
 ```
 
-#### `get_datacenter_id()`
-
-获取所配置的数据中心 ID。
-
-```rust
-pub fn get_datacenter_id(&self) -> u8
-```
-
-#### `get_worker_id()`
-
-获取所配置的工作者 ID。
-
-```rust
-pub fn get_worker_id(&self) -> u8
-```
-
-#### `get_last_timestamp()`
-
-获取最近使用的时间戳。
-
-```rust
-pub fn get_last_timestamp(&self) -> u64
-```
-
-#### `get_sequence()`
-
-获取当前序列号。
-
-```rust
-pub fn get_sequence(&self) -> u64
-```
+时间戳 / 数据中心 / 工作者 / 序列号全部来自实例配置与系统时钟，`ctx` 仅承载
+调用方上下文、不参与位布局。位分配由 `algorithm.snowflake` 配置决定；生成的
+ID 可用 `ParsedSnowflakeId` / `SnowflakeLayoutInfo`（`nebulaid::core::algorithm`
+re-export）解析。
 
 ---
 
@@ -658,59 +654,38 @@ pub async fn save_local_cache(&self) -> Result<()>
 
 ### DcFailureDetector
 
-检测并管理数据中心的健康状态。
+检测并管理数据中心的健康状态。定义于 `src/core/algorithm/segment.rs`；
+`segment` 模块为 `pub(crate)` 且本类型未经 re-export，属 crate 内部类型 ——
+由 `SegmentAlgorithm` 内部构建并驱动，外部代码不可导入。
 
-#### `DcFailureDetector::new(failure_threshold: u64, recovery_timeout: Duration)`
+```rust
+pub struct DcFailureDetector {
+    dc_states: Arc<RwLock<HashMap<u8, Arc<DcHealthState>>>>,
+    failure_threshold: u64,
+    recovery_timeout: Duration,
+}
+```
 
-创建新的故障检测器。
+**方法：**
 
 ```rust
 pub fn new(failure_threshold: u64, recovery_timeout: Duration) -> Self
-```
-
-**参数：**
-- `failure_threshold`：判定为故障前允许的连续失败次数
-- `recovery_timeout`：尝试恢复前等待的时长
-
-#### `add_dc(dc_id: u8)`
-
-添加要监视的数据中心。
-
-```rust
 pub fn add_dc(&self, dc_id: u8)
+pub async fn start_health_check_with_shutdown(
+    &self,
+    check_interval: Duration,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+)
 ```
 
-#### `get_dc_state(dc_id: u8)`
+- `new`：`failure_threshold` 为判定故障前允许的连续失败次数，`recovery_timeout`
+  为尝试恢复前等待的时长
+- `add_dc`：注册要监视的数据中心（幂等，已存在则不重建）
+- `start_health_check_with_shutdown`：启动后台健康检查循环，按 `check_interval`
+  周期执行恢复检查；`shutdown_rx` 收到关停信号后退出循环
 
-获取指定数据中心的健康状态。
-
-```rust
-pub fn get_dc_state(&self, dc_id: u8) -> Option<Arc<DcHealthState>>
-```
-
-#### `get_healthy_dcs()`
-
-获取健康数据中心列表。
-
-```rust
-pub fn get_healthy_dcs(&self) -> Vec<u8>
-```
-
-#### `select_best_dc(preferred_dc: u8)`
-
-选择最佳可用数据中心。
-
-```rust
-pub fn select_best_dc(&self, preferred_dc: u8) -> u8
-```
-
-#### `start_health_check(check_interval: Duration)`
-
-启动后台健康检查循环。
-
-```rust
-pub async fn start_health_check(&self, check_interval: Duration)
-```
+`SegmentAlgorithm::new` 内部以 `DcFailureDetector::new(5, Duration::from_secs(300))`
+构建检测器并注册本地 DC；`initialize` 阶段传入关停 watch 通道启动健康检查。
 
 ---
 
@@ -723,8 +698,6 @@ pub struct DcHealthState {
     pub dc_id: u8,
     pub status: AtomicU8,
     pub last_success: Arc<Mutex<Instant>>,
-    pub failure_count: AtomicU64,
-    pub consecutive_failures: AtomicU64,
 }
 ```
 
@@ -734,10 +707,10 @@ pub struct DcHealthState {
 pub fn new(dc_id: u8) -> Self
 pub fn get_status(&self) -> DcStatus
 pub fn set_status(&self, status: DcStatus)
-pub fn record_success(&self)
-pub fn record_failure(&self)
-pub fn should_use_dc(&self) -> bool
 ```
+
+`status` 以原子方式存取 `DcStatus`（`Healthy` / `Degraded` / `Failed`）的
+u8 判别值。
 
 ---
 
@@ -1564,7 +1537,7 @@ GET /health/sdforge
 
 sdforge 集成健康检查。该端点通过
 `#[forge]` 宏注册（见 `src/server/sdforge_adapter.rs::sdforge_health`），
-并经 `sdforge` 0.5.0-rc.4 的 inventory 路由合并器对外暴露。它返回
+并经 `sdforge` 0.5.0-rc.5 的 inventory 路由合并器对外暴露。它返回
 Nebula ID crate 的版本号，调用方可据此确认该路由由
 正在运行的二进制提供服务。
 
@@ -1581,7 +1554,7 @@ Nebula ID crate 的版本号，调用方可据此确认该路由由
 ```json
 {
   "status": "ok",
-  "sdforge_version": "0.2.0"
+  "sdforge_version": "0.3.0-rc.1"
 }
 ```
 
@@ -1596,7 +1569,7 @@ Nebula ID crate 的版本号，调用方可据此确认该路由由
 
 ```bash
 curl http://localhost:8080/health/sdforge
-# {"status":"ok","sdforge_version":"0.2.0"}
+# {"status":"ok","sdforge_version":"0.3.0-rc.1"}
 ```
 
 **注意：**
@@ -1605,7 +1578,7 @@ curl http://localhost:8080/health/sdforge
   `#[forge(name = "sdforge_health", version = "v1", description = "sdforge integration health check", path = "/health/sdforge", method = "GET")]`。
   `name` 参数采用下划线分隔形式 `sdforge_health`
   （而非连字符形式 `sdforge-health`），因为 `sdforge-macros`
-  0.5.0-rc.4 会校验 `name` 必须是合法的 Rust 标识符。HTTP 路由
+  0.5.0-rc.5 会校验 `name` 必须是合法的 Rust 标识符。HTTP 路由
   路径不受影响。
 - 启动时必须调用一次 `init_sdforge()`（见 `src/main.rs`），
   以防 inventory 注册的路由被链接器剥离。
@@ -1653,18 +1626,38 @@ Nebula ID 实施严格的参数校验，以确保系统稳定与安全：
 ### Segment 算法基础用法
 
 ```rust
-use nebulaid::core::algorithm::SegmentAlgorithm;
+use std::sync::Arc;
+
+use nebulaid::core::algorithm::{
+    CpuMonitor, DbSegmentLoader, GenerateContext, IdAlgorithm, SegmentAlgorithm,
+};
+use nebulaid::core::{database, Config};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let segment = SegmentAlgorithm::new(1);
-    
-    let id = segment.generate_id().await?;
+    let config = Config::default();
+
+    // 生产装配：真连 DB 的号段装载器 + CPU 使用率驱动的动态步长。
+    let conn = database::create_connection(&config.database).await?;
+    let repo = Arc::new(database::SeaOrmRepository::new(
+        conn,
+        config.auth.api_key_salt.clone(),
+    ));
+    let segment = SegmentAlgorithm::new(1).with_segment_loader(Arc::new(
+        DbSegmentLoader::with_dynamic_step(
+            repo,
+            config.algorithm.segment.clone(),
+            Arc::new(CpuMonitor::new()),
+        ),
+    ));
+
+    let ctx = GenerateContext::default();
+    let id = segment.generate(&ctx).await?;
     println!("Generated ID: {}", id.to_u128());
-    
-    let batch = segment.generate_batch(100).await?;
+
+    let batch = segment.batch_generate(&ctx, 100).await?;
     println!("Generated batch of {} IDs", batch.len());
-    
+
     Ok(())
 }
 ```
@@ -1672,17 +1665,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Snowflake 算法
 
 ```rust
-use nebulaid::core::algorithm::SnowflakeAlgorithm;
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let snowflake = SnowflakeAlgorithm::new(1, 1);
-    
-    let id = snowflake.generate_id()?;
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // dc_id / worker_id 取自 Config.app，受 algorithm.snowflake 位宽约束
+    // （默认 datacenter_id_bits=3 即 0-7、worker_id_bits=8 即 0-255）。
+    let mut config = Config::default();
+    config.app.dc_id = 1;
+    config.app.worker_id = 1;
+
+    let snowflake = AlgorithmBuilder::new(AlgorithmType::Snowflake)
+        .build(&config)
+        .await?;
+
+    let ctx = GenerateContext::default();
+    let id = snowflake.generate(&ctx).await?;
     println!("Generated Snowflake ID: {}", id.to_u128());
-    
-    println!("Datacenter ID: {}", snowflake.get_datacenter_id());
-    println!("Worker ID: {}", snowflake.get_worker_id());
-    
+
     Ok(())
 }
 ```
@@ -1717,54 +1719,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 使用 IdAlgorithm Trait
 
 ```rust
-use nebulaid::core::algorithm::traits::IdAlgorithm;
-use nebulaid::core::algorithm::SnowflakeAlgorithm;
-use nebulaid::core::algorithm::GenerateContext;
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let snowflake = SnowflakeAlgorithm::new(1, 1);
+    let config = Config::default();
+    let snowflake = AlgorithmBuilder::new(AlgorithmType::Snowflake)
+        .build(&config)
+        .await?;
     let ctx = GenerateContext::default();
-    
+
     let id = snowflake.generate(&ctx).await?;
     println!("Generated ID via trait: {}", id.to_u128());
-    
+
     let health = snowflake.health_check();
     println!("Health status: {:?}", health);
-    
+
     let metrics = snowflake.metrics();
     println!("Total generated: {}", metrics.total_generated);
-    
+
     Ok(())
 }
 ```
 
 ### 结合健康监测
 
+需要 `etcd` feature（`cargo build --features etcd`）。
+
 ```rust
-use nebulaid::core::algorithm::segment::{SegmentAlgorithm, DcFailureDetector};
+use std::sync::Arc;
+
+use nebulaid::core::algorithm::{GenerateContext, IdAlgorithm, SegmentAlgorithm};
 use nebulaid::core::coordinator::EtcdClusterHealthMonitor;
 use nebulaid::core::config::EtcdConfig;
-use std::sync::Arc;
-use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let dc_failure_detector = Arc::new(DcFailureDetector::new(5, Duration::from_secs(300)));
-    dc_failure_detector.add_dc(1);
-    
     let etcd_config = EtcdConfig::default();
     let health_monitor = Arc::new(EtcdClusterHealthMonitor::new(
         etcd_config,
         "./cache.json".to_string(),
     ));
-    
-    let segment = SegmentAlgorithm::new_with_loader(1, dc_failure_detector)
-        .with_etcd_cluster_health_monitor(health_monitor.clone());
-    
-    let id = segment.generate_id().await?;
+
+    let segment =
+        SegmentAlgorithm::new(1).with_etcd_cluster_health_monitor(health_monitor.clone());
+
+    let ctx = GenerateContext::default();
+    let id = segment.generate(&ctx).await?;
     println!("Generated ID with health monitoring: {}", id.to_u128());
-    
+
     Ok(())
 }
 ```
@@ -1772,15 +1777,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 批量生成
 
 ```rust
-use nebulaid::core::algorithm::SegmentAlgorithm;
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let segment = SegmentAlgorithm::new(1);
+    let config = Config::default();
 
-    let batch = segment.generate_batch(100).await?;
+    // 批量发号同样经 IdAlgorithm::batch_generate；Segment 算法注入
+    // DbSegmentLoader 后用法相同，上限由 batch_generate.max_batch_size 控制。
+    let algo = AlgorithmBuilder::new(AlgorithmType::Snowflake)
+        .build(&config)
+        .await?;
 
-    for (i, id) in batch.into_vec().into_iter().enumerate().take(5) {
+    let ctx = GenerateContext::default();
+    let batch = algo.batch_generate(&ctx, 100).await?;
+
+    for (i, id) in batch.ids.into_iter().enumerate().take(5) {
         println!("ID {}: {}", i + 1, id.to_u128());
     }
 

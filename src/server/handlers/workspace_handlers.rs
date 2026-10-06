@@ -154,7 +154,6 @@ impl super::ApiHandlers {
 // 错误响应统一引用 `ErrorResponse`（信封）。
 
 /// OpenAPI 注解载体：`POST /api/v1/workspaces`（实际 handler：`router::handle_create_workspace`，Admin-only）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     post,
     path = "/api/v1/workspaces",
@@ -174,7 +173,6 @@ pub fn create_workspace_docs() {}
 
 /// OpenAPI 注解载体：`GET /api/v1/workspaces`（实际 handler：`router::handle_list_workspaces`）。
 /// Admin 返回全量；User 仅返回自身 workspace。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     get,
     path = "/api/v1/workspaces",
@@ -192,7 +190,6 @@ pub fn list_workspaces_docs() {}
 
 /// OpenAPI 注解载体：`GET /api/v1/workspaces/{name}`（实际 handler：`router::handle_get_workspace`）。
 /// User 仅可查看自身 workspace，他人 workspace 返回 403。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     get,
     path = "/api/v1/workspaces/{name}",
@@ -214,7 +211,6 @@ pub fn get_workspace_docs() {}
 
 /// OpenAPI 注解载体：`POST /api/v1/workspaces/{name}/regenerate-user-key`
 /// （实际 handler：`router::handle_regenerate_user_key`，Admin-only）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     post,
     path = "/api/v1/workspaces/{name}/regenerate-user-key",
@@ -235,7 +231,6 @@ pub fn get_workspace_docs() {}
 pub fn regenerate_user_key_docs() {}
 
 /// OpenAPI 注解载体：`POST /api/v1/groups`（实际 handler：`router::handle_create_group`，User-only）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     post,
     path = "/api/v1/groups",
@@ -255,7 +250,6 @@ pub fn regenerate_user_key_docs() {}
 pub fn create_group_docs() {}
 
 /// OpenAPI 注解载体：`GET /api/v1/groups?workspace=...`（实际 handler：`router::handle_list_groups`，User-only）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     get,
     path = "/api/v1/groups",

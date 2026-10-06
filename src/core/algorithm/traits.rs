@@ -14,7 +14,9 @@ pub use crate::core::algorithm::DegradationManager;
 // 持有并通过 `pub(crate)` 访问器暴露给工厂 impl。工厂 impl 拆分到
 // 各算法文件（snowflake.rs / uuid_v7.rs / segment.rs），按规则 25
 // 「mod.rs/traits.rs 只放接口定义」要求。
+#[cfg(feature = "segment")]
 use crate::core::algorithm::segment::CpuMonitor;
+#[cfg(feature = "segment")]
 use crate::core::algorithm::segment::SegmentLoader;
 #[cfg(feature = "etcd")]
 use crate::core::coordinator::EtcdClusterHealthMonitor;
@@ -91,6 +93,7 @@ pub trait IdGenerator: Send + Sync {
     ///
     /// 返回 `None` 表示实现不基于 Snowflake 或无法获知布局；调用方应回退
     /// [`crate::core::algorithm::SnowflakeLayoutInfo::standard`]。
+    #[cfg(feature = "snowflake")]
     fn snowflake_layout(&self) -> Option<crate::core::algorithm::SnowflakeLayoutInfo> {
         None
     }
@@ -163,6 +166,7 @@ impl AlgorithmMetricsSnapshot {
 
 pub struct AlgorithmBuilder {
     algorithm_type: AlgorithmType,
+    #[cfg(feature = "segment")]
     cpu_monitor: Option<Arc<CpuMonitor>>,
     #[cfg(feature = "etcd")]
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
@@ -171,6 +175,7 @@ pub struct AlgorithmBuilder {
     /// `Some(loader)` 时 Segment 工厂以该装载器构建 `SegmentAlgorithm`
     /// （生产装配 `DbSegmentLoader` 走此缝）；`None` 时委托原始
     /// `SegmentFactory`，构建行为与历史完全一致。
+    #[cfg(feature = "segment")]
     segment_loader: Option<Arc<dyn SegmentLoader + Send + Sync>>,
     // 修复：非 etcd 版本不再持有 `etcd_health_monitor: Option<()>` 占位字段。
     // 原 `Option<()>` 既无意义也误导调用方。`with_etcd_health_monitor` builder
@@ -181,9 +186,11 @@ impl AlgorithmBuilder {
     pub fn new(algorithm_type: AlgorithmType) -> Self {
         Self {
             algorithm_type,
+            #[cfg(feature = "segment")]
             cpu_monitor: None,
             #[cfg(feature = "etcd")]
             etcd_health_monitor: None,
+            #[cfg(feature = "segment")]
             segment_loader: None,
         }
     }
@@ -193,16 +200,19 @@ impl AlgorithmBuilder {
     /// 生产装配方经 [`crate::core::algorithm::AlgorithmRouter::with_segment_repository`]
     /// 传入仓储后，router 在 `initialize` 阶段以此方法把
     /// `DbSegmentLoader` 透传给工厂；测试可注入内存造段器。
+    #[cfg(feature = "segment")]
     pub fn with_segment_loader(mut self, loader: Arc<dyn SegmentLoader + Send + Sync>) -> Self {
         self.segment_loader = Some(loader);
         self
     }
 
     /// 暴露 `segment_loader` 给工厂 impl（pub(crate)）。
+    #[cfg(feature = "segment")]
     pub(crate) fn segment_loader(&self) -> &Option<Arc<dyn SegmentLoader + Send + Sync>> {
         &self.segment_loader
     }
 
+    #[cfg(feature = "segment")]
     pub fn with_cpu_monitor(mut self, monitor: Arc<CpuMonitor>) -> Self {
         self.cpu_monitor = Some(monitor);
         self
@@ -220,6 +230,7 @@ impl AlgorithmBuilder {
     /// 暴露 `cpu_monitor` 给工厂 impl（pub(crate)）。
     /// 工厂 impl 拆分到各算法文件后，无法直接访问 AlgorithmBuilder
     /// 私有字段，必须通过访问器。
+    #[cfg(feature = "segment")]
     pub(crate) fn cpu_monitor(&self) -> &Option<Arc<CpuMonitor>> {
         &self.cpu_monitor
     }
@@ -280,8 +291,11 @@ pub trait AlgorithmFactory: Send + Sync {
 }
 
 /// 内置算法的工厂 struct。`pub` 让外部测试代码可构造并注入。
+#[cfg(feature = "snowflake")]
 pub struct SnowflakeFactory;
+#[cfg(feature = "uuid-v8")]
 pub struct UuidV8Factory;
+#[cfg(feature = "segment")]
 pub struct SegmentFactory;
 
 /// Segment 工厂的 DbSegmentLoader 装配包装（E lane 移交残余）。
@@ -293,8 +307,10 @@ pub struct SegmentFactory;
 /// - 未注入时整段委托 [`SegmentFactory::build`]，默认（生产 =
 ///   `UnconfiguredSegmentLoader` 显性报错 / 测试 = 内存造段器）行为
 ///   与历史逐字节一致。
+#[cfg(feature = "segment")]
 struct DbAwareSegmentFactory;
 
+#[cfg(feature = "segment")]
 #[async_trait]
 impl AlgorithmFactory for DbAwareSegmentFactory {
     async fn build(
@@ -329,11 +345,16 @@ impl AlgorithmFactory for DbAwareSegmentFactory {
 pub fn algorithm_factories() -> &'static HashMap<AlgorithmType, Arc<dyn AlgorithmFactory>> {
     static FACTORIES: OnceLock<HashMap<AlgorithmType, Arc<dyn AlgorithmFactory>>> = OnceLock::new();
     FACTORIES.get_or_init(|| {
+        // 零算法组合（三特性全关）无任何 insert，mut 在该组合下未被使用。
+        #[allow(unused_mut)]
         let mut m: HashMap<AlgorithmType, Arc<dyn AlgorithmFactory>> = HashMap::new();
+        #[cfg(feature = "snowflake")]
         m.insert(AlgorithmType::Snowflake, Arc::new(SnowflakeFactory));
+        #[cfg(feature = "uuid-v8")]
         m.insert(AlgorithmType::UuidV8, Arc::new(UuidV8Factory));
         // Segment 经 DbAwareSegmentFactory 代理，支持工厂路径注入
         // DbSegmentLoader（未注入时委托 SegmentFactory，行为不变）。
+        #[cfg(feature = "segment")]
         m.insert(AlgorithmType::Segment, Arc::new(DbAwareSegmentFactory));
         m
     })

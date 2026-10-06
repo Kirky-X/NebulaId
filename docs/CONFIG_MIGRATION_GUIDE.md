@@ -867,7 +867,7 @@ key_hex = "0011223344556677"
 | `algorithm.segment.base_step` / `min_step` / `max_step` / `switch_threshold` | u64 / u64 / u64 / f64 | `1000` / `500` / `100000` / `0.1` | ✅ | 动态步长（注意上文的 `merge` 说明） |
 | `algorithm.snowflake.datacenter_id_bits` / `worker_id_bits` / `sequence_bits` / `clock_drift_threshold_ms` | u8 / u8 / u8 / u64 | `3` / `8` / `10` / `1000` | ✅ | 位布局；余量为时间戳位 |
 | `algorithm.uuid_v8.enabled` | bool | `true` | ✅ | UUID v8 开关 |
-| `monitoring.metrics_enabled` / `metrics_path` / `tracing_enabled` / `otlp_endpoint` | bool / String / bool / String | `true` / `"/metrics"` / `false` / `""` | ✅ | Prometheus + OTLP |
+| `monitoring.metrics_enabled` / `metrics_path` / `tracing_enabled` / `otlp_endpoint` | bool / String / bool / String | `true` / `"/metrics"` / `false` / `""` | ✅ | 仅 `metrics_enabled`/`metrics_path` 生效（Prometheus）；`tracing_enabled`/`otlp_endpoint` 为保留字段，当前实现未消费 |
 | `logging.level` / `format` / `include_location` | String / String / bool | `"info"` / `"json"` / `true` | ✅ | `level`: trace…error，`format`: json/pretty |
 | `rate_limit.enabled` | bool | `true` | ✅ | 限流总开关 |
 | `rate_limit.default_rps` | u32 | `10000` | ✅ | 每秒请求数，启用时必须 > 0 |
@@ -921,7 +921,6 @@ HTTP port must be between 1 and 65535`）：
 | 约束 | 来源 |
 |------|------|
 | `http_port > 0`、`grpc_port > 0`、`shutdown_timeout_seconds > 0` | `Config::validate` |
-| `dc_id <= 31` | `Config::validate` |
 | `max_connections > 0`、`min_connections <= max_connections`、`acquire_timeout_seconds > 0` | `Config::validate` |
 | `rate_limit.enabled` ⇒ `default_rps > 0`、`burst_size > 0`、`burst_size <= 10 × default_rps` | `Config::validate` |
 | `algorithm.default ∈ {segment, snowflake, uuid_v8}` | `Config::validate` |

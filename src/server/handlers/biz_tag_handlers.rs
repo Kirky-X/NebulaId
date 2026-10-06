@@ -244,7 +244,6 @@ impl super::ApiHandlers {
 // 错误响应统一引用 `ErrorResponse`（信封）。
 
 /// OpenAPI 注解载体：`POST /api/v1/biz-tags`（实际 handler：`router::handle_create_biz_tag`，User-only）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     post,
     path = "/api/v1/biz-tags",
@@ -264,7 +263,6 @@ pub fn create_biz_tag_docs() {}
 
 /// OpenAPI 注解载体：`GET /api/v1/biz-tags`（实际 handler：`router::handle_list_biz_tags`）。
 /// User 强制绑定自身 workspace；Admin 必须显式传 `workspace_id`。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     get,
     path = "/api/v1/biz-tags",
@@ -287,7 +285,6 @@ pub fn create_biz_tag_docs() {}
 pub fn list_biz_tags_docs() {}
 
 /// OpenAPI 注解载体：`GET /api/v1/biz-tags/{id}`（实际 handler：`router::handle_get_biz_tag`，User-only + IDOR 防护）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     get,
     path = "/api/v1/biz-tags/{id}",
@@ -309,7 +306,6 @@ pub fn list_biz_tags_docs() {}
 pub fn get_biz_tag_docs() {}
 
 /// OpenAPI 注解载体：`PUT /api/v1/biz-tags/{id}`（实际 handler：`router::handle_update_biz_tag`，User-only + IDOR 防护）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     put,
     path = "/api/v1/biz-tags/{id}",
@@ -332,7 +328,6 @@ pub fn get_biz_tag_docs() {}
 pub fn update_biz_tag_docs() {}
 
 /// OpenAPI 注解载体：`DELETE /api/v1/biz-tags/{id}`（实际 handler：`router::handle_delete_biz_tag`，User-only + IDOR 防护）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     delete,
     path = "/api/v1/biz-tags/{id}",

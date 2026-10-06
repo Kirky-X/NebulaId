@@ -815,7 +815,6 @@ pub fn dynamic_step(base_step: u64, min_step: u64, max_step: u64, cpu_usage: f64
     clamped.min(i32::MAX as u64) as i32
 }
 
-#[allow(dead_code)]
 pub struct DbSegmentLoader<R: SegmentRepository> {
     repository: Arc<R>,
     step: i32,
@@ -831,7 +830,6 @@ struct DynamicStepPolicy {
     cpu_monitor: Arc<CpuMonitor>,
 }
 
-#[allow(dead_code)]
 impl<R: SegmentRepository> DbSegmentLoader<R> {
     /// 默认分配步长：与 `SegmentAlgorithmConfig::default().base_step`（1000）对齐。
     pub const DEFAULT_STEP: i32 = 1000;

@@ -73,7 +73,7 @@
 <td width="50%" style="vertical-align:top; padding: 12px">🚦 <b>全局限流</b><br><span style="color:#64748B">令牌桶真实挂载 HTTP 栈，<code>burst ≤ 10 × rps</code> 启动校验，<code>x-ratelimit-*</code> 响应头，管理接口热更新</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">📊 <b>可观测性</b><br><span style="color:#64748B">Prometheus <code>/metrics</code> 逐算法暴露 p50/p99/p999 与 <code>clock_backwards</code>，OTLP tracing，健康检查端点</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">📊 <b>可观测性</b><br><span style="color:#64748B">Prometheus <code>/metrics</code> 逐算法暴露 p50/p99/p999 与 <code>clock_backwards</code>，inklog 结构化日志，健康检查端点</span></td>
 <td width="50%" style="vertical-align:top; padding: 12px">🌍 <b>ICU 国际化</b><br><span style="color:#64748B">unify-rust-i18n（Fluent/ICU 栈）+ <code>Accept-Language</code> 协商（RFC 7231 §5.3.5），<code>en</code> 与 <code>zh-CN</code> 全量错误文案与日志</span></td>
 </tr>
 <tr>
@@ -157,7 +157,7 @@ println!("{} ids via {:?}", batch.len(), batch.algorithm);
 ### 📦 安装
 
 ```bash
-# 克隆仓库并构建（default 特性：postgresql + http + grpc + garrison-auth）
+# 克隆仓库并构建（default 特性：server 全栈 + 三算法 + postgresql + garrison-auth）
 git clone https://github.com/Kirky-X/NebulaId.git
 cd NebulaId
 cargo build --release
@@ -168,16 +168,29 @@ cargo build --release
 
 | feature | 默认 | 说明 |
 |---------|:----:|------|
+| `server` | ✅ | 服务端整层（HTTP/gRPC/认证/审计/限流），蕴含 `database` + `http` + `grpc`；`nebula-id` 二进制仅随此特性构建 |
+| `segment` | ✅ | 号段算法，蕴含 `database`（号段语义即 DB 号段） |
+| `snowflake` / `uuid-v8` | ✅ | 零 DB 叶子算法，可独立启用 |
+| `database` | ➖ | 仓储层开关（dbnexus + sea-orm），经 `segment` / `server` / `sdk` 蕴含，不单独使用 |
 | `postgresql` | ✅ | dbnexus PostgreSQL 存储后端（`--no-default-features` 可关，仅保证编译，运行时需自备 PostgreSQL） |
-| `http` / `grpc` | ✅ | REST 与 gRPC 接入（sdforge 镜像 feature） |
+| `http` / `grpc` | ✅ | REST 与 gRPC 接入（sdforge 镜像 feature，随 `server` 蕴含） |
 | `garrison-auth` | ✅ | garrison 接管 API key 验证（关闭后回退手写 Argon2id 路径） |
 | `etcd` | ➖ | etcd 分布式协调 |
-| `sdk` | ➖ | 嵌入式 SDK facade（`NebulaIdKit`，蕴含 `openapi`） |
+| `sdk` | ➖ | 嵌入式 SDK facade（`NebulaIdKit`，蕴含 `openapi` + `database`） |
 | `openapi` | ➖ | sdforge OpenAPI 镜像 feature（未启用时 `#[forge]` 不注册 OpenAPI 路由，`/api-docs/openapi.json` 的 paths 为空） |
 | `integration-tests` | ➖ | 门控需要真实数据库的 `#[ignore]` 测试 |
-| `alerting` | ➖ | 门控告警子系统（`src/core/monitoring`，生产默认不编译） |
+| `alerting` | ➖ | 门控告警子系统与 webhook 分发（`src/core/monitoring`，生产默认不编译） |
 
 > 💡 `--all-features` **可构建**（= default + etcd + alerting + sdk + integration-tests + openapi），CI 与文档统一采用该口径。
+
+> ✂️ **库消费剪裁**：以 lib 形式内嵌算法（不部署服务）时按需裁剪，例如只用 UUID v8：
+>
+> ```toml
+> [dependencies]
+> nebulaid = { version = "0.3", default-features = false, features = ["uuid-v8"] }
+> ```
+>
+> 该组合依赖树 191 个 crate，较变更前完整 default（532，实测 `cargo tree -e normal`）缩减约 64%；剪裁组合由 CI `Check feature trim` 步骤钉住，防止越界引用静默腐烂。
 
 ### 💡 最小示例
 
@@ -283,7 +296,7 @@ name = "nebula-id"
 host = "0.0.0.0"
 http_port = 8080            # 不存在 `app.port`
 grpc_port = 9091
-dc_id = 0                   # 0..=31
+dc_id = 0                   # 0..=7（默认 datacenter_id_bits=3）
 worker_id = 0
 
 [database]
@@ -445,7 +458,7 @@ CI 五阶段门禁（fmt + clippy → cargo-deny → cargo-audit `--deny warning
 <tr><th style="text-align:center">状态</th><th style="text-align:left">方向</th><th style="text-align:left">条目</th></tr>
 <tr><td align="center">✅</td><td>核心算法</td><td>Segment 双缓冲与动态步长、Snowflake、UUID v8、算法路由与降级链</td></tr>
 <tr><td align="center">✅</td><td>服务与协议</td><td>HTTP + gRPC 双协议、OpenAPI 文档、TLS、限流、garrison API key 认证、审计日志</td></tr>
-<tr><td align="center">✅</td><td>可观测与国际化</td><td>逐算法 p50/p99/p999 指标、健康检查、OTLP tracing、en / zh-CN i18n</td></tr>
+<tr><td align="center">✅</td><td>可观测与国际化</td><td>逐算法 p50/p99/p999 指标、健康检查、inklog 结构化日志、en / zh-CN i18n</td></tr>
 <tr><td align="center">✅</td><td>质量门禁</td><td>CI 五阶段门禁、覆盖率 ≥ 95%、cargo-deny / cargo-audit / CodeQL、约 1900 个测试</td></tr>
 <tr><td align="center">🚧</td><td>SDK 与分布式协调</td><td><code>sdk</code> facade（trait-kit 装配）持续强化；<code>etcd</code> 协调的生产化验证（feature 默认关闭）</td></tr>
 <tr><td align="center">🚧</td><td>性能工程</td><td>批量生成调优、Segment 路由基准接入（ID 生成吞吐基准框架与发布基线已落地，见 [📈 性能指南](docs/PERFORMANCE.md)）</td></tr>

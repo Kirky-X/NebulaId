@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use nebulaid::core::algorithm::AlgorithmRouter;
-use nebulaid::core::config::{resolve_startup_config, Config, Environment, StartupConfig};
+use nebulaid::core::config::{
+    resolve_startup_config, ApiKeyEntry, Config, Environment, StartupConfig,
+};
 // EtcdClientWrapper 仅在 assemble_coordination 内部经局部 use 引入。
 #[cfg(feature = "etcd")]
 use nebulaid::core::coordinator::{EtcdClusterHealthMonitor, WorkerIdAllocator};
@@ -72,201 +74,241 @@ async fn load_api_keys(
     repository: &Option<Arc<database::SeaOrmRepository>>,
     config: &Config,
 ) {
-    use nebulaid::core::database::{ApiKeyRole, CreateApiKeyRequest};
-    use uuid::Uuid;
+    let Some(ref repo) = repository else {
+        warn!("{}", t!("log.main.no_database_connection"));
+        return;
+    };
 
     info!("{}", t!("log.main.loading_api_keys"));
 
-    if let Some(ref repo) = repository {
-        // First, create API key from environment variable if configured
-        // Format: NEBULA_ADMIN_API_KEY_SECRET=your-secret-key
-        let admin_key_secret_from_env = std::env::var("NEBULA_ADMIN_API_KEY_SECRET").ok();
-        let admin_key_id_from_env = std::env::var("NEBULA_ADMIN_API_KEY_ID").ok();
+    // First, create API key from environment variable if configured
+    // Format: NEBULA_ADMIN_API_KEY_SECRET=your-secret-key
+    let admin_key_secret_from_env = env::var("NEBULA_ADMIN_API_KEY_SECRET").ok();
+    let admin_key_id_from_env = env::var("NEBULA_ADMIN_API_KEY_ID").ok();
 
-        // Second, create API keys from config if configured
-        // Config format: api_keys = [{ key_secret = "xxx", workspace = "global", role = "admin", rate_limit = 100000, name = "Admin" }]
-        let configured_keys = if !config.auth.api_keys.is_empty() {
-            Some(config.auth.api_keys.clone())
-        } else {
-            None
-        };
+    // Second, create API keys from config if configured
+    // Config format: api_keys = [{ key_secret = "xxx", workspace = "global", role = "admin", rate_limit = 100000, name = "Admin" }]
+    let configured_keys = if !config.auth.api_keys.is_empty() {
+        Some(config.auth.api_keys.clone())
+    } else {
+        None
+    };
 
-        // If configured via env or config, create the key (key_id generated internally)
-        if let Some(ref secret) = admin_key_secret_from_env {
-            info!("{}", t!("log.main.creating_admin_api_key_from_env"));
+    #[cfg(debug_assertions)]
+    let externally_bootstrapped = admin_key_secret_from_env.is_some() || configured_keys.is_some();
 
-            let request = CreateApiKeyRequest {
-                workspace_id: None,
-                name: "admin".to_string(),
-                description: Some("Admin API key from environment".to_string()),
-                role: ApiKeyRole::Admin,
-                rate_limit: Some(100000),
-                expires_at: None,
-                key_secret: Some(secret.to_string()),
-                key_id: admin_key_id_from_env,
-            };
-
-            match repo.create_api_key(&request).await {
-                Ok(key) => {
-                    info!(
-                        "{}",
-                        t!("log.main.admin_api_key_created", key_id = key.key.key_id)
-                    );
+    // If configured via env or config, create the key (key_id generated internally)
+    match admin_key_secret_from_env {
+        Some(secret) => create_admin_key_from_env(repo, &secret, admin_key_id_from_env).await,
+        None => {
+            if let Some(ref keys) = configured_keys {
+                if let Some(first_key) = keys.first() {
+                    create_key_from_config(repo, first_key).await;
                 }
-                Err(e) => {
-                    if !e.to_string().contains("duplicate key") {
-                        error!("{}", t!("log.main.admin_api_key_create_failed", error = e));
-                    }
-                }
-            }
-        } else if let Some(ref keys) = configured_keys {
-            if let Some(first_key) = keys.first() {
-                info!("{}", t!("log.main.creating_api_key_from_config"));
-
-                let role = match first_key.role.to_lowercase().as_str() {
-                    "admin" => ApiKeyRole::Admin,
-                    _ => ApiKeyRole::User,
-                };
-
-                let request = CreateApiKeyRequest {
-                    workspace_id: if first_key.workspace == "global" {
-                        None
-                    } else {
-                        Some(Uuid::parse_str(&first_key.workspace).unwrap_or(Uuid::nil()))
-                    },
-                    name: first_key.name.clone(),
-                    description: Some(format!("Configured via config, role: {}", first_key.role)),
-                    role,
-                    rate_limit: Some(first_key.rate_limit as i32),
-                    expires_at: None,
-                    key_secret: Some(first_key.key_secret.clone()),
-                    key_id: Some(first_key.key_id.clone()),
-                };
-
-                match repo.create_api_key(&request).await {
-                    Ok(key) => {
-                        info!(
-                            "{}",
-                            t!(
-                                "log.main.api_key_created_from_config",
-                                key_id = key.key.key_id,
-                                role = first_key.role
-                            )
-                        );
-                    }
-                    Err(e) => {
-                        if !e.to_string().contains("duplicate key") {
-                            warn!(
-                                "{}",
-                                t!("log.main.api_key_create_from_config_failed", error = e)
-                            );
-                        }
-                    }
-                }
-            }
-        } else {
-            // No configuration, check if admin key already exists
-            match repo.get_admin_api_key(Uuid::nil()).await {
-                Ok(Some(admin_key)) => {
-                    info!(
-                        key_id = ?admin_key.key_id,
-                        workspace_id = ?admin_key.workspace_id,
-                        "{}",
-                        t!("log.main.existing_admin_api_key_found")
-                    );
-                }
-                Ok(None) => {
-                    // Generate new admin API key
-                    let admin_request = CreateApiKeyRequest {
-                        workspace_id: None,
-                        name: "admin".to_string(),
-                        description: Some("Default Admin API Key".to_string()),
-                        role: ApiKeyRole::Admin,
-                        rate_limit: Some(100000),
-                        expires_at: None,
-                        key_secret: None,
-                        key_id: None,
-                    };
-                    match repo.create_api_key(&admin_request).await {
-                        Ok(key) => {
-                            info!(
-                                "{}",
-                                t!(
-                                    "log.main.admin_api_key_created_no_workspace",
-                                    key_id = key.key.key_id
-                                )
-                            );
-
-                            let is_production = nebulaid::core::config::is_production();
-
-                            if !is_production {
-                                // WARN: Print secret to console only once - user must save it
-                                println!("\n╔════════════════════════════════════════════════════════════════════╗");
-                                println!("║           ⚠️  ADMIN API KEY GENERATED - SAVE NOW!              ║");
-                                println!("╠════════════════════════════════════════════════════════════════════╣");
-                                println!(
-                                    "║  Key ID: {}                                                ║",
-                                    key.key.key_id
-                                );
-                                println!(
-                                    "║  Secret: {}                                    ║",
-                                    key.key_secret
-                                );
-                                println!("║                                                                    ║");
-                                println!("║  ⚠️  THIS IS THE ONLY TIME THE SECRET WILL BE SHOWN!           ║");
-                                println!("║  Save it securely - you will need it for API authentication.    ║");
-                                println!("╚════════════════════════════════════════════════════════════════════╝\n");
-                                tracing::warn!("{}", t!("log.main.admin_api_key_secret_printed"));
-                            } else {
-                                tracing::warn!(
-                                    "{}",
-                                    t!("log.main.admin_api_key_generated_no_print")
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            error!("{}", t!("log.main.admin_api_key_create_failed", error = e));
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("{}", t!("log.main.admin_api_key_check_failed", error = e));
-                }
+            } else {
+                ensure_default_admin_key(repo).await;
             }
         }
+    }
 
-        // Add test API key in development mode only if no configuration provided
-        #[cfg(debug_assertions)]
-        if admin_key_secret_from_env.is_none() && configured_keys.is_none() {
-            let test_request = CreateApiKeyRequest {
+    // Add test API key in development mode only if no configuration provided
+    #[cfg(debug_assertions)]
+    if !externally_bootstrapped {
+        create_dev_test_admin_key(repo).await;
+    }
+}
+
+/// NEBULA_ADMIN_API_KEY_SECRET 环境变量装配：以给定 secret 建 admin 键
+/// （key_id 可选透传）。重复键属幂等启动语义，静默放行。
+async fn create_admin_key_from_env(
+    repo: &Arc<database::SeaOrmRepository>,
+    secret: &str,
+    key_id: Option<String>,
+) {
+    use nebulaid::core::database::{ApiKeyRole, CreateApiKeyRequest};
+
+    info!("{}", t!("log.main.creating_admin_api_key_from_env"));
+
+    let request = CreateApiKeyRequest {
+        workspace_id: None,
+        name: "admin".to_string(),
+        description: Some("Admin API key from environment".to_string()),
+        role: ApiKeyRole::Admin,
+        rate_limit: Some(100000),
+        expires_at: None,
+        key_secret: Some(secret.to_string()),
+        key_id,
+    };
+
+    match repo.create_api_key(&request).await {
+        Ok(key) => {
+            info!(
+                "{}",
+                t!("log.main.admin_api_key_created", key_id = key.key.key_id)
+            );
+        }
+        Err(e) => {
+            if !e.to_string().contains("duplicate key") {
+                error!("{}", t!("log.main.admin_api_key_create_failed", error = e));
+            }
+        }
+    }
+}
+
+/// 配置文件 `auth.api_keys[0]` 装配：role 按小写 admin 判定，workspace 为
+/// "global" 时表示跨工作空间（None）。重复键属幂等启动语义，静默放行。
+async fn create_key_from_config(repo: &Arc<database::SeaOrmRepository>, first_key: &ApiKeyEntry) {
+    use nebulaid::core::database::{ApiKeyRole, CreateApiKeyRequest};
+    use uuid::Uuid;
+
+    info!("{}", t!("log.main.creating_api_key_from_config"));
+
+    let role = match first_key.role.to_lowercase().as_str() {
+        "admin" => ApiKeyRole::Admin,
+        _ => ApiKeyRole::User,
+    };
+
+    let request = CreateApiKeyRequest {
+        workspace_id: if first_key.workspace == "global" {
+            None
+        } else {
+            Some(Uuid::parse_str(&first_key.workspace).unwrap_or(Uuid::nil()))
+        },
+        name: first_key.name.clone(),
+        description: Some(format!("Configured via config, role: {}", first_key.role)),
+        role,
+        rate_limit: Some(first_key.rate_limit as i32),
+        expires_at: None,
+        key_secret: Some(first_key.key_secret.clone()),
+        key_id: Some(first_key.key_id.clone()),
+    };
+
+    match repo.create_api_key(&request).await {
+        Ok(key) => {
+            info!(
+                "{}",
+                t!(
+                    "log.main.api_key_created_from_config",
+                    key_id = key.key.key_id,
+                    role = first_key.role
+                )
+            );
+        }
+        Err(e) => {
+            if !e.to_string().contains("duplicate key") {
+                warn!(
+                    "{}",
+                    t!("log.main.api_key_create_from_config_failed", error = e)
+                );
+            }
+        }
+    }
+}
+
+/// 无任何外部配置时的兜底：admin 键已存在则确认后返回；不存在则生成——
+/// 非生产环境向控制台打印一次 secret（唯一一次展示），生产环境不打印。
+async fn ensure_default_admin_key(repo: &Arc<database::SeaOrmRepository>) {
+    use nebulaid::core::database::{ApiKeyRole, CreateApiKeyRequest};
+    use uuid::Uuid;
+
+    match repo.get_admin_api_key(Uuid::nil()).await {
+        Ok(Some(admin_key)) => {
+            info!(
+                key_id = ?admin_key.key_id,
+                workspace_id = ?admin_key.workspace_id,
+                "{}",
+                t!("log.main.existing_admin_api_key_found")
+            );
+        }
+        Ok(None) => {
+            // Generate new admin API key
+            let admin_request = CreateApiKeyRequest {
                 workspace_id: None,
-                name: "Test Admin API Key".to_string(),
-                description: Some("Default test admin API key".to_string()),
+                name: "admin".to_string(),
+                description: Some("Default Admin API Key".to_string()),
                 role: ApiKeyRole::Admin,
-                rate_limit: Some(10000),
+                rate_limit: Some(100000),
                 expires_at: None,
                 key_secret: None,
                 key_id: None,
             };
-            match repo.create_api_key(&test_request).await {
+            match repo.create_api_key(&admin_request).await {
                 Ok(key) => {
                     info!(
                         "{}",
                         t!(
-                            "log.main.test_admin_api_key_created",
+                            "log.main.admin_api_key_created_no_workspace",
                             key_id = key.key.key_id
                         )
                     );
+
+                    if nebulaid::core::config::is_production() {
+                        tracing::warn!("{}", t!("log.main.admin_api_key_generated_no_print"));
+                    } else {
+                        print_admin_key_banner(&key.key.key_id, &key.key_secret);
+                    }
                 }
                 Err(e) => {
-                    if !e.to_string().contains("duplicate key") {
-                        warn!("{}", t!("log.main.test_api_key_create_failed", error = e));
-                    }
+                    error!("{}", t!("log.main.admin_api_key_create_failed", error = e));
                 }
             }
         }
-    } else {
-        warn!("{}", t!("log.main.no_database_connection"));
+        Err(e) => {
+            error!("{}", t!("log.main.admin_api_key_check_failed", error = e));
+        }
+    }
+}
+
+/// 非 production 下的 secret 展示横幅：只在生成时刻打印一次，
+/// 用户必须立即保存。
+fn print_admin_key_banner(key_id: &str, secret: &str) {
+    // WARN: Print secret to console only once - user must save it
+    println!("\n╔════════════════════════════════════════════════════════════════════╗");
+    println!("║           ⚠️  ADMIN API KEY GENERATED - SAVE NOW!              ║");
+    println!("╠════════════════════════════════════════════════════════════════════╣");
+    println!(
+        "║  Key ID: {}                                                ║",
+        key_id
+    );
+    println!("║  Secret: {}                                    ║", secret);
+    println!("║                                                                    ║");
+    println!("║  ⚠️  THIS IS THE ONLY TIME THE SECRET WILL BE SHOWN!           ║");
+    println!("║  Save it securely - you will need it for API authentication.    ║");
+    println!("╚════════════════════════════════════════════════════════════════════╝\n");
+    tracing::warn!("{}", t!("log.main.admin_api_key_secret_printed"));
+}
+
+/// debug 构建兜底测试键：仅当 env/config 均未提供装配时创建。
+/// 重复键属幂等启动语义，静默放行。
+#[cfg(debug_assertions)]
+async fn create_dev_test_admin_key(repo: &Arc<database::SeaOrmRepository>) {
+    use nebulaid::core::database::{ApiKeyRole, CreateApiKeyRequest};
+
+    let test_request = CreateApiKeyRequest {
+        workspace_id: None,
+        name: "Test Admin API Key".to_string(),
+        description: Some("Default test admin API key".to_string()),
+        role: ApiKeyRole::Admin,
+        rate_limit: Some(10000),
+        expires_at: None,
+        key_secret: None,
+        key_id: None,
+    };
+    match repo.create_api_key(&test_request).await {
+        Ok(key) => {
+            info!(
+                "{}",
+                t!(
+                    "log.main.test_admin_api_key_created",
+                    key_id = key.key.key_id
+                )
+            );
+        }
+        Err(e) => {
+            if !e.to_string().contains("duplicate key") {
+                warn!("{}", t!("log.main.test_api_key_create_failed", error = e));
+            }
+        }
     }
 }
 
@@ -281,14 +323,16 @@ async fn create_id_generator(
     let audit_logger_for_core: nebulaid::core::algorithm::DynAuditLogger =
         audit_logger as Arc<dyn nebulaid::core::algorithm::AuditLogger>;
 
-    // Create CPU monitor
+    // Create CPU monitor（CpuMonitor 随 segment 特性门控，server 不蕴含 segment）
+    #[cfg(feature = "segment")]
     let cpu_monitor = Arc::new(nebulaid::core::algorithm::CpuMonitor::new());
     // 启动 CPU 周期采样（仅 Linux：读取 /proc/stat）。任务 detached，
     // 只要进程存活即持续更新共享的 current_usage，供 Segment 动态步长使用。
-    #[cfg(target_os = "linux")]
+    #[cfg(all(feature = "segment", target_os = "linux"))]
     let _cpu_sampler = cpu_monitor.start_monitoring();
     let router = AlgorithmRouter::new(config.clone(), Some(audit_logger_for_core));
 
+    #[cfg(feature = "segment")]
     let router = router.with_cpu_monitor(cpu_monitor);
     let router = if let Some(monitor) = etcd_health_monitor {
         Arc::new(router.with_etcd_health_monitor(monitor))
@@ -316,13 +360,15 @@ async fn create_id_generator(
     let audit_logger_for_core: nebulaid::core::algorithm::DynAuditLogger =
         audit_logger as Arc<dyn nebulaid::core::algorithm::AuditLogger>;
 
-    // Create CPU monitor
+    // Create CPU monitor（CpuMonitor 随 segment 特性门控，server 不蕴含 segment）
+    #[cfg(feature = "segment")]
     let cpu_monitor = Arc::new(nebulaid::core::algorithm::CpuMonitor::new());
     // 启动 CPU 周期采样（仅 Linux：读取 /proc/stat）。任务 detached，
     // 只要进程存活即持续更新共享的 current_usage，供 Segment 动态步长使用。
-    #[cfg(target_os = "linux")]
+    #[cfg(all(feature = "segment", target_os = "linux"))]
     let _cpu_sampler = cpu_monitor.start_monitoring();
     let router = AlgorithmRouter::new(config.clone(), Some(audit_logger_for_core));
+    #[cfg(feature = "segment")]
     let router = router.with_cpu_monitor(cpu_monitor);
     let router = Arc::new(router);
 
@@ -2056,6 +2102,9 @@ mod tests {
     /// 装配契约的 bin 侧入口）。注意：服务端 Segment 实例由
     /// `AlgorithmRouter::initialize` 经 `SegmentFactory` 内部构建，bin 侧
     /// 注入缝（router/traits 增设）不在本 lane 文件所有权内。
+    // DbSegmentLoader/SeaOrmRepository 随 segment（蕴含 database）特性门控，
+    // 本用例在无该特性的组合下不参与编译。
+    #[cfg(all(test, feature = "segment"))]
     #[test]
     fn test_db_segment_loader_assembly_api_reachable_from_bin() {
         use dbnexus::sea_orm::{DatabaseBackend, MockDatabase};

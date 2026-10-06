@@ -42,11 +42,6 @@ impl MockIdAlgorithm {
     fn set_health_status(&self, status: u64) {
         self.health_status.store(status, Ordering::Relaxed);
     }
-
-    #[allow(dead_code)]
-    fn get_call_count(&self) -> u64 {
-        self.call_count.load(Ordering::Relaxed)
-    }
 }
 
 #[async_trait]

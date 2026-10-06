@@ -178,7 +178,8 @@ fn default_statement_timeout_secs() -> u64 {
 
 /// 手写 `Debug`：`password` 是明文口令，`url` 可能以
 /// `postgresql://user:pass@host/db` 的形式内嵌口令，两者都不得进 `{:?}` 输出
-/// （CWE-532）。`url` 复用连接层已有的 [`redact_db_url`]，不另写第二份脱敏逻辑；
+/// （CWE-532）。`url` 经本模块 [`redact_db_url`] 脱敏（`core::database`
+/// 连接层复用同一实现，不另写第二份逻辑）；
 /// 空串保持原样输出，避免丢掉"没有配置整串 URL"这一可读状态。
 impl std::fmt::Debug for DatabaseConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -199,12 +200,26 @@ impl std::fmt::Debug for DatabaseConfig {
     }
 }
 
-/// 空串不参与脱敏（表示"未使用整串 URL"），其余交给连接层的 `redact_db_url`。
+/// 空串不参与脱敏（表示"未使用整串 URL"），其余经本地 `redact_db_url`。
+/// `redact_db_url` 定义在本模块（纯 `url` 解析，零 DB 依赖），以便
+/// `--no-default-features` 剪裁组合（`core::database` 被 cfg 排除）下
+/// 配置层仍可编译；`core::database` 侧复用本实现，不维持第二份逻辑。
+pub(crate) fn redact_db_url(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(mut parsed) => {
+            let _ = parsed.set_password(Some("***"));
+            parsed.to_string()
+        }
+        Err(_) => "<redacted>".to_string(),
+    }
+}
+
+/// 空串不参与脱敏（表示"未使用整串 URL"），其余交给本地 `redact_db_url`。
 pub(crate) fn redact_optional_url(url: &str) -> String {
     if url.is_empty() {
         String::new()
     } else {
-        crate::core::database::redact_db_url(url)
+        redact_db_url(url)
     }
 }
 

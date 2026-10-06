@@ -177,12 +177,14 @@ impl From<uuid::Error> for CoreError {
     }
 }
 
+#[cfg(feature = "server")]
 impl From<oxcache::OxCacheError> for CoreError {
     fn from(e: oxcache::OxCacheError) -> Self {
         CoreError::CacheError(e.to_string())
     }
 }
 
+#[cfg(feature = "server")]
 impl From<inklog::InklogError> for CoreError {
     fn from(e: inklog::InklogError) -> Self {
         CoreError::ConfigurationError(e.to_string())
@@ -761,17 +763,20 @@ mod tests {
             CoreError::ParseError(_)
         ));
 
-        let cache_err = oxcache::OxCacheError::Serialization("bad payload".to_string());
-        assert!(matches!(
-            CoreError::from(cache_err),
-            CoreError::CacheError(_)
-        ));
+        #[cfg(feature = "server")]
+        {
+            let cache_err = oxcache::OxCacheError::Serialization("bad payload".to_string());
+            assert!(matches!(
+                CoreError::from(cache_err),
+                CoreError::CacheError(_)
+            ));
 
-        let log_err = inklog::InklogError::ConfigError("bad config".to_string());
-        assert!(matches!(
-            CoreError::from(log_err),
-            CoreError::ConfigurationError(_)
-        ));
+            let log_err = inklog::InklogError::ConfigError("bad config".to_string());
+            assert!(matches!(
+                CoreError::from(log_err),
+                CoreError::ConfigurationError(_)
+            ));
+        }
     }
 
     #[test]
@@ -808,6 +813,7 @@ mod tests {
     /// DatabaseError 构造点保留底层错误源:source() 非空且第一层
     /// 文案不含源链(HTTP 出口消毒面不变)。`From<DbErr>` 路径由
     /// connection.rs 的 test_from_dberr 钉住。
+    #[cfg(feature = "database")]
     #[test]
     fn test_database_error_preserves_source_chain() {
         let db_err = dbnexus::sea_orm::DbErr::Custom("unique constraint violated".to_string());

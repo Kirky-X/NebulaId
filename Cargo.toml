@@ -17,23 +17,46 @@ path = "src/lib.rs"
 [[bin]]
 name = "nebula-id"
 path = "src/main.rs"
+required-features = ["server"]
+
+# 集成测试引用 server 门控面（nebulaid::server/axum/sdforge），声明
+# required-features 使剪裁组合（--no-default-features 系）自动跳过，
+# 而非编译失败（与 bins 的 required-features 同一机制）。
+[[test]]
+name = "i18n_e2e"
+path = "tests/i18n_e2e.rs"
+required-features = ["server"]
+
+[[test]]
+name = "audit_ring_stall_repro"
+path = "tests/audit_ring_stall_repro.rs"
+required-features = ["server"]
 
 [features]
-# 特性模型（2026-09 起）：
+# 特性模型（模块级门控）：
 # - `--all-features` 可构建（= default + etcd + alerting + sdk +
 #   integration-tests + openapi）。dbnexus 的 embedded/server 互斥不再被触发：
 #   sqlite feature 已删除，dbnexus/postgres 仅由本清单的 postgresql 声明控制。
-# - `--no-default-features` 是有效的轻量编译检查目标：postgres 驱动可关，
-#   garrison 回退路径与 sdforge 镜像 feature（http/grpc/openapi）关闭路径全部
-#   参与编译（CI fmt-clippy job 钉住该组合）。该组合仅保证编译——
-#   core::database 无条件参与编译，运行时需自备 PostgreSQL。
-default = ["postgresql", "http", "grpc", "garrison-auth"]
+# - `--no-default-features` 是有效的轻量编译目标：按需启用算法特性
+#   （如 `--features uuid-v8`）即得纯算法路径；database/server/alerting
+#   未启用时对应模块经 cfg 门控排除（CI fmt-clippy job 钉住该组合）。
+#   core::database 仅随 `database`（经 segment/server/sdk 蕴含）参与编译。
+default = ["server", "segment", "snowflake", "uuid-v8", "postgresql", "garrison-auth"]
 postgresql = ["dbnexus/postgres"]
 etcd = ["dep:etcd-client"]
+# 分层与算法特性（feature-isolation）：database 为仓储层开关，
+# segment 蕴含 database；snowflake/uuid-v8 为零 DB 叶子算法；
+# server 为整层开关（蕴含 database + http/grpc + Web/gRPC 全栈依赖）。
+database = ["dep:dbnexus", "dep:sea-orm", "dep:argon2", "dep:subtle"]
+segment = ["database"]
+snowflake = []
+uuid-v8 = []
+server = ["database", "http", "grpc", "dep:sdforge", "dep:oxcache", "dep:inklog", "dep:axum", "dep:tonic", "dep:tonic-prost", "dep:prost", "dep:utoipa", "dep:limiteron", "dep:tokio-stream", "dep:metrics-exporter-prometheus"]
 # alerting: 门控告警子系统(src/core/monitoring 的 AlertManager/AlertRule/
-# 告警状态机/通知通道/broadcast 事件流)。生产路径零引用,默认不含以缩小
-# 产物;test 构建恒包含(机制见 monitoring/core.rs 头注释)。
-alerting = []
+# 告警状态机/通知通道/broadcast 事件流)与 webhook 分发 reqwest 路径。
+# 生产路径默认不含以缩小产物；CI test job 经 --all-features 覆盖，
+# 本地 plain `cargo test` 需 --features alerting 恢复告警单测。
+alerting = ["dep:reqwest"]
 # integration-tests: 门控需要真实数据库的 #[ignore] 集成测试
 integration-tests = []
 # sdforge 宏在 #[forge] 展开时 emit #[cfg(feature = "http"/"grpc"/"openapi")]，
@@ -50,7 +73,8 @@ garrison-auth = ["dep:garrison"]
 # （分布式锁/仓储/路由/ID 生成四模块），依赖图由 kit.build() 校验，
 # 取代手写顺序装配。不开 sdk 的构建不含 trait-kit（依赖树零影响）。
 # 蕴含 openapi：SDK 示例（sdk_server）需产出含路径的 OpenAPI 文档。
-sdk = ["openapi", "dep:trait-kit"]
+# 蕴含 database：sdk/kit.rs 的 RepositoryModule 依赖 SeaOrmRepository。
+sdk = ["openapi", "dep:trait-kit", "database"]
 
 # sdforge 宏还 emit 其他内部 feature 的 cfg gate，声明为已知 cfg 值以消除 check-cfg 警告
 [lints.rust]
@@ -64,10 +88,10 @@ unexpected_cfgs = { level = "allow", check-cfg = [
 # 构建，CI 无需 checkout 兄弟目录。pre-release 语义下 req 下界即各库当前
 # 最新发布版，后续小版本按 semver 自动上浮。
 confers = { version = "0.6.0-rc.5", features = ["interpolation", "watch"] }
-oxcache = { version = "0.5.0-rc.4" }
-dbnexus = { version = "0.6.0-rc.5", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
-sdforge = { version = "0.5.0-rc.5", default-features = false, features = ["http", "grpc", "openapi", "context", "docs"] }
-inklog = { version = "0.3.0-rc.5", default-features = false, features = ["fast-masking"] }
+oxcache = { version = "0.5.0-rc.4", optional = true }
+dbnexus = { version = "0.6.0-rc.5", optional = true, default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
+sdforge = { version = "0.5.0-rc.5", optional = true, default-features = false, features = ["http", "grpc", "openapi", "context", "docs"] }
+inklog = { version = "0.3.0-rc.5", optional = true, default-features = false, features = ["fast-masking"] }
 # fast-masking：Aho-Corasick 多模式脱敏加速（凭证/密钥类日志字段的
 # 自动脱敏是本服务合规刚需；开 feature 即得，无接线代码）
 # garrison: 一站式身份认证框架（同作者 Kirky.X），通过 garrison-auth feature 启用，
@@ -90,27 +114,27 @@ serde_json = "1.0"
 
 # 异步运行时
 tokio = { version = "1.53", features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", optional = true }
 futures-util = "0.3"
 
 # Web 框架：axum 直接依赖（0.5.0-rc.4 的 sdforge::axum 精选门面收窄，
 # 不再导出 body::to_bytes/extract::State/routing::delete/http::* 等；
 # tower/tower-http/tonic/prost/utoipa 仍走 sdforge 整体 re-export）。
 # 版本必须与 sdforge 内部 axum 同 minor（0.8），保证 Router 跨边界类型一致。
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "form", "matched-path", "original-uri", "query", "tokio"] }
+axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "form", "matched-path", "original-uri", "query", "tokio"] }
 
 # gRPC / Protobuf（通过 sdforge::tonic / sdforge::prost re-export使用）
 
 # Derive 宏直接依赖：展开时生成 `::crate_name::` 绝对路径，必须是直接依赖。
 # 属性宏通过 `#[sdforge::crate::macro]` 调用，不受 extern prelude 限制。
-utoipa = { version = "5.5", default-features = false, features = ["macros", "uuid", "chrono"] }
-prost = { version = "0.14", default-features = false, features = ["derive"] }
-sea-orm = { version = "2.0", default-features = false, features = ["macros", "with-json", "with-uuid", "with-chrono"] }
-tonic-prost = { version = "0.14", default-features = false }
+utoipa = { version = "5.5", optional = true, default-features = false, features = ["macros", "uuid", "chrono"] }
+prost = { version = "0.14", optional = true, default-features = false, features = ["derive"] }
+sea-orm = { version = "2.0", optional = true, default-features = false, features = ["macros", "with-json", "with-uuid", "with-chrono"] }
+tonic-prost = { version = "0.14", optional = true, default-features = false }
 # 直接依赖 tonic：仅为启用 `tls` 特性（sdforge 的 tonic 未开该特性，
 # transport::{Certificate, Identity, ServerTlsConfig} 被特性门控）。
 # 特性联合使 sdforge::tonic 指向同一构建体，版本须与 sdforge 内部一致（0.14）。
-tonic = { version = "0.14", default-features = false, features = ["transport", "tls-ring"] }
+tonic = { version = "0.14", optional = true, default-features = false, features = ["transport", "tls-ring"] }
 
 # 分布式协调
 etcd-client = { version = "0.20", optional = true }
@@ -128,20 +152,22 @@ tracing = "0.1"
 # 不另起监听器。
 # metrics 0.24 起无任何 feature 开关（facade 本体），default-features = false 为显式表态。
 metrics = { version = "0.24", default-features = false }
-metrics-exporter-prometheus = { version = "0.18", default-features = false }
+metrics-exporter-prometheus = { version = "0.18", optional = true, default-features = false }
 
 # 工具库
 uuid = { version = "1.26", features = ["v4", "v7", "v8", "serde"] }
-chrono = { version = "0.4", features = ["std"] }
+# serde：AuditEvent（无条件编译）的 Serialize/Deserialize 派生含 DateTime<Utc>
+# 字段；此前经 sea-orm with-chrono 传递启用，sea-orm 转 optional 后须显式声明。
+chrono = { version = "0.4", features = ["std", "serde"] }
 hex = "0.4"
 base64 = "0.23"
 sha2 = "0.11"
 rand = "0.10"
-subtle = "2.6"
+subtle = { version = "2.6", optional = true }
 # Argon2id 用于 API key 密钥哈希（CWE-916 修复）；0.6 起 std 废弃，salt 的
 # OsRng 由 getrandom feature 提供
-argon2 = { version = "0.6", default-features = false, features = ["alloc", "password-hash", "getrandom"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+argon2 = { version = "0.6", optional = true, default-features = false, features = ["alloc", "password-hash", "getrandom"] }
+reqwest = { version = "0.13", optional = true, default-features = false, features = ["json", "rustls"] }
 # validator: 经 sdforge::validator re-export 消费（0.5.0-rc.5 起提供该面，
 # http feature 门控；本 crate 的 sdforge 依赖恒开 http），直接依赖移除。
 serde_with = "3.23"
@@ -162,7 +188,7 @@ url = "2.5"
 # core 的 TokenBucketLimiter / ConcurrencyLimiter / Limiter 原语），不启用——
 # 这同时解除了 limiteron → dbnexus ^0.4 的传递约束（postgres feature 是
 # optional dbnexus 的开关）。
-limiteron = { version = "0.3.0-rc.4", default-features = false }
+limiteron = { version = "0.3.0-rc.4", optional = true, default-features = false }
 
 # 国际化（统一基线 unify-rust-i18n：Fluent/ICU 栈，替换 rust-i18n YAML 后端）。
 # - fluent-bundle 0.16 concurrent：Send+Sync 的 FluentBundle 双束（en/zh）可入

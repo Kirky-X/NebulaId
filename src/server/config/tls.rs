@@ -120,6 +120,39 @@ impl TlsManager {
             }
         }
 
+        let (cert_der, private_key_der) = self.load_cert_and_key()?;
+
+        // 获取 DER 字节用于 gRPC Identity
+        let identity = Identity::from_pem(
+            cert_der.as_ref(),
+            Self::private_key_der_bytes(&private_key_der),
+        );
+
+        // 为 HTTP 配置 TLS with version enforcement
+        if self.config.http_enabled {
+            self.setup_http_acceptor(cert_der.clone(), private_key_der.clone_key())?;
+        }
+
+        // 为 gRPC 配置 TLS
+        if self.config.grpc_enabled {
+            self.setup_grpc_config(identity)?;
+        }
+
+        tracing::info!(
+            event = "tls_initialized",
+            http_enabled = %self.config.http_enabled,
+            grpc_enabled = %self.config.grpc_enabled,
+            min_version = %self.config.min_tls_version,
+            "{}",
+            t!("log.server.config.tls.tls_initialized")
+        );
+
+        Ok(())
+    }
+
+    /// 加载并解析证书与私钥 PEM（首个证书/私钥项，非对应项跳过；缺失项
+    /// 或文件不存在分别显性报错）。
+    fn load_cert_and_key(&self) -> TlsResult<(CertificateDer<'static>, PrivateKeyDer<'static>)> {
         let cert_path = Path::new(&self.config.cert_path);
         let key_path = Path::new(&self.config.key_path);
 
@@ -157,90 +190,79 @@ impl TlsManager {
             .ok_or_else(|| TlsError::PrivateKeyLoadError("Empty private key".to_string()))?
             .map_err(|e| TlsError::PrivateKeyLoadError(e.to_string()))?;
 
-        // 获取 PEM 字节用于 gRPC Identity
-        let cert_pem = cert_der.as_ref();
-        let key_pem: &[u8] = match &private_key_der {
+        Ok((cert_der, private_key_der))
+    }
+
+    /// 私钥的 DER 字节视图（gRPC Identity 装配用；历史变量名 `key_pem`
+    /// 实为 DER，本名如实描述内容）。
+    fn private_key_der_bytes<'a>(key: &'a PrivateKeyDer<'a>) -> &'a [u8] {
+        match key {
             PrivateKeyDer::Pkcs1(k) => k.secret_pkcs1_der(),
             PrivateKeyDer::Pkcs8(k) => k.secret_pkcs8_der(),
             PrivateKeyDer::Sec1(k) => k.secret_sec1_der(),
             _ => unreachable!(),
-        };
+        }
+    }
 
-        // 创建 Identity 用于 gRPC
-        let identity = Identity::from_pem(cert_pem, key_pem);
+    /// HTTP TLS acceptor：min_tls_version 经 builder_with_protocol_versions
+    /// 声明服务端可协商的版本集合，低于该集合的 ClientHello 被 rustls 直接
+    /// 拒绝（不再"只记日志不生效"）；并配置 ALPN（HTTP/2 支持）。
+    fn setup_http_acceptor(
+        &mut self,
+        cert_der: CertificateDer<'static>,
+        private_key: PrivateKeyDer<'static>,
+    ) -> TlsResult<()> {
+        let versions = enabled_protocol_versions(self.config.min_tls_version);
+        let mut config_with_alpn = ServerConfig::builder_with_protocol_versions(versions)
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], private_key)
+            .map_err(|e| TlsError::InvalidConfig(e.to_string()))?;
 
-        // 为 HTTP 配置 TLS with version enforcement
-        if self.config.http_enabled {
-            // min_tls_version 进 ServerConfig —— 用
-            // builder_with_protocol_versions 声明服务端可协商的版本集合，
-            // 低于该集合的 ClientHello 会被 rustls 直接拒绝（不再依赖
-            // rustls 默认的 TLS 1.2 + 1.3，也不再"只记日志不生效"）。
-            let versions = enabled_protocol_versions(self.config.min_tls_version);
-            let mut config_with_alpn = ServerConfig::builder_with_protocol_versions(versions)
-                .with_no_client_auth()
-                .with_single_cert(vec![cert_der.clone()], private_key_der.clone_key())
-                .map_err(|e| TlsError::InvalidConfig(e.to_string()))?;
+        if !self.config.alpn_protocols.is_empty() {
+            let alpn_protocols: Vec<Vec<u8>> = self
+                .config
+                .alpn_protocols
+                .iter()
+                .map(|s| s.as_bytes().to_vec())
+                .collect();
+            config_with_alpn.alpn_protocols = alpn_protocols;
+        }
+        self.http_acceptor = Some(TlsAcceptor::from(Arc::new(config_with_alpn)));
+        Ok(())
+    }
 
-            // 配置 ALPN 协议 (HTTP/2 支持)
-            if !self.config.alpn_protocols.is_empty() {
-                let alpn_protocols: Vec<Vec<u8>> = self
-                    .config
-                    .alpn_protocols
-                    .iter()
-                    .map(|s| s.as_bytes().to_vec())
-                    .collect();
-                config_with_alpn.alpn_protocols = alpn_protocols;
-            }
-            self.http_acceptor = Some(TlsAcceptor::from(Arc::new(config_with_alpn)));
+    /// gRPC TLS 配置：Identity + 可选 mTLS CA。边界如实上报：min_tls_version
+    /// 只强制到 HTTP acceptor（gRPC 侧 TLS 由 tonic 自行装配 ServerConfig，
+    /// 不接受本 crate 注入版本集合，可协商范围恒为 TLS 1.2 + 1.3），
+    /// 配置 1.3 时两侧不一致必须显式说明。
+    fn setup_grpc_config(&mut self, identity: Identity) -> TlsResult<()> {
+        let mut grpc_config = ServerTlsConfig::new().identity(identity);
+
+        if let Some(ref ca_path) = self.config.ca_path {
+            let ca_file =
+                File::open(ca_path).map_err(|e| TlsError::CertificateLoadError(e.to_string()))?;
+
+            // 读取 CA 证书（首个证书项，语义同上）
+            let ca_cert = CertificateDer::pem_reader_iter(ca_file)
+                .next()
+                .ok_or_else(|| TlsError::CertificateLoadError("Empty CA certificate".to_string()))?
+                .map_err(|e| TlsError::CertificateLoadError(e.to_string()))?;
+
+            let ca_cert_bytes = ca_cert.as_ref().to_vec();
+            let ca_cert_tonic = Certificate::from_pem(ca_cert_bytes);
+            grpc_config = grpc_config.client_ca_root(ca_cert_tonic);
         }
 
-        // 为 gRPC 配置 TLS
-        if self.config.grpc_enabled {
-            let mut grpc_config = ServerTlsConfig::new().identity(identity);
+        self.grpc_tls_config = Some(Arc::new(grpc_config));
 
-            if let Some(ref ca_path) = self.config.ca_path {
-                let ca_file = File::open(ca_path)
-                    .map_err(|e| TlsError::CertificateLoadError(e.to_string()))?;
-
-                // 读取 CA 证书（首个证书项，语义同上）
-                let ca_cert = CertificateDer::pem_reader_iter(ca_file)
-                    .next()
-                    .ok_or_else(|| {
-                        TlsError::CertificateLoadError("Empty CA certificate".to_string())
-                    })?
-                    .map_err(|e| TlsError::CertificateLoadError(e.to_string()))?;
-
-                let ca_cert_bytes = ca_cert.as_ref().to_vec();
-                let ca_cert_tonic = Certificate::from_pem(ca_cert_bytes);
-                grpc_config = grpc_config.client_ca_root(ca_cert_tonic);
-            }
-
-            self.grpc_tls_config = Some(Arc::new(grpc_config));
-
-            // 边界如实上报：min_tls_version 只强制到上面的 HTTP acceptor，
-            // gRPC 侧 TLS 由 tonic 自行装配 ServerConfig（不接受本 crate 注入
-            // 版本集合），其可协商范围恒为 tonic/rustls 默认的 TLS 1.2 + 1.3。
-            // 配置 1.3 时两者不一致，必须显式说明，否则 tls_initialized 日志
-            // 会让人误以为两个端口都只允许 TLS 1.3。
-            if self.config.min_tls_version == crate::core::config::TlsVersion::Tls13 {
-                tracing::warn!(
-                    event = "tls_min_version_scope",
-                    min_version = %self.config.min_tls_version,
-                    "min_tls_version is enforced on the HTTP acceptor only; the gRPC port \
-                     uses tonic's default version range and still accepts TLS 1.2"
-                );
-            }
+        if self.config.min_tls_version == crate::core::config::TlsVersion::Tls13 {
+            tracing::warn!(
+                event = "tls_min_version_scope",
+                min_version = %self.config.min_tls_version,
+                "min_tls_version is enforced on the HTTP acceptor only; the gRPC port \
+                 uses tonic's default version range and still accepts TLS 1.2"
+            );
         }
-
-        tracing::info!(
-            event = "tls_initialized",
-            http_enabled = %self.config.http_enabled,
-            grpc_enabled = %self.config.grpc_enabled,
-            min_version = %self.config.min_tls_version,
-            "{}",
-            t!("log.server.config.tls.tls_initialized")
-        );
-
         Ok(())
     }
 }

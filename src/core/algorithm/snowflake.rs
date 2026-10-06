@@ -452,24 +452,8 @@ impl SnowflakeAlgorithm {
             let timestamp = Self::get_timestamp();
 
             if timestamp < last_ts {
-                let drift = last_ts - timestamp;
-                self.record_clock_backward(timestamp, last_ts, drift);
-
-                if drift > self.config.clock_drift_threshold_ms {
-                    return Err(CoreError::ClockMovedBackward {
-                        last_timestamp: last_ts,
-                    });
-                }
-
-                // 阈值内：等时钟追平后 CAS 把 last_ts 推进到 wait_ts（seq 归零）。
-                // CAS 失败说明他线程已推进状态，直接重读重试。
-                let wait_ts = self.wait_for_next_ms(last_ts).await;
-                let _ = self.state.compare_exchange(
-                    state,
-                    self.pack_state(wait_ts, 0),
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                );
+                self.handle_clock_backward(state, timestamp, last_ts)
+                    .await?;
                 continue;
             }
 
@@ -501,27 +485,55 @@ impl SnowflakeAlgorithm {
             }
 
             // 同毫秒序列耗尽：推进到下一毫秒重试（seq 归零）。
-            let next_ts = self.wait_for_next_ms(timestamp).await;
-            if self
-                .state
-                .compare_exchange(
-                    state,
-                    self.pack_state(next_ts, 0),
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_ok()
-            {
-                self.rotation_count.fetch_add(1, Ordering::Relaxed);
-                self.metrics
-                    .sequence_overflows
-                    .fetch_add(1, Ordering::Relaxed);
-                tracing::debug!(
-                    event = "snowflake_sequence_exhausted",
-                    timestamp = timestamp,
-                    next_timestamp = next_ts
-                );
-            }
+            self.roll_to_next_ms(state, timestamp).await;
+        }
+    }
+
+    /// 时钟回拨分支：超过阈值的回拨直接报错；阈值内的回拨等待时钟追平后
+    /// CAS 把 last_ts 推进到 wait_ts（seq 归零）。CAS 失败说明他线程已推进
+    /// 状态，由调用方循环重读重试。
+    async fn handle_clock_backward(&self, state: u64, timestamp: u64, last_ts: u64) -> Result<()> {
+        let drift = last_ts - timestamp;
+        self.record_clock_backward(timestamp, last_ts, drift);
+
+        if drift > self.config.clock_drift_threshold_ms {
+            return Err(CoreError::ClockMovedBackward {
+                last_timestamp: last_ts,
+            });
+        }
+
+        let wait_ts = self.wait_for_next_ms(last_ts).await;
+        let _ = self.state.compare_exchange(
+            state,
+            self.pack_state(wait_ts, 0),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        Ok(())
+    }
+
+    /// 同毫秒序列耗尽：推进到下一毫秒（seq 归零）并累计旋转/溢出指标。
+    async fn roll_to_next_ms(&self, state: u64, timestamp: u64) {
+        let next_ts = self.wait_for_next_ms(timestamp).await;
+        if self
+            .state
+            .compare_exchange(
+                state,
+                self.pack_state(next_ts, 0),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.rotation_count.fetch_add(1, Ordering::Relaxed);
+            self.metrics
+                .sequence_overflows
+                .fetch_add(1, Ordering::Relaxed);
+            tracing::debug!(
+                event = "snowflake_sequence_exhausted",
+                timestamp = timestamp,
+                next_timestamp = next_ts
+            );
         }
     }
 

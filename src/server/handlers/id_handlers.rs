@@ -213,6 +213,8 @@ impl super::ApiHandlers {
         })
     }
 
+    // snowflake 特性关闭时无法解析位布局（SnowflakeLayoutInfo 随特性门控）。
+    #[cfg(feature = "snowflake")]
     fn extract_snowflake_metadata(&self, id: Id) -> IdMetadataResponse {
         // 位布局解析知识下沉 core；运行时取当前配置，取不到时
         // 回退 standard()（与历史硬编码 3/8/10 行为一致）。
@@ -228,6 +230,20 @@ impl super::ApiHandlers {
             worker_id: parsed.worker_id,
             sequence: parsed.sequence,
             algorithm: "snowflake".to_string(),
+            biz_tag: String::new(),
+        }
+    }
+
+    #[cfg(not(feature = "snowflake"))]
+    fn extract_snowflake_metadata(&self, _id: Id) -> IdMetadataResponse {
+        // 位布局不可解析时按本文件不可识别输入的既有语义返回 unknown 占位，
+        // 不产出带 snowflake 算法名的"成功解码"假象（timestamp=0 即 1970 纪元）。
+        IdMetadataResponse {
+            timestamp: 0,
+            datacenter_id: 0,
+            worker_id: 0,
+            sequence: 0,
+            algorithm: "unknown".to_string(),
             biz_tag: String::new(),
         }
     }
@@ -273,7 +289,6 @@ impl super::ApiHandlers {
 // `ErrorResponse`（信封，business_code 见 openapi.rs 错误码表）。
 
 /// OpenAPI 注解载体：`POST /api/v1/generate`（实际 handler：`router::handle_generate`）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     post,
     path = "/api/v1/generate",
@@ -294,7 +309,6 @@ impl super::ApiHandlers {
 pub fn generate_docs() {}
 
 /// OpenAPI 注解载体：`POST /api/v1/generate/batch`（实际 handler：`router::handle_batch_generate`）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     post,
     path = "/api/v1/generate/batch",
@@ -315,7 +329,6 @@ pub fn generate_docs() {}
 pub fn batch_generate_docs() {}
 
 /// OpenAPI 注解载体：`POST /api/v1/parse`（实际 handler：`router::handle_parse`）。
-#[allow(dead_code)]
 #[sdforge::utoipa::path(
     post,
     path = "/api/v1/parse",

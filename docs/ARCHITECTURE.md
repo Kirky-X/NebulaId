@@ -65,31 +65,36 @@ graph TB
 
 ```mermaid
 graph LR
+    subgraph 入口层
+        Bin[main.rs<br/>装配与启动]
+        Sdk[src/sdk/<br/>嵌入式 Kit facade<br/>（sdk 门控）]
+    end
+
     subgraph 表现层
         Server[server/<br/>HTTP, gRPC, 中间件]
     end
 
     subgraph 核心层
         Algo[core/algorithm/<br/>ID 算法]
-        Container[core/container/<br/>DI 容器]
         Coord[core/coordinator/<br/>分布式协调]
-        DB[core/database/<br/>SeaORM 实体]
+        DB[core/database/<br/>SeaORM 实体<br/>（database 门控）]
         Types[core/types/<br/>类型定义]
         Config[core/config/<br/>配置]
         Auth[core/auth/<br/>认证]
-        Monitor[core/monitoring/<br/>监控]
+        Monitor[core/monitoring/<br/>监控<br/>（alerting 门控）]
+        I18n[core/i18n.rs<br/>国际化]
     end
 
-    subgraph 基础设施层
-        Infra[infrastructure/<br/>适配器实现]
-    end
+    Bin --> Server
+    Sdk --> Algo
+    Sdk --> Config
 
     Server --> Algo
     Server --> Auth
     Server --> Config
     Server --> Monitor
+    Server --> I18n
 
-    Algo --> Container
     Algo --> Coord
     Algo --> DB
     Algo --> Types
@@ -98,25 +103,26 @@ graph LR
     Coord --> DB
     Coord --> Types
 
-    Infra --> Config
-    Infra --> DB
-
     style Server fill:#c8e6c9
     style Algo fill:#bbdefb
-    style Infra fill:#fff9c4
+    style Sdk fill:#fff9c4
 ```
 
 ## 3. 外部库角色
 
-项目通过 5 个 crates.io 外部库实现基础设施解耦：
+项目通过 8 个自研生态 crates.io 库（同一 RC 波次）加 1 个第三方库实现基础设施解耦（版本为 `Cargo.toml` 当前 req 下界）：
 
 | 库 | 版本 | 角色 | 使用方式 |
 |----|------|------|----------|
-| `confers` | 0.5 | 配置管理 | 提供 `ConfigProvider` trait 与环境变量展开 |
-| `oxcache` | 0.4 | 多级缓存 | 提供 `Cache` 抽象（内存 + Redis） |
-| `dbnexus` | 0.5 | 数据库抽象 | 提供 PostgreSQL 连接池与事务管理 |
-| `limiteron` | 0.2 | 限流 | 提供 core 限流原语（TokenBucket / ConcurrencyLimiter） |
-| `sdforge` | 0.5 | 服务发现 | 提供 HTTP 与 gRPC 服务发现 |
+| `confers` | 0.6.0-rc.5 | 配置管理 | 提供 `ConfigProvider` trait、环境变量展开与 watch |
+| `oxcache` | 0.5.0-rc.4 | 多级缓存 | 提供 `Cache` 抽象（内存 + Redis） |
+| `dbnexus` | 0.6.0-rc.5 | 数据库抽象 | 提供 PostgreSQL 连接池与事务管理 |
+| `sdforge` | 0.5.0-rc.5 | 服务框架 | 提供 HTTP / gRPC / Web（OpenAPI）装配宏，非服务发现 |
+| `inklog` | 0.3.0-rc.5 | 日志 | 结构化日志与 fast-masking 脱敏 |
+| `garrison` | 0.9.0-rc.1 | 认证框架 | API key 验证（`garrison-auth` 门控） |
+| `trait-kit` | 0.5.0-rc.6 | Kit 接口中心 | AsyncKit 模块化装配（仅 `sdk` 门控拉入） |
+| `limiteron` | 0.3.0-rc.4 | 限流 | 提供 core 限流原语（TokenBucket / ConcurrencyLimiter） |
+| `etcd-client` | 0.20 | 第三方 etcd 客户端 | 分布式协调（`etcd` 门控） |
 
 **依赖特性化原则（规则 28）：**
 - 所有外部库均使用 `default-features = false`，显式声明所需特性
@@ -241,7 +247,7 @@ graph LR
 ```mermaid
 graph TB
     subgraph Trait层
-        Trait[EtcdClientOps trait<br/>src/core/coordinator/etcd.rs<br/>6 方法: kv_get/kv_delete/<br/>lease_grant/lease_revoke/<br/>txn_check_create_rev_and_put/ping]
+        Trait[EtcdClientOps trait<br/>src/core/coordinator/etcd.rs<br/>7 方法: kv_get/kv_delete/<br/>lease_grant/lease_revoke/<br/>txn_check_create_rev_and_put/ping/<br/>lease_keep_alive_once]
         Err[EtcdError enum<br/>Network/KeyNotFound/<br/>LeaseInvalid/Internal]
     end
 
@@ -286,7 +292,7 @@ graph TB
 ```mermaid
 graph TB
     subgraph Trait层
-        Trait[ConfigManagementService trait<br/>src/server/config/management.rs<br/>~18 方法: get_config/get_secure_config/<br/>get_batch_max_size/update_rate_limit/<br/>update_logging/reload_config/<br/>set_algorithm/biz_tag CRUD/<br/>workspace&amp;group CRUD/metrics]
+        Trait[ConfigManagementService trait<br/>src/server/config/management.rs<br/>22 方法: get_config/get_secure_config/<br/>get_batch_max_size/update_rate_limit/<br/>update_logging/reload_config/<br/>set_algorithm/biz_tag CRUD/<br/>workspace&amp;group CRUD/metrics]
     end
 
     subgraph 实现层

@@ -113,9 +113,8 @@ services:
 ### 配置文件位置
 
 - **主配置文件**: `config/config.toml`
-- **无 etcd 配置**: `config/config_no_etcd.toml`
-- **Docker 测试配置**: `docker/test-server-config.toml`
-- **环境变量示例**: `docker/.env.example`
+- **测试配置文件**: `config/test_config.toml`（测试脚本模板，说明见 `config/README_TEST_CONFIG.md`；无 etcd 环境经 `config.toml` 的 `[etcd] endpoints = []` 控制，不再单独维护 `config_no_etcd.toml`）
+- **基准压测配置**: `config/bench_a.toml` / `bench_b.toml` / `bench_e.toml`（HTTP 端到端压测，见 [PERFORMANCE.md](PERFORMANCE.md)）
 
 ### 环境变量优先级
 
@@ -170,8 +169,8 @@ export DATABASE_URL="postgresql://..."
 
 ### 背景
 
-代码侧 `AlgorithmTypeDb`（`src/core/database/biz_tag_entity.rs:138-147`）当前只有三个取值，
-且通过 `From<AlgorithmType> for AlgorithmTypeDb` 与 `AlgorithmType`（`src/core/types/id.rs:173-188`）双向一一映射：
+代码侧 `AlgorithmTypeDb`（`src/core/database/biz_tag_entity.rs:129-136`）当前只有三个取值，
+且通过 `From<AlgorithmType> for AlgorithmTypeDb` 与 `AlgorithmType`（`src/core/types/id.rs:213-219`）双向一一映射：
 
 | DB ENUM label | SeaORM 变体 | `AlgorithmType` |
 |---------------|-------------|-----------------|
@@ -328,7 +327,9 @@ WHERE algorithm::text IN ('uuid_v7', 'uuid_v4');
 ### 3. 方案 B：重建类型（取值精确等于代码，需排他锁）
 
 `ALTER COLUMN ... TYPE` 会重写 `biz_tags` 并对该表持有 `ACCESS EXCLUSIVE` 锁（读写全部阻塞）。
-`biz_tags` 通常是小表（默认 `max_biz_tags = 1000`），耗时以毫秒计，但**必须安排在维护窗口**，
+`biz_tags` 通常是小表（新建 workspace 未显式指定时，应用写入路径默认 `max_biz_tags = 100`，
+见 `src/core/database/workspace_repository.rs:81`；`scripts/init.sql:38` 的 SQL 列默认值 1000
+对 SeaORM 显式插入不可达），耗时以毫秒计，但**必须安排在维护窗口**，
 并保留 `lock_timeout` 以免锁等待队列堆积把服务拖死。
 
 ```sql
@@ -380,7 +381,7 @@ ALTER TYPE nebula_id.algorithm_type_new RENAME TO algorithm_type;
 ### 补充步骤：收紧 `algorithm` 列的 NOT NULL（方案 A / 方案 B 之后都要执行）
 
 SeaORM 实体 `Model.algorithm` 是**非 Option** 的 `AlgorithmTypeDb`
-（`src/core/database/biz_tag_entity.rs:30`），任何 `algorithm IS NULL` 的行在 `find` 时都会
+（`src/core/database/biz_tag_entity.rs:19`），任何 `algorithm IS NULL` 的行在 `find` 时都会
 解码失败并抛错——与残留 `uuid_v7` 行是同一类故障。`scripts/init.sql` 已把该列声明为
 `NOT NULL DEFAULT 'segment'`，但它用的是 `CREATE TABLE IF NOT EXISTS`，**对存量库完全不生效**，
 所以约束必须由本步骤手工收紧。
@@ -497,8 +498,8 @@ ROLLBACK;
 
 > `POST /api/v1/config/algorithm` 改的是热加载的**默认算法**（内存态配置），不会写 `biz_tags.algorithm`，
 > 所以不能用它验证本次 ENUM 迁移。真正会把 `biz_tags.algorithm` 反序列化成 `AlgorithmTypeDb` 的是
-> `GET /api/v1/biz-tags` / `GET /api/v1/biz-tags/{id}`（路由见 `src/server/router.rs:153-162`，
-> 前缀 `/api/v1` 见 `src/server/api_version.rs:32`）。迁移后调用一次
+> `GET /api/v1/biz-tags` / `GET /api/v1/biz-tags/{id}`（路由见 `src/server/router.rs:385-394`，
+> 前缀 `/api/v1` 见 `src/server/api_version.rs:21-23`）。迁移后调用一次
 > `GET /api/v1/biz-tags`，确认不出现 enum 转换失败类错误即可。
 
 ### 6. 回滚
@@ -862,8 +863,8 @@ key_hex = "0011223344556677"
 | `auth.cache_ttl_seconds` | u64 | `300` | ✅ | 认证缓存 TTL |
 | `auth.api_keys` | 数组 | `[]` | ➖ | 条目字段：`key_id`、`key_secret`、`workspace`、`role`、`rate_limit`、`name`（全部必填）。启动时**只创建第一条**；`workspace` 必须是 UUID 字符串或 `global`；`role` 仅精确取 `admin` 时才建管理员 |
 | `auth.api_key_salt` | String | `$NEBULA_API_KEY_SALT` 或 `""` | ➖ | 密钥哈希盐值 |
-| `auth.key_rotation_grace_period_seconds` | u64 | `0`（关闭宽限期） | ➖ | 设为 `> 0` 才在轮换后保留上一代凭证该秒数；超过 30 天会被钳制到 30 天并告警；需库中存在宽限期两列，启动期迁移会自动补齐（仅数据库账号无 DDL 权限时需手工执行，见本文「密钥轮换宽限期」章节） |
-| `algorithm.default` | String | `"segment"` | ✅ | `segment` / `snowflake` / `uuid_v8` |
+| `auth.key_rotation_grace_period_seconds` | u64 | `0`（关闭宽限期） | ➖ | 设为 `> 0` 才在轮换后保留上一代凭证该秒数；超过 30 天（2592000 秒）启动校验直接拒绝（fail-fast，`src/core/config/app_config.rs:420-427`），非 clamp；需库中存在宽限期两列，启动期迁移会自动补齐（仅数据库账号无 DDL 权限时需手工执行，见本文「密钥轮换宽限期」章节） |
+| `algorithm.default` | String | `"segment"` | ✅ | `segment` / `snowflake` / `uuid_v8`（此列为代码 `Config::default()` 口径；出厂 `config/config.toml` 文件中写的是 `snowflake`） |
 | `algorithm.segment.base_step` / `min_step` / `max_step` / `switch_threshold` | u64 / u64 / u64 / f64 | `1000` / `500` / `100000` / `0.1` | ✅ | 动态步长（注意上文的 `merge` 说明） |
 | `algorithm.snowflake.datacenter_id_bits` / `worker_id_bits` / `sequence_bits` / `clock_drift_threshold_ms` | u8 / u8 / u8 / u64 | `3` / `8` / `10` / `1000` | ✅ | 位布局；余量为时间戳位 |
 | `algorithm.uuid_v8.enabled` | bool | `true` | ✅ | UUID v8 开关 |

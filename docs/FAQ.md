@@ -185,7 +185,7 @@
 - **gRPC**：任何支持 gRPC 的语言（Python、Java、Go 等）
 
 **文档：**
-- [Rust API 文档](https://docs.rs/nebula-id)
+- [Rust API 文档](https://docs.rs/nebulaid)
 - [API 参考](API_REFERENCE.md)
 
 </details>
@@ -264,9 +264,9 @@ cargo add nebulaid tokio
 **可选特性**（`Cargo.toml` 的 `[features]`）：
 
 ```toml
-# default = ["postgresql", "http", "grpc", "garrison-auth"]
-nebulaid = { version = "0.2", features = ["etcd"] }  # 分布式协调
-# nebulaid = { version = "0.2", features = ["sdk"] } # NebulaIdKit 门面
+# default = ["server", "segment", "snowflake", "uuid-v8", "postgresql", "garrison-auth"]
+nebulaid = { version = "0.3", features = ["etcd"] }  # 分布式协调
+# nebulaid = { version = "0.3", features = ["sdk"] } # NebulaIdKit 门面
 # 并不存在 `monitoring` / `audit` / `tls` 特性：指标、审计日志与
 # TLS 均为运行时配置（[monitoring] / [auth] / [tls]）。
 ```
@@ -352,7 +352,7 @@ async fn main() -> nebulaid::core::Result<()> {
    ```
 
 2. **确保所需特性已启用**（默认为
-   `["postgresql", "http", "grpc", "garrison-auth"]`）：
+   `["server", "segment", "snowflake", "uuid-v8", "postgresql", "garrison-auth"]`）：
    ```toml
    nebulaid = "0.2"
    ```
@@ -810,7 +810,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - 你希望 dc / worker / shard 能直接从 ID 中观察到
 
 > **旧命名**：`uuid_v7` 与 `uuid_v4` 已不再是独立算法，但
-> `AlgorithmType::from_str`（`src/core/types/id.rs:195-201`）仍接受这两种拼写作为
+> `AlgorithmType::from_str`（`src/core/types/id.rs:238-239`）仍接受这两种拼写作为
 > 解析到 `UuidV8` 的**输入别名**，因此旧配置与 API 载荷依然可用。
 > Nebula 输出的一律是 `uuid_v8`。
 
@@ -904,13 +904,13 @@ async fn main() {
         Err(CoreError::ClockMovedBackward { last_timestamp }) => {
             eprintln!("❌ System clock regressed to {last_timestamp}, NTP sync required");
         }
-        Err(CoreError::DatabaseError(msg)) => {
+        Err(CoreError::DatabaseError(msg, _)) => {
             eprintln!("❌ Database error: {msg}");
         }
         Err(CoreError::SegmentExhausted { max_id }) => {
             eprintln!("❌ ID segment exhausted at {max_id}, refreshing…");
         }
-        Err(CoreError::EtcdError(msg)) => {
+        Err(CoreError::EtcdError(msg, _)) => {
             eprintln!("❌ Etcd error: {msg} — falling back to the local cache");
         }
         Err(e) => eprintln!("❌ Error: {e}"),
@@ -923,14 +923,15 @@ async fn main() {
 | 错误 | 载荷 | 说明 | 恢复方式 |
 |-------|---------|-------------|----------|
 | `ClockMovedBackward` | `{ last_timestamp }` | 系统时钟回拨 | 需要 NTP 同步 |
-| `DatabaseError` | `(String)` | 数据库不可用或查询失败 | 检查连接，使用缓存 |
+| `DatabaseError` | `(String, Option<ErrorSource>)` | 数据库不可用或查询失败 | 检查连接，使用缓存 |
 | `SegmentExhausted` | `{ max_id }` | ID 区间耗尽 | 自动刷新号段 |
-| `EtcdError` | `(String)` | Etcd 不可用 | 使用本地缓存 |
+| `EtcdError` | `(String, Option<ErrorSource>)` | Etcd 不可用 | 使用本地缓存 |
 | `SequenceOverflow` | `{ timestamp }` | Snowflake 序列溢出 | 等待下一毫秒（算法已自动休眠 1 毫秒并重试） |
 | `ConfigurationError` | `(String)` | 必需配置缺失或无效 | 修正配置 |
 
 不存在 `DatabaseConnectionFailed` / `EtcdConnectionFailed` 变体 —— 那些是
-过时的名称；数据库与 etcd 路径都通过 `DatabaseError` / `EtcdError` 上报。
+过时的名称；数据库与 etcd 路径都通过 `DatabaseError` / `EtcdError` 上报
+（`src/core/types/error.rs:102,137`；第二字段为 `#[source]` 错误源，仅进服务端日志）。
 
 </details>
 
@@ -991,34 +992,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 <br>
 
-**基准测试结果：**
+**基准测试结果**（Criterion 微基准，采集于 2026-09-18、commit `e6acb2c`、
+AMD Ryzen 9 9950X / WSL2，完整口径与置信区间见 [PERFORMANCE.md](PERFORMANCE.md) 已记录基线）：
 
-<table>
-<tr>
-<th>算法</th>
-<th>吞吐量</th>
-<th>P50 延迟</th>
-<th>P99 延迟</th>
-</tr>
-<tr>
-<td>Segment</td>
-<td>100,000+ ID/秒</td>
-<td>~0.1ms</td>
-<td>~0.5ms</td>
-</tr>
-<tr>
-<td>Snowflake</td>
-<td>1,000,000+ ID/秒</td>
-<td>~0.05ms</td>
-<td>~0.1ms</td>
-</tr>
-<tr>
-<td>UUID v8</td>
-<td>500,000+ ID/秒</td>
-<td>~0.03ms</td>
-<td>~0.05ms</td>
-</tr>
-</table>
+| 基准用例 | 中位数 | 换算吞吐 |
+|----------|-------:|---------:|
+| `snowflake/generate` | 977.5 ns | ≈ 102.3 万次/s |
+| `snowflake/batch_generate_100` | 97.76 µs | ≈ 102.3 万 ID/s |
+| `router/generate_snowflake_primary` | 986.8 ns | ≈ 101.3 万次/s |
+| `router/generate_with_algorithm_uuid_v8` | 382.1 ns | ≈ 261 万次/s |
+| `rate_limiter/check_rate_limit` | 183.2 ns | ≈ 546 万次/s |
+| `auth_cache/get_hit` | 277.7 ns | ≈ 360 万次/s |
+
+口径边界：
+
+- Segment 算法未纳入基准（`SegmentAlgorithm` / `SegmentLoader` 为 `pub(crate)`，
+  外部 bench 无法注入内存 stub 号段装载器）；Segment 端到端吞吐请以自身负载实测。
+- 以上为算法/中间件层微基准（含每迭代 `block_on` 调度开销），不覆盖 HTTP 全链路，
+  亦非 SLA 承诺。HTTP 端到端压测数据同见 [PERFORMANCE.md](PERFORMANCE.md)。
+- 本仓库约定不发布未经基准框架产出的吞吐数字。
 
 **自行运行基准测试：**
 
@@ -1079,32 +1071,18 @@ cargo bench
 
 <br>
 
-**典型内存占用：**
+仓库当前没有内存占用基准，因此不发布具体内存数字（与
+[PERFORMANCE.md](PERFORMANCE.md) 的约定一致：不发布未经基准框架产出的数据）。
+评估部署内存请对自身负载实测，例如：
 
-<table>
-<tr>
-<th>组件</th>
-<th>内存</th>
-</tr>
-<tr>
-<td>核心库</td>
-<td>~1MB</td>
-</tr>
-<tr>
-<td>号段缓存（100 万 ID）</td>
-<td>~8MB</td>
-</tr>
-<tr>
-<td>Etcd 客户端</td>
-<td>~2MB</td>
-</tr>
-<tr>
-<td>HTTP 服务器</td>
-<td>~5MB</td>
-</tr>
-</table>
+```bash
+# 进程峰值 RSS
+/usr/bin/time -v ./target/release/nebula-id 2>&1 | grep "Maximum resident"
+```
 
-**合计：**约 16MB 基础占用 + 算法相关开销
+**内存设计要点：**
+- 号段缓存占用与 `[algorithm.segment]` 步长成正比（步长越大，常驻 ID 越多）
+- 连接池占用与 `[database].max_connections` 成正比
 
 **内存安全：**
 - ✅ 无内存泄漏（经持续测试验证）
@@ -1123,9 +1101,9 @@ Nebula ID 为高并发而生：
 
 **并发特性：**
 - 🚀 **Async/Await**：非阻塞操作
-- 🔀 **DashMap**：线程安全的并发数据结构
+- 🔀 **分片 RwLock（parking_lot）+ arc-swap**：线程安全的低开销并发原语（限流表按 key 哈希分片，去写锁热点）
 - 📊 **连接池**：高效的数据库连接
-- ⚡ **无锁**：最小化竞争点
+- ⚡ **无锁**：Snowflake 生成状态为单原子字 CAS，最小化竞争点
 
 **最佳实践：**
 
@@ -1239,7 +1217,7 @@ enabled = true                     # 必填
 cache_ttl_seconds = 300            # 必填
 # 静态引导密钥；运行时密钥存放在数据库 / garrison 中。
 # ApiKeyEntry 的每个字段都是必填的。
-# 启动时只预置第一条条目（`src/main.rs:136` 取 `keys.first()`）；
+# 启动时只预置第一条条目（`src/main.rs:105` 取 `keys.first()`）；
 # 第 2..N 条会被解析和校验但从不创建，且没有任何警告。
 # `workspace` 必须是 UUID 字符串或字面量 "global"（其他值会使
 # `Uuid::parse_str` 失败并被静默替换为全零 UUID）。
@@ -1256,7 +1234,7 @@ key_rotation_grace_period_seconds = 0 # 可选；0（默认）= 关闭宽限期�
 
 [rate_limit]
 enabled = true
-default_rps = 1000
+default_rps = 10000
 burst_size = 100                   # validate(): <= 10 × default_rps
 
 [batch_generate]
@@ -1302,16 +1280,15 @@ Authorization: Basic base64(<key_id>:<key_secret>)
 **请负责任地报告安全问题：**
 
 1. **不要**创建公开的 GitHub issue
-2. **邮箱：**security@nebula-id.io
+2. **使用 GitHub [Security Advisories](https://github.com/Kirky-X/NebulaId/security/advisories/new) 私密披露通道**提交报告（完整政策见 [SECURITY.md](SECURITY.md)）
 3. **内容包括：**
-   - 漏洞描述
-   - 复现步骤
+   - 受影响版本
+   - 漏洞描述与复现步骤（或概念验证）
    - 潜在影响
 
 **响应时间线：**
-- 📧 初步响应：24 小时
-- 🔍 评估：72 小时
-- 📢 公开披露：修复发布之后
+- 📮 确认收到后跟进评估与修复
+- 📢 公开披露：修复发布之后（经 [CHANGELOG](CHANGELOG.md) 的 `Security` 小节披露）
 
 </details>
 
@@ -1327,7 +1304,7 @@ Nebula ID 内置限流：
 ```toml
 [rate_limit]
 enabled = true
-default_rps = 1000
+default_rps = 10000
 burst_size = 100
 ```
 
@@ -1337,7 +1314,7 @@ burst_size = 100
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `default_rps` | 1000 | 每秒请求数 |
+| `default_rps` | 10000 | 每秒请求数 |
 | `burst_size` | 100 | 突发容量 |
 
 **响应头：**
@@ -1407,7 +1384,7 @@ Error: system clock moved backward
 </details>
 
 <details>
-<summary><b>❓ 遇到 "DatabaseConnectionFailed" 错误</b></summary>
+<summary><b>❓ 遇到 "DatabaseError" 错误</b></summary>
 
 <br>
 
@@ -1421,11 +1398,8 @@ Error: failed to connect to database
 **解决方案：**
 1. **确认数据库正在运行：**
    ```bash
-   # PostgreSQL
+   # PostgreSQL（本服务当前唯一支持的数据库）
    pg_isready -h localhost -p 5432
-   
-   # MySQL
-   mysqladmin ping -h localhost
    ```
 
 2. **检查连接字符串：**
@@ -1581,7 +1555,7 @@ curl http://localhost:8080/metrics
 
 </details>
 
-**还有其他问题？**查看 [DEPLOYMENT.md](DEPLOYMENT.md) 中的故障排查章节，或在 [GitHub Issues](https://github.com/nebula-id/nebula-id/issues) 中提问。
+**还有其他问题？**查看 [DEPLOYMENT.md](DEPLOYMENT.md) 中的故障排查章节，或在 [GitHub Issues](https://github.com/Kirky-X/NebulaId/issues) 中提问。
 
 ---
 
@@ -1798,7 +1772,7 @@ API 文档与教程
 </a>
 </td>
 <td width="33%" align="center">
-<a href="https://docs.rs/nebula-id">
+<a href="https://docs.rs/nebulaid">
 <img src="https://img.icons8.com/fluency/96/000000/documentation.png" width="48"><br>
 <b>阅读 API 文档</b>
 </a>

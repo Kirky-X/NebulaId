@@ -1,7 +1,7 @@
 # 📐 NebulaId 测试总体方案：模块分析 · 场景穷举 · 特性组合 · 执行计划
 
 > 适用版本：NebulaId **0.2.x 工作区**（Rust edition 2021，单包 `nebulaid`）。
-> 编写依据（只读核对）：`src/` 全部模块源码、`src/core/tests/` 13 个 E2E 文件、`tests/` 脚本、`docs/` 11 篇文档、`docker/`、`scripts/`、`.github/workflows/ci.yml`、`protos/nebula_id.proto`。
+> 编写依据（只读核对）：`src/` 全部模块源码、`src/core/tests/` 12 个文件（11 个 E2E 测试模块 + `mod.rs`）、`tests/` 脚本、`docs/` 11 篇文档、`docker/`、`scripts/`、`.github/workflows/ci.yml`、`protos/nebula_id.proto`。
 > 与 [TEST_SCENARIOS.md](TEST_SCENARIOS.md) 的关系：该文档是**场景矩阵概览**（已覆盖什么）；本文档是**深度方案**——模块交互分析、正常+异常场景穷举、特性组合行为差异、以及每个场景的前置条件/步骤/预期/验证方法。两者编号体系独立。
 
 [🏠 主页](../README.md) • [架构文档](ARCHITECTURE.md) • [场景矩阵](TEST_SCENARIOS.md) • [API 参考](API_REFERENCE.md)
@@ -50,7 +50,7 @@
 │ types/（CoreError 24变体·Id·Metrics）                                     │
 └──────────────────────────────────┬───────────────────────────────────────┘
 ┌──────────────────────────────────▼───────────────────────────────────────┐
-│ 基础设施（自研生态 ../base、../garrison 路径依赖）：                       │
+│ 基础设施（自研生态，统一走 crates.io registry，无路径依赖）：              │
 │ dbnexus(PostgreSQL) · oxcache(缓存) · confers(配置/插值/watch)             │
 │ sdforge(HTTP/gRPC/OpenAPI宏) · inklog(日志/脱敏) · limiteron(令牌桶)       │
 │ garrison(认证缓存) · trait-kit(仅sdk) · etcd-client(仅etcd)               │
@@ -61,22 +61,22 @@
 
 | 模块 | 关键文件（行数） | 职责 | 高价值内部行为 |
 |---|---|---|---|
-| 算法路由 | `core/algorithm/router.rs`（2262） | 算法注册表、per-biz_tag 路由、按次覆盖、fallback 链、观测 | 主算法失败→链上回退→全败返回**主算法原始错误**；initialize 单算法 build 失败仅 warn 不中止；健康聚合 Unhealthy 优先于 Degraded |
-| Segment | `core/algorithm/segment.rs`（1468） | 号段双缓冲、CPU 监控、DC 故障检测器（半成品）、三种 Loader | 3 次重试耗尽→`SegmentExhausted`；batch size=0 也报 `SegmentExhausted`（与另两算法语义相反）；生产默认 Loader=Unconfigured（显性报错防静默） |
-| Snowflake | `core/algorithm/snowflake.rs`（1077） | 无锁 CAS 状态字 `(ts<<seq)|seq`、时钟回拨+drift 衰减 | 单毫秒容量=mask（不发号 mask 本身）；回拨>阈值→`ClockMovedBackward{状态字ts}`；drift 超 60s 衰减清零；batch 重试 100 次耗尽→`InternalError`（不返回短批） |
-| UUID v8 | `core/algorithm/uuid_v8.rs`（453） | RFC 9562 v8 时间有序、21bit 计数器+26bit 随机熵 | 复用 Snowflake 的 `clock_drift_threshold_ms`（耦合点）；回拨载荷=**drift 差值**（与 Snowflake 语义不同）；dc/worker 静默截断 |
-| 降级熔断 | `core/algorithm/degradation_manager.rs`（2097） | 熔断状态机 Closed→Open→HalfOpen、降级/恢复、审计联动 | 巡检模式下 `failure_threshold` 计数按**巡检轮次**而非请求；已降级算法跳过健康检查；`auto_recovery`/`recovery_check_interval_ms` 为死配置 |
-| 协调器 | `core/coordinator/etcd.rs`（3164，门控）/`local.rs`（594） | worker_id 租约分配、分布式锁、etcd 集群健康监控+文件缓存 | etcd：fail-stop（续期连续 3 失败→触发停机，防双主重复 ID）；release 归属校验防误删；local：无租约、恒返回配置 worker_id（**多实例必冲突**）、锁 TTL 被忽略 |
+| 算法路由 | `core/algorithm/router.rs`（2364） | 算法注册表、per-biz_tag 路由、按次覆盖、fallback 链、观测 | 主算法失败→链上回退→全败返回**主算法原始错误**；initialize 单算法 build 失败仅 warn 不中止；健康聚合 Unhealthy 优先于 Degraded |
+| Segment | `core/algorithm/segment.rs`（1780） | 号段双缓冲、CPU 监控、DC 故障检测器（半成品）、三种 Loader | 3 次重试耗尽→`SegmentExhausted`；batch size=0 也报 `SegmentExhausted`（与另两算法语义相反）；生产默认 Loader=Unconfigured（显性报错防静默） |
+| Snowflake | `core/algorithm/snowflake.rs`（1392） | 无锁 CAS 状态字 `(ts<<seq)|seq`、时钟回拨+drift 衰减 | 单毫秒容量=mask（不发号 mask 本身）；回拨>阈值→`ClockMovedBackward{状态字ts}`；drift 超 60s 衰减清零；batch 重试 100 次耗尽→`InternalError`（不返回短批） |
+| UUID v8 | `core/algorithm/uuid_v8.rs`（480） | RFC 9562 v8 时间有序、21bit 计数器+26bit 随机熵 | 复用 Snowflake 的 `clock_drift_threshold_ms`（耦合点）；回拨载荷=**drift 差值**（与 Snowflake 语义不同）；dc/worker 静默截断 |
+| 降级熔断 | `core/algorithm/degradation_manager.rs`（2113） | 熔断状态机 Closed→Open→HalfOpen、降级/恢复、审计联动 | 巡检模式下 `failure_threshold` 计数按**巡检轮次**而非请求；已降级算法跳过健康检查；`auto_recovery`/`recovery_check_interval_ms` 为死配置 |
+| 协调器 | `core/coordinator/etcd.rs`（3154，门控）/`local.rs`（583） | worker_id 租约分配、分布式锁、etcd 集群健康监控+文件缓存 | etcd：fail-stop（续期连续 3 失败→触发停机，防双主重复 ID）；release 归属校验防误删；local：无租约、恒返回配置 worker_id（**多实例必冲突**）、锁 TTL 被忽略 |
 | 配置 | `core/config/app_config.rs` + 13 节文件 | 聚合根 `Config`（13 节全 `deny_unknown_fields`）、22 条 validate、env 插值/覆盖、merge、启动判定矩阵 | env 覆盖后 merge 会把 `algorithm.segment/snowflake/uuid_v8` 三个子表**重置为默认**，仅 `default` 保留；`key_rotation_grace_period_seconds` 刻意不参与 merge |
 | 数据库 | `core/database/`（connection+4 域仓储） | 连接池、幂等迁移（schema `nebula_id`、2 枚举、5 表）、宽限期两列自动补齐 | 号段分配=单语句 `UPDATE…RETURNING`+`ON CONFLICT` 重试（PG 行锁保证并发）；语句超时映射为 `TimeoutError`（非 DatabaseError） |
 | 认证核心 | `core/auth/key_hasher.rs` | `KeyHasher` trait + Argon2id（m=19456,t=2,p=1） | 密码材料=`{salt}|{key_id}:{key_secret}` 单一来源；verify 对 malformed 哈希返回 false 而非 Err |
 | 监控 | `core/monitoring/core.rs`（门控）+ `server/router.rs` Prometheus 桥 | 告警规则/状态机/通知通道（SSRF 防护）/broadcast 事件流；/metrics 采样渲染桥 | 生产零引用、**test 构建恒编译**（告警 e2e 的 import 所需）；webhook SSRF 已知残余：`https://[::1]` 可绕过 |
-| HTTP 服务 | `server/router.rs`（3946）+ handlers | 路由装配、中间件栈、错误信封、限流挂载、安全头 | 中间件序（外→内）：size_limit(main 层)→request_id→sdforge context→审计→CORS→安全头×6→限流→路由→locale→api_version→auth→角色守卫 |
+| HTTP 服务 | `server/router.rs`（3936）+ handlers | 路由装配、中间件栈、错误信封、限流挂载、安全头 | 中间件序（外→内）：size_limit(main 层)→request_id→sdforge context→审计→CORS→安全头×6→限流→路由→locale→api_version→auth→角色守卫 |
 | gRPC | `server/grpc.rs` + `proto/` | 5 RPC（Generate/BatchGenerate/BatchGenerateStream/Parse/HealthCheck） | 与 HTTP 共用 `ApiKeyAuth` 与失败桶；gRPC 侧独有 `classify_miss`（禁用/过期→PermissionDenied，其余→Unauthenticated 同文案防探测）；count 校验先于流消费 |
 | 限流 | `server/rate_limit/` | limiteron 令牌桶，16 分片，5min 空闲回收 | 键优先级 workspace_id→IP→"anonymous"，但生产装配**从不注入 workspace_id 扩展**（实际全按 IP）；限流器内部错误 fail-open |
 | 审计 | `server/audit/` | 内存环+可选文件落盘（独立 writer task）、PII 脱敏 | 审计失败**不阻塞请求**；文件打开失败回退内存环；路径拒绝 `..` 遍历 |
 | 热重载 | `server/config/hot_reload.rs` | `ArcSwap<Config>` 原子换配 + confers FsWatcher（去抖=interval） | 解析/读失败→`Ok(false)` **保留旧配置**；变更 diff 仅 5 字段写审计 |
-| SDK | `sdk/kit.rs`（1211，门控） | AsyncKit 四模块装配（锁→仓储→路由→发号）、依赖图校验、健康聚合 | etcd 连接失败 build 直接 Err（fail-closed，不回退本地锁）；Segment 无仓储显性报错 |
+| SDK | `sdk/kit.rs`（1321，门控） | AsyncKit 四模块装配（锁→仓储→路由→发号）、依赖图校验、健康聚合 | etcd 连接失败 build 直接 Err（fail-closed，不回退本地锁）；Segment 无仓储显性报错 |
 | i18n | `core/i18n.rs` + `server/middleware/locale.rs` | 编译期内嵌 en/zh-CN，RFC 7231 协商 | 缺键→en→仍缺→返回键名（永不为空）；locale 不可用于鉴权决策 |
 
 ### 1.3 HTTP 请求生命周期（测试必须理解的主干）

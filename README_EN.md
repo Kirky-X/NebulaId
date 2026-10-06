@@ -74,7 +74,7 @@ Double-buffered segments, drift-guarded bit slicing, custom UUID v8 layouts — 
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">📊 <b>Observability</b><br><span style="color:#64748B">Prometheus <code>/metrics</code> exposes per-algorithm p50/p99/p999 and <code>clock_backwards</code>, plus inklog structured logging and health check endpoints</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🌍 <b>ICU Internationalization</b><br><span style="color:#64748B">unify-rust-i18n (Fluent/ICU stack) with <code>Accept-Language</code> negotiation (RFC 7231 §5.3.5); full error and log translations for <code>en</code> and <code>zh-CN</code></span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🌍 <b>ICU Internationalization</b><br><span style="color:#64748B">Fluent/ICU stack (fluent-bundle + unic-langid + sys-locale, aligned with the unify-rust-i18n baseline) with <code>Accept-Language</code> negotiation (RFC 7231 §5.3.5); full error and log translations for <code>en</code> and <code>zh-CN</code></span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🛡️ <b>Transport & Response Security</b><br><span style="color:#64748B">rustls TLS 1.2/1.3 (<code>min_tls_version</code> enforced), security headers, strict CORS, trusted-proxy IP attribution</span></td>
@@ -82,7 +82,7 @@ Double-buffered segments, drift-guarded bit slicing, custom UUID v8 layouts — 
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">⚙️ <b>Config fail-fast</b><br><span style="color:#64748B">All 18 config structs carry <code>deny_unknown_fields</code>; a bad config aborts startup with exit code 1; <code>${VAR}</code> environment expansion built in</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>Unified Script Entry</b><br><span style="color:#64748B"><code>scripts/run.sh</code> dispatches deploy / lint / redis-test / api-test / install-hooks, identical locally and in CI</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>Unified Script Entry</b><br><span style="color:#64748B"><code>scripts/run.sh</code> dispatches deploy / lint / redis-test / api-test / install-hooks — the single local development entry point</span></td>
 </tr>
 </table>
 
@@ -355,7 +355,7 @@ max_batch_size = 100        # validate(): 1..=10000
 
 ## 🌐 Internationalization
 
-Since v0.2.0 Nebula ID ships built-in internationalization, now on the unify-rust-i18n stack (Fluent/ICU, replacing the rust-i18n YAML backend in 0.3.0) covering runtime translation of error messages and logs:
+Since v0.2.0 Nebula ID ships built-in internationalization, now on the Fluent/ICU stack (fluent-bundle + unic-langid + sys-locale, replacing the rust-i18n YAML backend in 0.3.0 and aligned with the unify-rust-i18n baseline) covering runtime translation of error messages and logs:
 
 | Locale tag | Language | Locales file | Status |
 |------------|----------|--------------|--------|
@@ -386,7 +386,7 @@ Since v0.2.0 all development/deployment scripts are merged into the single entry
 ./scripts/run.sh api-test http://localhost:8080
 ```
 
-CI (`ci.yml` / `release.yml` / `health-check.yml`) calls the same entry point, keeping local and CI behavior identical. For the internal implementations and full arguments of each subcommand, see the [Deployment Guide · scripts/run.sh subcommands](docs/DEPLOYMENT.md#8-scriptsrunsh-子命令).
+CI (`ci.yml` / `release.yml` / `health-check.yml`) does not go through `scripts/run.sh`; it invokes the toolchain directly (`cargo fmt` / `clippy` / `test` / `llvm-cov` / `deny` / `audit`). `scripts/run.sh` is the local development entry point — it shares the same toolchain with CI but the call paths are independent. For the internal implementations and full arguments of each subcommand, see the [Deployment Guide · scripts/run.sh subcommands](docs/DEPLOYMENT.md#8-scriptsrunsh-子命令).
 
 ---
 
@@ -424,7 +424,7 @@ cargo bench --bench algorithms
 
 ### 📊 Test Scale
 
-As of the 0.3.0-rc.1 workspace: about 1900 Rust test functions (inline in `src/` plus the `src/core/tests/` E2E modules plus `tests/i18n_e2e.rs`), 4 shell end-to-end scripts, and 2 Criterion benchmark groups (i18n hot paths with 4 benchmark functions / 12 cases plus ID-generation / rate-limit / auth-cache hot paths with 6 benchmark functions / 7 cases). The CI coverage gate requires at least 95% line coverage, and the pre-push hook enforces a local 90% gate; actual line coverage at the v0.2.0 release was 89.91%. For per-module counts and methodology, see the [test scenario doc · statistics](docs/TEST_SCENARIOS.md#统计汇总).
+As of the 0.3.0-rc.1 workspace: about 1900 Rust test functions (inline in `src/` plus the `src/core/tests/` E2E modules plus `tests/i18n_e2e.rs`), 4 shell end-to-end scripts, and 2 Criterion benchmark groups (i18n hot paths with 4 benchmark functions / 12 cases plus ID-generation / rate-limit / auth-cache hot paths with 7 benchmark functions / 7 cases). The CI coverage gate requires at least 95% line coverage, and the pre-push hook enforces a local 90% gate; actual line coverage at the v0.2.0 release was 89.91%. For per-module counts and methodology, see the [test scenario doc · statistics](docs/TEST_SCENARIOS.md#统计汇总).
 
 ---
 
@@ -438,7 +438,7 @@ Two Criterion benchmarks are declared in this repository: the i18n hot paths (`b
 
 ### 🛡️ Security Design
 
-Security design follows "authenticate → throttle → transport → audit": garrison API key authentication (Argon2id hashing + constant-time comparison + cache + rotation grace period, clamped beyond 30 days), token-bucket rate limiting (genuinely mounted on the HTTP stack with normalized 429 headers), rustls TLS (handshakes below TLS 1.3 rejected when `tls13` is selected), security headers with strict CORS, trusted-proxy X-Forwarded-For validation, gRPC auth failure code distinction (`Unauthenticated` / `PermissionDenied`), the single-admin-key guard, and biz-tags tenant isolation (IDOR fix). Mechanism-level details live in the [Security doc](docs/SECURITY.md).
+Security design follows "authenticate → throttle → transport → audit": garrison API key authentication (Argon2id hashing + constant-time comparison + cache + rotation grace period, values beyond 30 days rejected by startup validation), token-bucket rate limiting (genuinely mounted on the HTTP stack with normalized 429 headers), rustls TLS (handshakes below TLS 1.3 rejected when `tls13` is selected), security headers with strict CORS, trusted-proxy X-Forwarded-For validation, gRPC auth failure code distinction (`Unauthenticated` / `PermissionDenied`), the single-admin-key guard, and biz-tags tenant isolation (IDOR fix). Mechanism-level details live in the [Security doc](docs/SECURITY.md).
 
 ### ⛓️ Supply Chain and Gates
 
@@ -512,7 +512,7 @@ For the full version history, see the [📋 Changelog](docs/CHANGELOG.md) (follo
 
 | Version | Date | Highlights |
 |------|------|------|
-| 0.3.0-rc.1 | 2026-09-22 | Ecosystem fully switched to the crates.io registry (RC-wave alignment), i18n migrated to unify-rust-i18n (Fluent/ICU), SDK migrated to trait-kit assembly (`NebulaIdKit`), gRPC auth on all RPCs, rate limiting genuinely mounted, TLS fail-fast, config `deny_unknown_fields` + exit code 1, key rotation grace period |
+| 0.3.0-rc.1 | 2026-09-22 | Ecosystem fully switched to the crates.io registry (RC-wave alignment), i18n migrated to the Fluent/ICU stack (fluent-bundle, aligned with the unify-rust-i18n baseline), SDK migrated to trait-kit assembly (`NebulaIdKit`), gRPC auth on all RPCs, rate limiting genuinely mounted, TLS fail-fast, config `deny_unknown_fields` + exit code 1, key rotation grace period |
 | 0.2.0 | 2026-07-23 | garrison DAO infrastructure, expanded e2e suite (95% module coverage), dbnexus / sdforge / confers architecture takeover, 3 strix security fixes |
 
 ---

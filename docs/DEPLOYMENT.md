@@ -111,7 +111,7 @@ docker run -d \
 | `[app]` | `http_port` | HTTP 服务端口 | 8080 |
 | `[app]` | `grpc_port` | gRPC 服务端口 | 9091 |
 | `[database]` | `password` | 数据库密码（环境变量展开） | `${NEBULA_DATABASE_PASSWORD}` |
-| `[algorithm]` | `default` | 默认算法 | snowflake |
+| `[algorithm]` | `default` | 默认算法 | snowflake（出厂 `config/config.toml` 值；代码 `Config::default()` 为 `segment`） |
 | `[algorithm.segment]` | `base_step` | 号段基础步长 | 1000 |
 | `[algorithm.snowflake]` | `sequence_bits` | 序列号位数 | 10 |
 | `[tls]` | `enabled` | 启用 TLS | false |
@@ -356,7 +356,7 @@ scripts/run.sh <subcommand> [args...]
 `cargo test --package nebulaid --all-features`。`--all-features` 可构建
 （= default + etcd + alerting + sdk + integration-tests + openapi）。
 
-GitHub Actions CI（`.github/workflows/ci.yml`）通过同一入口调用此子命令，确保本地与 CI 行为一致。
+GitHub Actions CI（`.github/workflows/ci.yml`）不经过 `scripts/run.sh`，直接执行 `cargo fmt` / `clippy` / `test` / `llvm-cov` / `deny` / `audit` 等工具链命令；`scripts/run.sh` 是本地开发入口，与 CI 使用同一套工具链但调用路径相互独立。
 
 ### 8.4 redis-test — Redis 集成测试
 
@@ -393,7 +393,7 @@ GitHub Actions CI（`.github/workflows/ci.yml`）通过同一入口调用此子�
 - 指标端点：`GET /metrics`
 - ID 生成端点：`POST /api/v1/generate`、`POST /api/v1/generate/batch`
 - ID 解析端点：`POST /api/v1/parse`
-- 鉴权测试：`X-API-Key` 头校验
+- 鉴权测试：`Authorization` 头校验（`ApiKey <key_id>:<key_secret>` scheme 与 Basic salted hash，全程不使用 `X-API-Key`）
 - 配置端点：`GET /api/v1/config`
 
 每个测试用例输出 PASS/FAIL，最终汇总 `PASSED`/`FAILED` 计数。

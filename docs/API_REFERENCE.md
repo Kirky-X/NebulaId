@@ -112,10 +112,10 @@
 | `server` | ✅ | `database` + `http` + `grpc` | 服务端整层；`nebula-id` 二进制随此特性构建 |
 | `segment` | ✅ | `database` | 号段算法（DB 号段） |
 | `snowflake` / `uuid-v8` | ✅ | — | 零 DB 叶子算法 |
-| `database` | ➖ | — | 仓储层（dbnexus + sea-orm），经 `segment` / `server` / `sdk` 蕴含 |
+| `database` | ➖ | — | 仓储层（dbnexus + sea-orm），经 `segment` / `server` 蕴含 |
 | `postgresql` | ✅ | — | dbnexus PostgreSQL 驱动开关 |
 | `garrison-auth` | ✅ | — | garrison API key 认证 |
-| `sdk` | ➖ | `openapi` + `database` | 嵌入式 SDK facade |
+| `sdk` | ➖ | `openapi` | 嵌入式 SDK facade；不蕴含 `database`（仓储面随 `database` cfg 门控，需仓储的组合显式启用 `sdk,database`） |
 | `alerting` | ➖ | 拉入 `reqwest` | 告警子系统与 webhook 分发 |
 | `etcd` | ➖ | — | etcd 分布式协调 |
 | `openapi` / `integration-tests` | ➖ | — | sdforge OpenAPI 镜像 / 真实 DB 测试门控 |
@@ -477,7 +477,7 @@ pub trait IdAlgorithm: Send + Sync {
 }
 ```
 
-> **注意：** `async fn initialize(&mut self, config: &Config)` 方法已在 L13 中从该 trait 移除（见 `src/core/algorithm/traits.rs:44-56`）。算法初始化现在通过各算法结构体自身的方法（如 `SnowflakeAlgorithm::initialize`）完成，由 `AlgorithmBuilder::build` 在交出 `Box<dyn IdAlgorithm>` 之前调用。这样既保持了 trait 的对象安全性，也避免了在共享的 `Arc<dyn IdAlgorithm>` 引用上要求 `&mut self`。
+> **注意：** `async fn initialize(&mut self, config: &Config)` 方法已在 L13 中从该 trait 移除（见 `src/core/algorithm/traits.rs:37-48`）。算法初始化现在通过各算法结构体自身的方法（如 `SnowflakeAlgorithm::initialize`）完成，由 `AlgorithmBuilder::build` 在交出 `Box<dyn IdAlgorithm>` 之前调用。这样既保持了 trait 的对象安全性，也避免了在共享的 `Arc<dyn IdAlgorithm>` 引用上要求 `&mut self`。
 
 #### `generate()`
 
@@ -783,7 +783,7 @@ pub enum AlgorithmType {
 
 `AlgorithmType::from_str` 还接受旧拼写 `uuid_v7` / `uuid_v4`
 （以及 `uuidv7` / `uuid7` / `uuidv4` / `uuid4`）作为 `UuidV8` 的**输入别名**
-（`src/core/types/id.rs:195-201`）；`Display` 只会输出 `segment` / `snowflake` / `uuid_v8`。
+（`src/core/types/id.rs:238-239`）；`Display` 只会输出 `segment` / `snowflake` / `uuid_v8`。
 
 ### `DcStatus`
 
@@ -859,7 +859,7 @@ pub struct AlgorithmMetricsSnapshot {
 > 含义是「尚未被路由器观测到」，而非「延迟为 0」。
 > `cache_hit_rate = None` 表示该算法没有缓存概念（Snowflake / UUID v8）——
 > 使用 `Option` 可避免把「无缓存」当作 0% 命中率计入均值
-> （`src/core/algorithm/traits.rs:144-166`）。
+> （`src/core/algorithm/traits.rs:138-159`）。
 
 ### `SegmentInfo`
 
@@ -977,12 +977,12 @@ pub struct ApiKeyWithSecret {
 | `BizTagNotFound(String)` | biz-tag 未找到 | 404 | `2003` |
 | `RateLimitExceeded` | 触发限流 | 429 | `4001` |
 | `TimeoutError` | 下游依赖超时 | 503 | `5004` |
-| `DatabaseError(String)` | 数据库操作失败 | 500 | `5002` |
+| `DatabaseError(String, Option<ErrorSource>)` | 数据库操作失败 | 500 | `5002` |
 | `CacheError(String)` | 缓存服务失败 | 500 | `5003` |
 | `InternalError(String)` | 附带描述的内部错误 | 500 | `5001` |
 | `ConfigurationError(String)` | 配置错误 | 500 | `5001` |
-| `EtcdError(String)` | etcd 协调层错误 | 500 | `5001` |
-| `IoError(String)` | I/O 错误 | 500 | `5001` |
+| `EtcdError(String, Option<ErrorSource>)` | etcd 协调层错误 | 500 | `5001` |
+| `IoError(String, Option<ErrorSource>)` | I/O 错误 | 500 | `5001` |
 | `ClockMovedBackward { last_timestamp }` | 系统时钟回拨，可能产生重复 ID | 500 | `5001` |
 | `SequenceOverflow { timestamp }` | 同一毫秒内序列号溢出 | 500 | `5001` |
 | `SegmentExhausted { max_id }` | 号段已完全耗尽 | 500 | `5001` |
@@ -991,6 +991,10 @@ pub struct ApiKeyWithSecret {
 > 算法类变体（`ClockMovedBackward` / `SequenceOverflow` / `SegmentExhausted`）
 > 与其余未单列的 5xx 类变体统一收敛为 500 + `5001`（`InternalError`），
 > 不会把内部细节泄露给客户端。
+>
+> `DatabaseError` / `EtcdError` / `IoError` 的第二字段 `Option<ErrorSource>`
+> 是 `#[source]` 底层错误源：`.0` 为第一层人类可读文案，`.1` 仅进服务端日志
+> （`src/core/types/error.rs:99-100,134-145`），不出现在 HTTP 响应体中。
 
 ### 本地化错误响应（v0.2.0+）
 
@@ -1180,7 +1184,7 @@ locale 中间件仅作用于 `/api/v1/*` 路由。根路径下的
 ### 限流响应头
 
 由 `RateLimitMiddleware` 写入其处理的**每一个**响应。头名称为
-`src/server/rate_limit/middleware.rs:35-36` 中的规范小写常量：
+`src/server/rate_limit/middleware.rs:24-25` 中的规范小写常量：
 
 | 响应头 | 放行时写入（2xx/4xx/5xx） | 拒绝时写入（429） |
 |--------|--------------------------|-------------------|
@@ -1190,7 +1194,7 @@ locale 中间件仅作用于 `/api/v1/*` 路由。根路径下的
 
 429 响应体为 JSON：`{"code": 429, "message": "Rate limit exceeded", "retry_after": <n|null>}`。
 
-**CORS 暴露范围很重要。** `src/server/config/cors.rs:36` 中的
+**CORS 暴露范围很重要。** `src/server/config/cors.rs:25` 中的
 `EXPOSED_HEADERS` 为 `["x-request-id", "x-ratelimit-remaining"]`。因此浏览器
 只能读取 `x-ratelimit-remaining`；`x-ratelimit-limit` 与 `Retry-After` 虽然存在于
 响应中，但**不会**暴露给脚本 —— 请在服务端读取。
@@ -1653,7 +1657,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ctx = GenerateContext::default();
     let id = segment.generate(&ctx).await?;
-    println!("Generated ID: {}", id.to_u128());
+    println!("Generated ID: {}", id.as_u128());
 
     let batch = segment.batch_generate(&ctx, 100).await?;
     println!("Generated batch of {} IDs", batch.len());
@@ -1683,7 +1687,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ctx = GenerateContext::default();
     let id = snowflake.generate(&ctx).await?;
-    println!("Generated Snowflake ID: {}", id.to_u128());
+    println!("Generated Snowflake ID: {}", id.as_u128());
 
     Ok(())
 }
@@ -1732,7 +1736,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = GenerateContext::default();
 
     let id = snowflake.generate(&ctx).await?;
-    println!("Generated ID via trait: {}", id.to_u128());
+    println!("Generated ID via trait: {}", id.as_u128());
 
     let health = snowflake.health_check();
     println!("Health status: {:?}", health);
@@ -1768,7 +1772,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ctx = GenerateContext::default();
     let id = segment.generate(&ctx).await?;
-    println!("Generated ID with health monitoring: {}", id.to_u128());
+    println!("Generated ID with health monitoring: {}", id.as_u128());
 
     Ok(())
 }
@@ -1795,7 +1799,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batch = algo.batch_generate(&ctx, 100).await?;
 
     for (i, id) in batch.ids.into_iter().enumerate().take(5) {
-        println!("ID {}: {}", i + 1, id.to_u128());
+        println!("ID {}: {}", i + 1, id.as_u128());
     }
 
     println!("... and {} more IDs", 95);

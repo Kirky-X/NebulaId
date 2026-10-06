@@ -33,19 +33,19 @@
 | 层 | 位置 | 规模（截至 0.3.0-rc.1 工作区） | 运行方式 |
 |----|------|---------------------------|----------|
 | 内联单元测试 | `src/` 各模块 `#[cfg(test)]` | 约 1700 个测试函数 | `cargo test --package nebulaid` |
-| E2E 测试模块 | `src/core/tests/`（11 个测试模块 + `mod.rs`） | 226 个测试函数 | `cargo test --package nebulaid --all-features` |
+| E2E 测试模块 | `src/core/tests/`（11 个测试模块 + `mod.rs`） | 219 个测试函数 | `cargo test --package nebulaid --all-features` |
 | i18n 端到端 | `tests/i18n_e2e.rs` | 1 个文件（middleware → Extension → 翻译响应全链） | 同上 |
 | 审计管道阻塞回归 | `tests/audit_ring_stall_repro.rs` | 1 个测试（灌满 inklog async 通道后断言审计 log() 不阻塞） | 同上 |
 | Shell 端到端 | `tests/*.sh` | 4 个脚本（见下节） | `./scripts/run.sh api-test` 等 |
 | Criterion 基准（i18n 热路径） | `benches/i18n.rs` | 1 组（4 基准函数 / 12 用例） | `cargo bench --bench i18n` |
-| Criterion 基准（发号热路径） | `benches/algorithms.rs` | 1 组（6 基准函数 / 7 用例） | `cargo bench --bench algorithms` |
+| Criterion 基准（发号热路径） | `benches/algorithms.rs` | 1 组（7 基准函数 / 7 用例） | `cargo bench --bench algorithms` |
 
 `src/core/tests/` 内的 E2E 模块按层组织，计数如下（`grep -c` 口径）：
 
 | 模块 | 测试函数 | 覆盖域 |
 |------|:--------:|--------|
 | `server_layer_e2e_tests.rs` | 56 | HTTP 服务层端到端 |
-| `auth_handlers_e2e_tests.rs` | 35 | 认证 handlers |
+| `auth_handlers_e2e_tests.rs` | 28 | 认证 handlers |
 | `grpc_monitoring_e2e_tests.rs` | 40 | gRPC 与监控 |
 | `supporting_layer_e2e_tests.rs` | 28 | 支撑层（配置 / 日志 / 缓存装配） |
 | `infra_e2e_tests.rs` | 21 | 基础设施（数据库连接 / 迁移） |
@@ -79,7 +79,7 @@
 |------|------|--------|----------|
 | AUTH-01 | API key 全生命周期 | 创建 / 校验 / 吊销 / 启停 | `src/core/tests/auth_handlers_e2e_tests.rs` |
 | AUTH-02 | Argon2id 哈希与常量时间比较 | 凭证不以明文落库；比较走 `subtle` | auth 模块内联测试 |
-| AUTH-03 | 轮换宽限期 | `>0` 时旧密钥在窗口内可用、到期惰性失效；`>30 天`钳制并告警 | 同上（CHANGELOG「密钥轮换宽限期」） |
+| AUTH-03 | 轮换宽限期 | `>0` 时旧密钥在窗口内可用、到期惰性失效；`>30 天`启动校验直接拒绝（fail-fast，非 clamp；`src/core/config/app_config.rs:420-427`） | 同上（CHANGELOG「密钥轮换宽限期」） |
 | AUTH-04 | 认证缓存 | 命中优先、未命中回源；缓存值不含 secret；`cache_ttl_seconds=0` 不装配 | `src/server/auth/memory_dao.rs` 内联测试 |
 | AUTH-05 | 缓存失效精确匹配 | 含 `*`/`?` 的 key_id 不能批量清除他人条目 | 同上 |
 | AUTH-06 | gRPC 认证失败码 | 禁用/过期 → `PermissionDenied`；无效/不存在 → `Unauthenticated` | `src/core/tests/grpc_monitoring_e2e_tests.rs` |
@@ -151,10 +151,10 @@
 | 脚本 | 行数 | 场景 | 前置条件 |
 |------|-----:|------|----------|
 | `tests/api_test.sh` | 1037 | API 端点回归（认证、发号、管理面） | 服务已启动；`./scripts/run.sh api-test [server_url]` |
-| `tests/degradation_test.sh` | 313 | 依赖故障下的降级行为 | 按脚本头部说明准备依赖 |
+| `tests/degradation_test.sh` | 326 | 依赖故障下的降级行为 | 按脚本头部说明准备依赖 |
 | `tests/distributed_test.sh` | 459 | etcd 分布式协调场景 | etcd 可用 |
-| `tests/db_concurrency_test.sh` | 289 | 数据库并发正确性 | PostgreSQL 可用 |
-| `tests/lib.sh` | 544 | 上述脚本的共用断言/工具库 | — |
+| `tests/db_concurrency_test.sh` | 302 | 数据库并发正确性 | PostgreSQL 可用 |
+| `tests/lib.sh` | 575 | 上述脚本的共用断言/工具库 | — |
 
 ---
 
@@ -188,12 +188,12 @@ cargo bench --bench i18n
 
 | 类别 | 数量 |
 |------|-----:|
-| Rust 测试函数合计 | 约 1930 |
+| Rust 测试函数合计 | 约 1925 |
 | ├─ `src/` 内联单元测试 | 约 1700 |
-| ├─ `src/core/tests/` E2E 模块 | 226 |
-| └─ `tests/i18n_e2e.rs` | 8（全链 i18n） |
+| ├─ `src/core/tests/` E2E 模块 | 219 |
+| └─ `tests/i18n_e2e.rs` | 7（全链 i18n） |
 | Shell 端到端脚本 | 4（另有 1 个共用库） |
-| Criterion 基准组 | 2（i18n：4 函数 / 12 用例；发号热路径：6 函数 / 7 用例） |
+| Criterion 基准组 | 2（i18n：4 函数 / 12 用例；发号热路径：7 函数 / 7 用例） |
 
 覆盖率：CI 门禁为行覆盖率 ≥ 95%（`ci.yml`），pre-push 本地门禁 ≥ 90%（`_coverage_gate.sh`）；v0.2.0 发布时实际行覆盖率 89.91%（门禁值是下限，非当前值）。历史口径：v0.2.0 发布时 e2e 套件曾报 1829 条（见 [CHANGELOG](CHANGELOG.md)），后续演进以上表 grep 口径为准。
 

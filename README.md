@@ -74,7 +74,7 @@
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">📊 <b>可观测性</b><br><span style="color:#64748B">Prometheus <code>/metrics</code> 逐算法暴露 p50/p99/p999 与 <code>clock_backwards</code>，inklog 结构化日志，健康检查端点</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🌍 <b>ICU 国际化</b><br><span style="color:#64748B">unify-rust-i18n（Fluent/ICU 栈）+ <code>Accept-Language</code> 协商（RFC 7231 §5.3.5），<code>en</code> 与 <code>zh-CN</code> 全量错误文案与日志</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🌍 <b>ICU 国际化</b><br><span style="color:#64748B">Fluent/ICU 栈（fluent-bundle + unic-langid + sys-locale，对齐 unify-rust-i18n 基线）+ <code>Accept-Language</code> 协商（RFC 7231 §5.3.5），<code>en</code> 与 <code>zh-CN</code> 全量错误文案与日志</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🛡️ <b>传输与响应安全</b><br><span style="color:#64748B">rustls TLS 1.2/1.3（<code>min_tls_version</code> 强制）、安全响应头、严格 CORS、可信代理 IP 归属</span></td>
@@ -82,7 +82,7 @@
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">⚙️ <b>配置 fail-fast</b><br><span style="color:#64748B">18 个配置结构体全部 <code>deny_unknown_fields</code>，坏配置以退出码 1 终止启动；<code>${VAR}</code> 环境变量展开</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>统一脚本入口</b><br><span style="color:#64748B"><code>scripts/run.sh</code> 调度 deploy / lint / redis-test / api-test / install-hooks，本地与 CI 同源</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>统一脚本入口</b><br><span style="color:#64748B"><code>scripts/run.sh</code> 调度 deploy / lint / redis-test / api-test / install-hooks，统一本地开发入口</span></td>
 </tr>
 </table>
 
@@ -358,7 +358,7 @@ max_batch_size = 100        # validate(): 1..=10000
 
 ## 🌐 国际化
 
-Nebula ID 自 v0.2.0 起内置国际化，现基于 unify-rust-i18n（Fluent/ICU 栈，0.3.0 起替换 rust-i18n YAML 后端），覆盖错误消息与日志的运行时翻译：
+Nebula ID 自 v0.2.0 起内置国际化，现基于 Fluent/ICU 栈（fluent-bundle + unic-langid + sys-locale，0.3.0 起替换 rust-i18n YAML 后端，对齐 unify-rust-i18n 基线），覆盖错误消息与日志的运行时翻译：
 
 | Locale 标签 | 语言 | locales 文件 | 状态 |
 |-------------|------|--------------|------|
@@ -389,7 +389,7 @@ curl 示例、请求头语义与 i18n 模块在架构中的位置，见 [📘 AP
 ./scripts/run.sh api-test http://localhost:8080
 ```
 
-CI（`ci.yml` / `release.yml` / `health-check.yml`）也通过同一入口调用，本地与 CI 行为一致。各子命令的内部实现与完整参数见 [🚀 部署指南 · scripts/run.sh 子命令](docs/DEPLOYMENT.md#8-scriptsrunsh-子命令)。
+CI（`ci.yml` / `release.yml` / `health-check.yml`）不经过 `scripts/run.sh`，直接执行 `cargo fmt` / `clippy` / `test` / `llvm-cov` / `deny` / `audit` 等工具链命令；`scripts/run.sh` 是本地开发入口，与 CI 使用同一套工具链但调用路径相互独立。各子命令的内部实现与完整参数见 [🚀 部署指南 · scripts/run.sh 子命令](docs/DEPLOYMENT.md#8-scriptsrunsh-子命令)。
 
 ---
 
@@ -426,7 +426,7 @@ cargo bench --bench algorithms
 
 ### 📊 测试规模
 
-截至 0.3.0-rc.1 工作区：约 1900 个 Rust 测试函数（`src/` 内联 + `src/core/tests/` E2E 模块 + `tests/i18n_e2e.rs`）、4 个 shell 端到端脚本、2 组 Criterion 基准（i18n 热路径 4 个基准函数 / 12 用例 + 发号 / 限流 / 认证缓存热路径 6 个基准函数 / 7 用例）。CI 覆盖率门禁为行覆盖率 ≥ 95%，pre-push 钩子另执行 ≥ 90% 的本地门禁；v0.2.0 发布时实际行覆盖率 89.91%。逐模块统计与统计口径见 [🧪 测试场景文档 · 统计汇总](docs/TEST_SCENARIOS.md#统计汇总)。
+截至 0.3.0-rc.1 工作区：约 1900 个 Rust 测试函数（`src/` 内联 + `src/core/tests/` E2E 模块 + `tests/i18n_e2e.rs`）、4 个 shell 端到端脚本、2 组 Criterion 基准（i18n 热路径 4 个基准函数 / 12 用例 + 发号 / 限流 / 认证缓存热路径 7 个基准函数 / 7 用例）。CI 覆盖率门禁为行覆盖率 ≥ 95%，pre-push 钩子另执行 ≥ 90% 的本地门禁；v0.2.0 发布时实际行覆盖率 89.91%。逐模块统计与统计口径见 [🧪 测试场景文档 · 统计汇总](docs/TEST_SCENARIOS.md#统计汇总)。
 
 ---
 
@@ -440,7 +440,7 @@ cargo bench --bench algorithms
 
 ### 🛡️ 安全设计
 
-安全设计围绕「认证 → 流控 → 传输 → 审计」展开：garrison API key 认证（Argon2id 哈希 + 常量时间比较 + 缓存 + 轮换宽限期，超 30 天钳制）、令牌桶限流（真实挂载 HTTP 栈，429 携带规范化响应头）、rustls TLS（`tls13` 时拒绝低于 1.3 的握手）、安全响应头与严格 CORS、可信代理 X-Forwarded-For 校验、gRPC 认证失败码区分（`Unauthenticated` / `PermissionDenied`）、单 admin key 守卫与 biz-tags 租户隔离（IDOR 修复）。逐项机制的代码级细节见 [🔒 安全文档](docs/SECURITY.md)。
+安全设计围绕「认证 → 流控 → 传输 → 审计」展开：garrison API key 认证（Argon2id 哈希 + 常量时间比较 + 缓存 + 轮换宽限期，超 30 天启动校验拒绝）、令牌桶限流（真实挂载 HTTP 栈，429 携带规范化响应头）、rustls TLS（`tls13` 时拒绝低于 1.3 的握手）、安全响应头与严格 CORS、可信代理 X-Forwarded-For 校验、gRPC 认证失败码区分（`Unauthenticated` / `PermissionDenied`）、单 admin key 守卫与 biz-tags 租户隔离（IDOR 修复）。逐项机制的代码级细节见 [🔒 安全文档](docs/SECURITY.md)。
 
 ### ⛓️ 供应链与门禁
 
@@ -514,7 +514,7 @@ CI 五阶段门禁（fmt + clippy → cargo-deny → cargo-audit `--deny warning
 
 | 版本 | 日期 | 要点 |
 |------|------|------|
-| 0.3.0-rc.1 | 2026-09-22 | 自研生态全面切 crates.io registry（RC 波次对齐）、i18n 迁移 unify-rust-i18n（Fluent/ICU）、SDK 迁移 trait-kit 装配（`NebulaIdKit`）、gRPC 全 RPC 认证、限流真实挂载、TLS fail-fast、配置 `deny_unknown_fields` + 退出码 1、密钥轮换宽限期 |
+| 0.3.0-rc.1 | 2026-09-22 | 自研生态全面切 crates.io registry（RC 波次对齐）、i18n 迁移 Fluent/ICU 栈（fluent-bundle，对齐 unify-rust-i18n 基线）、SDK 迁移 trait-kit 装配（`NebulaIdKit`）、gRPC 全 RPC 认证、限流真实挂载、TLS fail-fast、配置 `deny_unknown_fields` + 退出码 1、密钥轮换宽限期 |
 | 0.2.0 | 2026-07-23 | garrison DAO 基础设施、e2e 套件扩充（95% 模块覆盖）、dbnexus / sdforge / confers 架构接管、3 项 strix 安全修复 |
 
 ---

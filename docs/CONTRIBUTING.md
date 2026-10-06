@@ -92,7 +92,7 @@
 </tr>
 </table>
 
-> 📜 **完整行为准则:** [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+> 📜 **行为准则：** 上表即为本仓库行为准则摘要；仓库暂未提供独立的 `CODE_OF_CONDUCT.md` 文件。
 
 ---
 
@@ -151,8 +151,8 @@ cargo --version
 **2. Clone 您的 Fork**
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/nebula-id
-cd nebula-id
+git clone https://github.com/YOUR_USERNAME/NebulaId
+cd NebulaId
 ```
 
 </td>
@@ -164,7 +164,7 @@ cd nebula-id
 
 ```bash
 git remote add upstream \
-  https://github.com/nebula-id/nebula-id
+  https://github.com/Kirky-X/NebulaId
 ```
 
 </td>
@@ -175,7 +175,7 @@ git remote add upstream \
 ```bash
 git remote -v
 # origin    your-fork
-# upstream  nebula-id/nebula-id
+# upstream  Kirky-X/NebulaId
 ```
 
 </td>
@@ -185,7 +185,7 @@ git remote -v
 ### 构建与测试
 
 ```bash
-# 构建项目（default = postgresql + http + grpc + garrison-auth）
+# 构建项目（default = server + segment + snowflake + uuid-v8 + postgresql + garrison-auth；http/grpc 随 server 蕴含）
 cargo build --package nebulaid
 
 # 全特性构建（--all-features 可构建，覆盖 etcd + sdk + alerting +
@@ -233,13 +233,13 @@ graph LR
 
 #### 1️⃣ 创建分支
 
-分支应基于 `develop` 分支创建。
+分支应基于 `main` 分支创建（仓库当前唯一长期分支）。
 
 ```bash
-# 同步上游 develop 分支
+# 同步上游 main 分支
 git fetch upstream
-git checkout develop
-git merge upstream/develop
+git checkout main
+git merge upstream/main
 
 # 创建功能分支
 git checkout -b feature/ALGORITHM-id-generation
@@ -409,7 +409,8 @@ git push origin feature/ALGORITHM-id-generation
 - **核心业务逻辑**: 100% 覆盖。
 
 ```bash
-# 生成覆盖率报告（仓库门禁统一使用 cargo-llvm-cov）
+# 生成覆盖率报告（CI 与 pre-push 门禁统一使用 cargo-llvm-cov；
+# scripts/run.sh pre-commit 的可选覆盖率步骤使用 cargo-tarpaulin）
 cargo llvm-cov --package nebulaid --fail-under-lines 90
 
 # CI 权威门禁（default leg，排除 server/proto/ 生成代码，≥ 95%）

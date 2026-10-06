@@ -78,7 +78,8 @@ cache_ttl_seconds = 300
 api_key_salt = "${NEBULA_API_KEY_SALT:}"
 api_keys = []
 # 密钥轮换宽限期（秒）。0 = 关闭：轮换后上一代凭证立即失效。
-# 需要"轮换不掉请求"时改为正整数（如 3600），上限 30 天，超限会被 clamp 到上限并告警。
+# 需要"轮换不掉请求"时改为正整数（如 3600），上限 30 天（2592000 秒）；
+# 超过上限的配置在启动校验时被直接拒绝（fail-fast，退出码 1），并非 clamp。
 key_rotation_grace_period_seconds = 0
 
 [etcd]

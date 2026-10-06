@@ -117,10 +117,10 @@ cargo --version
 
 ```toml
 [dependencies]
-nebulaid = { version = "0.2", features = ["postgresql"] }
+nebulaid = { version = "0.3", features = ["postgresql"] }
 
 # 如需 etcd 分布式协调（推荐生产环境）
-# nebulaid = { version = "0.2", features = ["postgresql", "etcd"] }
+# nebulaid = { version = "0.3", features = ["postgresql", "etcd"] }
 ```
 
 或者使用命令行（自动添加最新版本到 Cargo.toml）：
@@ -195,7 +195,7 @@ Segment 算法支持多数据中心部署，每个数据中心分配唯一的 DC
 | 消费形态 | 推荐组合 | 依赖树规模 |
 |---|---|---|
 | 部署完整服务 | default（`server` + 三算法 + `postgresql` + `garrison-auth`） | 524 |
-| 嵌入式 SDK | `sdk`（蕴含 `openapi` + `database`） | 279 |
+| 嵌入式 SDK | `sdk`（蕴含 `openapi`；不蕴含 `database`，仓储面另显式启用） | 192（`sdk,database` 组合为 279） |
 | 仅号段算法 | `segment`（蕴含 `database`） | 278 |
 | 仅 Snowflake / UUID v8 | `snowflake` 或 `uuid-v8` | 191 |
 
@@ -311,7 +311,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 > 💡 **关于旧名称**：`uuid_v7` / `uuid_v4` 不再是独立算法，但 `AlgorithmType::from_str`
-> （`src/core/types/id.rs:195-201`）仍接受它们作为 `uuid_v8` 的**输入别名**，
+> （`src/core/types/id.rs:238-239`）仍接受它们作为 `uuid_v8` 的**输入别名**，
 > 因此历史配置/API 请求里的 `"uuid_v7"` 依然能解析；输出与存储一律是 `uuid_v8`。
 
 ---
@@ -447,7 +447,7 @@ Nebula ID 提供一等公民的嵌入式 SDK（feature `sdk`），无需自行�
 
 ```toml
 [dependencies]
-nebulaid = { version = "0.2", features = ["sdk"] }
+nebulaid = { version = "0.3", features = ["sdk"] }
 ```
 
 **纯算法嵌入（零 DB 零网络）** —— 对照 `examples/embedded.rs`：
@@ -560,7 +560,7 @@ cargo run --package nebulaid --example sdk_server --features sdk,http
 
 <div align="center">
 
-**💬 仍然需要帮助？** [提交 Issue](../../issues) 或 [访问文档中心](https://github.com/nebula-id/nebula-id)
+**💬 仍然需要帮助？** [提交 Issue](../../issues) 或 [访问文档中心](https://github.com/Kirky-X/NebulaId)
 
 </div>
 
@@ -604,7 +604,7 @@ cargo run --package nebulaid --example sdk_server --features sdk,http
 
 <div align="center">
 
-**[📖 API 文档](https://docs.rs/nebula-id)** • **[❓ 常见问题](FAQ.md)** • **[🐛 报告问题](../../issues)**
+**[📖 API 文档](https://docs.rs/nebulaid)** • **[❓ 常见问题](FAQ.md)** • **[🐛 报告问题](../../issues)**
 
 由 Nebula ID Team 用 ❤️ 制作
 

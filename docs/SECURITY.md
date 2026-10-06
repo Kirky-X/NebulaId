@@ -23,7 +23,7 @@
 
 | 版本 | 支持状态 |
 |------|----------|
-| latest（0.2.x 及 Unreleased） | ✅ 接收安全修复 |
+| latest（0.3.0-rc.1 及 Unreleased） | ✅ 接收安全修复 |
 | 更早版本 | ❌ 不再接收修复 |
 
 依赖安全由 `cargo-audit`（CI 与 release 前置均以 `--deny warnings` 执行）与 `cargo-deny`（许可证 + 安全 Advisories 检查，配置见 `deny.toml`）双重监控。
@@ -46,7 +46,7 @@
 
 - API key 验证由 [garrison](https://crates.io/crates/garrison) 接管（`web-axum` 中间件 + `protocol-apikey` ApiKeyHandler + `cache-memory` KV 后端），不再使用手写方案。
 - 密钥以 **Argon2id** 哈希落库（`argon2 0.6`，修复 CWE-916；salt 由 `NEBULA_API_KEY_SALT` 或 `[auth].api_key_salt` 提供），凭证比较使用常量时间实现（`subtle`）。
-- **轮换宽限期**：`key_rotation_grace_period_seconds > 0` 时，轮换会把上一代哈希与窗口截止时刻落库（`prev_secret_hash` / `rotate_expires_at` 两列，启动期迁移自动补齐，见[配置迁移指南](CONFIG_MIGRATION_GUIDE.md#密钥轮换宽限期与配置-fail-fast未发布版本)），旧密钥在宽限窗口内仍可验证、到期惰性失效；超过 30 天会被钳制并告警。默认 `0`（关闭）。
+- **轮换宽限期**：`key_rotation_grace_period_seconds > 0` 时，轮换会把上一代哈希与窗口截止时刻落库（`prev_secret_hash` / `rotate_expires_at` 两列，启动期迁移自动补齐，见[配置迁移指南](CONFIG_MIGRATION_GUIDE.md#密钥轮换宽限期与配置-fail-fast未发布版本)），旧密钥在宽限窗口内仍可验证、到期惰性失效；超过 30 天（2592000 秒）启动校验直接拒绝（fail-fast，非 clamp）。默认 `0`（关闭）。
 - **认证缓存**：进程内 `MemoryGarrisonDao` 实现缓存命中优先、未命中回源 DB；缓存值仅含 workspace_id / role / 过期时间，**不含 secret**。吊销/轮换/禁用对本进程即时失效；多节点部署其他节点最长滞后一个 TTL。缓存失效为精确前缀匹配，glob 形态（含 `*` / `?`）的 key_id 不能批量清除他人条目。
 - **gRPC 认证**：全部 RPC（含双向流）在各入口经单点 `authenticate()` 校验 `authorization`（Basic/ApiKey）。key 被禁用或过期返回 `PermissionDenied`，凭证无效或不存在返回 `Unauthenticated`；`auth.enabled = false` 时放行。
 - **单 admin key 守卫**：创建/吊销 admin key 的守卫用 SQL 侧 `role='admin' AND enabled=true` 计数判定（行 id 精确查询，无分页上界），阻止「admin 再开 admin」持久化后门。注意作用范围：守卫只在 HTTP `POST /api-keys` 生效，启动期环境/配置引导的 admin key 走仓储直插。

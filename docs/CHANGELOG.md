@@ -64,7 +64,8 @@ SDK 强化、密钥轮换宽限期与配置 fail-fast（**含多项行为变更�
   `0.5.0-rc.5` / inklog `0.3.0-rc.5` / garrison `0.9.0-rc.1` / trait-kit `0.5.0-rc.6` /
   limiteron `0.3.0-rc.4` 统一对齐同一 RC 波次；本仓库自此可独立构建，CI 无需 checkout
   兄弟目录，pre-release 语义下各依赖按 semver 自动上浮。
-- **i18n 技术栈迁移到 unify-rust-i18n（Fluent/ICU 栈）**：rust-i18n 的 YAML 资源
+- **i18n 技术栈迁移到 Fluent/ICU 栈（fluent-bundle + unic-langid + sys-locale，对齐
+  unify-rust-i18n 基线；直接依赖 fluent-bundle，未引入 unify-rust-i18n crate）**：rust-i18n 的 YAML 资源
   `locales/en.yml` / `locales/zh-CN.yml` 替换为 `locales/{en,zh}/messages.ftl`（经
   `include_str!` 编译期内嵌，键集对齐守卫改为作用于 FTL 资源）；进程默认 locale 可配置
   （检测链 `NEBULA_LOCALE` → `[app].locale` → `LC_ALL`/`LC_MESSAGES`/`LANG` →
@@ -211,7 +212,8 @@ SDK 强化、密钥轮换宽限期与配置 fail-fast（**含多项行为变更�
   `rotate_api_key` 的形参写作 `_grace_period_seconds`（下划线前缀、完全不读），
   轮换直接覆盖 `key_secret_hash` → 旧密钥当场失效，宽限期形同虚设。现在
   `>0` 时轮换会把上一代哈希和窗口截止时刻落库，旧密钥在宽限窗口内仍可验证、
-  到期自动失效（惰性按 `rotate_expires_at` 判定），超过 30 天会被钳制；
+  到期自动失效（惰性按 `rotate_expires_at` 判定），超过 30 天的配置在启动校验
+  时直接拒绝（fail-fast）；
   `key_rotation_grace_period_seconds` 的默认值由 7 天改为 `0`（宽限期关闭），
   因为旧行为等价于"没有宽限期"，默认开启会改变既有部署的安全窗口语义。
   `api_keys` 表新增 `prev_secret_hash` / `rotate_expires_at` 两列；两列由启动期
@@ -265,10 +267,11 @@ SDK 强化、密钥轮换宽限期与配置 fail-fast（**含多项行为变更�
 
 ### Added
 
-- **嵌入式 SDK（feature `sdk`）**：`NebulaIdClientBuilder` / `NebulaIdClient`，
-  `build()` 收拢分布式锁注入 / 路由初始化 / 降级后台任务；`examples/embedded.rs`
-  （零 DB 零网络）与 `examples/sdk_server.rs`（sdforge `#[forge]` 封装 +
-  OpenAPI）。
+- **嵌入式 SDK（feature `sdk`）**：以 trait-kit 装配的新门面 `NebulaIdKitBuilder` /
+  `NebulaIdKit`（旧 `NebulaIdClient` / `NebulaIdClientBuilder` 已在同版本移除，
+  迁移对照见上文 Breaking），`build()` 收拢分布式锁注入 / 路由初始化 / 降级后台
+  任务；`examples/embedded.rs`（零 DB 零网络）与 `examples/sdk_server.rs`
+  （sdforge `#[forge]` 封装 + OpenAPI）。
 - **CI/构建**：`ci.yml` clippy 与 test matrix 改单特性（`--features etcd`，
   因 dbnexus 禁止 sqlite+postgres 混用）；`docker/Dockerfile` 适配单包
   `nebulaid` 构建；新增 `openapi` 镜像特性。

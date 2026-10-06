@@ -169,12 +169,12 @@ cargo build --release
 | `server` | ✅ | Full server layer (HTTP/gRPC/auth/audit/rate limiting), implies `database` + `http` + `grpc`; the `nebula-id` binary is only built with this feature |
 | `segment` | ✅ | Segment algorithm, implies `database` (segments are DB-backed by definition) |
 | `snowflake` / `uuid-v8` | ✅ | DB-free leaf algorithms, can be enabled independently |
-| `database` | ➖ | Repository-layer switch (dbnexus + sea-orm), implied by `segment` / `server` / `sdk`, never used standalone |
+| `database` | ➖ | Repository-layer switch (dbnexus + sea-orm), implied by `segment` / `server` (SDK repository surface enabled via the `sdk,database` combination), never used standalone |
 | `postgresql` | ✅ | dbnexus PostgreSQL storage backend (can be turned off with `--no-default-features`; compile-only guarantee, a real PostgreSQL is needed at runtime) |
 | `http` / `grpc` | ✅ | REST and gRPC access (sdforge mirror features, implied by `server`) |
 | `garrison-auth` | ✅ | garrison takes over API key verification (falling back to the hand-written Argon2id path when disabled) |
 | `etcd` | ➖ | etcd distributed coordination |
-| `sdk` | ➖ | Embedded SDK facade (`NebulaIdKit`, implies `openapi` + `database`) |
+| `sdk` | ➖ | Embedded SDK facade (`NebulaIdKit`, implies `openapi`; pure-algorithm embedding compiles with a zero-DB tree, repository surface gated on `database`) |
 | `openapi` | ➖ | sdforge OpenAPI mirror feature (without it, `#[forge]` registers no OpenAPI routes and `/api-docs/openapi.json` has empty paths) |
 | `integration-tests` | ➖ | Gates `#[ignore]` tests that need a real database |
 | `alerting` | ➖ | Gates the alerting subsystem and webhook dispatch (`src/core/monitoring`, not compiled into production builds by default) |

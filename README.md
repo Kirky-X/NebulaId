@@ -171,12 +171,12 @@ cargo build --release
 | `server` | ✅ | 服务端整层（HTTP/gRPC/认证/审计/限流），蕴含 `database` + `http` + `grpc`；`nebula-id` 二进制仅随此特性构建 |
 | `segment` | ✅ | 号段算法，蕴含 `database`（号段语义即 DB 号段） |
 | `snowflake` / `uuid-v8` | ✅ | 零 DB 叶子算法，可独立启用 |
-| `database` | ➖ | 仓储层开关（dbnexus + sea-orm），经 `segment` / `server` / `sdk` 蕴含，不单独使用 |
+| `database` | ➖ | 仓储层开关（dbnexus + sea-orm），经 `segment` / `server` 蕴含（SDK 仓储面经 `sdk,database` 组合启用），不单独使用 |
 | `postgresql` | ✅ | dbnexus PostgreSQL 存储后端（`--no-default-features` 可关，仅保证编译，运行时需自备 PostgreSQL） |
 | `http` / `grpc` | ✅ | REST 与 gRPC 接入（sdforge 镜像 feature，随 `server` 蕴含） |
 | `garrison-auth` | ✅ | garrison 接管 API key 验证（关闭后回退手写 Argon2id 路径） |
 | `etcd` | ➖ | etcd 分布式协调 |
-| `sdk` | ➖ | 嵌入式 SDK facade（`NebulaIdKit`，蕴含 `openapi` + `database`） |
+| `sdk` | ➖ | 嵌入式 SDK facade（`NebulaIdKit`，蕴含 `openapi`；纯算法嵌入零 DB 编译树，仓储面随 `database` 门控） |
 | `openapi` | ➖ | sdforge OpenAPI 镜像 feature（未启用时 `#[forge]` 不注册 OpenAPI 路由，`/api-docs/openapi.json` 的 paths 为空） |
 | `integration-tests` | ➖ | 门控需要真实数据库的 `#[ignore]` 测试 |
 | `alerting` | ➖ | 门控告警子系统与 webhook 分发（`src/core/monitoring`，生产默认不编译） |

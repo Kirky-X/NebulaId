@@ -449,9 +449,14 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
     ];
     for sql in &upgrade_sqls {
         if let Err(e) = db.execute_unprepared(sql).await {
-            tracing::error!(event = "db_upgrade_statement_failed", error = %e, "schema upgrade statement failed");
+            tracing::error!(
+                event = "db_upgrade_statement_failed",
+                error = %e,
+                "{}",
+                t!("log.core.database.connection.schema_upgrade_statement_failed")
+            );
             return Err(CoreError::DatabaseError(
-                "Failed to apply schema upgrade (see server logs for details)".to_string(),
+                t!("error.core.database.connection.schema_upgrade_failed"),
                 Some(crate::core::types::ErrorSource::new(e)),
             ));
         }

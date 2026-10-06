@@ -61,7 +61,7 @@ impl ObfuscationConfig {
             return Ok(None);
         };
         let key = u64::from_str_radix(hex, 16)
-            .map_err(|_| "algorithm.obfuscation.key_hex must be 16 hex characters".to_string())?;
+            .map_err(|_| t!("error.core.config.algorithm.key_hex_invalid"))?;
         Ok(Some(crate::core::types::obfuscation::IdObfuscator::new(
             key,
         )))

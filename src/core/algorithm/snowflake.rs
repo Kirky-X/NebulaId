@@ -256,26 +256,27 @@ impl SnowflakeAlgorithm {
             + u32::from(self.config.worker_id_bits)
             + u32::from(self.config.sequence_bits);
         if total_bits >= 64 {
-            return Err(CoreError::ConfigurationError(format!(
-                "snowflake total bits ({total_bits}) must be less than 64"
+            return Err(CoreError::ConfigurationError(t!(
+                "error.core.algorithm.snowflake.total_bits_exceed_limit",
+                total_bits = total_bits
             )));
         }
         let dc_bits = self.config.datacenter_id_bits;
         if dc_bits < 8 && self.datacenter_id >= (1u8 << dc_bits) {
-            return Err(CoreError::ConfigurationError(format!(
-                "datacenter_id {} exceeds datacenter_id_bits={} range (max {})",
-                self.datacenter_id,
-                dc_bits,
-                (1u16 << dc_bits) - 1
+            return Err(CoreError::ConfigurationError(t!(
+                "error.core.algorithm.snowflake.dc_id_exceeds_bits",
+                dc_id = self.datacenter_id,
+                dc_bits = dc_bits,
+                max = (1u16 << dc_bits) - 1
             )));
         }
         let worker_bits = self.config.worker_id_bits;
         if worker_bits < 8 && self.worker_id >= (1u8 << worker_bits) {
-            return Err(CoreError::ConfigurationError(format!(
-                "worker_id {} exceeds worker_id_bits={} range (max {})",
-                self.worker_id,
-                worker_bits,
-                (1u16 << worker_bits) - 1
+            return Err(CoreError::ConfigurationError(t!(
+                "error.core.algorithm.snowflake.worker_id_exceeds_bits",
+                worker_id = self.worker_id,
+                worker_bits = worker_bits,
+                max = (1u16 << worker_bits) - 1
             )));
         }
 
@@ -294,14 +295,11 @@ impl SnowflakeAlgorithm {
             if let Some(saved) = snowflake_state::load(&path) {
                 let now = Self::get_timestamp();
                 if saved.last_issued_ts > now {
-                    return Err(CoreError::ConfigurationError(format!(
-                        "snowflake state guard: last issued timestamp {} is ahead of \
-                         current clock {} (clock moved backward across restart by {}ms); \
-                         refuse to generate duplicate IDs — resolve clock sync and remove \
-                         the state file only if the previous run is confirmed discarded",
-                        saved.last_issued_ts,
-                        now,
-                        saved.last_issued_ts - now
+                    return Err(CoreError::ConfigurationError(t!(
+                        "error.core.algorithm.snowflake.state_guard_clock_backward",
+                        last_issued_ts = saved.last_issued_ts,
+                        now = now,
+                        behind_ms = saved.last_issued_ts - now
                     )));
                 }
             }

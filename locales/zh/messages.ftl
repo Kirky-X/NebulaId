@@ -108,6 +108,10 @@ log-core-algorithm-circuit_breaker-transitioned_to_half_open = 熔断器已切�
 
 # src/core/algorithm/snowflake.rs
 log-core-algorithm-snowflake-initialized = Snowflake 算法已初始化，datacenter_id={ $datacenter_id }，worker_id={ $worker_id }
+error-core-algorithm-snowflake-total_bits_exceed_limit = Snowflake 位宽合计（{ $total_bits }）必须小于 64
+error-core-algorithm-snowflake-dc_id_exceeds_bits = datacenter_id { $dc_id } 超出 datacenter_id_bits={ $dc_bits } 的取值范围（最大 { $max }）
+error-core-algorithm-snowflake-worker_id_exceeds_bits = worker_id { $worker_id } 超出 worker_id_bits={ $worker_bits } 的取值范围（最大 { $max }）
+error-core-algorithm-snowflake-state_guard_clock_backward = Snowflake 状态守卫：上次发号时间戳 { $last_issued_ts } 超前于当前时钟 { $now }（跨重启时钟回拨 { $behind_ms }ms）；拒绝生成重复 ID，请先解决时钟同步问题，并仅在前次运行确认已作废后才删除状态文件
 
 # src/core/algorithm/segment.rs
 log-core-algorithm-segment-cpu_monitoring_not_supported = 当前平台不支持 CPU 监控，使用默认值
@@ -192,6 +196,17 @@ log-core-config-environment-unknown_nebula_env_treated_as_production = NEBULA_EN
 log-core-config-app_config-config_expanded = 配置已展开
 log-core-config-app_config-toml_parsed = 原始解析的 auth enabled
 log-core-config-app_config-config_loaded = 认证配置已加载
+error-core-config-app_config-segment_feature_not_enabled = algorithm.default = "segment" 需要启用 `segment` 特性，但当前构建未启用
+error-core-config-app_config-snowflake_feature_not_enabled = algorithm.default = "snowflake" 需要启用 `snowflake` 特性，但当前构建未启用
+error-core-config-app_config-uuid_v8_feature_not_enabled = algorithm.default = "uuid_v8" 需要启用 `uuid-v8` 特性，但当前构建未启用
+error-core-config-app_config-total_bits_exceed_limit = Snowflake 总位数（datacenter_id_bits + worker_id_bits + sequence_bits）必须小于 64
+error-core-config-app_config-dc_id_exceeds_bits = app.dc_id { $dc_id } 超出 datacenter_id_bits={ $dc_bits } 的取值范围（最大 { $max }）
+error-core-config-app_config-worker_id_exceeds_bits = app.worker_id { $worker_id } 超出 worker_id_bits={ $worker_bits } 的取值范围（最大 { $max }）
+error-core-config-app_config-clock_drift_threshold_invalid = Snowflake clock_drift_threshold_ms 必须大于 0
+error-core-config-app_config-key_hex_invalid = algorithm.obfuscation.key_hex 必须恰好为 16 个十六进制字符（= u64）
+
+# src/core/config/algorithm.rs
+error-core-config-algorithm-key_hex_invalid = algorithm.obfuscation.key_hex 必须为 16 个十六进制字符
 
 # src/core/database/connection.rs
 log-core-database-connection-connecting = 正在连接 { $engine } 数据库，URL：{ $url }
@@ -202,6 +217,8 @@ log-core-database-connection-schema_create_failed = 无法创建 schema（可能
 log-core-database-connection-table_created_verified = 表已创建/验证：{ $table_name }
 log-core-database-connection-table_already_exists = 表已存在，跳过创建
 log-core-database-connection-migrations_completed = 数据库迁移已成功完成
+log-core-database-connection-schema_upgrade_statement_failed = schema 升级语句执行失败
+error-core-database-connection-schema_upgrade_failed = 应用 schema 升级失败（详见服务端日志）
 
 # src/core/database/repository.rs
 log-core-database-repository-api_key_role_conversion = API 密钥角色转换
@@ -269,6 +286,10 @@ log-core-monitoring-core-send_alert_failed = 发送告警失败：{ $error }
 log-core-monitoring-core-send_resolved_alert_failed = 发送已恢复告警失败：{ $error }
 log-core-monitoring-core-alert_manager_shutting_down = AlertManager 正在关闭...
 log-core-monitoring-core-alert_manager_shutdown_complete = AlertManager 已关闭
+
+# src/core/types/id.rs
+error-core-types-id-obfuscation_key_not_configured = 请求了 obfuscated 格式 ID，但未配置 obfuscation.key_hex
+error-core-types-id-obfuscation_id_exceeds_u64 = ID 超出 u64 取值范围，无法混淆
 
 # src/server/audit/logger.rs
 log-server-audit-logger-persist_failed = 持久化审计日志失败：{ $error }
@@ -635,6 +656,7 @@ error-sdk-capability_missing = { $module } 能力缺失：{ $reason }
 error-sdk-module_register_failed = trait-kit 模块注册失败：{ $reason }
 error-sdk-assembly_config_missing = SDK 装配配置缺失：{ $reason }
 error-sdk-kit_build_failed = trait-kit build 失败：{ $reason }
+error-sdk-repository_required_for_segment = Segment 算法需要数据库仓储；请先调用 NebulaIdKitBuilder::with_repository() 再 build()
 error-sdk-router_module_must_exist_on_ready_kit = RouterModule 能力在 Ready Kit 上必然存在（build 依赖图校验已保证）
 log-sdk-audit_logger_injection_confirmed = sdk: audit_logger 注入确认
 error-detail-segment_loader_not_configured = Segment 算法未接通数据源，需在装配处注入 DbSegmentLoader（SegmentRepository::allocate_segment）

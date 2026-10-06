@@ -287,21 +287,21 @@ impl Config {
         // 允许合成组合（默认 config + 任意 feature 集），不做拦截。
         #[cfg(all(not(test), not(feature = "segment")))]
         if self.algorithm.get_default_algorithm() == crate::core::types::AlgorithmType::Segment {
-            return Err(ConfigError::InvalidValue(
-                "algorithm.default = \"segment\" requires the `segment` feature, which this build does not enable".to_string(),
-            ));
+            return Err(ConfigError::InvalidValue(t!(
+                "error.core.config.app_config.segment_feature_not_enabled"
+            )));
         }
         #[cfg(all(not(test), not(feature = "snowflake")))]
         if self.algorithm.get_default_algorithm() == crate::core::types::AlgorithmType::Snowflake {
-            return Err(ConfigError::InvalidValue(
-                "algorithm.default = \"snowflake\" requires the `snowflake` feature, which this build does not enable".to_string(),
-            ));
+            return Err(ConfigError::InvalidValue(t!(
+                "error.core.config.app_config.snowflake_feature_not_enabled"
+            )));
         }
         #[cfg(all(not(test), not(feature = "uuid-v8")))]
         if self.algorithm.get_default_algorithm() == crate::core::types::AlgorithmType::UuidV8 {
-            return Err(ConfigError::InvalidValue(
-                "algorithm.default = \"uuid_v8\" requires the `uuid-v8` feature, which this build does not enable".to_string(),
-            ));
+            return Err(ConfigError::InvalidValue(t!(
+                "error.core.config.app_config.uuid_v8_feature_not_enabled"
+            )));
         }
 
         if self.algorithm.segment.min_step > self.algorithm.segment.max_step {
@@ -340,9 +340,9 @@ impl Config {
             + u32::from(self.algorithm.snowflake.sequence_bits);
 
         if total_bits >= 64 {
-            return Err(ConfigError::InvalidValue(
-                "Snowflake total bits (datacenter_id_bits + worker_id_bits + sequence_bits) must be less than 64".to_string(),
-            ));
+            return Err(ConfigError::InvalidValue(t!(
+                "error.core.config.app_config.total_bits_exceed_limit"
+            )));
         }
 
         // ID 值必须落在各自位宽的可表示域内：construct_id 直接 OR 不掩码，
@@ -355,11 +355,11 @@ impl Config {
         if dc_bits < 8 {
             let dc_limit = 1u16 << dc_bits;
             if u16::from(self.app.dc_id) >= dc_limit {
-                return Err(ConfigError::InvalidValue(format!(
-                    "app.dc_id {} exceeds datacenter_id_bits={} range (max {})",
-                    self.app.dc_id,
-                    dc_bits,
-                    dc_limit - 1
+                return Err(ConfigError::InvalidValue(t!(
+                    "error.core.config.app_config.dc_id_exceeds_bits",
+                    dc_id = self.app.dc_id,
+                    dc_bits = dc_bits,
+                    max = dc_limit - 1
                 )));
             }
         }
@@ -368,28 +368,27 @@ impl Config {
         if worker_bits < 8 {
             let worker_limit = 1u16 << worker_bits;
             if u16::from(self.app.worker_id) >= worker_limit {
-                return Err(ConfigError::InvalidValue(format!(
-                    "app.worker_id {} exceeds worker_id_bits={} range (max {})",
-                    self.app.worker_id,
-                    worker_bits,
-                    worker_limit - 1
+                return Err(ConfigError::InvalidValue(t!(
+                    "error.core.config.app_config.worker_id_exceeds_bits",
+                    worker_id = self.app.worker_id,
+                    worker_bits = worker_bits,
+                    max = worker_limit - 1
                 )));
             }
         }
 
         if self.algorithm.snowflake.clock_drift_threshold_ms == 0 {
-            return Err(ConfigError::InvalidValue(
-                "Snowflake clock_drift_threshold_ms must be greater than 0".to_string(),
-            ));
+            return Err(ConfigError::InvalidValue(t!(
+                "error.core.config.app_config.clock_drift_threshold_invalid"
+            )));
         }
 
         // 混淆密钥：必须恰 16 个 hex 字符（= u64）。None 合法（未启用）。
         if let Some(hex) = &self.algorithm.obfuscation.key_hex {
             if hex.len() != 16 || u64::from_str_radix(hex, 16).is_err() {
-                return Err(ConfigError::InvalidValue(
-                    "algorithm.obfuscation.key_hex must be exactly 16 hex characters (= u64)"
-                        .to_string(),
-                ));
+                return Err(ConfigError::InvalidValue(t!(
+                    "error.core.config.app_config.key_hex_invalid"
+                )));
             }
         }
 

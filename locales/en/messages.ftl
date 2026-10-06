@@ -112,6 +112,10 @@ log-core-algorithm-circuit_breaker-transitioned_to_half_open = Circuit breaker t
 
 # src/core/algorithm/snowflake.rs
 log-core-algorithm-snowflake-initialized = Snowflake algorithm initialized with datacenter_id={ $datacenter_id }, worker_id={ $worker_id }
+error-core-algorithm-snowflake-total_bits_exceed_limit = snowflake total bits ({ $total_bits }) must be less than 64
+error-core-algorithm-snowflake-dc_id_exceeds_bits = datacenter_id { $dc_id } exceeds datacenter_id_bits={ $dc_bits } range (max { $max })
+error-core-algorithm-snowflake-worker_id_exceeds_bits = worker_id { $worker_id } exceeds worker_id_bits={ $worker_bits } range (max { $max })
+error-core-algorithm-snowflake-state_guard_clock_backward = snowflake state guard: last issued timestamp { $last_issued_ts } is ahead of current clock { $now } (clock moved backward across restart by { $behind_ms }ms); refuse to generate duplicate IDs — resolve clock sync and remove the state file only if the previous run is confirmed discarded
 
 # src/core/algorithm/segment.rs
 log-core-algorithm-segment-cpu_monitoring_not_supported = CPU monitoring not supported on this platform, using default value
@@ -196,6 +200,17 @@ log-core-config-environment-unknown_nebula_env_treated_as_production = NEBULA_EN
 log-core-config-app_config-config_expanded = Configuration expanded
 log-core-config-app_config-toml_parsed = Raw parsed auth enabled
 log-core-config-app_config-config_loaded = Auth configuration loaded
+error-core-config-app_config-segment_feature_not_enabled = algorithm.default = "segment" requires the `segment` feature, which this build does not enable
+error-core-config-app_config-snowflake_feature_not_enabled = algorithm.default = "snowflake" requires the `snowflake` feature, which this build does not enable
+error-core-config-app_config-uuid_v8_feature_not_enabled = algorithm.default = "uuid_v8" requires the `uuid-v8` feature, which this build does not enable
+error-core-config-app_config-total_bits_exceed_limit = Snowflake total bits (datacenter_id_bits + worker_id_bits + sequence_bits) must be less than 64
+error-core-config-app_config-dc_id_exceeds_bits = app.dc_id { $dc_id } exceeds datacenter_id_bits={ $dc_bits } range (max { $max })
+error-core-config-app_config-worker_id_exceeds_bits = app.worker_id { $worker_id } exceeds worker_id_bits={ $worker_bits } range (max { $max })
+error-core-config-app_config-clock_drift_threshold_invalid = Snowflake clock_drift_threshold_ms must be greater than 0
+error-core-config-app_config-key_hex_invalid = algorithm.obfuscation.key_hex must be exactly 16 hex characters (= u64)
+
+# src/core/config/algorithm.rs
+error-core-config-algorithm-key_hex_invalid = algorithm.obfuscation.key_hex must be 16 hex characters
 
 # src/core/database/connection.rs
 log-core-database-connection-connecting = Connecting to { $engine } database, URL: { $url }
@@ -206,6 +221,8 @@ log-core-database-connection-schema_create_failed = Could not create schema (may
 log-core-database-connection-table_created_verified = Table created/verified: { $table_name }
 log-core-database-connection-table_already_exists = Table already exists, skipping
 log-core-database-connection-migrations_completed = Database migrations completed successfully
+log-core-database-connection-schema_upgrade_statement_failed = schema upgrade statement failed
+error-core-database-connection-schema_upgrade_failed = Failed to apply schema upgrade (see server logs for details)
 
 # src/core/database/repository.rs
 log-core-database-repository-api_key_role_conversion = API key role conversion
@@ -273,6 +290,10 @@ log-core-monitoring-core-send_alert_failed = Failed to send alert: { $error }
 log-core-monitoring-core-send_resolved_alert_failed = Failed to send resolved alert: { $error }
 log-core-monitoring-core-alert_manager_shutting_down = AlertManager shutting down...
 log-core-monitoring-core-alert_manager_shutdown_complete = AlertManager shutdown complete
+
+# src/core/types/id.rs
+error-core-types-id-obfuscation_key_not_configured = obfuscated id format requested but obfuscation.key_hex is not configured
+error-core-types-id-obfuscation_id_exceeds_u64 = id exceeds u64 range and cannot be obfuscated
 
 # src/server/audit/logger.rs
 log-server-audit-logger-persist_failed = Failed to persist audit log: { $error }
@@ -643,6 +664,7 @@ error-sdk-capability_missing = { $module } capability missing: { $reason }
 error-sdk-module_register_failed = trait-kit module registration failed: { $reason }
 error-sdk-assembly_config_missing = SDK assembly config missing: { $reason }
 error-sdk-kit_build_failed = trait-kit build failed: { $reason }
+error-sdk-repository_required_for_segment = Segment algorithm requires a database repository; call NebulaIdKitBuilder::with_repository() before build()
 error-sdk-router_module_must_exist_on_ready_kit = RouterModule capability must exist on a Ready Kit (guaranteed by build dependency-graph validation)
 log-sdk-audit_logger_injection_confirmed = sdk: audit_logger injection confirmed
 error-detail-segment_loader_not_configured = Segment algorithm has no data source wired; inject DbSegmentLoader (SegmentRepository::allocate_segment) at the assembly site

@@ -320,11 +320,9 @@ impl IdGenerator {
     #[cfg(feature = "database")]
     fn require_repository_for_segment(&self, algorithm: AlgorithmType) -> Result<()> {
         if algorithm == AlgorithmType::Segment && self.repository.is_none() {
-            return Err(CoreError::ConfigurationError(
-                "Segment algorithm requires a database repository; \
-                 call NebulaIdKitBuilder::with_repository() before build()"
-                    .to_string(),
-            ));
+            return Err(CoreError::ConfigurationError(t!(
+                "error.sdk.repository_required_for_segment"
+            )));
         }
         Ok(())
     }
@@ -749,6 +747,7 @@ mod tests {
 
     /// RouterModule 注册后 build 成功，require 返回已初始化
     /// router（可直接生成 ID）。
+    #[cfg(feature = "snowflake")]
     #[tokio::test]
     async fn test_router_module_builds_and_initializes() {
         let kit = NebulaIdKitBuilder::new(snowflake_config())
@@ -775,6 +774,7 @@ mod tests {
     /// tick 后，经 pub 接缝 `get_algorithm_metrics()` 观测 snowflake 的连续
     /// 成功计数被后台任务刷新（仅后台任务运行时 `record_success` 才发生；
     /// 禁止依赖私有字段）。
+    #[cfg(feature = "snowflake")]
     #[tokio::test]
     async fn test_router_lifecycle_on_ready_starts_degradation() {
         let kit = NebulaIdKitBuilder::new(snowflake_config())
@@ -837,6 +837,7 @@ mod tests {
     }
 
     /// 纯算法（snowflake）在零仓储注入下可用。
+    #[cfg(feature = "snowflake")]
     #[tokio::test]
     async fn test_id_generator_pure_algorithm_without_repository() {
         let kit = NebulaIdKitBuilder::new(snowflake_config())
@@ -939,6 +940,7 @@ mod tests {
 
     /// `IdGenerator` 为 Clone handle，克隆后在独立 tokio 任务中
     /// 生成（Send + Sync 语义的运行时验证）。
+    #[cfg(feature = "snowflake")]
     #[tokio::test]
     async fn test_id_generator_handle_is_clone_and_cross_task() {
         let kit = NebulaIdKitBuilder::new(snowflake_config())
@@ -977,6 +979,7 @@ mod tests {
 
     /// 门面 `id_generator()` 取用的 handle 可 generate 与
     /// batch_generate。
+    #[cfg(feature = "snowflake")]
     #[tokio::test]
     async fn test_kit_id_generator_generates_and_batches() {
         let kit = NebulaIdKitBuilder::new(snowflake_config())
@@ -1016,6 +1019,7 @@ mod tests {
 
     /// `health_check()` 保留算法级快照语义（返回
     /// `Vec<(AlgorithmType, HealthStatus)>`，与旧 API 一致）。
+    #[cfg(feature = "snowflake")]
     #[tokio::test]
     async fn test_kit_health_check_returns_algorithm_snapshot() {
         let kit = NebulaIdKitBuilder::new(snowflake_config())
@@ -1034,6 +1038,7 @@ mod tests {
     /// 门面 `shutdown()` 后降级后台任务停止 ——先证明任务在运行
     ///（≥1 tick 后计数刷新），再 shutdown，等待一个完整 interval 断言计数不再
     /// 增长（pub 接缝 `get_algorithm_metrics()`，禁止依赖私有字段）。
+    #[cfg(feature = "snowflake")]
     #[tokio::test]
     async fn test_kit_shutdown_stops_background_check() {
         let kit = NebulaIdKitBuilder::new(snowflake_config())
@@ -1080,6 +1085,7 @@ mod tests {
 
     /// 8 并发 × 1000 次 snowflake 生成，去重后零重复
     ///（旧 `client.rs` `sdk_concurrent_snowflake_generation_is_unique` 迁移）。
+    #[cfg(feature = "snowflake")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn test_kit_concurrent_snowflake_generation_is_unique() {
         use std::collections::HashSet;

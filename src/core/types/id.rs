@@ -136,18 +136,17 @@ impl Id {
             IdFormat::Prefixed => self.to_string(),
             IdFormat::Obfuscated => {
                 let obf = obfuscator.ok_or_else(|| {
-                    CoreError::ConfigurationError(
-                        "obfuscated id format requested but obfuscation.key_hex is not configured"
-                            .to_string(),
-                    )
+                    CoreError::ConfigurationError(t!(
+                        "error.core.types.id.obfuscation_key_not_configured"
+                    ))
                 })?;
                 let raw = self.0;
                 if raw > u64::MAX as u128 {
                     // 不回显明文 ID：防枚举格式的失败路径不得把原值交给
                     // 错误消费方（CWE-209 变体）。
-                    return Err(CoreError::InvalidInput(
-                        "id exceeds u64 range and cannot be obfuscated".to_string(),
-                    ));
+                    return Err(CoreError::InvalidInput(t!(
+                        "error.core.types.id.obfuscation_id_exceeds_u64"
+                    )));
                 }
                 obf.encode(raw as u64).to_string()
             }

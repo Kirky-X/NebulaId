@@ -90,6 +90,13 @@ jobs:
           cargo check --package ${{ env.PKG }} --no-default-features --features sdk,snowflake,uuid-v8 --lib --tests
           cargo test --package ${{ env.PKG }} --no-default-features --features sdk,snowflake,uuid-v8 --lib sdk::kit::tests::test_segment_request_rejected_without_database_feature
 
+      - name: Check sdk with uuid-v8 only
+        # sdk 零 database 且零 snowflake：纯 uuid-v8 嵌入的最薄算法面。
+        # 本钉执行该组合的全量 lib 测试——snowflake 依赖的 kit 测试经
+        # #[cfg(feature = "snowflake")] 门控在此面编译剔除（与 database 门控
+        # 同款约定），防止测试硬编码算法使组合面出现盲区失败。
+        run: cargo test --package ${{ env.PKG }} --no-default-features --features sdk,uuid-v8 --lib
+
   # 阶段 2：cargo-deny 检查（许可证 + 安全）
   deny:
     name: cargo-deny
@@ -135,6 +142,31 @@ jobs:
         feature:
           - default
           - all
+    # default leg 的覆盖率采集会真实启动 nebula-id 二进制覆盖 main.rs 组合根，
+    # 需 PG + Redis 服务（跑迁移/装载 key/缓存）；两 leg 共享 job，服务对 all leg 无害。
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: idgen
+          POSTGRES_PASSWORD: idgen
+          POSTGRES_DB: idgen
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U idgen -d idgen"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v7
 
@@ -170,12 +202,45 @@ jobs:
         run: cargo test --package ${{ env.PKG }} --all-features --no-fail-fast
 
       # default leg：覆盖率门禁（≥95%）与 Codecov 上报只在 default 跑。
-      # --ignore-filename-regex 排除 prost/tonic 生成的 proto 胶水代码：
-      # 生成代码无法被单元测试有意义地覆盖（编译器产物），计入覆盖率
-      # 只会稀释人工代码的真实覆盖率。main.rs 等手写代码仍全量计入。
-      - name: Run Tests with Coverage (feature=default)
+      # 采集分两步累积 profraw 再合并出报告：
+      #  (1) cargo llvm-cov --no-report：单元/集成测试覆盖 lib 与各 handler；
+      #  (2) cargo llvm-cov --no-report run --bin nebula-id：真实启动服务端（连上方
+      #      postgres/redis 服务、跑迁移、装载 API key、起 HTTP+gRPC），健康就绪后
+      #      SIGTERM 优雅停机，覆盖 main.rs 组合根（init_*/run_servers/shutdown_signal）
+      #      —— 这些代码 `cargo test` 结构上无法执行，只有跑真实二进制才命中。
+      # 阈值仍 95%；--ignore-filename-regex 仅排除 prost/tonic 生成的 proto 胶水，
+      # main.rs 等手写代码全量计入（现经真实启动覆盖）。
+      - name: Collect coverage (tests + live server boot), enforce ≥95%
         if: matrix.feature == 'default'
-        run: cargo llvm-cov --package ${{ env.PKG }} --fail-under-lines 95 --ignore-filename-regex "server/proto/" --lcov --output-path lcov.info
+        env:
+          NEBULA_ENV: development
+          NEBULA_DATABASE_PASSWORD: idgen
+          NEBULA_API_KEY_SALT: ci-coverage-salt-0123456789
+          NEBULA_ADMIN_API_KEY_ID: ciadmin
+          NEBULA_ADMIN_API_KEY_SECRET: ci-admin-secret-0123456789
+        run: |
+          set -uo pipefail
+          # (1) 测试覆盖（累积 profraw，先不出报告）；测试失败即终止
+          cargo llvm-cov --no-report --package ${{ env.PKG }} || { echo "::error::单元/集成测试未通过"; exit 1; }
+          # (2) 真实启动二进制覆盖组合根，健康就绪后优雅停机
+          cargo llvm-cov --no-report run --bin nebula-id -- --config config/config.toml &
+          SERVER_PID=$!
+          healthy=0
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8080/health >/dev/null 2>&1; then healthy=1; break; fi
+            sleep 2
+          done
+          if [ "$healthy" != "1" ]; then
+            echo "::error::nebula-id 未在 120s 内就绪，无法采集组合根覆盖率"
+            kill -TERM "$SERVER_PID" 2>/dev/null || true
+            exit 1
+          fi
+          pkill -TERM -f 'config/config.toml' || true
+          wait "$SERVER_PID" 2>/dev/null || true
+          # (3) 合并两轮 profraw 出 lcov 并强制 95% 行覆盖率门禁
+          cargo llvm-cov report --package ${{ env.PKG }} \
+            --ignore-filename-regex "server/proto/" \
+            --fail-under-lines 95 --lcov --output-path lcov.info
 
       - name: Upload Coverage Report
         if: always() && matrix.feature == 'default'

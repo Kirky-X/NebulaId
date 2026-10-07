@@ -5,7 +5,7 @@
 //!
 //! Layout (RFC 9562 §5.8, 128 bits):
 //! - `custom_a` (bits 0..48): 48-bit Unix millisecond timestamp (sortable).
-//! - `custom_b` (bits 48..60): `dc(3) << 9 | worker(8) << 1 | counter_hi(1)`.
+//! - `custom_b` (bits 52..64): `dc(3) << 9 | worker(8) << 1 | counter_hi(1)`.
 //! - `custom_c` (bits 66..128): `shard(16) << 46 | counter_lo(20) << 26 | rand(26)`.
 //!
 //! Composed manually into a `u128`, with version = `0b1000` (v8) at bits 48..52

@@ -111,7 +111,7 @@
 |---|:---:|---|---|
 | `server` | ✅ | `database` + `http` + `grpc` | 服务端整层；`nebula-id` 二进制随此特性构建 |
 | `segment` | ✅ | `database` | 号段算法（DB 号段） |
-| `snowflake` / `uuid-v8` | ✅ | — | 零 DB 叶子算法 |
+| `snowflake` / `uuid-v8` / `uuid-v5` | ✅ | — | 零 DB 叶子算法（`uuid-v5` 为 RFC 9562 §5.5 确定性派生，非发号） |
 | `database` | ➖ | — | 仓储层（dbnexus + sea-orm），经 `segment` / `server` 蕴含 |
 | `postgresql` | ✅ | — | dbnexus PostgreSQL 驱动开关 |
 | `garrison-auth` | ✅ | — | garrison API key 认证 |
@@ -127,7 +127,7 @@
 - `nebulaid::core::Cache` 公共 re-export 仅随 `server` 特性可见。
 
 ```toml
-# 只用 UUID v8 的最小依赖组合（191 个 crate；完整 default 为 524，实测 cargo tree）
+# 只用 UUID v8 的最小依赖组合（196 个 crate；完整 default 为 526，实测 cargo tree）
 nebulaid = { version = "0.3", default-features = false, features = ["uuid-v8"] }
 ```
 
@@ -459,6 +459,33 @@ pub async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result
 > **旧名称：** `uuid_v7` / `uuid_v4` 仍会被 `AlgorithmType::from_str`
 > （`src/core/types/id.rs:197-198`）**作为输入**接受，并映射到 `AlgorithmType::UuidV8`。
 > 它们既不是类型名、构造函数，也不是存储值 —— `Display` 只会输出 `uuid_v8`。
+
+#### `derive_uuid_v5` / `derive_uuid_v5_batch`
+
+RFC 9562 §5.5 **确定性派生**（`src/core/algorithm/uuid_v5.rs`，feature `uuid-v5` 门控，
+default 开启）。同 `(namespace, name)` 恒同输出——服务于按业务身份稳定派生的场景
+（如 etyma 词典实体按 `(lemma, language)` 派生，其 340,566 个存量 ID 数值即标准
+v5 输出，与本函数逐位兼容）。
+
+```rust
+pub fn derive_uuid_v5(namespace: Uuid, name: &str) -> Result<Id>
+pub fn derive_uuid_v5_batch(pairs: &[(Uuid, &str)]) -> Result<Vec<Id>>
+```
+
+同步纯函数（无状态/无时钟/无 IO）：内部即 `Id::from_uuid_v8(Uuid::new_v5(namespace,
+name.as_bytes()))`，与 `Uuid::new_v5` 同 crate 同版本，数值逐位一致。
+
+**与 v8 的边界**：v5 **不**实现 `IdAlgorithm`、不进 `AlgorithmRouter`/`AlgorithmType`、
+不经 `/generate`——派生失败没有「换发号算法」的可动作语义（fallback 会产出数值错误
+的非 v5 ID）；亦无配额/审计面。SDK 面 `IdGenerator::derive_uuid_v5`（feature `sdk`）
+为同步薄包装；v5-only 嵌入（如 `features = ["uuid-v5"]`）经直调路径使用——kit
+`build()` 要求 ≥1 个发号算法在场（`AlgorithmRouter::initialize` 空注册表显性报错），
+v5 不是路由算法、不计数。
+
+> **输出提示**：v5 的 `Id` 是 UUID 形态，但 `Display` 版本白名单为 {v4, v7, v8}
+> ——直接 `to_string()` 会得到十进制数值；canonical 连字符字符串请用
+> `Id::render(&IdFormat::Uuid, None, None)`。调用方应使用自己的业务命名空间
+> （勿用 nil namespace），name 空间需自行保证全局唯一。
 
 ---
 
@@ -1558,7 +1585,7 @@ Nebula ID crate 的版本号，调用方可据此确认该路由由
 ```json
 {
   "status": "ok",
-  "sdforge_version": "0.3.0-rc.1"
+  "sdforge_version": "0.3.0-rc.2"
 }
 ```
 
@@ -1573,7 +1600,7 @@ Nebula ID crate 的版本号，调用方可据此确认该路由由
 
 ```bash
 curl http://localhost:8080/health/sdforge
-# {"status":"ok","sdforge_version":"0.3.0-rc.1"}
+# {"status":"ok","sdforge_version":"0.3.0-rc.2"}
 ```
 
 **注意：**

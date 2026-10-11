@@ -68,9 +68,24 @@ jobs:
 
       - name: Check feature trim (uuid-v8 only)
         # 剪裁钉：纯算法嵌入场景的最小组合（core/algorithm 仅 uuid_v8，
-        # 依赖树 191 crates vs default 524）。防止越界 use（如 lib 面引用
+        # 依赖树 196 crates vs default 526）。防止越界 use（如 lib 面引用
         # core::database）静默腐烂剪裁能力；--tests 同上钉住测试面。
         run: cargo check --package ${{ env.PKG }} --no-default-features --features uuid-v8 --lib --tests
+
+      - name: Check feature trim (uuid-v5 only)
+        # 剪裁钉：v5 确定性派生的最小组合（core/algorithm 仅 uuid_v5，
+        # 零 DB 零服务端零其他发号算法）——etyma 的消费形态即此形状。
+        # v5 不经 router/AlgorithmType，该组合同时钉住「无任何发号算法时
+        # lib 与测试面」的可构建性（sdk 不在场，kit 测试面不参与编译）；
+        # --tests 钉住 uuid_v5 自身测试的门控。
+        run: cargo check --package ${{ env.PKG }} --no-default-features --features uuid-v5 --lib --tests
+
+      - name: Check sdk with uuid-v5 only
+        # sdk + uuid-v5（无 snowflake/uuid-v8/segment）：kit build 在此组合
+        # 因无发号算法而显性失败属既定契约（v5-only 消费者走直调路径），
+        # 但 lib 与测试面必须编译干净、无半门控测试漏网（kit 测试按
+        #[cfg(any(feature = "snowflake", feature = "uuid-v8"))] 门控剔除）。
+        run: cargo test --package ${{ env.PKG }} --no-default-features --features sdk,uuid-v5 --lib
 
       - name: Check server without algorithm features
         # server 不蕴含任何算法特性：钉住 bin 在 server-only 组合下可构建

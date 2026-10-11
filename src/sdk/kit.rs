@@ -302,6 +302,20 @@ impl IdGenerator {
             .await
     }
 
+    /// RFC 9562 v5 确定性派生（**非发号**：同输入恒同输出）。
+    ///
+    /// 同步方法：纯 SHA-1 计算无 IO，不制造假异步（规则 7）。不经
+    /// router——派生没有「换发号算法」的可动作语义（fallback 会产出数值
+    /// 错误的非 v5 ID），也没有配额/审计/降级面（纯计算无资源消耗决策）。
+    /// 随 `uuid-v5` 特性编译，未开启时本方法不存在。
+    ///
+    /// 语义与直调 [`crate::core::algorithm::derive_uuid_v5`] 逐位一致；
+    /// 嵌入方经本方法保持「统一生成入口」的调用形态。
+    #[cfg(feature = "uuid-v5")]
+    pub fn derive_uuid_v5(&self, namespace: uuid::Uuid, name: &str) -> Result<Id> {
+        crate::core::algorithm::derive_uuid_v5(namespace, name)
+    }
+
     fn make_ctx(workspace: &str, group: &str, biz_tag: &str) -> GenerateContext {
         GenerateContext {
             workspace_id: workspace.to_string(),
@@ -623,6 +637,7 @@ mod tests {
     /// 已注入 Config 与 audit_logger（空图断言随模块演进由
     /// `test_health_report_contains_router_module` / `test_kit_full_build_*`
     /// 取代）。
+    #[cfg(any(feature = "snowflake", feature = "uuid-v8"))]
     #[tokio::test]
     async fn test_kit_builder_builds_empty_ready_kit() {
         let kit = NebulaIdKitBuilder::new(local_config())
@@ -642,6 +657,7 @@ mod tests {
     /// `DistributedLockModule` 注册后 `build()` 成功；`require`
     /// 返回的锁可 `acquire`/`release` 且 `is_healthy()` 为 true
     ///（`DistributedLock` trait 无 `lock()/unlock()` 方法，断言只走既有面）。
+    #[cfg(any(feature = "snowflake", feature = "uuid-v8"))]
     #[tokio::test]
     async fn test_kit_builds_distributed_lock_module() {
         let kit = NebulaIdKitBuilder::new(local_config())
@@ -801,6 +817,10 @@ mod tests {
 
     /// `health_report()`（同步）基于 trait-kit health feature
     /// 返回包含 `router` 模块的报告。
+    // kit build 要求 ≥1 个路由算法在场（router initialize 在空注册表时
+    // 显性报错）；v5 不是路由算法，不计数。与 ci.yml「Check sdk with
+    // uuid-v8 only」的同款门控约定。
+    #[cfg(any(feature = "snowflake", feature = "uuid-v8"))]
     #[tokio::test]
     async fn test_health_report_contains_router_module() {
         let kit = NebulaIdKitBuilder::new(snowflake_config())
@@ -816,6 +836,7 @@ mod tests {
     }
 
     /// health_summary 聚合：全模块健康时 status=healthy 且明细齐全。
+    #[cfg(any(feature = "snowflake", feature = "uuid-v8"))]
     #[tokio::test]
     async fn test_health_summary_aggregates_worst_of() {
         let kit = NebulaIdKitBuilder::new(snowflake_config())
@@ -919,7 +940,10 @@ mod tests {
     ///（`CoreError::InvalidAlgorithmType`，router `cfg(not(feature = "segment"))`
     /// 分支）——仓储守卫缺席时显性语义由 router 承担，sdk 零 DB 嵌入的
     /// 组合级运行时契约：不 panic、不静默产出 ID。
-    #[cfg(not(feature = "database"))]
+    #[cfg(all(
+        not(feature = "database"),
+        any(feature = "snowflake", feature = "uuid-v8")
+    ))]
     #[tokio::test]
     async fn test_segment_request_rejected_without_database_feature() {
         let kit = NebulaIdKitBuilder::new(local_config())
@@ -964,6 +988,7 @@ mod tests {
     }
 
     /// 完整 build 后四模块（除未注入的仓储）全部在场。
+    #[cfg(any(feature = "snowflake", feature = "uuid-v8"))]
     #[tokio::test]
     async fn test_kit_full_build_all_modules_present() {
         let kit = NebulaIdKitBuilder::new(snowflake_config())
@@ -1002,6 +1027,7 @@ mod tests {
     }
 
     /// 指定算法（uuid_v8）生成走通。
+    #[cfg(feature = "uuid-v8")]
     #[tokio::test]
     async fn test_kit_generate_with_algorithm_uuid_v8() {
         let kit = NebulaIdKitBuilder::new(snowflake_config())
@@ -1015,6 +1041,36 @@ mod tests {
             .await
             .expect("uuid_v8 生成必须成功");
         assert!(id.as_u128() > 0);
+    }
+
+    /// SDK 薄包装契约：经 kit 的 `derive_uuid_v5` 与 core 层直调逐位一致；
+    /// 锚点值同时钉死与 etyma 340,566 个存量 ID 的跨仓兼容（etyma
+    /// `word_id.rs:43` 的钉死值）。
+    ///
+    /// `snowflake` 门控理由：kit `build()` 要求 ≥1 个路由算法在场
+    /// （`sdk,uuid-v5` 无算法组合下 build 恒失败）——包装器本身是纯委托，
+    /// 其覆盖由 `uuid_v5.rs` 的 6 个直调测试承载（与 kit.rs 既有
+    /// `#[cfg(feature = "snowflake")]` 测试约定同款）。
+    #[cfg(all(feature = "uuid-v5", feature = "snowflake"))]
+    #[tokio::test]
+    async fn test_kit_derive_uuid_v5_wrapper_matches_core() {
+        let kit = NebulaIdKitBuilder::new(snowflake_config())
+            .build()
+            .await
+            .expect("build 必须成功");
+        let generator = kit.id_generator().expect("id_generator() 必须成功");
+
+        let namespace = uuid::Uuid::from_bytes([
+            0x47, 0x9e, 0x67, 0xb5, 0x8d, 0x48, 0x51, 0x9e, 0xb7, 0x5c, 0x3c, 0x17, 0x65, 0xc4,
+            0x5e, 0x9b,
+        ]);
+        let id = generator
+            .derive_uuid_v5(namespace, "ecdict|abandon|en")
+            .expect("derive 必须成功");
+        assert_eq!(
+            id.render(&IdFormat::Uuid, None, None).unwrap(),
+            "21e7d32f-5500-5e4a-a943-219059f73c94"
+        );
     }
 
     /// `health_check()` 保留算法级快照语义（返回
@@ -1147,6 +1203,7 @@ mod tests {
     }
 
     /// uuid_v8 批量生成零 DB 可用（旧 `client.rs` 用例迁移）。
+    #[cfg(feature = "uuid-v8")]
     #[tokio::test]
     async fn test_kit_batch_generate_uuid_v8_without_repository() {
         let mut config = snowflake_config();

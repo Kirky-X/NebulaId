@@ -30,7 +30,7 @@
 
 ## 测试分层总览
 
-| 层 | 位置 | 规模（截至 0.3.0-rc.1 工作区） | 运行方式 |
+| 层 | 位置 | 规模（截至 0.3.0-rc.2 工作区） | 运行方式 |
 |----|------|---------------------------|----------|
 | 内联单元测试 | `src/` 各模块 `#[cfg(test)]` | 约 1700 个测试函数 | `cargo test --package nebulaid` |
 | E2E 测试模块 | `src/core/tests/`（11 个测试模块 + `mod.rs`） | 219 个测试函数 | `cargo test --package nebulaid --all-features` |
@@ -72,6 +72,7 @@
 | ALG-06 | UUID v8 毫秒翻转 | `test_uuid_v8_counter_resets_on_millisecond_rollover`（非 flaky：按样本内嵌时间戳判定同毫秒） | `src/core/algorithm/uuid_v8.rs` 内联测试 |
 | ALG-07 | 算法路由 | `generate_with_algorithm` 按次覆盖 `algorithm.default` | `src/core/algorithm/router.rs` 内联测试 |
 | ALG-08 | 批量生成边界 | `batch_generate(0)` 边界与 `max_batch_size` 上限（1..=10000） | 算法模块内联 + `validate` 测试 |
+| ALG-09 | UUID v5 确定性派生 | 同 (namespace, name) 恒同输出；version/variant 位布局；etyma 存量锚点与 Python hashlib 独立基准对拍；批量与逐条一致 | `src/core/algorithm/uuid_v5.rs` 内联测试 |
 
 ### 认证与密钥（AUTH）
 
@@ -184,12 +185,12 @@ cargo bench --bench i18n
 
 ## 统计汇总
 
-截至 0.3.0-rc.1 工作区（口径：`grep -rc '#\[test\]\|#\[tokio::test'` 于 `src/` 与 `tests/`）：
+截至 0.3.0-rc.2 工作区（口径：`grep -rc '#\[test\]\|#\[tokio::test'` 于 `src/` 与 `tests/`）：
 
 | 类别 | 数量 |
 |------|-----:|
-| Rust 测试函数合计 | 约 1925 |
-| ├─ `src/` 内联单元测试 | 约 1700 |
+| Rust 测试函数合计 | 约 1943 |
+| ├─ `src/` 内联单元测试 | 约 1717 |
 | ├─ `src/core/tests/` E2E 模块 | 219 |
 | └─ `tests/i18n_e2e.rs` | 7（全链 i18n） |
 | Shell 端到端脚本 | 4（另有 1 个共用库） |

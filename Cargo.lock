@@ -3391,7 +3391,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "nebulaid"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "arc-swap",
  "argon2",
@@ -6120,6 +6120,7 @@ dependencies = [
  "getrandom 0.4.3",
  "js-sys",
  "serde_core",
+ "sha1_smol",
  "wasm-bindgen",
 ]
 

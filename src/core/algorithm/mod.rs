@@ -11,8 +11,14 @@ pub(crate) mod snowflake;
 #[cfg(feature = "snowflake")]
 pub(crate) mod snowflake_state;
 pub(crate) mod traits;
+#[cfg(feature = "uuid-v5")]
+pub(crate) mod uuid_v5;
 #[cfg(feature = "uuid-v8")]
 pub(crate) mod uuid_v8;
+// RFC 9562 v5 确定性派生的稳定公开路径：直调消费者（嵌入方不需要 Kit 装配）
+// 与 SDK 薄包装（IdGenerator::derive_uuid_v5）共用同一实现。
+#[cfg(feature = "uuid-v5")]
+pub use uuid_v5::{derive_uuid_v5, derive_uuid_v5_batch};
 
 pub use traits::*;
 

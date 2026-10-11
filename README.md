@@ -170,7 +170,7 @@ cargo build --release
 |---------|:----:|------|
 | `server` | ✅ | 服务端整层（HTTP/gRPC/认证/审计/限流），蕴含 `database` + `http` + `grpc`；`nebula-id` 二进制仅随此特性构建 |
 | `segment` | ✅ | 号段算法，蕴含 `database`（号段语义即 DB 号段） |
-| `snowflake` / `uuid-v8` | ✅ | 零 DB 叶子算法，可独立启用 |
+| `snowflake` / `uuid-v8` / `uuid-v5` | ✅ | 零 DB 叶子算法，可独立启用（`uuid-v5` 为 RFC 9562 §5.5 确定性派生，非发号） |
 | `database` | ➖ | 仓储层开关（dbnexus + sea-orm），经 `segment` / `server` 蕴含（SDK 仓储面经 `sdk,database` 组合启用），不单独使用 |
 | `postgresql` | ✅ | dbnexus PostgreSQL 存储后端（`--no-default-features` 可关，仅保证编译，运行时需自备 PostgreSQL） |
 | `http` / `grpc` | ✅ | REST 与 gRPC 接入（sdforge 镜像 feature，随 `server` 蕴含） |
@@ -190,7 +190,7 @@ cargo build --release
 > nebulaid = { version = "0.3", default-features = false, features = ["uuid-v8"] }
 > ```
 >
-> 该组合依赖树 191 个 crate，较变更前完整 default（532，实测 `cargo tree -e normal`）缩减约 64%；剪裁组合由 CI `Check feature trim` 步骤钉住，防止越界引用静默腐烂。
+> 该组合依赖树 196 个 crate，较完整 default（526，实测 `cargo tree -e normal`）缩减约 63%；剪裁组合由 CI `Check feature trim` 步骤钉住，防止越界引用静默腐烂。
 
 ### 💡 最小示例
 
@@ -426,7 +426,7 @@ cargo bench --bench algorithms
 
 ### 📊 测试规模
 
-截至 0.3.0-rc.1 工作区：约 1900 个 Rust 测试函数（`src/` 内联 + `src/core/tests/` E2E 模块 + `tests/i18n_e2e.rs`）、4 个 shell 端到端脚本、2 组 Criterion 基准（i18n 热路径 4 个基准函数 / 12 用例 + 发号 / 限流 / 认证缓存热路径 7 个基准函数 / 7 用例）。CI 覆盖率门禁为行覆盖率 ≥ 95%，pre-push 钩子另执行 ≥ 90% 的本地门禁；v0.2.0 发布时实际行覆盖率 89.91%。逐模块统计与统计口径见 [🧪 测试场景文档 · 统计汇总](docs/TEST_SCENARIOS.md#统计汇总)。
+截至 0.3.0-rc.2 工作区：约 1943 个 Rust 测试函数（`src/` 内联 + `src/core/tests/` E2E 模块 + `tests/i18n_e2e.rs`）、4 个 shell 端到端脚本、2 组 Criterion 基准（i18n 热路径 4 个基准函数 / 12 用例 + 发号 / 限流 / 认证缓存热路径 7 个基准函数 / 7 用例）。CI 覆盖率门禁为行覆盖率 ≥ 95%，pre-push 钩子另执行 ≥ 90% 的本地门禁；v0.2.0 发布时实际行覆盖率 89.91%。逐模块统计与统计口径见 [🧪 测试场景文档 · 统计汇总](docs/TEST_SCENARIOS.md#统计汇总)。
 
 ---
 
@@ -514,6 +514,7 @@ CI 五阶段门禁（fmt + clippy → cargo-deny → cargo-audit `--deny warning
 
 | 版本 | 日期 | 要点 |
 |------|------|------|
+| 0.3.0-rc.2 | 2026-10-11 | RFC 9562 v5 确定性派生（`uuid-v5` 叶子特性，与 etyma 340,566 存量 ID 数值兼容）、i18n 收编 sdforge（快照零锁渲染）、garrison 接管认证防爆破（`BoundedDao` 容量阀 + fail-closed）、confers 热加载接线、发布前三审查整改 |
 | 0.3.0-rc.1 | 2026-09-22 | 自研生态全面切 crates.io registry（RC 波次对齐）、i18n 迁移 Fluent/ICU 栈（fluent-bundle，对齐 unify-rust-i18n 基线）、SDK 迁移 trait-kit 装配（`NebulaIdKit`）、gRPC 全 RPC 认证、限流真实挂载、TLS fail-fast、配置 `deny_unknown_fields` + 退出码 1、密钥轮换宽限期 |
 | 0.2.0 | 2026-07-23 | garrison DAO 基础设施、e2e 套件扩充（95% 模块覆盖）、dbnexus / sdforge / confers 架构接管、3 项 strix 安全修复 |
 

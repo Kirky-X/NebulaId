@@ -168,7 +168,7 @@ cargo build --release
 |---------|:----:|------|
 | `server` | ✅ | Full server layer (HTTP/gRPC/auth/audit/rate limiting), implies `database` + `http` + `grpc`; the `nebula-id` binary is only built with this feature |
 | `segment` | ✅ | Segment algorithm, implies `database` (segments are DB-backed by definition) |
-| `snowflake` / `uuid-v8` | ✅ | DB-free leaf algorithms, can be enabled independently |
+| `snowflake` / `uuid-v8` / `uuid-v5` | ✅ | DB-free leaf algorithms, can be enabled independently (`uuid-v5` is RFC 9562 §5.5 deterministic derivation, not minting) |
 | `database` | ➖ | Repository-layer switch (dbnexus + sea-orm), implied by `segment` / `server` (SDK repository surface enabled via the `sdk,database` combination), never used standalone |
 | `postgresql` | ✅ | dbnexus PostgreSQL storage backend (can be turned off with `--no-default-features`; compile-only guarantee, a real PostgreSQL is needed at runtime) |
 | `http` / `grpc` | ✅ | REST and gRPC access (sdforge mirror features, implied by `server`) |
@@ -188,7 +188,7 @@ cargo build --release
 > nebulaid = { version = "0.3", default-features = false, features = ["uuid-v8"] }
 > ```
 >
-> That combination pulls 191 crates vs 532 for the pre-change full default (measured via `cargo tree -e normal`, about 64% fewer); the trim combination is pinned by the CI `Check feature trim` step to prevent out-of-scope imports from silently rotting it.
+> That combination pulls 196 crates vs 526 for the full default (measured via `cargo tree -e normal`, about 63% fewer); the trim combination is pinned by the CI `Check feature trim` step to prevent out-of-scope imports from silently rotting it.
 
 ### 💡 Minimal Example
 
@@ -424,7 +424,7 @@ cargo bench --bench algorithms
 
 ### 📊 Test Scale
 
-As of the 0.3.0-rc.1 workspace: about 1900 Rust test functions (inline in `src/` plus the `src/core/tests/` E2E modules plus `tests/i18n_e2e.rs`), 4 shell end-to-end scripts, and 2 Criterion benchmark groups (i18n hot paths with 4 benchmark functions / 12 cases plus ID-generation / rate-limit / auth-cache hot paths with 7 benchmark functions / 7 cases). The CI coverage gate requires at least 95% line coverage, and the pre-push hook enforces a local 90% gate; actual line coverage at the v0.2.0 release was 89.91%. For per-module counts and methodology, see the [test scenario doc · statistics](docs/TEST_SCENARIOS.md#统计汇总).
+As of the 0.3.0-rc.2 workspace: about 1943 Rust test functions (inline in `src/` plus the `src/core/tests/` E2E modules plus `tests/i18n_e2e.rs`), 4 shell end-to-end scripts, and 2 Criterion benchmark groups (i18n hot paths with 4 benchmark functions / 12 cases plus ID-generation / rate-limit / auth-cache hot paths with 7 benchmark functions / 7 cases). The CI coverage gate requires at least 95% line coverage, and the pre-push hook enforces a local 90% gate; actual line coverage at the v0.2.0 release was 89.91%. For per-module counts and methodology, see the [test scenario doc · statistics](docs/TEST_SCENARIOS.md#统计汇总).
 
 ---
 
@@ -512,6 +512,7 @@ For the full version history, see the [📋 Changelog](docs/CHANGELOG.md) (follo
 
 | Version | Date | Highlights |
 |------|------|------|
+| 0.3.0-rc.2 | 2026-10-11 | RFC 9562 v5 deterministic derivation (`uuid-v5` leaf feature, bit-exact compatible with etyma's 340,566 existing IDs), i18n folded into sdforge (snapshot lock-free rendering), garrison auth brute-force adoption (`BoundedDao` capacity valve + fail-closed), confers hot-reload wiring, pre-release three-way review remediation |
 | 0.3.0-rc.1 | 2026-09-22 | Ecosystem fully switched to the crates.io registry (RC-wave alignment), i18n migrated to the Fluent/ICU stack (fluent-bundle, aligned with the unify-rust-i18n baseline), SDK migrated to trait-kit assembly (`NebulaIdKit`), gRPC auth on all RPCs, rate limiting genuinely mounted, TLS fail-fast, config `deny_unknown_fields` + exit code 1, key rotation grace period |
 | 0.2.0 | 2026-07-23 | garrison DAO infrastructure, expanded e2e suite (95% module coverage), dbnexus / sdforge / confers architecture takeover, 3 strix security fixes |
 

@@ -194,10 +194,11 @@ Segment 算法支持多数据中心部署，每个数据中心分配唯一的 DC
 
 | 消费形态 | 推荐组合 | 依赖树规模 |
 |---|---|---|
-| 部署完整服务 | default（`server` + 三算法 + `postgresql` + `garrison-auth`） | 524 |
-| 嵌入式 SDK | `sdk`（蕴含 `openapi`；不蕴含 `database`，仓储面另显式启用） | 192（`sdk,database` 组合为 279） |
-| 仅号段算法 | `segment`（蕴含 `database`） | 278 |
-| 仅 Snowflake / UUID v8 | `snowflake` 或 `uuid-v8` | 191 |
+| 部署完整服务 | default（`server` + 四算法 + `postgresql` + `garrison-auth`） | 526 |
+| 嵌入式 SDK | `sdk`（蕴含 `openapi`；不蕴含 `database`，仓储面另显式启用） | 197（`sdk,database` 组合为 289） |
+| 仅号段算法 | `segment`（蕴含 `database`） | 288 |
+| 仅 Snowflake / UUID v8 | `snowflake` 或 `uuid-v8` | 196 |
+| 仅 UUID v5 确定性派生 | `uuid-v5` | 196（kit 不参与：直调 `derive_uuid_v5`） |
 
 ```toml
 # Cargo.toml —— 只用 UUID v8 的剪裁示例
@@ -313,6 +314,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 > 💡 **关于旧名称**：`uuid_v7` / `uuid_v4` 不再是独立算法，但 `AlgorithmType::from_str`
 > （`src/core/types/id.rs:238-239`）仍接受它们作为 `uuid_v8` 的**输入别名**，
 > 因此历史配置/API 请求里的 `"uuid_v7"` 依然能解析；输出与存储一律是 `uuid_v8`。
+
+#### UUID v5 确定性派生（非发号）
+
+与 v8 的发号语义不同，v5 是 **name-based 确定性派生**（RFC 9562 §5.5）：
+同一 `(namespace, name)` 恒得同一 ID，适用于按业务身份稳定派生的场景——
+如词典实体按 `(lemma, language)` 派生（etyma 340,566 个存量 ID 即标准 v5
+输出，可经 `derive_uuid_v5` 逐位复现，见仓内对拍测试）。
+
+直调路径（`uuid-v5` 特性，default 开启）：
+
+```rust
+use nebulaid::core::algorithm::derive_uuid_v5;
+use nebulaid::core::types::IdFormat;
+use uuid::Uuid;
+
+let namespace = Uuid::from_bytes([/* 调用方业务命名空间（16 字节） */]);
+let id = derive_uuid_v5(namespace, "ecdict|abandon|en")?;
+// canonical 连字符字符串必须经 render（Id 的 Display 版本白名单为
+// {v4, v7, v8}，直接 to_string() 对 v5 会输出十进制数值）
+println!("{}", id.render(&IdFormat::Uuid, None, None)?);
+```
+
+嵌入式 SDK 用户经统一入口调用（`sdk` 特性，薄包装同一实现）：
+
+```rust
+let id = kit
+    .id_generator()?
+    .derive_uuid_v5(namespace, "ecdict|abandon|en")?;
+```
+
+> 💡 v5 不经 `/generate` HTTP 端点与 `AlgorithmRouter`——派生失败没有
+> 「换一个发号算法」的可动作语义（fallback 会产出数值错误的非 v5 ID）；
+> 亦无配额/审计面（纯计算，无资源消耗决策）。
+>
+> 💡 **v5-only 嵌入走直调路径**：kit `build()` 要求 ≥1 个发号算法在场
+> （`AlgorithmRouter::initialize` 在空注册表时显性报错），v5 不是路由
+> 算法、不计数——只消费 v5 的嵌入方（如 `features = ["uuid-v5"]`）用
+> `nebulaid::core::algorithm::derive_uuid_v5` 直调，无需装配 kit。
+>
+> 💡 **命名空间约定**：调用方应使用自己的业务命名空间（勿用 nil
+> namespace——不同业务若共用 nil 且 name 空间相近，派生结果会互撞）；
+> name 空间需自行保证全局唯一（v5 是身份派生，不是唯一性保证）。
 
 ---
 

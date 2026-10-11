@@ -19,6 +19,20 @@
 
 ## [Unreleased]
 
+### feat（add-uuid-v5-derive：RFC 9562 v5 确定性派生）
+
+- **新增 `uuid-v5` 零 DB 叶子特性**（default 开启）：`derive_uuid_v5(namespace, name)` 与 `derive_uuid_v5_batch(pairs)` 两个纯函数（无状态 / 无时钟 / 无 IO），随特性门控；SDK 面 `IdGenerator::derive_uuid_v5` 为同步薄包装（`sdk` 特性）。
+- **设计边界**：v5 刻意不进 `AlgorithmType` / `AlgorithmRouter` / `/generate`——派生失败没有 fallback 语义（回落发号算法会产出数值错误的非 v5 ID）；UUID v4/v7 在本仓同样不是算法族成员（仅 `FromStr` 输入别名）。
+- **数值兼容锚点**：与 `Uuid::new_v5` 同 crate 同版本逐位一致；测试以 etyma 340,566 个存量 ID 的钉死值（`ecdict|abandon|en` → `21e7d32f-5500-5e4a-a943-219059f73c94`）与 Python hashlib SHA-1 独立基准双重对拍。etyma 侧接入（统一生成入口）随其 0.6.0 迭代跟进。
+
+### feat（selfdev-lib-adoption-r1：自研库收编）
+
+- **i18n 收编 sdforge**：删除 fluent-bundle / unic-langid 直依赖，FTL 键集注册进 sdforge `register_translation`；查询路径经注册期 `OnceLock` 快照零锁查找 + 本地渲染（不经 sdforge 进程级注册表的全局 `Mutex`），本地渲染与 `translate_for` 全键集（全参 / 无参 / 多参）对拍。
+- **garrison 接管 API key 防爆破**：`InMemoryDao` 经本仓 `server::auth` 门面消费，外箍 `BoundedDao` 容量阀（100k 键 FIFO——补回 garrison DAO 缺失的键空间上界：其过期键只惰性清理、无 sweeper）；HTTP 与 gRPC 共享同一失败桶，观测故障 fail-closed。
+- **confers HotReloader 热加载接线**：notify 事件驱动 watcher + 丢弃增量显性上报（循环内逐次与通道关闭前收尾共用同一上报路径）。
+- **发布前三审查整改**（安全 / 架构 / 性能并行 subagent，规则 10）：防爆破观测故障 fail-open → fail-closed（ErrDao 桩测试钉死极性）；DAO 无界增长 → 容量阀（BoundedDao）；i18n 热路径绕开全局锁；`test_support` 恢复 `#[cfg(test)]`（不再随发布库进公开面）；garrison 特性裁剪至 `firewall-bruteforce`（web-axum / protocol-apikey / cache-memory 零使用）；bench `required-features` 补齐（剪裁组合由编译失败改为正确跳过）。
+- **已知取舍**：① core 层自此无条件依赖 sdforge（收编决策的声明后果：纯算法消费方也编译 sdforge 树）；sdforge i18n 注册表是进程级共享可变全局——NebulaId 查询路径已绕开（本地快照），但同二进制内其他 sdforge 使用方与 NebulaId 的键共表，未来键命名须防冲突。② i18n 缺参渲染与旧 Fluent 有形符差（`{$name}` vs `{ $name }`），仅在调用点漏参（本身即 bug）时显现。③ gRPC 对禁用 / 过期 / 不存在 key 的错误码区分构成 key 状态枚举侧信道（批次前既有，未在本批引入，另行跟进）。
+
 ### fix（2026-09-24 uuid_v8 唯一性防线修复）
 
 - **计数器随机起点失效修复**：`UuidV8Impl::new` 的计数器种子为 `rand26 << 31 再 & 21 位掩码`，恒为 0——UUIDP「随机起点」机制实际未生效，跨重启同毫秒的碰撞防线退化到仅剩 26 位 rand。改为直接取 21 位随机初值，恢复设计保证（新增随机性测试钉住）。

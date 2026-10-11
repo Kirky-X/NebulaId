@@ -1,6 +1,6 @@
 [package]
 name = "nebulaid"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 description = "Enterprise-grade distributed ID generation system"
 authors = ["Kirky-X <Kirky-X@outlook.com>"]
 edition = "2021"
@@ -42,16 +42,23 @@ required-features = ["server"]
 #   未启用时对应模块经 cfg 门控排除（CI fmt-clippy job 钉住该组合）。
 #   core::database 仅随 `database`（经 segment/server 蕴含，SDK 仓储面经
 #   sdk,database 组合）参与编译。
-default = ["server", "segment", "snowflake", "uuid-v8", "postgresql", "garrison-auth"]
+default = ["server", "segment", "snowflake", "uuid-v8", "uuid-v5", "postgresql", "garrison-auth"]
 postgresql = ["dbnexus/postgres"]
 etcd = ["dep:etcd-client"]
 # 分层与算法特性（feature-isolation）：database 为仓储层开关，
-# segment 蕴含 database；snowflake/uuid-v8 为零 DB 叶子算法；
+# segment 蕴含 database；snowflake/uuid-v8/uuid-v5 为零 DB 叶子算法；
 # server 为整层开关（蕴含 database + http/grpc + Web/gRPC 全栈依赖）。
 database = ["dep:dbnexus", "dep:sea-orm", "dep:argon2", "dep:subtle"]
 segment = ["database"]
 snowflake = []
 uuid-v8 = []
+# uuid-v5: RFC 9562 §5.5 name-based 确定性派生（src/core/algorithm/uuid_v5.rs）。
+# 与 snowflake/uuid-v8 同为可独立启用的零 DB 叶子特性：纯函数（无时钟、无
+# 协调、无状态），随 uuid-v5 门控的 derive_uuid_v5/derive_uuid_v5_batch 与
+# SDK 方法构成该特性的全部代码面。入 default：语义是零成本（仅 uuid crate 一个
+# feature flag，传递依赖 sha1_smol 在 HEAD 的 Cargo.lock 已存在（redis 路径），
+# 零新增 crate 节点；不为省它引入同 crate 双依赖名的 optional 重复依赖写法）。
+uuid-v5 = []
 server = ["database", "http", "grpc", "sdforge/http", "sdforge/grpc", "sdforge/openapi", "sdforge/context", "sdforge/docs", "dep:oxcache", "dep:inklog", "dep:axum", "dep:tonic", "dep:tonic-prost", "dep:prost", "dep:utoipa", "dep:limiteron", "dep:tokio-stream", "dep:metrics-exporter-prometheus"]
 # alerting: 门控告警子系统(src/core/monitoring 的 AlertManager/AlertRule/
 # 告警状态机/通知通道/broadcast 事件流)与 webhook 分发 reqwest 路径。
@@ -172,7 +179,13 @@ metrics = { version = "0.24", default-features = false }
 metrics-exporter-prometheus = { version = "0.18", optional = true, default-features = false }
 
 # 工具库
-uuid = { version = "1.26", features = ["v4", "v7", "v8", "serde"] }
+# v5 无条件开在依赖面（本依赖恒编译）；使用侧经 uuid-v5 特性门控。
+# v5 = RFC 9562 name-based（SHA-1）确定性派生的既定原语，与 etyma 等
+# 消费方的 Uuid::new_v5 同 crate 同版本，保证派生数值逐位兼容。
+# 传递依赖为 sha1_smol（uuid crate 内部经其实现 SHA-1）；HEAD 的
+# Cargo.lock 已含同版本 sha1_smol（redis 路径引入），本 feature 零新增
+# crate 节点。
+uuid = { version = "1.26", features = ["v4", "v7", "v8", "v5", "serde"] }
 # serde：AuditEvent（无条件编译）的 Serialize/Deserialize 派生含 DateTime<Utc>
 # 字段；此前经 sea-orm with-chrono 传递启用，sea-orm 转 optional 后须显式声明。
 chrono = { version = "0.4", features = ["std", "serde"] }

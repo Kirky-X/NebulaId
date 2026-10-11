@@ -251,7 +251,7 @@
 
 ```toml
 [dependencies]
-nebulaid = "0.2"                       # Cargo 包名是 `nebulaid`
+nebulaid = "0.3"                       # Cargo 包名是 `nebulaid`
 tokio = { version = "1.0", features = ["full"] }
 ```
 
@@ -264,7 +264,7 @@ cargo add nebulaid tokio
 **可选特性**（`Cargo.toml` 的 `[features]`）：
 
 ```toml
-# default = ["server", "segment", "snowflake", "uuid-v8", "postgresql", "garrison-auth"]
+# default = ["server", "segment", "snowflake", "uuid-v8", "uuid-v5", "postgresql", "garrison-auth"]
 nebulaid = { version = "0.3", features = ["etcd"] }  # 分布式协调
 # nebulaid = { version = "0.3", features = ["sdk"] } # NebulaIdKit 门面
 # 并不存在 `monitoring` / `audit` / `tls` 特性：指标、审计日志与
@@ -352,9 +352,9 @@ async fn main() -> nebulaid::core::Result<()> {
    ```
 
 2. **确保所需特性已启用**（默认为
-   `["server", "segment", "snowflake", "uuid-v8", "postgresql", "garrison-auth"]`）：
+   `["server", "segment", "snowflake", "uuid-v8", "uuid-v5", "postgresql", "garrison-auth"]`）：
    ```toml
-   nebulaid = "0.2"
+   nebulaid = "0.3"
    ```
 
 3. **清理构建产物：**

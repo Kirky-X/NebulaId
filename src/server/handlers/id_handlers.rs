@@ -192,7 +192,20 @@ impl super::ApiHandlers {
 
         let metadata = match algorithm.as_str() {
             "snowflake" => self.extract_snowflake_metadata(id.clone()),
-            "uuid_v8" => self.extract_uuid_v8_metadata(id.clone()),
+            "uuid_v8" => self.extract_timestamp_metadata(id.clone(), "uuid_v8"),
+            // add-uuid-v4-v7：v7 走标准时间戳提取（RFC 9562 §5.7 布局，
+            // 与 v8 的私有布局解析同效但 dc/worker/sequence 无对应字段）；
+            "uuid_v7" => self.extract_timestamp_metadata(id.clone(), "uuid_v7"),
+            // v4 显式声明零元数据而非落 unknown——unknown 会被运维当作
+            // 「解析失败」处理，而 v4 的 ID 本就不可解析出任何字段。
+            "uuid_v4" => IdMetadataResponse {
+                timestamp: 0,
+                datacenter_id: 0,
+                worker_id: 0,
+                sequence: 0,
+                algorithm: "uuid_v4".to_string(),
+                biz_tag: String::new(),
+            },
             "segment" => self.extract_segment_metadata(id.clone(), req.biz_tag),
             _ => IdMetadataResponse {
                 timestamp: 0,
@@ -248,7 +261,10 @@ impl super::ApiHandlers {
         }
     }
 
-    fn extract_uuid_v8_metadata(&self, id: Id) -> IdMetadataResponse {
+    /// v7/v8 的时间戳提取（v8 私有布局与 v7 标准布局同构：差异仅算法名；
+    /// dc/worker/sequence 均无对应字段，恒 0）。合并为一处实现避免逐行
+    /// 复制（规则 6 复用优先）。
+    fn extract_timestamp_metadata(&self, id: Id, algorithm: &str) -> IdMetadataResponse {
         let uuid = id.to_uuid_v8();
         let timestamp = uuid
             .get_timestamp()
@@ -263,7 +279,7 @@ impl super::ApiHandlers {
             datacenter_id: 0,
             worker_id: 0,
             sequence: 0,
-            algorithm: "uuid_v8".to_string(),
+            algorithm: algorithm.to_string(),
             biz_tag: String::new(),
         }
     }
@@ -491,5 +507,51 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{algorithm:?} parse must succeed, got {e:?}"));
             assert_eq!(resp.numeric_value, id);
         }
+    }
+
+    /// add-uuid-v4-v7：v7 分支提取标准时间戳（非零、量级为 ms），
+    /// v4 分支显式零元数据（timestamp == 0 且 algorithm 名为 uuid_v4，
+    /// 不是 unknown）。
+    #[tokio::test]
+    #[cfg(feature = "uuid-v7")]
+    async fn test_handle_parse_uuid_v7_timestamp_and_v4_zero_metadata() {
+        use uuid::Uuid;
+
+        let (handlers, _mock_gen) = create_test_api_handlers();
+        let v7_id = Uuid::now_v7().to_string();
+        let v4_id = Uuid::new_v4().to_string();
+
+        let v7_resp = handlers
+            .parse(ParseRequest {
+                id: v7_id.clone(),
+                workspace: "w".to_string(),
+                group: "g".to_string(),
+                biz_tag: "t".to_string(),
+                algorithm: "uuid_v7".to_string(),
+            })
+            .await
+            .expect("v7 parse must succeed");
+        assert_eq!(v7_resp.metadata.algorithm, "uuid_v7");
+        assert!(
+            v7_resp.metadata.timestamp > 1_600_000_000_000,
+            "v7 timestamp must be a plausible current ms epoch, got {}",
+            v7_resp.metadata.timestamp
+        );
+
+        let v4_resp = handlers
+            .parse(ParseRequest {
+                id: v4_id,
+                workspace: "w".to_string(),
+                group: "g".to_string(),
+                biz_tag: "t".to_string(),
+                algorithm: "uuid_v4".to_string(),
+            })
+            .await
+            .expect("v4 parse must succeed");
+        assert_eq!(v4_resp.metadata.algorithm, "uuid_v4");
+        assert_eq!(
+            v4_resp.metadata.timestamp, 0,
+            "v4 has no embedded timestamp"
+        );
     }
 }

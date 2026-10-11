@@ -406,11 +406,13 @@ fn e2e_id_batch_from_u64s_and_new_consistent() {
 // AlgorithmType 别名解析端到端
 // =============================================================================
 
-/// AlgorithmType::from_str 接受所有别名与大小写变体。
+/// AlgorithmType::from_str 接受所有名称与大小写变体。
 ///
 /// 覆盖功能场景穷举分析第 2.7 节"算法类型解析"行：
 /// - 大小写不敏感
-/// - uuid_v7 / uuid_v4 系列名称作为 UuidV8 的向后兼容别名保留
+/// - add-uuid-v4-v7（破坏性反转）：uuid_v7 / uuid_v4 系列名称从「UuidV8 的
+///   向后兼容别名」反转为真算法（UuidV7 / UuidV4）；存量串使用面实测为零，
+///   语义声明见 docs/CHANGELOG.md
 #[test]
 fn e2e_algorithm_type_from_str_all_aliases_and_case_variants() {
     // 标准名称
@@ -427,7 +429,7 @@ fn e2e_algorithm_type_from_str_all_aliases_and_case_variants() {
         AlgorithmType::UuidV8
     );
 
-    // 别名：uuid_v8 自身变体
+    // 变体：uuid_v8 自身别名
     assert_eq!(
         AlgorithmType::from_str("uuidv8").unwrap(),
         AlgorithmType::UuidV8
@@ -436,30 +438,31 @@ fn e2e_algorithm_type_from_str_all_aliases_and_case_variants() {
         AlgorithmType::from_str("uuid8").unwrap(),
         AlgorithmType::UuidV8
     );
-    // 别名：迁移前的 v7 / v4 名称仍解析为 UuidV8
+    // 真算法：v7 组（反转后指向 UuidV7）
     assert_eq!(
         AlgorithmType::from_str("uuid_v7").unwrap(),
-        AlgorithmType::UuidV8
+        AlgorithmType::UuidV7
     );
     assert_eq!(
         AlgorithmType::from_str("uuidv7").unwrap(),
-        AlgorithmType::UuidV8
+        AlgorithmType::UuidV7
     );
     assert_eq!(
         AlgorithmType::from_str("uuid7").unwrap(),
-        AlgorithmType::UuidV8
+        AlgorithmType::UuidV7
     );
+    // 真算法：v4 组（反转后指向 UuidV4）
     assert_eq!(
         AlgorithmType::from_str("uuid_v4").unwrap(),
-        AlgorithmType::UuidV8
+        AlgorithmType::UuidV4
     );
     assert_eq!(
         AlgorithmType::from_str("uuidv4").unwrap(),
-        AlgorithmType::UuidV8
+        AlgorithmType::UuidV4
     );
     assert_eq!(
         AlgorithmType::from_str("uuid4").unwrap(),
-        AlgorithmType::UuidV8
+        AlgorithmType::UuidV4
     );
 
     // 大小写不敏感
@@ -473,11 +476,11 @@ fn e2e_algorithm_type_from_str_all_aliases_and_case_variants() {
     );
     assert_eq!(
         AlgorithmType::from_str("UUIDV7").unwrap(),
-        AlgorithmType::UuidV8
+        AlgorithmType::UuidV7
     );
     assert_eq!(
         AlgorithmType::from_str("Uuid7").unwrap(),
-        AlgorithmType::UuidV8
+        AlgorithmType::UuidV7
     );
 }
 

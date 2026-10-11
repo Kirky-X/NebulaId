@@ -1,6 +1,6 @@
 [package]
 name = "nebulaid"
-version = "0.3.0-rc.2"
+version = "0.3.0-rc.3"
 description = "Enterprise-grade distributed ID generation system"
 authors = ["Kirky-X <Kirky-X@outlook.com>"]
 edition = "2021"
@@ -42,12 +42,12 @@ required-features = ["server"]
 #   未启用时对应模块经 cfg 门控排除（CI fmt-clippy job 钉住该组合）。
 #   core::database 仅随 `database`（经 segment/server 蕴含，SDK 仓储面经
 #   sdk,database 组合）参与编译。
-default = ["server", "segment", "snowflake", "uuid-v8", "uuid-v5", "postgresql", "garrison-auth"]
+default = ["server", "segment", "snowflake", "uuid-v8", "uuid-v5", "uuid-v4", "uuid-v7", "postgresql", "garrison-auth"]
 postgresql = ["dbnexus/postgres"]
 etcd = ["dep:etcd-client"]
 # 分层与算法特性（feature-isolation）：database 为仓储层开关，
-# segment 蕴含 database；snowflake/uuid-v8/uuid-v5 为零 DB 叶子算法；
-# server 为整层开关（蕴含 database + http/grpc + Web/gRPC 全栈依赖）。
+# segment 蕴含 database；snowflake/uuid-v8/uuid-v5/uuid-v4/uuid-v7 为零 DB
+# 叶子算法；server 为整层开关（蕴含 database + http/grpc + Web/gRPC 全栈依赖）。
 database = ["dep:dbnexus", "dep:sea-orm", "dep:argon2", "dep:subtle"]
 segment = ["database"]
 snowflake = []
@@ -59,6 +59,16 @@ uuid-v8 = []
 # feature flag，传递依赖 sha1_smol 在 HEAD 的 Cargo.lock 已存在（redis 路径），
 # 零新增 crate 节点；不为省它引入同 crate 双依赖名的 optional 重复依赖写法）。
 uuid-v5 = []
+# uuid-v4: RFC 9562 §5.4 随机 UUID 发号（src/core/algorithm/uuid_v4.rs）。零 DB
+# 叶子特性（零状态：无时钟、无计数器、无协调）。独占能力：122 位不可猜测 +
+# 完全零元数据（连创建时间都不泄漏）——request id / 能力令牌类场景。
+uuid-v4 = []
+# uuid-v7: RFC 9562 §5.7 时间有序 UUID 发号（src/core/algorithm/uuid_v7.rs）。
+# 零 DB 叶子特性（零自持状态：uuid crate 进程级单调上下文即得进程内保序）。
+# 独占能力：标准时间有序布局（时间戳可被任何 RFC 9562 工具直取）+ 零配置
+# （无 dc/worker/shard，不泄漏部署拓扑）。三者 v4/v7/v8 正交分工：
+# v8 独占租户上下文嵌入，v5 独占确定性派生。
+uuid-v7 = []
 server = ["database", "http", "grpc", "sdforge/http", "sdforge/grpc", "sdforge/openapi", "sdforge/context", "sdforge/docs", "dep:oxcache", "dep:inklog", "dep:axum", "dep:tonic", "dep:tonic-prost", "dep:prost", "dep:utoipa", "dep:limiteron", "dep:tokio-stream", "dep:metrics-exporter-prometheus"]
 # alerting: 门控告警子系统(src/core/monitoring 的 AlertManager/AlertRule/
 # 告警状态机/通知通道/broadcast 事件流)与 webhook 分发 reqwest 路径。

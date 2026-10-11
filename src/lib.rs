@@ -4,9 +4,10 @@
 //! Nebula ID - Enterprise-grade distributed ID generation system
 //!
 //! This crate provides a unified API for distributed ID generation with support for
-//! multiple algorithms (Segment, Snowflake, UUID v8 — `uuid_v7` / `uuid_v4` are
-//! accepted only as input aliases of `AlgorithmType::from_str`) and features like
-//! distributed coordination, caching, and monitoring.
+//! multiple algorithms (Segment, Snowflake, UUID v8 / v7 / v4 as real minting
+//! algorithms selectable via `AlgorithmType` and its `from_str` string surface)
+//! plus RFC 9562 §5.5 name-based deterministic derivation (`uuid-v5`), and
+//! features like distributed coordination, caching, and monitoring.
 //!
 //! # Architecture
 //!

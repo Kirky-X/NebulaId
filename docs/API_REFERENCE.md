@@ -111,7 +111,7 @@
 |---|:---:|---|---|
 | `server` | ✅ | `database` + `http` + `grpc` | 服务端整层；`nebula-id` 二进制随此特性构建 |
 | `segment` | ✅ | `database` | 号段算法（DB 号段） |
-| `snowflake` / `uuid-v8` / `uuid-v5` | ✅ | — | 零 DB 叶子算法（`uuid-v5` 为 RFC 9562 §5.5 确定性派生，非发号） |
+| `snowflake` / `uuid-v8` / `uuid-v7` / `uuid-v5` / `uuid-v4` | ✅ | — | 零 DB 叶子算法（v8 私有布局带租户上下文、v7 标准时间有序零配置、v4 随机零元数据；`uuid-v5` 为确定性派生，非发号） |
 | `database` | ➖ | — | 仓储层（dbnexus + sea-orm），经 `segment` / `server` 蕴含 |
 | `postgresql` | ✅ | — | dbnexus PostgreSQL 驱动开关 |
 | `garrison-auth` | ✅ | — | garrison API key 认证 |
@@ -422,10 +422,11 @@ re-export）解析。
 
 #### `UuidV8Impl`
 
-按时间排序的 RFC 9562 **v8** UUID 生成器（`src/core/algorithm/uuid_v8.rs`）。它是本 crate 中唯一的
-UUID 算法 —— 没有独立的随机 UUID（v4）实现。
+按时间排序的 RFC 9562 **v8** UUID 生成器（`src/core/algorithm/uuid_v8.rs`）——私有位布局
+（dc/worker/counter + shard），租户上下文嵌入是其独占能力。随机 v4 / 标准时间有序 v7 为
+并列的真算法（见本章末尾「UUID v4 / v7」节）。
 
-可达性：`uuid_v8` 模块为 `pub(crate)`（`src/core/algorithm/mod.rs:21`），因此
+可达性：`uuid_v8` 模块为 `pub(crate)`（`src/core/algorithm/mod.rs`），因此
 `UuidV8Impl` **无法**从 crate 外部导入。请改用公开的工厂构建：
 
 ```rust
@@ -456,9 +457,12 @@ pub async fn generate(&self, ctx: &GenerateContext) -> Result<Id>
 pub async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result<IdBatch>
 ```
 
-> **旧名称：** `uuid_v7` / `uuid_v4` 仍会被 `AlgorithmType::from_str`
-> （`src/core/types/id.rs:197-198`）**作为输入**接受，并映射到 `AlgorithmType::UuidV8`。
-> 它们既不是类型名、构造函数，也不是存储值 —— `Display` 只会输出 `uuid_v8`。
+> **版本选择（add-uuid-v4-v7 后）**：`AlgorithmType::from_str` 的 `uuid_v4` /
+> `uuid_v7` 系列名称已从「映射到 `UuidV8` 的输入别名」反转为**真算法**
+> （`UuidV4` / `UuidV7`）；v8 自身别名（`uuidv8` / `uuid8`）保持折叠。
+> `Display` 输出与 `from_str` roundtrip 自洽（规格见 change `add-uuid-v4-v7`）。
+> UUID 版本分工：v4 随机零元数据、v7 标准时间有序零配置、v8 租户上下文
+> 私有布局、v5 确定性派生（见下节）。
 
 #### `derive_uuid_v5` / `derive_uuid_v5_batch`
 
@@ -486,6 +490,24 @@ v5 不是路由算法、不计数。
 > ——直接 `to_string()` 会得到十进制数值；canonical 连字符字符串请用
 > `Id::render(&IdFormat::Uuid, None, None)`。调用方应使用自己的业务命名空间
 > （勿用 nil namespace），name 空间需自行保证全局唯一。
+
+---
+
+#### `UuidV4Impl` / `UuidV7Impl`（add-uuid-v4-v7）
+
+两个零状态发号器（`src/core/algorithm/uuid_v4.rs` / `uuid_v7.rs`，feature `uuid-v4` / `uuid-v7` 门控）。
+
+```rust
+pub fn generate(&self, ctx: &GenerateContext) -> Result<Id>   // 经 IdAlgorithm
+pub async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result<IdBatch>
+```
+
+- `UuidV4Impl`：`generate` = `Id::from_uuid_v8(Uuid::new_v4())`——122 位随机、完全零元数据。零状态（无时钟/计数器/协调）。batch 无溢出守卫（互异性由随机熵保证）。
+- `UuidV7Impl`：`generate` = `Id::from_uuid_v8(Uuid::now_v7())`——RFC 9562 §5.7 标准时间有序，进程内保序由 uuid crate 共享计数器上下文提供（本 crate 零自持状态）。batch 无溢出守卫（crate 计数器溢出时自动进位 +1ms 保序，物理不可达）。
+
+**与 v8 的分界**：v4/v7 不接受也不嵌入 `workspace/group/biz_tag` 上下文（租户上下文嵌入是 v8 独占能力）。经 `AlgorithmRouter::generate_with_algorithm(AlgorithmType::UuidV4 | UuidV7, ...)` 或 SDK `generate_with_algorithm` 选择；`AlgorithmType::from_str` 的 `uuid_v4`/`uuid_v7` 串直接映射真算法（破坏性反转，见 CHANGELOG）。
+
+**保序边界**：v7 进程内严格保序；跨进程仅毫秒粒度——跨进程严格保序是 v8（dc/worker + 墙钟）的地盘。
 
 ---
 
@@ -770,8 +792,9 @@ pub fn to_base36(&self) -> String
 // otherwise the plain u128 (`src/core/types/id.rs:55-70`).
 ```
 
-> `Id` 没有 `from_uuid_v7` / `from_uuid_v4` —— `uuid_v7` / `uuid_v4` 仅作为
-> `AlgorithmType::from_str` 的输入别名存在（`src/core/types/id.rs:197-198`）。
+> `Id` 没有 `from_uuid_v7` / `from_uuid_v4` 构造函数——`from_uuid_v8`（历史命名）
+> 承担任意 Uuid → Id 的包装；UUID v4/v7 经各自的 `UuidV4Impl` / `UuidV7Impl`
+> 算法实体进入运行期（见「UUID 生成」章）。
 
 ### `IdBatch`
 
@@ -805,12 +828,16 @@ pub enum AlgorithmType {
     Segment,
     Snowflake,
     UuidV8,
+    UuidV4,
+    UuidV7,
 }
 ```
 
-`AlgorithmType::from_str` 还接受旧拼写 `uuid_v7` / `uuid_v4`
-（以及 `uuidv7` / `uuid7` / `uuidv4` / `uuid4`）作为 `UuidV8` 的**输入别名**
-（`src/core/types/id.rs:238-239`）；`Display` 只会输出 `segment` / `snowflake` / `uuid_v8`。
+`AlgorithmType::from_str` 的串面（add-uuid-v4-v7 起）：`uuid_v4`/`uuidv4`/`uuid4` → `UuidV4`、
+`uuid_v7`/`uuidv7`/`uuid7` → `UuidV7`（**不再是** `UuidV8` 的输入别名——破坏性反转，
+见 CHANGELOG）、`uuid_v8`/`uuidv8`/`uuid8` 保持 → `UuidV8`；大小写不敏感，未知串返回
+`InvalidAlgorithmType`。`Display` 输出规范名（`segment` / `snowflake` / `uuid_v8` /
+`uuid_v4` / `uuid_v7`），与 `from_str` roundtrip 自洽。
 
 ### `DcStatus`
 

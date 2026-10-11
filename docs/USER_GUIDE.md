@@ -167,10 +167,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 1️⃣ ID 生成算法
 
-`Nebula ID` 提供三种核心算法：
+`Nebula ID` 提供五种核心算法：
 - **Segment (号段)**: 基于数据库的号段分配，支持高并发批量获取
 - **Snowflake (雪花)**: Twitter 风格的分布式 ID，时间有序、无需协调
-- **UUID (通用唯一标识符)**: 时间有序的 UUID v8 实现（RFC 9562 §5.8 自定义布局，内嵌 dc/worker/shard）；`uuid_v7` / `uuid_v4` 仅作为算法名的输入别名保留
+- **UUID v8 (通用唯一标识符)**: 时间有序的私有位布局（RFC 9562 §5.8，内嵌 dc/worker/shard，租户上下文独占）
+- **UUID v7**: RFC 9562 §5.7 标准时间有序——时间戳可被任何标准工具直取，零 dc/worker 配置（add-uuid-v4-v7 起为真算法，不再是别名）
+- **UUID v4**: 122 位随机 + 完全零元数据（不泄漏创建时间与部署结构，add-uuid-v4-v7 起为真算法）
 
 ### 2️⃣ 数据中心 (Datacenter)
 
@@ -194,10 +196,11 @@ Segment 算法支持多数据中心部署，每个数据中心分配唯一的 DC
 
 | 消费形态 | 推荐组合 | 依赖树规模 |
 |---|---|---|
-| 部署完整服务 | default（`server` + 四算法 + `postgresql` + `garrison-auth`） | 519 |
+| 部署完整服务 | default（`server` + 五算法 + `postgresql` + `garrison-auth`） | 519 |
 | 嵌入式 SDK | `sdk`（蕴含 `openapi`；不蕴含 `database`，仓储面另显式启用） | 197（`sdk,database` 组合为 283） |
 | 仅号段算法 | `segment`（蕴含 `database`） | 282 |
 | 仅 Snowflake / UUID v8 | `snowflake` 或 `uuid-v8` | 196 |
+| 仅 UUID v7 / v4 | `uuid-v7` 或 `uuid-v4` | 196 |
 | 仅 UUID v5 确定性派生 | `uuid-v5` | 196（kit 不参与：直调 `derive_uuid_v5`） |
 
 依赖树规模口径：`cargo tree -e normal --prefix none | sort -u | wc -l`（唯一 name+version 包数，2026-10-11 实测）。
@@ -313,9 +316,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-> 💡 **关于旧名称**：`uuid_v7` / `uuid_v4` 不再是独立算法，但 `AlgorithmType::from_str`
-> （`src/core/types/id.rs:238-239`）仍接受它们作为 `uuid_v8` 的**输入别名**，
-> 因此历史配置/API 请求里的 `"uuid_v7"` 依然能解析；输出与存储一律是 `uuid_v8`。
+> 💡 **关于 uuid_v7 / uuid_v4**（add-uuid-v4-v7，2026-10）：两者曾是 `uuid_v8`
+> 的输入别名（配置 `uuid_v7` 实际产出 v8）；现已反转为**真算法**——
+> `"uuid_v7"` 解析为 `AlgorithmType::UuidV7`（标准时间有序 UUID）、
+> `"uuid_v4"` 解析为 `AlgorithmType::UuidV4`（随机 UUID）。历史配置中的
+> 这两个串的输出布局随之改变（存量串使用面实测为零，CHANGELOG 有破坏性
+> 声明）。v8 的别名（`uuidv8` / `uuid8`）保持折叠。
 
 #### UUID v5 确定性派生（非发号）
 
@@ -358,6 +364,45 @@ let id = kit
 > 💡 **命名空间约定**：调用方应使用自己的业务命名空间（勿用 nil
 > namespace——不同业务若共用 nil 且 name 空间相近，派生结果会互撞）；
 > name 空间需自行保证全局唯一（v5 是身份派生，不是唯一性保证）。
+
+#### UUID v4 / v7：发号器的另两个版本（add-uuid-v4-v7）
+
+`AlgorithmType` 现在有**五个真算法**。UUID 四个版本的分工——按场景选，不按版本号新旧的选：
+
+| 版本 | 独占能力 | 选它的场景 |
+|---|---|---|
+| `uuid_v4` | 122 位随机、完全零元数据（不泄漏创建时间与部署结构） | request id、能力令牌——「不可从 ID 反推任何信息」 |
+| `uuid_v7` | 标准时间有序（RFC 9562 §5.7，时间戳可被任何标准工具直取）+ 零配置（无 dc/worker） | 数据库主键要索引局部性、又不想绑 NebulaId 私有布局 |
+| `uuid_v8` | 私有布局内嵌 dc/worker/shard（租户上下文） | 多租户观测、分片路由、需要 `/parse` 解析拓扑 |
+| v5 派生 | 同输入恒同输出 | 按业务身份（如 `(lemma, language)`）稳定派生 |
+
+两个版本的用法与 v8 同构（工厂构建 / 配置 `algorithm.default` / HTTP `algorithm` 字段均可选）：
+
+```rust
+use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
+use nebulaid::core::types::AlgorithmType;
+use nebulaid::core::Config;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = Config::default();
+
+    // UUID v7 —— 标准时间有序，进程内严格保序
+    let v7 = AlgorithmBuilder::new(AlgorithmType::UuidV7).build(&config).await?;
+    // UUID v4 —— 随机零元数据
+    let v4 = AlgorithmBuilder::new(AlgorithmType::UuidV4).build(&config).await?;
+
+    let ctx = GenerateContext::default();
+    println!("v7: {}", v7.generate(&ctx).await?);
+    println!("v4: {}", v4.generate(&ctx).await?);
+    Ok(())
+}
+```
+
+> ⚠️ **破坏性变更提示（2026-10）**：历史配置/API 请求里的字符串
+> `"uuid_v7"` / `"uuid_v4"` 此前是 `uuid_v8` 的输入别名（配 v7 得 v8），
+> 现已反转为真算法——同名串的输出布局随之改变。v8 自身的别名
+> （`uuidv8` / `uuid8`）不受影响。详见 CHANGELOG 破坏性条目。
 
 ---
 

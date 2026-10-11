@@ -169,19 +169,20 @@ export DATABASE_URL="postgresql://..."
 
 ### 背景
 
-代码侧 `AlgorithmTypeDb`（`src/core/database/biz_tag_entity.rs:129-136`）当前只有三个取值，
-且通过 `From<AlgorithmType> for AlgorithmTypeDb` 与 `AlgorithmType`（`src/core/types/id.rs:213-219`）双向一一映射：
+代码侧 `AlgorithmTypeDb`（`src/core/database/biz_tag_entity.rs`）当前有五个取值，
+且通过 `From<AlgorithmType> for AlgorithmTypeDb` 与 `AlgorithmType`（`src/core/types/id.rs`）双向一一映射：
 
 | DB ENUM label | SeaORM 变体 | `AlgorithmType` |
 |---------------|-------------|-----------------|
 | `segment`     | `AlgorithmTypeDb::Segment`   | `AlgorithmType::Segment`   |
 | `snowflake`   | `AlgorithmTypeDb::Snowflake` | `AlgorithmType::Snowflake` |
 | `uuid_v8`     | `AlgorithmTypeDb::UuidV8`    | `AlgorithmType::UuidV8`    |
+| `uuid_v4`     | `AlgorithmTypeDb::UuidV4`    | `AlgorithmType::UuidV4`    |
+| `uuid_v7`     | `AlgorithmTypeDb::UuidV7`    | `AlgorithmType::UuidV7`    |
 
-`uuid_v7` / `uuid_v4` 只作为 `AlgorithmType::from_str` 的**输入别名**保留
-（`src/core/types/id.rs:197-198`，用于 API/配置层的向后兼容），**不再是合法的 DB 取值**。
-因此库里残留 `uuid_v7` / `uuid_v4` 行时，新版程序 `find` 这些 `biz_tags` 行会因无法转换成
-enum 变体而直接报错。
+add-uuid-v4-v7（2026-10）后 `uuid_v7` / `uuid_v4` 从「`AlgorithmType::from_str` 的
+输入别名（非 DB 取值）」反转为**合法的 DB 取值**（enum 已扩容，存量库由
+`run_migrations` 的 `ADD VALUE` 幂等补齐）。
 
 - 新建库：`scripts/init.sql` 已改为正确取值，无需迁移。
 - 存量库：必须执行本节迁移。注意 `init.sql` 的 `DO ... WHEN duplicate_object THEN null` 块

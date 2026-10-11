@@ -328,14 +328,15 @@ async fn e2e_all_algorithm_types_built_via_builder_generate_unique_ids() {
 // AlgorithmRouter 端到端
 // =============================================================================
 
-/// Router.initialize 在默认配置下应注册全部 3 种算法。
+/// Router.initialize 在默认配置下应注册本构建特性集内的全部算法。
 ///
 /// 覆盖功能场景穷举分析第 1 节算法路由行的"按 biz_tag 选算法"前置条件：
-/// 主算法 + fallback chain 全部就绪。`AlgorithmType` 现有 Segment / Snowflake /
-/// UuidV8 三个变体（UuidV4 已按 spec 约束移除，不再兜底）。
+/// 主算法 + fallback chain 全部就绪。add-uuid-v4-v7 后 `AlgorithmType` 有
+/// 五个真算法（Segment / Snowflake / UuidV8 / UuidV4 / UuidV7，各随特性
+/// 门控进注册表）；`UuidV4` 曾按旧 spec 约束「移除」，该约束已被本次
+/// 变更推翻（v4 作为独占「随机零元数据」能力的真算法回归）。
 #[tokio::test]
-#[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
-async fn e2e_router_initialize_registers_three_algorithms() {
+async fn e2e_router_initialize_registers_all_enabled_algorithms() {
     let config = Config::default();
     let router = AlgorithmRouter::new(config, None);
 
@@ -345,21 +346,60 @@ async fn e2e_router_initialize_registers_three_algorithms() {
         .expect("E2E: Router.initialize should succeed");
 
     let health_statuses = router.health_check().await;
+
+    // 期望数按构建特性集计算：initialize 的构建循环与注册表同口径门控
+    let expected = {
+        let mut n = 0;
+        #[cfg(feature = "segment")]
+        {
+            n += 1;
+        }
+        #[cfg(feature = "snowflake")]
+        {
+            n += 1;
+        }
+        #[cfg(feature = "uuid-v8")]
+        {
+            n += 1;
+        }
+        #[cfg(feature = "uuid-v4")]
+        {
+            n += 1;
+        }
+        #[cfg(feature = "uuid-v7")]
+        {
+            n += 1;
+        }
+        n
+    };
     assert_eq!(
         health_statuses.len(),
-        3,
-        "E2E: Router should register 3 algorithms (Segment, Snowflake, UuidV8)"
+        expected,
+        "E2E: Router should register exactly the algorithms of the enabled feature set"
     );
 
     let registered: HashSet<AlgorithmType> = health_statuses.iter().map(|(t, _)| *t).collect();
+    #[cfg(feature = "segment")]
     assert!(registered.contains(&AlgorithmType::Segment));
+    #[cfg(feature = "snowflake")]
     assert!(registered.contains(&AlgorithmType::Snowflake));
+    #[cfg(feature = "uuid-v8")]
     assert!(registered.contains(&AlgorithmType::UuidV8));
+    #[cfg(feature = "uuid-v4")]
+    assert!(
+        registered.contains(&AlgorithmType::UuidV4),
+        "uuid-v4 feature enabled but UuidV4 missing from router registry"
+    );
+    #[cfg(feature = "uuid-v7")]
+    assert!(
+        registered.contains(&AlgorithmType::UuidV7),
+        "uuid-v7 feature enabled but UuidV7 missing from router registry"
+    );
 
     for (alg_type, status) in &health_statuses {
         // Segment 在没有数据库连接时 health_check 返回 Degraded("No active buffers")
-        // 这是设计行为——Segment 需要数据库加载号段。其他两种算法（Snowflake /
-        // UuidV8）不依赖外部状态，应返回 Healthy。
+        // 这是设计行为——Segment 需要数据库加载号段。其他算法不依赖外部状态，
+        // 应返回 Healthy。
         match alg_type {
             AlgorithmType::Segment => {
                 assert!(
@@ -378,6 +418,44 @@ async fn e2e_router_initialize_registers_three_algorithms() {
             }
         }
     }
+}
+
+/// add-uuid-v4-v7 回归锚点（F-01）：v4/v7 经路由 `generate_with_algorithm`
+/// 产出**各自布局**的 ID——initialize 漏注册曾让本路径静默 fallback 到
+/// fallback 链（表现为「请求 v7 得 v8」）。
+#[tokio::test]
+#[cfg(all(feature = "uuid-v4", feature = "uuid-v7"))]
+async fn e2e_router_generate_v4_v7_yields_correct_layout_no_fallback() {
+    let config = Config::default();
+    let router = AlgorithmRouter::new(config, None);
+    router
+        .initialize()
+        .await
+        .expect("E2E: Router.initialize should succeed");
+
+    let v7 = router
+        .generate_with_algorithm(AlgorithmType::UuidV7, "ws", "g", "layout-probe")
+        .await
+        .expect("v7 via router must succeed");
+    let v4 = router
+        .generate_with_algorithm(AlgorithmType::UuidV4, "ws", "g", "layout-probe")
+        .await
+        .expect("v4 via router must succeed");
+
+    let v7_bits = v7.to_uuid_v8().as_u128();
+    let v4_bits = v4.to_uuid_v8().as_u128();
+    assert_eq!(
+        (v7_bits >> 76) & 0xF,
+        7,
+        "v7 via router must carry version 7"
+    );
+    assert_eq!(
+        (v4_bits >> 76) & 0xF,
+        4,
+        "v4 via router must carry version 4"
+    );
+    // 互异：两次路由生成不得相同（fallback 到同一算法的另一表现）
+    assert_ne!(v7_bits, v4_bits);
 }
 
 /// Router 按 biz_tag 覆盖默认算法。

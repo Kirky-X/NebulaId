@@ -203,6 +203,8 @@ log-core-config-app_config-config_loaded = Auth configuration loaded
 error-core-config-app_config-segment_feature_not_enabled = algorithm.default = "segment" requires the `segment` feature, which this build does not enable
 error-core-config-app_config-snowflake_feature_not_enabled = algorithm.default = "snowflake" requires the `snowflake` feature, which this build does not enable
 error-core-config-app_config-uuid_v8_feature_not_enabled = algorithm.default = "uuid_v8" requires the `uuid-v8` feature, which this build does not enable
+error-core-config-app_config-uuid_v4_feature_not_enabled = algorithm.default = "uuid_v4" requires the `uuid-v4` feature, which this build does not enable
+error-core-config-app_config-uuid_v7_feature_not_enabled = algorithm.default = "uuid_v7" requires the `uuid-v7` feature, which this build does not enable
 error-core-config-app_config-total_bits_exceed_limit = Snowflake total bits (datacenter_id_bits + worker_id_bits + sequence_bits) must be less than 64
 error-core-config-app_config-dc_id_exceeds_bits = app.dc_id { $dc_id } exceeds datacenter_id_bits={ $dc_bits } range (max { $max })
 error-core-config-app_config-worker_id_exceeds_bits = app.worker_id { $worker_id } exceeds worker_id_bits={ $worker_bits } range (max { $max })

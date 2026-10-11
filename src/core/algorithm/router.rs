@@ -338,6 +338,8 @@ impl AlgorithmRouter {
             AlgorithmType::Segment,
             AlgorithmType::Snowflake,
             AlgorithmType::UuidV8,
+            AlgorithmType::UuidV4,
+            AlgorithmType::UuidV7,
         ] {
             // 未启用算法不进构建循环：配置声明禁用算法是意图而非故障，
             // 不应对其发 algorithm_build_failed 告警。
@@ -351,6 +353,17 @@ impl AlgorithmRouter {
             }
             #[cfg(not(feature = "uuid-v8"))]
             if alg_type == AlgorithmType::UuidV8 {
+                continue;
+            }
+            // add-uuid-v4-v7：两个零状态发号器同样只在特性开启时进
+            // 构建循环——未开启时路由表无该算法，generate_with_algorithm
+            // 经下方 cfg 守卫显性报错（见 generate_with_algorithm_internal）。
+            #[cfg(not(feature = "uuid-v4"))]
+            if alg_type == AlgorithmType::UuidV4 {
+                continue;
+            }
+            #[cfg(not(feature = "uuid-v7"))]
+            if alg_type == AlgorithmType::UuidV7 {
                 continue;
             }
             #[allow(unused_mut)]
@@ -686,6 +699,14 @@ impl AlgorithmRouter {
         if algorithm == AlgorithmType::UuidV8 {
             return Err(CoreError::InvalidAlgorithmType("uuid-v8".to_string()));
         }
+        #[cfg(not(feature = "uuid-v4"))]
+        if algorithm == AlgorithmType::UuidV4 {
+            return Err(CoreError::InvalidAlgorithmType("uuid-v4".to_string()));
+        }
+        #[cfg(not(feature = "uuid-v7"))]
+        if algorithm == AlgorithmType::UuidV7 {
+            return Err(CoreError::InvalidAlgorithmType("uuid-v7".to_string()));
+        }
         let effective_algorithm = algorithm;
 
         debug!(
@@ -798,6 +819,14 @@ impl AlgorithmRouter {
         #[cfg(not(feature = "uuid-v8"))]
         if algorithm == AlgorithmType::UuidV8 {
             return Err(CoreError::InvalidAlgorithmType("uuid-v8".to_string()));
+        }
+        #[cfg(not(feature = "uuid-v4"))]
+        if algorithm == AlgorithmType::UuidV4 {
+            return Err(CoreError::InvalidAlgorithmType("uuid-v4".to_string()));
+        }
+        #[cfg(not(feature = "uuid-v7"))]
+        if algorithm == AlgorithmType::UuidV7 {
+            return Err(CoreError::InvalidAlgorithmType("uuid-v7".to_string()));
         }
         let effective_algorithm = algorithm;
 

@@ -185,7 +185,7 @@ git remote -v
 ### 构建与测试
 
 ```bash
-# 构建项目（default = server + segment + snowflake + uuid-v8 + uuid-v5 + postgresql + garrison-auth；http/grpc 随 server 蕴含）
+# 构建项目（default = server + segment + snowflake + uuid-v8 + uuid-v7 + uuid-v5 + uuid-v4 + postgresql + garrison-auth；http/grpc 随 server 蕴含）
 cargo build --package nebulaid
 
 # 全特性构建（--all-features 可构建，覆盖 etcd + sdk + alerting +

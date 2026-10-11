@@ -17,7 +17,7 @@ CREATE SCHEMA IF NOT EXISTS nebula_id;
 -- 连接的 search_path 需包含 nebula_id；应用连接串由 create_connection
 -- 自动注入 search_path=nebula_id,public）
 DO $$ BEGIN
-    CREATE TYPE nebula_id.algorithm_type AS ENUM ('segment', 'snowflake', 'uuid_v8');
+    CREATE TYPE nebula_id.algorithm_type AS ENUM ('segment', 'snowflake', 'uuid_v8', 'uuid_v4', 'uuid_v7');
 EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;

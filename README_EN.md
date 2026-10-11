@@ -168,7 +168,7 @@ cargo build --release
 |---------|:----:|------|
 | `server` | ✅ | Full server layer (HTTP/gRPC/auth/audit/rate limiting), implies `database` + `http` + `grpc`; the `nebula-id` binary is only built with this feature |
 | `segment` | ✅ | Segment algorithm, implies `database` (segments are DB-backed by definition) |
-| `snowflake` / `uuid-v8` / `uuid-v5` | ✅ | DB-free leaf algorithms, can be enabled independently (`uuid-v5` is RFC 9562 §5.5 deterministic derivation, not minting) |
+| `snowflake` / `uuid-v8` / `uuid-v7` / `uuid-v5` / `uuid-v4` | ✅ | DB-free leaf algorithms, can be enabled independently (v8 private layout with tenant context, v7 standard time-ordered zero-config, v4 random zero-metadata; `uuid-v5` is RFC 9562 §5.5 deterministic derivation, not minting) |
 | `database` | ➖ | Repository-layer switch (dbnexus + sea-orm), implied by `segment` / `server` (SDK repository surface enabled via the `sdk,database` combination), never used standalone |
 | `postgresql` | ✅ | dbnexus PostgreSQL storage backend (can be turned off with `--no-default-features`; compile-only guarantee, a real PostgreSQL is needed at runtime) |
 | `http` / `grpc` | ✅ | REST and gRPC access (sdforge mirror features, implied by `server`) |

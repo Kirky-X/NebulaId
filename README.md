@@ -16,7 +16,7 @@
 
 <div align="center">
 
-### 🎯 一套服务，三种发号算法
+### 🎯 一套服务，五种发号算法
 
 号段双缓冲、位切片防回拨、UUID v8 自定义布局，HTTP 与 gRPC 同源直达：
 
@@ -170,7 +170,7 @@ cargo build --release
 |---------|:----:|------|
 | `server` | ✅ | 服务端整层（HTTP/gRPC/认证/审计/限流），蕴含 `database` + `http` + `grpc`；`nebula-id` 二进制仅随此特性构建 |
 | `segment` | ✅ | 号段算法，蕴含 `database`（号段语义即 DB 号段） |
-| `snowflake` / `uuid-v8` / `uuid-v5` | ✅ | 零 DB 叶子算法，可独立启用（`uuid-v5` 为 RFC 9562 §5.5 确定性派生，非发号） |
+| `snowflake` / `uuid-v8` / `uuid-v7` / `uuid-v5` / `uuid-v4` | ✅ | 零 DB 叶子算法，可独立启用（v8 私有布局带租户上下文、v7 标准时间有序零配置、v4 随机零元数据；`uuid-v5` 为 RFC 9562 §5.5 确定性派生，非发号） |
 | `database` | ➖ | 仓储层开关（dbnexus + sea-orm），经 `segment` / `server` 蕴含（SDK 仓储面经 `sdk,database` 组合启用），不单独使用 |
 | `postgresql` | ✅ | dbnexus PostgreSQL 存储后端（`--no-default-features` 可关，仅保证编译，运行时需自备 PostgreSQL） |
 | `http` / `grpc` | ✅ | REST 与 gRPC 接入（sdforge 镜像 feature，随 `server` 蕴含） |
@@ -276,7 +276,7 @@ cargo run --package nebulaid --example sdk_server --features sdk,http
 
 ## 🏗️ 架构
 
-Nebula ID 采用「server → core → 自研生态」三层设计：`src/server/` 承载 HTTP（axum）与 gRPC（tonic）端点、中间件（认证、限流、CORS、locale、安全头）与 handlers；`src/core/` 包含算法路由器与三种算法实现、数据库仓储、etcd 协调器、监控与 i18n；数据库、配置、日志、缓存、限流、服务发现与认证分别委托给同作者生态 `dbnexus` / `confers` / `inklog` / `oxcache` / `limiteron` / `sdforge` / `garrison` / `trait-kit`。Segment 以双缓冲 + 动态步长从数据库领取号段，Snowflake 串行化 `(last_timestamp, sequence)` 迁移防并发重复，主算法不可用时按降级链兜底。
+Nebula ID 采用「server → core → 自研生态」三层设计：`src/server/` 承载 HTTP（axum）与 gRPC（tonic）端点、中间件（认证、限流、CORS、locale、安全头）与 handlers；`src/core/` 包含算法路由器与五种算法实现、数据库仓储、etcd 协调器、监控与 i18n；数据库、配置、日志、缓存、限流、服务发现与认证分别委托给同作者生态 `dbnexus` / `confers` / `inklog` / `oxcache` / `limiteron` / `sdforge` / `garrison` / `trait-kit`。Segment 以双缓冲 + 动态步长从数据库领取号段，Snowflake 串行化 `(last_timestamp, sequence)` 迁移防并发重复，UUID v8/v7/v4 分别承接租户上下文私有布局 / 标准时间有序 / 随机零元数据场景（add-uuid-v4-v7），主算法不可用时按降级链兜底。
 
 架构图、模块依赖关系、外部库角色、`mod.rs` 接口隔离标准（规则 25）与 trait 关系图的完整说明见 [🏗️ 架构文档](docs/ARCHITECTURE.md)。
 

@@ -295,6 +295,10 @@ pub trait AlgorithmFactory: Send + Sync {
 pub struct SnowflakeFactory;
 #[cfg(feature = "uuid-v8")]
 pub struct UuidV8Factory;
+#[cfg(feature = "uuid-v4")]
+pub struct UuidV4Factory;
+#[cfg(feature = "uuid-v7")]
+pub struct UuidV7Factory;
 #[cfg(feature = "segment")]
 pub struct SegmentFactory;
 
@@ -352,6 +356,10 @@ pub fn algorithm_factories() -> &'static HashMap<AlgorithmType, Arc<dyn Algorith
         m.insert(AlgorithmType::Snowflake, Arc::new(SnowflakeFactory));
         #[cfg(feature = "uuid-v8")]
         m.insert(AlgorithmType::UuidV8, Arc::new(UuidV8Factory));
+        #[cfg(feature = "uuid-v4")]
+        m.insert(AlgorithmType::UuidV4, Arc::new(UuidV4Factory));
+        #[cfg(feature = "uuid-v7")]
+        m.insert(AlgorithmType::UuidV7, Arc::new(UuidV7Factory));
         // Segment 经 DbAwareSegmentFactory 代理，支持工厂路径注入
         // DbSegmentLoader（未注入时委托 SegmentFactory，行为不变）。
         #[cfg(feature = "segment")]

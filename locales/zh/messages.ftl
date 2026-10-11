@@ -199,6 +199,8 @@ log-core-config-app_config-config_loaded = 认证配置已加载
 error-core-config-app_config-segment_feature_not_enabled = algorithm.default = "segment" 需要启用 `segment` 特性，但当前构建未启用
 error-core-config-app_config-snowflake_feature_not_enabled = algorithm.default = "snowflake" 需要启用 `snowflake` 特性，但当前构建未启用
 error-core-config-app_config-uuid_v8_feature_not_enabled = algorithm.default = "uuid_v8" 需要启用 `uuid-v8` 特性，但当前构建未启用
+error-core-config-app_config-uuid_v4_feature_not_enabled = algorithm.default = "uuid_v4" 需要启用 `uuid-v4` 特性，但当前构建未启用
+error-core-config-app_config-uuid_v7_feature_not_enabled = algorithm.default = "uuid_v7" 需要启用 `uuid-v7` 特性，但当前构建未启用
 error-core-config-app_config-total_bits_exceed_limit = Snowflake 总位数（datacenter_id_bits + worker_id_bits + sequence_bits）必须小于 64
 error-core-config-app_config-dc_id_exceeds_bits = app.dc_id { $dc_id } 超出 datacenter_id_bits={ $dc_bits } 的取值范围（最大 { $max }）
 error-core-config-app_config-worker_id_exceeds_bits = app.worker_id { $worker_id } 超出 worker_id_bits={ $worker_bits } 的取值范围（最大 { $max }）

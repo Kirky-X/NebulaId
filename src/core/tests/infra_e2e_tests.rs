@@ -333,9 +333,9 @@ async fn e2e_rate_limiter_cleanup_keeps_active_buckets() {
 /// 验证迁移逻辑的完整性（所有语句都被发出且无错误）。
 #[tokio::test]
 async fn e2e_database_run_migrations_creates_tables() {
-    // 1 schema + 2 enum types + 2 upgrade ALTERs + 5 tables
-    //   + 1 constraint backfill + 1 grace-column ALTER = 12 个成功的 execute
-    let results: Vec<MockExecResult> = (0..12)
+    // 1 schema + 4 enum types（2 CREATE + 2 ADD VALUE）+ 2 upgrade ALTERs + 5 tables
+    //   + 1 constraint backfill + 1 grace-column ALTER = 14 个成功的 execute
+    let results: Vec<MockExecResult> = (0..14)
         .map(|_| MockExecResult {
             last_insert_id: 0,
             rows_affected: 0,

@@ -264,7 +264,7 @@ cargo add nebulaid tokio
 **可选特性**（`Cargo.toml` 的 `[features]`）：
 
 ```toml
-# default = ["server", "segment", "snowflake", "uuid-v8", "uuid-v5", "postgresql", "garrison-auth"]
+# default = ["server", "segment", "snowflake", "uuid-v8", "uuid-v7", "uuid-v5", "uuid-v4", "postgresql", "garrison-auth"]
 nebulaid = { version = "0.3", features = ["etcd"] }  # 分布式协调
 # nebulaid = { version = "0.3", features = ["sdk"] } # NebulaIdKit 门面
 # 并不存在 `monitoring` / `audit` / `tls` 特性：指标、审计日志与
@@ -352,7 +352,7 @@ async fn main() -> nebulaid::core::Result<()> {
    ```
 
 2. **确保所需特性已启用**（默认为
-   `["server", "segment", "snowflake", "uuid-v8", "uuid-v5", "postgresql", "garrison-auth"]`）：
+   `["server", "segment", "snowflake", "uuid-v8", "uuid-v7", "uuid-v5", "uuid-v4", "postgresql", "garrison-auth"]`）：
    ```toml
    nebulaid = "0.3"
    ```
@@ -809,10 +809,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - 按时间排序很重要
 - 你希望 dc / worker / shard 能直接从 ID 中观察到
 
-> **旧命名**：`uuid_v7` 与 `uuid_v4` 已不再是独立算法，但
-> `AlgorithmType::from_str`（`src/core/types/id.rs:238-239`）仍接受这两种拼写作为
-> 解析到 `UuidV8` 的**输入别名**，因此旧配置与 API 载荷依然可用。
-> Nebula 输出的一律是 `uuid_v8`。
+> **版本选择（add-uuid-v4-v7 后）**：`uuid_v7` 与 `uuid_v4` 曾是解析到 `UuidV8`
+> 的输入别名，现已反转为**真算法**——`uuid_v7` 产出 RFC 9562 §5.7 标准时间有序
+> UUID，`uuid_v4` 产出随机 UUID。历史配置中这两个串的输出布局随之改变（存量串
+> 使用面实测为零，CHANGELOG 有破坏性声明）。
 
 </details>
 

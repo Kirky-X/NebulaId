@@ -234,6 +234,28 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
             WHEN duplicate_object THEN null;
         END $$"#,
         ),
+        // add-uuid-v4-v7：存量库的 algorithm_type 枚举扩容。每个 ADD VALUE
+        // 独立 DO 块——PL/pgSQL 的异常处理按块回卷，与 CREATE 同块会让
+        // CREATE 成功后随 ADD 失败一并回滚；独立块使「已存在则跳过」各自
+        // 成立（PG 12+ 允许事务内 ADD VALUE，目标环境 PG 16）。
+        (
+            NEBULA_SCHEMA,
+            r#"
+        DO $$ BEGIN
+            ALTER TYPE {}.algorithm_type ADD VALUE 'uuid_v4';
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$"#,
+        ),
+        (
+            NEBULA_SCHEMA,
+            r#"
+        DO $$ BEGIN
+            ALTER TYPE {}.algorithm_type ADD VALUE 'uuid_v7';
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$"#,
+        ),
         (
             NEBULA_SCHEMA,
             r#"
@@ -692,9 +714,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_succeeds_when_all_executes_succeed() {
-        // 1 schema + 2 enum types + 2 upgrade ALTERs + 5 tables
-        //   + 1 constraint backfill + 1 grace-column ALTER = 12 successful executes.
-        let db = mock_db_with_n_ok(12);
+        // 1 schema + 4 enum types（2 CREATE + 2 ADD VALUE）+ 2 upgrade ALTERs
+        //   + 5 tables + 1 constraint backfill + 1 grace-column ALTER
+        //   = 14 successful executes.
+        let db = mock_db_with_n_ok(14);
         let result = run_migrations(&db).await;
         assert!(
             result.is_ok(),
@@ -710,7 +733,7 @@ mod tests {
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "schema creation permission denied".to_string(),
             ))])
-            .append_exec_results(ok_exec_results(11))
+            .append_exec_results(ok_exec_results(13))
             .into_connection();
         let result = run_migrations(&db).await;
         assert!(
@@ -721,31 +744,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_returns_database_error_when_table_create_fails() {
-        // Schema + 2 enum types + 2 upgrade ALTERs succeed, first table fails
+        // Schema + 4 enum types + 2 upgrade ALTERs succeed, first table fails
         // with non-"already exists".
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_exec_results(vec![
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-                MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                },
-            ])
+            .append_exec_results(ok_exec_results(7))
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "syntax error near 'FOO'".to_string(),
             ))])
@@ -768,15 +770,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_treats_already_exists_as_info_not_error() {
-        // Schema + 2 enum types + 2 upgrade ALTERs + first table succeed,
+        // Schema + 4 enum types + 2 upgrade ALTERs + first table succeed,
         // second table fails with "already exists", remaining tables +
         // constraint backfill + the grace-column ALTER succeed.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_exec_results(ok_exec_results(6))
+            .append_exec_results(ok_exec_results(8))
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "relation already exists".to_string(),
             ))])
-            .append_exec_results(ok_exec_results(6))
+            .append_exec_results(ok_exec_results(8))
             .into_connection();
         let result = run_migrations(&db).await;
         assert!(
@@ -787,15 +789,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_treats_duplicate_as_info_not_error() {
-        // Schema + 2 enum types + 2 upgrade ALTERs + 2 tables succeed, third
+        // Schema + 4 enum types + 2 upgrade ALTERs + 2 tables succeed, third
         // table fails with "duplicate", remaining 2 tables + constraint
         // backfill + the grace-column ALTER succeed.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_exec_results(ok_exec_results(7))
+            .append_exec_results(ok_exec_results(9))
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "duplicate table name".to_string(),
             ))])
-            .append_exec_results(ok_exec_results(4))
+            .append_exec_results(ok_exec_results(6))
             .into_connection();
         let result = run_migrations(&db).await;
         assert!(
@@ -858,7 +860,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_migrations_returns_error_when_grace_column_alter_fails() {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_exec_results(ok_exec_results(11))
+            .append_exec_results(ok_exec_results(13))
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "permission denied for table api_keys".to_string(),
             ))])

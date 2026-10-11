@@ -133,6 +133,10 @@ pub enum AlgorithmTypeDb {
     Snowflake,
     #[sea_orm(string_value = "uuid_v8")]
     UuidV8,
+    #[sea_orm(string_value = "uuid_v4")]
+    UuidV4,
+    #[sea_orm(string_value = "uuid_v7")]
+    UuidV7,
 }
 
 #[derive(Debug, Clone, Copy, EnumIter, DeriveActiveEnum, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,6 +158,8 @@ impl From<AlgorithmTypeDb> for AlgorithmType {
             AlgorithmTypeDb::Segment => AlgorithmType::Segment,
             AlgorithmTypeDb::Snowflake => AlgorithmType::Snowflake,
             AlgorithmTypeDb::UuidV8 => AlgorithmType::UuidV8,
+            AlgorithmTypeDb::UuidV4 => AlgorithmType::UuidV4,
+            AlgorithmTypeDb::UuidV7 => AlgorithmType::UuidV7,
         }
     }
 }
@@ -164,6 +170,8 @@ impl From<AlgorithmType> for AlgorithmTypeDb {
             AlgorithmType::Segment => AlgorithmTypeDb::Segment,
             AlgorithmType::Snowflake => AlgorithmTypeDb::Snowflake,
             AlgorithmType::UuidV8 => AlgorithmTypeDb::UuidV8,
+            AlgorithmType::UuidV4 => AlgorithmTypeDb::UuidV4,
+            AlgorithmType::UuidV7 => AlgorithmTypeDb::UuidV7,
         }
     }
 }

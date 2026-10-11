@@ -275,7 +275,7 @@ init_observability → init_sdforge(防inventory剥离) → load_config(fail-fas
 | 编号 | 场景 | 预期 | 验证 | 现状 |
 |---|---|---|---|---|
 | ALG-50 | `Id::from_string` 6 分支（UUID/数值/溢出 2^128/含空白/36 字符非 UUID 回退） | 各分支正确或 `InvalidIdString(原文)` | 内联 | ✅ |
-| ALG-51 | `AlgorithmType::from_str` 7 个 UUID 别名（uuid_v7/uuid_v4 等全部映射 UuidV8）+ 非法值 | 别名生效；非法→`InvalidAlgorithmType` | e2e + 内联 | ✅ |
+| ALG-51 | `AlgorithmType::from_str` 九串映射（uuid_v8 组→UuidV8；uuid_v7 组→UuidV7、uuid_v4 组→UuidV4，add-uuid-v4-v7 破坏性反转）+ 非法值 | 映射生效；非法→`InvalidAlgorithmType` | e2e + 内联 | ✅ |
 | ALG-52 | `Id::Display` 版本位嗅探 | bits76-79==4/7/8 渲染为 UUID，否则数值——**数值型 ID 高位恰好命中版本位会被误渲染**（固有歧义） | 钉桩测试 | ❌ 缺口 |
 | ALG-53 | `CoreError` 24 变体 → HTTP 码/business_code/i18n（en+zh-CN） | 单表映射全对（见 3.14 SEC-30 消毒） | helpers 全变体矩阵 + error.rs Display 测试 | ✅ |
 | ALG-54 | `ErrorSource` 保链 | `DatabaseError`/`EtcdError`/`IoError` 底层 cause 经 source() 保留，顶层文案与 i18n 同源 | 保链测试 | ✅ |
@@ -344,7 +344,7 @@ init_observability → init_sdforge(防inventory剥离) → load_config(fail-fas
 | 编号 | 场景（前置） | 步骤 | 预期 | 验证 | 现状 |
 |---|---|---|---|---|---|
 | IDGEN-01 | User key + 已建 workspace/biz_tag | `POST /api/v1/generate` 各算法 | 200 + ID；snowflake/uuid 形态校验（parse 位拆解） | api_test.sh + e2e | ✅ |
-| IDGEN-02 | 请求带 `algorithm` 覆盖 | 指定 uuid_v7（别名） | 按次覆盖生效 | api_test.sh | ✅ |
+| IDGEN-02 | 请求带 `algorithm` 覆盖 | 指定 uuid_v7（真算法，产出 version=7 布局） | 按次覆盖生效 | api_test.sh | ✅ |
 | IDGEN-03 | Admin 调 generate | 同上 | **403**（generate/batch 仅 User） | e2e | ✅ |
 | IDGEN-04 | 跨租户 namespace | User B 发 A 的 workspace | 403 workspace_mismatch | e2e + grpc | ✅ |
 | IDGEN-05 | workspace/biz_tag 不存在 | 发号 | 404（2001/2003 业务码） | e2e | ✅ |

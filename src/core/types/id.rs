@@ -216,6 +216,11 @@ pub enum AlgorithmType {
     Segment,
     Snowflake,
     UuidV8,
+    /// RFC 9562 §5.4 随机 UUID（122 位不可猜测、零元数据）。
+    UuidV4,
+    /// RFC 9562 §5.7 时间有序 UUID（标准布局：时间戳可被标准工具直取，
+    /// 零 dc/worker 配置）。
+    UuidV7,
 }
 
 impl fmt::Display for AlgorithmType {
@@ -224,6 +229,8 @@ impl fmt::Display for AlgorithmType {
             AlgorithmType::Segment => write!(f, "segment"),
             AlgorithmType::Snowflake => write!(f, "snowflake"),
             AlgorithmType::UuidV8 => write!(f, "uuid_v8"),
+            AlgorithmType::UuidV4 => write!(f, "uuid_v4"),
+            AlgorithmType::UuidV7 => write!(f, "uuid_v7"),
         }
     }
 }
@@ -231,12 +238,17 @@ impl fmt::Display for AlgorithmType {
 impl FromStr for AlgorithmType {
     type Err = CoreError;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, CoreError> {
         match s.to_lowercase().as_str() {
             "segment" => Ok(AlgorithmType::Segment),
             "snowflake" => Ok(AlgorithmType::Snowflake),
-            "uuid_v8" | "uuidv8" | "uuid8" | "uuid_v7" | "uuidv7" | "uuid7" | "uuid_v4"
-            | "uuidv4" | "uuid4" => Ok(AlgorithmType::UuidV8),
+            "uuid_v8" | "uuidv8" | "uuid8" => Ok(AlgorithmType::UuidV8),
+            // add-uuid-v4-v7（破坏性反转）：v4/v7 不再是 v8 的输入别名，
+            // 各自解析为真算法。存量串使用面 config 层面实测为零
+            // （config/*.toml 无使用；tests/*.sh 的用例反转后反而从
+            // 结构性必败转为通过）。语义声明见 docs/CHANGELOG.md。
+            "uuid_v4" | "uuidv4" | "uuid4" => Ok(AlgorithmType::UuidV4),
+            "uuid_v7" | "uuidv7" | "uuid7" => Ok(AlgorithmType::UuidV7),
             _ => Err(CoreError::InvalidAlgorithmType(s.to_string())),
         }
     }
@@ -718,24 +730,63 @@ mod tests {
 
     // ===== AlgorithmType FromStr 全部分支（别名 + 错误） =====
 
+    /// add-uuid-v4-v7：`uuid_v4`/`uuid_v7` 从「折叠 v8 的输入别名」反转为
+    /// 真解析（破坏性变更，存量串使用面实测为零，见 CHANGELOG 条目）。
     #[test]
-    fn test_algorithm_type_from_str_uuid_v8_aliases() {
+    fn test_algorithm_type_from_str_uuid_v4_v7_are_real() {
+        // v4 组
+        assert_eq!(
+            AlgorithmType::from_str("uuid_v4").unwrap(),
+            AlgorithmType::UuidV4
+        );
+        assert_eq!(
+            AlgorithmType::from_str("uuidv4").unwrap(),
+            AlgorithmType::UuidV4
+        );
+        assert_eq!(
+            AlgorithmType::from_str("uuid4").unwrap(),
+            AlgorithmType::UuidV4
+        );
+        // v7 组
+        assert_eq!(
+            AlgorithmType::from_str("uuid_v7").unwrap(),
+            AlgorithmType::UuidV7
+        );
+        assert_eq!(
+            AlgorithmType::from_str("uuidv7").unwrap(),
+            AlgorithmType::UuidV7
+        );
+        assert_eq!(
+            AlgorithmType::from_str("uuid7").unwrap(),
+            AlgorithmType::UuidV7
+        );
+        // v8 组保持
+        assert_eq!(
+            AlgorithmType::from_str("uuid_v8").unwrap(),
+            AlgorithmType::UuidV8
+        );
         assert_eq!(
             AlgorithmType::from_str("uuidv8").unwrap(),
             AlgorithmType::UuidV8
         );
         assert_eq!(
-            AlgorithmType::from_str("uuid7").unwrap(),
+            AlgorithmType::from_str("uuid8").unwrap(),
             AlgorithmType::UuidV8
         );
-        assert_eq!(
-            AlgorithmType::from_str("uuid4").unwrap(),
-            AlgorithmType::UuidV8
-        );
-        assert_eq!(
-            AlgorithmType::from_str("uuidv4").unwrap(),
-            AlgorithmType::UuidV8
-        );
+    }
+
+    #[test]
+    fn test_algorithm_type_display_from_str_roundtrip() {
+        for (name, variant) in [
+            ("segment", AlgorithmType::Segment),
+            ("snowflake", AlgorithmType::Snowflake),
+            ("uuid_v8", AlgorithmType::UuidV8),
+            ("uuid_v4", AlgorithmType::UuidV4),
+            ("uuid_v7", AlgorithmType::UuidV7),
+        ] {
+            assert_eq!(variant.to_string(), name, "Display 输出须与 FromStr 自洽");
+            assert_eq!(AlgorithmType::from_str(name).unwrap(), variant);
+        }
     }
 
     #[test]

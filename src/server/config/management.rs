@@ -18,6 +18,7 @@ use crate::server::models::{
 };
 use async_trait::async_trait;
 use sdforge::validator::Validate;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -371,17 +372,17 @@ impl ConfigManagementService for ConfigManager {
             };
         }
 
-        let algorithm_type = match req.algorithm.to_lowercase().as_str() {
-            "segment" => AlgorithmType::Segment,
-            "snowflake" => AlgorithmType::Snowflake,
-            "uuid_v8" => AlgorithmType::UuidV8,
-            _ => {
+        // 串面唯一映射源：AlgorithmType::from_str（别名/大小写/新算法零重复
+        // 维护，add-uuid-v4-v7 后 v4/v7 字符串亦在此解析为真算法）。
+        let algorithm_type = match AlgorithmType::from_str(&req.algorithm) {
+            Ok(alg) => alg,
+            Err(_) => {
                 return SetAlgorithmResponse {
                     success: false,
                     biz_tag: req.biz_tag.clone(),
                     algorithm: req.algorithm.clone(),
                     message: format!(
-                        "Invalid algorithm '{}'. Valid options: segment, snowflake, uuid_v8",
+                        "Invalid algorithm '{}'. Valid options: segment, snowflake, uuid_v8, uuid_v4, uuid_v7",
                         req.algorithm
                     ),
                 };
@@ -881,6 +882,47 @@ mod tests {
         let response = service.set_algorithm(req).await;
         assert!(!response.success);
         assert!(response.message.contains("Invalid algorithm"));
+    }
+
+    /// add-uuid-v4-v7：uuid_v4 / uuid_v7 真算法可经 set_algorithm 切换；
+    /// 拒绝消息的合法清单含五算法。
+    #[tokio::test]
+    async fn test_set_algorithm_accepts_uuid_v4_v7_and_lists_all_five() {
+        let hot_config = Arc::new(HotReloadConfig::new(
+            test_config(),
+            "config/config.toml".to_string(),
+        ));
+        let algorithm_router = create_test_algorithm_router();
+        let service = ConfigManager::new(hot_config, algorithm_router.clone());
+
+        for algorithm in ["uuid_v4", "uuid_v7"] {
+            let response = service
+                .set_algorithm(SetAlgorithmRequest {
+                    biz_tag: "test-biz".to_string(),
+                    algorithm: algorithm.to_string(),
+                })
+                .await;
+            assert!(
+                response.success,
+                "{algorithm} must be settable: {}",
+                response.message
+            );
+        }
+
+        let rejected = service
+            .set_algorithm(SetAlgorithmRequest {
+                biz_tag: "test-biz".to_string(),
+                algorithm: "invalid_algorithm".to_string(),
+            })
+            .await;
+        assert!(!rejected.success);
+        for name in ["segment", "snowflake", "uuid_v8", "uuid_v4", "uuid_v7"] {
+            assert!(
+                rejected.message.contains(name),
+                "reject message must list {name}, got: {}",
+                rejected.message
+            );
+        }
     }
 
     // ========== get_config / get_secure_config / get_batch_max_size ==========

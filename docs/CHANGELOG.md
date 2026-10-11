@@ -22,9 +22,17 @@
 ### feat（add-uuid-v5-derive：RFC 9562 v5 确定性派生）
 
 - **新增 `uuid-v5` 零 DB 叶子特性**（default 开启）：`derive_uuid_v5(namespace, name)` 与 `derive_uuid_v5_batch(pairs)` 两个纯函数（无状态 / 无时钟 / 无 IO），随特性门控；SDK 面 `IdGenerator::derive_uuid_v5` 为同步薄包装（`sdk` 特性）。
-- **设计边界**：v5 刻意不进 `AlgorithmType` / `AlgorithmRouter` / `/generate`——派生失败没有 fallback 语义（回落发号算法会产出数值错误的非 v5 ID）；UUID v4/v7 在本仓同样不是算法族成员（仅 `FromStr` 输入别名）。
+- **设计边界**：v5 刻意不进 `AlgorithmType` / `AlgorithmRouter` / `/generate`——派生失败没有 fallback 语义（回落发号算法会产出数值错误的非 v5 ID）。~~UUID v4/v7 在本仓同样不是算法族成员（仅 `FromStr` 输入别名）~~——**此句为历史快照**：add-uuid-v4-v7 已把 v4/v7 反转为真算法（见下一条目），v5「不入算法族」的边界不变。
 - **数值兼容锚点**：与 `Uuid::new_v5` 同 crate 同版本逐位一致；测试以 etyma 340,566 个存量 ID 的钉死值（`ecdict|abandon|en` → `21e7d32f-5500-5e4a-a943-219059f73c94`）与 Python hashlib SHA-1 独立基准双重对拍。etyma 侧接入（统一生成入口）随其 0.6.0 迭代跟进。
 - **T010 发布门禁整改**：依赖树规模/测试数两处的数字改按可复现口径钉死（`cargo tree -e normal --prefix none | sort -u | wc -l` 与 `grep -rnE` 精确转义；此前 docs 的两个 grep 口径未转义、统计虚高约 30 项）；规格清单（README 双语 / API_REFERENCE / USER_GUIDE / CONTRIBUTING / FAQ）补 `uuid-v5`；API_REFERENCE 新增 v5 API 小节（含 v5-only 直调路径与命名空间约定）；TEST_SCENARIOS 补 ALG-09 场景行。
+
+### feat（add-uuid-v4-v7：UUID v4 / v7 真算法 + ⚠️ 破坏性别名反转）
+
+- **`AlgorithmType` 增设 `UuidV4` / `UuidV7`**：两个零 DB 叶子特性（`uuid-v4 = []` / `uuid-v7 = []`，入 default）+ 真实现（`src/core/algorithm/uuid_v4.rs` 零状态随机；`uuid_v7.rs` 零自持状态、经 uuid crate 进程级单调上下文得进程内保序），均实现 `IdAlgorithm` 进路由（与 v8 同族的真发号器）。
+- **⚠️ 破坏性变更（语义反转）**：`from_str` 的 `"uuid_v4"/"uuidv4"/"uuid4"` → `AlgorithmType::UuidV4`、`"uuid_v7"/"uuidv7"/"uuid7"` → `AlgorithmType::UuidV7`——此前它们是 `UuidV8` 的输入别名（配置 uuid_v7 实际产出 v8）。历史配置/API 请求中这两个串的输出布局随之改变；**存量串使用面实测为零**（`config/*.toml` 无使用），`uuidv8`/`uuid8` 别名不受影响。反转同时让配 uuidv4 的人第一次真正拿到随机 UUID。
+- **独占能力入列**（各版本不可互相替代，详见 USER_GUIDE 分工表）：v4 = 122 位随机 + 完全零元数据（不泄漏创建时间/部署结构）；v7 = RFC 9562 §5.7 标准时间有序（时间戳可被任何标准工具直取）+ 零配置（无 dc/worker/shard）；v8 保持租户上下文私有布局独占。
+- **连带面**：`/parse` 增 `uuid_v7`（标准时间戳提取）与 `uuid_v4`（显式零元数据，非 unknown）分支；`set_algorithm` 白名单改以 `AlgorithmType::from_str` 为唯一映射源（错误消息列五算法）；PostgreSQL `algorithm_type` 枚举经独立 DO 块 `ADD VALUE` 扩容（存量库幂等；PG 12+ 事务内 ADD VALUE 语义）；DB 实体枚举 `AlgorithmTypeDb` 同步两变体。
+- **文档口径反转**：lib.rs 模块头、USER_GUIDE（v4/v7 使用小节 + 四版本分工表 + 破坏性提示）、API_REFERENCE（UUID v4/v7 节 + 别名注记重写）、README 双语特性表、CONTRIBUTING/FAQ 默认特性清单同步五算法。
 
 ### feat（selfdev-lib-adoption-r1：自研库收编）
 

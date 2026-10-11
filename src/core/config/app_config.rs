@@ -10,6 +10,7 @@ use super::{
     RedisConfig, TlsConfig,
 };
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 /// 热更新相关配置。
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq)]
@@ -275,9 +276,13 @@ impl Config {
     }
 
     fn validate_algorithm(&self) -> ConfigResult<()> {
-        if !["segment", "snowflake", "uuid_v8"].contains(&self.algorithm.default.as_str()) {
+        // 串面唯一映射源：AlgorithmType::from_str（add-uuid-v4-v7 后
+        // v4/v7 为真算法；别名面与 set_algorithm 同源，不再手维护双份
+        // 白名单）。错误消息列五个规范名。
+        if crate::core::types::AlgorithmType::from_str(&self.algorithm.default).is_err() {
             return Err(ConfigError::InvalidValue(
-                "Default algorithm must be one of: segment, snowflake, uuid_v8".to_string(),
+                "Default algorithm must be one of: segment, snowflake, uuid_v8, uuid_v4, uuid_v7"
+                    .to_string(),
             ));
         }
 
@@ -301,6 +306,18 @@ impl Config {
         if self.algorithm.get_default_algorithm() == crate::core::types::AlgorithmType::UuidV8 {
             return Err(ConfigError::InvalidValue(t!(
                 "error.core.config.app_config.uuid_v8_feature_not_enabled"
+            )));
+        }
+        #[cfg(all(not(test), not(feature = "uuid-v4")))]
+        if self.algorithm.get_default_algorithm() == crate::core::types::AlgorithmType::UuidV4 {
+            return Err(ConfigError::InvalidValue(t!(
+                "error.core.config.app_config.uuid_v4_feature_not_enabled"
+            )));
+        }
+        #[cfg(all(not(test), not(feature = "uuid-v7")))]
+        if self.algorithm.get_default_algorithm() == crate::core::types::AlgorithmType::UuidV7 {
+            return Err(ConfigError::InvalidValue(t!(
+                "error.core.config.app_config.uuid_v7_feature_not_enabled"
             )));
         }
 
@@ -1553,8 +1570,21 @@ mod tests {
         config.algorithm.default = "invalid_algo".to_string();
         assert_invalid_value(
             config.validate(),
-            "Default algorithm must be one of: segment, snowflake, uuid_v8",
+            "Default algorithm must be one of: segment, snowflake, uuid_v8, uuid_v4, uuid_v7",
         );
+    }
+
+    /// add-uuid-v4-v7：uuid_v4 / uuid_v7 为合法默认算法（反转后）。
+    #[test]
+    fn validate_algorithm_default_accepts_uuid_v4_v7() {
+        for default in ["uuid_v4", "uuid_v7"] {
+            let mut config = Config::default();
+            config.algorithm.default = default.to_string();
+            assert!(
+                config.validate().is_ok(),
+                "{default} must be a valid default algorithm"
+            );
+        }
     }
 
     /// segment.min_step > max_step 时校验失败

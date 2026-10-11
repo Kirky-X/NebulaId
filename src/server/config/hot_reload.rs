@@ -12,6 +12,17 @@ use tokio::fs;
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 
+/// 计算本次应上报的「事件丢弃增量」。
+///
+/// 只在计数上升时返回 `Some(增量)`——计数不变则无事可报，计数回退
+/// （watcher 重建、计数归零）也不报，避免重建被误判成丢失。
+fn dropped_delta(current: u64, last_reported: u64) -> Option<u64> {
+    if current <= last_reported {
+        return None;
+    }
+    Some(current - last_reported)
+}
+
 #[derive(Clone)]
 pub struct HotReloadConfig {
     config: Arc<ArcSwap<Config>>,
@@ -218,7 +229,35 @@ impl HotReloadConfig {
                     continue;
                 }
             };
+            // 丢弃增量上报水位：每个 watcher 实例一份（重建后归零重报）。
+            let mut reported_dropped: u64 = 0;
+            // 丢弃增量上报（循环内逐次与通道关闭前收尾共用，规则 6 DRY）：
+            // 事件丢弃可观测性（R-hotreload-001）——dropped_events 非零表示
+            // 本消费方跟不上、有变更通知已丢失，那是一次重载触发丢失，必须
+            // 显性上报供运维手工对账，不能静默漏掉一次热加载。
+            let report_dropped = |current: u64, reported: &mut u64, path: &str| {
+                if let Some(delta) = dropped_delta(current, *reported) {
+                    *reported = current;
+                    warn!(
+                        event = "config_watcher_events_dropped",
+                        dropped = delta,
+                        total_dropped = current,
+                        path = %path,
+                        "{}",
+                        t!(
+                            "log.server.config.hot_reload.watcher_events_dropped",
+                            dropped = delta,
+                            total_dropped = current
+                        )
+                    );
+                }
+            };
             while watcher.recv().await.is_some() {
+                report_dropped(
+                    watcher.dropped_events(),
+                    &mut reported_dropped,
+                    &self.config_path,
+                );
                 if let Err(e) = self.reload_config().await {
                     error!(
                         "{}",
@@ -226,6 +265,13 @@ impl HotReloadConfig {
                     );
                 }
             }
+            // 通道关闭前把本实例累计丢弃量报掉：重建监视器后计数归零，
+            // 不报就等于把最后一段丢失量静默丢弃。
+            report_dropped(
+                watcher.dropped_events(),
+                &mut reported_dropped,
+                &self.config_path,
+            );
             // recv() 返回 None = 事件通道关闭（stop() 或系统级错误）：重建监视器。
             warn!("config file watcher closed; re-establishing");
         }
@@ -326,6 +372,30 @@ impl HotReloadConfig {
             }
         };
         map.get(biz_tag).cloned()
+    }
+}
+
+#[cfg(test)]
+mod dropped_delta_tests {
+    use super::dropped_delta;
+
+    #[test]
+    fn no_change_reports_nothing() {
+        assert_eq!(dropped_delta(0, 0), None);
+        assert_eq!(dropped_delta(7, 7), None);
+    }
+
+    #[test]
+    fn increase_reports_delta() {
+        assert_eq!(dropped_delta(1, 0), Some(1));
+        assert_eq!(dropped_delta(12, 5), Some(7));
+    }
+
+    #[test]
+    fn counter_reset_is_not_reported_as_loss() {
+        // watcher 重建后计数归零：不能被误判成一次丢失
+        assert_eq!(dropped_delta(0, 9), None);
+        assert_eq!(dropped_delta(3, 9), None);
     }
 }
 

@@ -91,7 +91,7 @@ impl GrpcServer {
         // 与 HTTP 中间件同源：先查失败桶，超限直接拒收，
         // 不再消耗解析/校验成本。桶体（阈值、窗口、容量阀）全部在
         // `ApiKeyAuth` 内，两条传输线共享同一计数器。
-        if !auth.check_auth_failure_rate(&client_ip) {
+        if !auth.check_auth_failure_rate(&client_ip).await {
             return Err(Status::resource_exhausted(
                 "Too many authentication attempts. Please try again later.",
             ));
@@ -109,7 +109,8 @@ impl GrpcServer {
                 "missing_authorization",
                 &t!("log.server.middleware.api_key_auth.missing_auth_header"),
                 Status::unauthenticated("missing authorization metadata"),
-            ));
+            )
+            .await);
         };
         let Some((key_id, key_secret)) = parse_authorization_header(value) else {
             return Err(reject(
@@ -119,7 +120,8 @@ impl GrpcServer {
                 "unsupported_auth_format",
                 &t!("log.server.middleware.api_key_auth.unsupported_auth_format"),
                 Status::unauthenticated("invalid authorization format"),
-            ));
+            )
+            .await);
         };
 
         match auth.validate_key(&key_id, &key_secret).await {
@@ -258,7 +260,7 @@ async fn authorize_namespace(
 /// 日志文案复用 `log.server.middleware.api_key_auth.*` 既有键：语义完全对应
 /// （缺少 authorization / 不支持的格式 / 无效凭据），新增 grpc 专属键只会在
 /// 两个 locale 里造出同义重复条目。
-fn reject(
+async fn reject(
     auth: &ApiKeyAuth,
     client_ip: &str,
     key_id_prefix: &str,
@@ -268,7 +270,7 @@ fn reject(
 ) -> Status {
     // 与 HTTP `unauthorized_response` 同源：每次认证拒绝都入桶，
     // 供下一次请求的 `check_auth_failure_rate` 累计判定。
-    auth.record_auth_failure(client_ip);
+    auth.record_auth_failure(client_ip).await;
     tracing::warn!(
         event = "auth_failure",
         reason = reason,
@@ -294,7 +296,7 @@ enum KeyMiss {
 }
 
 impl KeyMiss {
-    fn reject(&self, auth: &ApiKeyAuth, client_ip: &str, key_id: &str) -> Status {
+    async fn reject(&self, auth: &ApiKeyAuth, client_ip: &str, key_id: &str) -> Status {
         let (reason, status) = match self {
             // 身份可识别但被授权层拒绝 ⇒ permission_denied
             Self::Disabled => (
@@ -324,6 +326,7 @@ impl KeyMiss {
             &t!("log.server.middleware.api_key_auth.invalid_credentials"),
             status,
         )
+        .await
     }
 }
 
@@ -345,7 +348,7 @@ async fn classify_miss(auth: &ApiKeyAuth, key_id: &str, client_ip: &str) -> Stat
                 client_ip = %client_ip,
                 "failed to load api key state for auth failure classification"
             );
-            return KeyMiss::Unknown.reject(auth, client_ip, key_id);
+            return KeyMiss::Unknown.reject(auth, client_ip, key_id).await;
         }
     };
 
@@ -364,7 +367,7 @@ async fn classify_miss(auth: &ApiKeyAuth, key_id: &str, client_ip: &str) -> Stat
             }
         }
     };
-    miss.reject(auth, client_ip, key_id)
+    miss.reject(auth, client_ip, key_id).await
 }
 
 #[async_trait]

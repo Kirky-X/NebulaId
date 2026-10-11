@@ -9,28 +9,63 @@ use axum::middleware::Next;
 use axum::response::IntoResponse;
 use axum::response::Response;
 use base64::Engine;
+#[cfg(not(feature = "garrison-auth"))]
 use parking_lot::RwLock;
+#[cfg(not(feature = "garrison-auth"))]
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+#[cfg(not(feature = "garrison-auth"))]
+use std::time::Duration;
+use std::time::Instant;
 
 // Re-export ApiKeyRole locally for use in this module
 pub use crate::core::database::ApiKeyRole;
 
-/// Phase 9 — hard cap on the number of distinct IPs
-/// tracked in `auth_failures`. When the map reaches this size, the
-/// oldest entries are evicted to bound memory usage. Prevents an
-/// attacker (especially one able to spoof IPs via the now-fixed
-/// `X-Forwarded-For` issue, H3) from OOMing the process by sending
-/// requests from many distinct source IPs.
+/// 认证失败滑窗窗口（秒）与阈值： garrison `BruteForceStrategy` 组装为
+/// `BruteForceConfig` 时使用的窗口值，两条传输线（HTTP 429 / gRPC
+/// ResourceExhausted）共享同一实例与同一组阈值。
+#[cfg(feature = "garrison-auth")]
+const AUTH_FAILURE_WINDOW_SECS: u64 = 300;
+
+/// 触发封禁所需的认证失败次数。 garrison `record_failure` 在
+/// `new_count > max_attempts` 时封禁，故取阈值减一：第 10 次失败即触发，
+/// 与手写版「窗口内失败达 10 次后拒绝」等价。
+#[cfg(feature = "garrison-auth")]
+const AUTH_FAILURE_MAX_ATTEMPTS: u32 = 9;
+
+/// 封禁时长（秒）。与窗口同值，避免封禁期长于计数窗口而导致「窗口滑出后
+/// 仍被拒」的行为偏离。
+#[cfg(feature = "garrison-auth")]
+const AUTH_FAILURE_LOCK_SECS: u64 = AUTH_FAILURE_WINDOW_SECS;
+
+/// Phase 9 — 进程内滑窗回退实现的 IP 跟踪上限（仅剪裁构建使用）。
+#[cfg(not(feature = "garrison-auth"))]
 const MAX_TRACKED_AUTH_FAILURE_IPS: usize = 10_000;
+
+/// garrison-auth 构建的失败表键数上限（计数键 + 封禁键合计，约折合
+/// 25k IP × 4 键的 headroom，对齐剪裁构建的 10k IP 阀口径）。
+///
+/// garrison `InMemoryDao` 无容量上限且过期键惰性清理（`keys()` 只过滤
+/// 不删除、无后台 sweeper），而防爆破桶的键空间受攻击者控制（可信代理
+/// 场景下 XFF 首段可任意伪造）——故经 [`crate::server::auth::BoundedDao`]
+/// 装饰器在装配处设界，超限按 FIFO 淘汰，不是「按窗口 TTL 自然过期」。
+#[cfg(feature = "garrison-auth")]
+const MAX_TRACKED_AUTH_FAILURE_KEYS: usize = 100_000;
 
 #[derive(Clone)]
 pub struct ApiKeyAuth {
     pub(crate) repo: Arc<dyn ApiKeyRepository>,
     pub(crate) enabled: bool,
     trusted_proxies: Vec<IpAddr>,
+    /// garrison-auth 构建：认证失败限速委托 garrison `BruteForceStrategy`
+    /// （DAO 原子计数 + 封禁存储）。HTTP 与 gRPC 共用同一实例即共享同一
+    /// 失败桶。
+    #[cfg(feature = "garrison-auth")]
+    brute_force: Arc<garrison::strategy::firewall::BruteForceStrategy>,
+    /// 无 garrison-auth 的剪裁构建：保留进程内滑窗回退实现（库不可用，
+    /// 不能静默去掉防爆破保护）。
+    #[cfg(not(feature = "garrison-auth"))]
     auth_failures: Arc<RwLock<HashMap<String, Vec<Instant>>>>,
     /// garrison cache-memory 认证决策缓存；`None` = 不缓存。
     #[cfg(feature = "garrison-auth")]
@@ -43,10 +78,72 @@ impl ApiKeyAuth {
             repo,
             enabled,
             trusted_proxies: Vec::new(),
+            #[cfg(feature = "garrison-auth")]
+            brute_force: Arc::new(Self::build_brute_force_strategy()),
+            #[cfg(not(feature = "garrison-auth"))]
             auth_failures: Arc::new(RwLock::new(HashMap::new())),
             #[cfg(feature = "garrison-auth")]
             cache: None,
         }
+    }
+
+    /// 将 client 标识映射为 garrison `FirewallContext` 接受的 IP 字符串。
+    ///
+    /// 合法 IP 原样透传；非法标识不能被 `FirewallContext::new` 接受
+    /// （其 debug 构建对 IP 格式做 assert），而 NebulaId 的取值域里确有
+    /// 非法值——gRPC 对端取不到地址时的 `"unknown"` 兜底
+    /// （`grpc.rs:147`），以及 HTTP 侧经可信代理透传的 XFF 首段任意文本
+    /// （`utils.rs:69`）。它们在手写版里各自独立成桶，故这里按标识哈希
+    /// 派生一个 ULA 段（`fc00::/7`，不可路由，不与真实客户端地址冲突）
+    /// IPv6 地址：同标识恒得同桶，不同标识互不干扰，且不伪造真实地址。
+    /// 派生地址只用于限流桶键，日志与审计仍输出原始 `client_ip`。
+    #[cfg(feature = "garrison-auth")]
+    fn client_ip_to_context_ip(client_ip: &str) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        if client_ip.parse::<std::net::IpAddr>().is_ok() {
+            return client_ip.to_string();
+        }
+        // 进程内稳定即可：桶只在进程内存中存活，无需跨重启一致。
+        let mut hasher = DefaultHasher::new();
+        client_ip.hash(&mut hasher);
+        let h = hasher.finish();
+        std::net::Ipv6Addr::new(
+            0xfc00,
+            0,
+            0,
+            0,
+            (h >> 48) as u16,
+            (h >> 32) as u16,
+            (h >> 16) as u16,
+            h as u16,
+        )
+        .to_string()
+    }
+
+    /// 组装 garrison `BruteForceStrategy`：每实例一个进程内 DAO 与一份
+    /// 策略，等同原 `auth_failures` 的实例级内存桶语义（不跨实例共享，
+    /// 与手写版一致）。DAO 用本仓门面 `InMemoryDao`（garrison 库实现），
+    /// 外箍 `BoundedDao` 容量阀（`MAX_TRACKED_AUTH_FAILURE_KEYS`），
+    /// 补回 garrison `InMemoryDao` 缺失的键空间上界。
+    #[cfg(feature = "garrison-auth")]
+    fn build_brute_force_strategy() -> garrison::strategy::firewall::BruteForceStrategy {
+        use garrison::strategy::firewall::{BruteForceConfig, BruteForceStrategy};
+
+        let dao: Arc<dyn garrison::dao::GarrisonDao> =
+            Arc::new(crate::server::auth::BoundedDao::new(
+                crate::server::auth::InMemoryDao::new(),
+                MAX_TRACKED_AUTH_FAILURE_KEYS,
+            ));
+        BruteForceStrategy::new(
+            BruteForceConfig {
+                max_attempts: AUTH_FAILURE_MAX_ATTEMPTS,
+                window_seconds: AUTH_FAILURE_WINDOW_SECS,
+                lock_seconds: AUTH_FAILURE_LOCK_SECS,
+            },
+            dao,
+        )
     }
 
     /// 启用认证缓存。命中即跳过 DB + Argon2id 校验。
@@ -79,7 +176,39 @@ impl ApiKeyAuth {
     /// 提为 `pub(crate)`：gRPC 认证失败路径复用同一失败桶
     /// （HTTP 429 对应 gRPC `Code::ResourceExhausted`），两条传输线
     /// 共享同一阈值与窗口，不另建第二份计数器。
-    pub(crate) fn check_auth_failure_rate(&self, client_ip: &str) -> bool {
+    ///
+    /// garrison-auth 构建委托 garrison `BruteForceStrategy::is_blocked`
+    /// （只读封禁检查，不递增计数）；剪裁构建用进程内滑窗回退实现。
+    #[cfg(feature = "garrison-auth")]
+    pub(crate) async fn check_auth_failure_rate(&self, client_ip: &str) -> bool {
+        use garrison::strategy::firewall::FirewallContext;
+
+        let ctx = FirewallContext::new(Self::client_ip_to_context_ip(client_ip));
+        match self.brute_force.is_blocked(&ctx).await {
+            // is_blocked=true 表示已封禁 → 本方法返回 false（拒绝）；
+            // false 表示放行。
+            Ok(blocked) => !blocked,
+            // 观测面故障显性失败关闭：读不到封禁状态即拒绝本次请求，不得
+            // 因取不到计数就放行爆破窗口（i18n 文案 failure_rate_check_failed
+            // 的「按失败关闭拒绝」即此语义）。InMemoryDao 的 get 不会出错故
+            // 此分支当前不可达，但多实例换 Redis 后端 DAO 时即为活路径，
+            // 极性必须现在钉死（见 test_failure_rate_check_fails_closed）。
+            Err(e) => {
+                tracing::error!(
+                    event = "auth_failure_rate_check_failed",
+                    client_ip = %client_ip,
+                    error = %e,
+                    "{}",
+                    t!("log.server.middleware.api_key_auth.failure_rate_check_failed")
+                );
+                false
+            }
+        }
+    }
+
+    /// 剪裁构建回退（无 garrison-auth）：进程内滑窗。
+    #[cfg(not(feature = "garrison-auth"))]
+    pub(crate) async fn check_auth_failure_rate(&self, client_ip: &str) -> bool {
         let now = Instant::now();
         let mut failures_map = self.auth_failures.write();
         let failures = failures_map.entry(client_ip.to_string()).or_default();
@@ -142,7 +271,29 @@ impl ApiKeyAuth {
     ///
     /// 提为 `pub(crate)`：gRPC 认证拒绝出口与 HTTP 中间件
     /// 共享同一失败桶（见 [`Self::check_auth_failure_rate`]）。
-    pub(crate) fn record_auth_failure(&self, client_ip: &str) {
+    ///
+    /// garrison-auth 构建委托 garrison `BruteForceStrategy::record_failure`
+    /// （原子递增 + 窗口 TTL，超阈值即封禁）；剪裁构建用进程内滑窗回退。
+    #[cfg(feature = "garrison-auth")]
+    pub(crate) async fn record_auth_failure(&self, client_ip: &str) {
+        use garrison::strategy::firewall::FirewallContext;
+
+        let ctx = FirewallContext::new(Self::client_ip_to_context_ip(client_ip));
+        if let Err(e) = self.brute_force.record_failure(&ctx).await {
+            // 失败必须显性上报：静默丢计数等于给攻击者免费失败次数
+            tracing::error!(
+                event = "auth_failure_record_failed",
+                client_ip = %client_ip,
+                error = %e,
+                "{}",
+                t!("log.server.middleware.api_key_auth.failure_record_failed")
+            );
+        }
+    }
+
+    /// 剪裁构建回退（无 garrison-auth）：进程内滑窗。
+    #[cfg(not(feature = "garrison-auth"))]
+    pub(crate) async fn record_auth_failure(&self, client_ip: &str) {
         let now = Instant::now();
         let mut failures_map = self.auth_failures.write();
         let failures = failures_map.entry(client_ip.to_string()).or_default();
@@ -295,7 +446,7 @@ impl ApiKeyAuth {
         }
 
         // 检查认证失败速率
-        if !self.check_auth_failure_rate(&client_ip) {
+        if !self.check_auth_failure_rate(&client_ip).await {
             return self.too_many_requests_response();
         }
 
@@ -324,7 +475,7 @@ impl ApiKeyAuth {
                     "{}",
                     t!("log.server.middleware.api_key_auth.missing_auth_header")
                 );
-                return self.unauthorized_response(&client_ip);
+                return self.unauthorized_response(&client_ip).await;
             }
             Err(err) => {
                 let (reason, message) = match err {
@@ -360,7 +511,7 @@ impl ApiKeyAuth {
                     "{}",
                     message
                 );
-                return self.unauthorized_response(&client_ip);
+                return self.unauthorized_response(&client_ip).await;
             }
         };
 
@@ -400,11 +551,11 @@ impl ApiKeyAuth {
 
         // Return 401 for both unknown routes and missing auth to avoid information disclosure
         // This prevents attackers from discovering which API endpoints exist
-        self.unauthorized_response(&client_ip)
+        self.unauthorized_response(&client_ip).await
     }
 
-    fn unauthorized_response(&self, client_ip: &str) -> Response {
-        self.record_auth_failure(client_ip);
+    async fn unauthorized_response(&self, client_ip: &str) -> Response {
+        self.record_auth_failure(client_ip).await;
         let response = axum::Json(serde_json::json!({
             "code": 401,
             "message": "Invalid or missing API key"
@@ -1165,55 +1316,139 @@ mod tests {
         }
     }
 
-    /// 超上限改为「淘汰最旧条目」而非整体清空
-    /// 1. 表规模回到上限内（10_000）；
-    /// 2. 被淘汰的是每 IP 最早失败时间最旧的条目；
-    /// 3. 活跃攻击 IP（失败时间最新）的计数保留——攻击者不因容量阀值
-    ///    获得全新失败预算（旧 clear() 语义下会整体清零、自解除封禁）。
-    #[test]
-    fn test_auth_failure_map_capacity_valve_evicts_oldest_entries() {
+    /// 淘汰语义的替代保证： garrison DAO 计数键按窗口 TTL 自然过期，
+    /// 不存在整表清空路径，故灌注远超旧 `MAX_TRACKED_AUTH_FAILURE_IPS`
+    /// （10_000）的 IP 后，活跃攻击者的失败预算必须仍然有效。
+    #[tokio::test]
+    async fn test_active_attacker_counter_survives_many_other_ips() {
         let auth = ApiKeyAuth::new(Arc::new(make_mock_repo()), true);
 
-        // 灌注 10_001 个 IP（"10.9.0.0" 最先记录 → 最早失败时间全局最旧）。
-        // 阀值入口要求被检 IP 窗口内有失败（空桶提前返回、≥10 次走拒绝路径，
-        // 都不进容量阀），因此用只有 1 次失败的 "10.9.0.1" 触发。
-        for i in 0..10_001 {
-            auth.record_auth_failure(&format!("10.9.{}.{}", i / 256, i % 256));
+        // 攻击者先失败 10 次：达阈值并被封禁。
+        for _ in 0..10 {
+            auth.record_auth_failure("203.0.113.7").await;
+        }
+        assert!(!auth.check_auth_failure_rate("203.0.113.7").await);
+
+        // 灌注 10_002 个其他 IP（未达 MAX_TRACKED_AUTH_FAILURE_KEYS 阀）：
+        // 验证灌入不重置活跃攻击者的失败预算——有界性与淘汰语义由
+        // memory_dao.rs 的 BoundedDao 测试直接锚定。
+        for i in 0..10_002u32 {
+            auth.record_auth_failure(&format!("10.9.{}.{}", i / 256, i % 256))
+                .await;
         }
 
-        // 攻击者：12 次失败，失败时间最新（不会被最旧淘汰选中）。
-        for _ in 0..12 {
-            auth.record_auth_failure("203.0.113.7");
-        }
-
-        // 触发容量阀：表 10_002 条 > 10_000，淘汰 excess=2 个最旧条目。
-        assert!(auth.check_auth_failure_rate("10.9.0.1"));
-
-        {
-            let failures_map = auth.auth_failures.read();
-            assert_eq!(
-                failures_map.len(),
-                MAX_TRACKED_AUTH_FAILURE_IPS,
-                "容量阀必须把表压回上限内"
-            );
-            assert!(
-                !failures_map.contains_key("10.9.0.0"),
-                "最早灌注（最早失败时间）的 IP 应第一个被淘汰"
-            );
-            assert!(
-                failures_map.contains_key("10.9.0.2"),
-                "未被淘汰名额覆盖的条目应保留"
-            );
-            assert!(
-                failures_map.contains_key("203.0.113.7"),
-                "活跃攻击 IP（失败时间最新）不得被容量阀淘汰"
-            );
-        }
-
-        // 关键语义回归：攻击者的失败计数未被清空 → 仍处于拒绝状态。
+        // 关键语义回归：活跃攻击者的失败预算未被重置 → 仍被拒绝。
         assert!(
-            !auth.check_auth_failure_rate("203.0.113.7"),
-            "容量阀不得重置活跃攻击 IP 的失败预算（旧 clear() 语义会）"
+            !auth.check_auth_failure_rate("203.0.113.7").await,
+            "不得因其他 IP 的灌注重置活跃攻击者的失败预算"
+        );
+
+        // 失败次数未达阈值的其他 IP 不受影响（每条目各计各的）。
+        assert!(auth.check_auth_failure_rate("10.9.0.1").await);
+    }
+
+    /// H1 回归锚点：`is_blocked` 读不到封禁状态（DAO 故障）时
+    /// `check_auth_failure_rate` 必须失败关闭（返回 false = 拒绝），与注释
+    /// 及 i18n 文案「按失败关闭拒绝」一致。此前 Err 分支误返 true（放行），
+    /// 多实例换 Redis 后端 DAO 时会把爆破窗口打开。
+    #[tokio::test]
+    #[cfg(feature = "garrison-auth")]
+    async fn test_failure_rate_check_fails_closed_when_dao_errors() {
+        use garrison::strategy::firewall::{BruteForceConfig, BruteForceStrategy};
+
+        /// 全部写读路径恒失败的 DAO 桩：模拟 Redis 后端不可达。
+        struct ErrDao;
+
+        #[async_trait]
+        impl garrison::dao::GarrisonDao for ErrDao {
+            async fn get(&self, _key: &str) -> garrison::error::GarrisonResult<Option<String>> {
+                Err(garrison::error::GarrisonError::Dao("probe".into()))
+            }
+            async fn set(
+                &self,
+                _key: &str,
+                _value: &str,
+                _ttl_seconds: u64,
+            ) -> garrison::error::GarrisonResult<()> {
+                Err(garrison::error::GarrisonError::Dao("probe".into()))
+            }
+            async fn update(
+                &self,
+                _key: &str,
+                _value: &str,
+            ) -> garrison::error::GarrisonResult<()> {
+                Err(garrison::error::GarrisonError::Dao("probe".into()))
+            }
+            async fn expire(
+                &self,
+                _key: &str,
+                _seconds: u64,
+            ) -> garrison::error::GarrisonResult<()> {
+                Err(garrison::error::GarrisonError::Dao("probe".into()))
+            }
+            async fn delete(&self, _key: &str) -> garrison::error::GarrisonResult<()> {
+                Err(garrison::error::GarrisonError::Dao("probe".into()))
+            }
+            async fn set_if_absent(
+                &self,
+                _key: &str,
+                _value: &str,
+                _ttl_seconds: u64,
+            ) -> garrison::error::GarrisonResult<bool> {
+                Err(garrison::error::GarrisonError::Dao("probe".into()))
+            }
+            async fn rename(
+                &self,
+                _old_key: &str,
+                _new_key: &str,
+            ) -> garrison::error::GarrisonResult<()> {
+                Err(garrison::error::GarrisonError::Dao("probe".into()))
+            }
+            async fn get_and_delete(
+                &self,
+                _key: &str,
+            ) -> garrison::error::GarrisonResult<Option<String>> {
+                Err(garrison::error::GarrisonError::Dao("probe".into()))
+            }
+            async fn incr(
+                &self,
+                _key: &str,
+                _ttl_seconds: u64,
+            ) -> garrison::error::GarrisonResult<u64> {
+                Err(garrison::error::GarrisonError::Dao("probe".into()))
+            }
+            async fn decr(&self, _key: &str) -> garrison::error::GarrisonResult<u64> {
+                Err(garrison::error::GarrisonError::Dao("probe".into()))
+            }
+            async fn compare_and_swap(
+                &self,
+                _key: &str,
+                _expected: Option<&str>,
+                _new_value: &str,
+                _ttl_seconds: u64,
+            ) -> garrison::error::GarrisonResult<bool> {
+                Err(garrison::error::GarrisonError::Dao("probe".into()))
+            }
+        }
+
+        let strategy = BruteForceStrategy::new(
+            BruteForceConfig {
+                max_attempts: AUTH_FAILURE_MAX_ATTEMPTS,
+                window_seconds: AUTH_FAILURE_WINDOW_SECS,
+                lock_seconds: AUTH_FAILURE_LOCK_SECS,
+            },
+            Arc::new(ErrDao),
+        );
+        let auth = ApiKeyAuth {
+            repo: Arc::new(make_mock_repo()),
+            enabled: true,
+            trusted_proxies: Vec::new(),
+            brute_force: Arc::new(strategy),
+            cache: None,
+        };
+        assert!(
+            !auth.check_auth_failure_rate("203.0.113.7").await,
+            "DAO 故障必须失败关闭：读不到封禁状态即拒绝"
         );
     }
 
@@ -1335,21 +1570,71 @@ mod tests {
         assert_eq!(last_status, StatusCode::TOO_MANY_REQUESTS);
     }
 
+    /// 5 分钟窗口 10 次阈值： garrison `BruteForceStrategy` 承接
+    /// `check_auth_failure_rate` / `record_auth_failure` 后的语义钉桩。
     #[tokio::test]
     async fn test_check_auth_failure_rate_blocks_after_threshold() {
         let auth = ApiKeyAuth::new(Arc::new(make_mock_repo()), true);
 
-        // 无失败记录的 IP 直接放行（同时触发空桶驱逐路径）。
-        assert!(auth.check_auth_failure_rate("192.0.2.50"));
+        // 无失败记录的 IP 直接放行。
+        assert!(auth.check_auth_failure_rate("192.0.2.50").await);
 
         // 恰好 10 次失败后命中阈值分支：放行翻转为拒绝。
         for _ in 0..10 {
-            auth.record_auth_failure("192.0.2.50");
+            auth.record_auth_failure("192.0.2.50").await;
         }
-        assert!(!auth.check_auth_failure_rate("192.0.2.50"));
+        assert!(!auth.check_auth_failure_rate("192.0.2.50").await);
 
         // 阈值按 IP 隔离，其他 IP 不受影响。
-        assert!(auth.check_auth_failure_rate("192.0.2.51"));
+        assert!(auth.check_auth_failure_rate("192.0.2.51").await);
+    }
+
+    /// HTTP 429 与 gRPC `ResourceExhausted` 共享同一失败桶：两条传输线
+    /// 共用同一 `ApiKeyAuth` 实例与同一 garrison 策略，不得出现第二份计数器。
+    /// 这里以 gRPC 的调用配对（`record_auth_failure` 由 `grpc::reject` 调用，
+    /// `check_auth_failure_rate` 在入口查桶）灌满桶，再以 HTTP 中间件断言
+    /// 同一 IP 已被拒——反之亦可，桶只有一个。
+    #[tokio::test]
+    async fn test_http_and_grpc_paths_share_one_failure_bucket() {
+        let auth = Arc::new(ApiKeyAuth::new(Arc::new(make_mock_repo()), true));
+        let router = build_test_router(Arc::clone(&auth));
+
+        // gRPC 侧入桶 10 次（未达阈值前每次都是普通认证失败）。client 标识
+        // 必须取 HTTP 中间件在该测试请求下的同一取值：请求不注入
+        // ConnectInfo，中间件的 `get_client_ip` 兜底为 "unknown"。
+        for _ in 0..10 {
+            auth.record_auth_failure("unknown").await;
+        }
+        // HTTP 中间件必须看到同一桶已满 → 429。
+        let resp = router
+            .oneshot(make_request(Some(&basic_auth_header(
+                "user-key",
+                "user-secret",
+            ))))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "HTTP 与 gRPC 必须共享同一失败桶"
+        );
+
+        // 反向：HTTP 侧入桶（请求无 ConnectInfo，client_ip 取 "unknown"
+        // 兜底），`check_auth_failure_rate`（gRPC 入口查询）必须看到拒绝。
+        let auth2 = Arc::new(ApiKeyAuth::new(Arc::new(make_mock_repo()), true));
+        let router2 = build_test_router(Arc::clone(&auth2));
+        let bad = basic_auth_header("user-key", "wrong");
+        for _ in 0..10 {
+            let _ = router2
+                .clone()
+                .oneshot(make_request(Some(&bad)))
+                .await
+                .unwrap();
+        }
+        assert!(
+            !auth2.check_auth_failure_rate("unknown").await,
+            "HTTP 侧灌满的桶必须对 gRPC 查询入口生效"
+        );
     }
 
     /// 宽限期内的旧凭证：认证放行但必须跳过缓存写入（缓存只能表达相对

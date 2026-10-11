@@ -317,6 +317,7 @@ log-server-config-hot_reload-parse_config_failed = Failed to parse or validate c
 log-server-config-hot_reload-read_lock_failed_callbacks = Failed to acquire read lock for reload callbacks: { $error }
 log-server-config-hot_reload-config_hot_reloaded = Configuration hot-reloaded from { $config_path }
 log-server-config-hot_reload-reload_error = Error during config reload: { $error }
+log-server-config-hot_reload-watcher_events_dropped = Config file change events dropped by watcher (consumer fell behind): { $dropped } since last report, { $total_dropped } total — a reload trigger may have been lost, reconcile manually
 log-server-config-hot_reload-config_updated_programmatically = Configuration updated programmatically
 log-server-config-hot_reload-write_lock_failed_algorithm_map = Failed to acquire write lock for algorithm map: { $error }
 log-server-config-hot_reload-algorithm_set = Set algorithm for biz_tag '{ $biz_tag }'
@@ -346,6 +347,8 @@ log-server-handlers-system_handlers-key_rotation_shutting_down = Key rotation ta
 
 # src/server/middleware/api_key_auth.rs
 log-server-middleware-api_key_auth-too_many_auth_failures = Too many authentication failures
+log-server-middleware-api_key_auth-failure_rate_check_failed = Auth failure rate limiter unavailable (DAO/strategy error); failing closed
+log-server-middleware-api_key_auth-failure_record_failed = Auth failure counter record failed (DAO/strategy error); one failure count lost
 log-server-middleware-api_key_auth-auth_middleware_called = Auth middleware called
 log-server-middleware-api_key_auth-auth_disabled_request = Authentication disabled - allowing request without validation (AUDIT LOGGED)
 log-server-middleware-api_key_auth-request_processed_without_auth = Request processed without authentication

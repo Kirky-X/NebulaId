@@ -52,7 +52,7 @@ database = ["dep:dbnexus", "dep:sea-orm", "dep:argon2", "dep:subtle"]
 segment = ["database"]
 snowflake = []
 uuid-v8 = []
-server = ["database", "http", "grpc", "dep:sdforge", "dep:oxcache", "dep:inklog", "dep:axum", "dep:tonic", "dep:tonic-prost", "dep:prost", "dep:utoipa", "dep:limiteron", "dep:tokio-stream", "dep:metrics-exporter-prometheus"]
+server = ["database", "http", "grpc", "sdforge/http", "sdforge/grpc", "sdforge/openapi", "sdforge/context", "sdforge/docs", "dep:oxcache", "dep:inklog", "dep:axum", "dep:tonic", "dep:tonic-prost", "dep:prost", "dep:utoipa", "dep:limiteron", "dep:tokio-stream", "dep:metrics-exporter-prometheus"]
 # alerting: 门控告警子系统(src/core/monitoring 的 AlertManager/AlertRule/
 # 告警状态机/通知通道/broadcast 事件流)与 webhook 分发 reqwest 路径。
 # 生产路径默认不含以缩小产物；CI test job 经 --all-features 覆盖，
@@ -91,21 +91,34 @@ unexpected_cfgs = { level = "allow", check-cfg = [
 # RC 波次），不再使用 ../base、../garrison 兄弟仓库路径依赖——本仓库可独立
 # 构建，CI 无需 checkout 兄弟目录。pre-release 语义下 req 下界即各库当前
 # 最新发布版，后续小版本按 semver 自动上浮。
-confers = { version = "0.6.0-rc.5", features = ["interpolation", "watch"] }
+# confers: 0.6.0-rc.6 是热加载收编的最低依赖版本——watcher::HotReloader 与
+# hot-reload-kit feature 自 rc.6 起提供（rc.5 仅 watch/progressive-reload），
+# req ^0.6.0-rc.5 本就按 semver 上浮至此。hot-reload-kit = watch +
+# progressive-reload，watch 不再单独声明。
+confers = { version = "0.6.0-rc.6", features = ["interpolation", "hot-reload-kit"] }
 oxcache = { version = "0.5.0-rc.4", optional = true }
-dbnexus = { version = "0.6.0-rc.5", optional = true, default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
-sdforge = { version = "0.5.0-rc.5", optional = true, default-features = false, features = ["http", "grpc", "openapi", "context", "docs"] }
+dbnexus = { version = "0.6.0-rc.5", optional = true, default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid", "migration"] }
+sdforge = { version = "0.5.0-rc.5", default-features = false }
 inklog = { version = "0.3.0-rc.5", optional = true, default-features = false, features = ["fast-masking"] }
 # fast-masking：Aho-Corasick 多模式脱敏加速（凭证/密钥类日志字段的
 # 自动脱敏是本服务合规刚需；开 feature 即得，无接线代码）
 # garrison: 一站式身份认证框架（同作者 Kirky.X），通过 garrison-auth feature 启用，
-# 接管 API key 验证。仅启用 web-axum（中间件）+ protocol-apikey（ApiKeyHandler）+ cache-memory（KV 后端）。
-# 0.9.0-rc.1 起内部与本项目同一 RC 波次（confers 0.6.0-rc.5 / oxcache 0.5.0-rc.4 /
+# 接管 API key 防爆破滑窗与封禁存储（BruteForceStrategy），并提供进程内 DAO
+# （InMemoryDao，经本仓 server::auth 门面消费，外箍 BoundedDao 容量阀）。
+# 实际消费面只有 firewall-bruteforce（strategy::firewall::brute_force）与
+# 无特性门控的 dao 模块；web-axum / protocol-apikey / cache-memory 三个特性
+# 全仓零使用（API key 校验始终是 NebulaId 自有 repo.validate_api_key），
+# 按规则 12 显式最小化，不为它们白拉依赖树。
+# 0.9.0-rc.1 起内部与本项目同一 RC 波次（confers 0.6.0-rc.6 / oxcache 0.5.0-rc.4 /
 # sdforge 0.5.0-rc.5 / inklog 0.3.0-rc.5），旧 0.8.x 的类型不跨边界技术债已随升级收敛。
-garrison = { version = "0.9.0-rc.1", optional = true, default-features = false, features = ["web-axum", "protocol-apikey", "cache-memory"] }
+# rc.2 是 firewall-bruteforce 的最低可用版本：rc.1 的 limiteron/ban.rs 对
+# limiteron::BanTarget 非穷尽匹配（缺 Cidr 变体），开启该 feature 即编译失败。
+# rc.2 连带要求 limiteron ^0.3.0-rc.5，故 limiteron 同步上浮；两者均在既有 req
+# 边界内，非主动升级。
+garrison = { version = "0.9.0-rc.2", optional = true, default-features = false, features = ["firewall-bruteforce"] }
 # trait-kit: 模块定义标准接口与 Kit 能力管理中心（同作者自研生态，
 # garrison/limiteron/dbnexus/sdforge 均提供 trait-kit 集成面）。
-# 锁定 0.5.0-rc.6（与 confers 0.6.0-rc.5 / garrison 0.9.0-rc.1 同一 RC 生态）；
+# 锁定 0.5.0-rc.6（与 confers 0.6.0-rc.6 / garrison 0.9.0-rc.2 同一 RC 生态）；
 # 正式版发布后按 semver 上浮。
 # 仅 sdk feature 拉入（dep:trait-kit）：不开 sdk 的构建依赖树零影响。
 trait-kit = { version = "0.5.0-rc.6", optional = true, default-features = false, features = ["async", "lifecycle", "health"] }
@@ -192,18 +205,16 @@ url = "2.5"
 # core 的 TokenBucketLimiter / ConcurrencyLimiter / Limiter 原语），不启用——
 # 这同时解除了 limiteron → dbnexus ^0.4 的传递约束（postgres feature 是
 # optional dbnexus 的开关）。
-limiteron = { version = "0.3.0-rc.4", optional = true, default-features = false }
+limiteron = { version = "0.3.0-rc.5", optional = true, default-features = false, features = ["audit-log", "circuit-breaker"] }
 
 # 国际化（统一基线 unify-rust-i18n：Fluent/ICU 栈，替换 rust-i18n YAML 后端）。
-# - fluent-bundle 0.16 concurrent：Send+Sync 的 FluentBundle 双束（en/zh）可入
-#   static，FTL 资源 locales/{en,zh}/messages.ftl 经 include_str! 编译期内嵌；
-# - unic-langid：Fluent 束的语言标识解析；
+# - FTL 资源 locales/{en,zh}/messages.ftl 经 include_str! 编译期内嵌，键集在
+#   init 期注册进 sdforge i18n（2026-10-10 selfdev-lib-adoption-r1 条目 8 收编，
+#   fluent-bundle / unic-langid 两个直接依赖随之移除）；
 # - sys-locale：系统语言自动探测（检测链见 main.rs resolve_locale：
 #   NEBULA_LOCALE → config.app.locale → LC_ALL/LC_MESSAGES/LANG → sys-locale → en）。
 # - icu 按需不引入：本项目消息均为纯文本插值（t!/translate_with_locale），
 #   无数字/日期/复数/排序格式化需求（见 design.md Non-Goals）。
-fluent-bundle = "0.16"
-unic-langid = "0.9"
 sys-locale = "0.3"
 
 [dev-dependencies]
@@ -219,10 +230,17 @@ toml = { version = "1.1", default-features = false, features = ["std", "serde"] 
 [[bench]]
 name = "i18n"
 harness = false
+required-features = ["server"]
 
 [[bench]]
 name = "algorithms"
 harness = false
+required-features = ["server", "garrison-auth"]
+
+[[bench]]
+name = "auth_cache_adoption"
+harness = false
+required-features = ["server", "garrison-auth"]
 
 # SDK 示例 —— 仅启用 `sdk` 特性时构建（示例引用被 #[cfg(feature = "sdk")]
 # 门控的 `nebulaid::sdk`）。未启用时 `cargo build`/`cargo test` 跳过它们。

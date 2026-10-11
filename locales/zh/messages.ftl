@@ -313,6 +313,7 @@ log-server-config-hot_reload-parse_config_failed = 解析或校验配置文件�
 log-server-config-hot_reload-read_lock_failed_callbacks = 获取 reload callbacks 的读锁失败：{ $error }
 log-server-config-hot_reload-config_hot_reloaded = 配置已从 { $config_path } 热加载
 log-server-config-hot_reload-reload_error = 配置热加载出错：{ $error }
+log-server-config-hot_reload-watcher_events_dropped = 配置文件监视器丢弃变更事件（消费方跟不上）：自上次上报起 { $dropped } 个，累计 { $total_dropped } 个——可能有重载触发已丢失，需手工对账
 log-server-config-hot_reload-config_updated_programmatically = 配置已通过编程方式更新
 log-server-config-hot_reload-write_lock_failed_algorithm_map = 获取 algorithm map 的写锁失败：{ $error }
 log-server-config-hot_reload-algorithm_set = 已设置 biz_tag '{ $biz_tag }' 的算法
@@ -342,6 +343,8 @@ log-server-handlers-system_handlers-key_rotation_shutting_down = 密钥轮换任
 
 # src/server/middleware/api_key_auth.rs
 log-server-middleware-api_key_auth-too_many_auth_failures = 认证失败次数过多
+log-server-middleware-api_key_auth-failure_rate_check_failed = 认证失败限速器不可用（DAO/策略错误），按失败关闭拒绝
+log-server-middleware-api_key_auth-failure_record_failed = 认证失败计数写入失败（DAO/策略错误），丢失一次失败计数
 log-server-middleware-api_key_auth-auth_middleware_called = 认证中间件被调用
 log-server-middleware-api_key_auth-auth_disabled_request = 认证已禁用 - 允许请求通过不校验（已记录审计日志）
 log-server-middleware-api_key_auth-request_processed_without_auth = 请求已在不认证的情况下处理

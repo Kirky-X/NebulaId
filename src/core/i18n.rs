@@ -68,6 +68,10 @@ pub fn init_i18n(locale: &str) {
         LANG_EN
     };
     GLOBAL_LANG.store(lang, Ordering::Release);
+    // 键集注册提前到启动期（R-i18n 的「静态键集注册在启动期完成」约束）：
+    // FTL 解析与注册是一次性成本，放在 init_i18n 里就不落在首个认证/
+    // 错误响应请求的热路径上。ensure_registered 幂等，重复调用无副作用。
+    ensure_registered();
 }
 
 /// Current process default locale as its canonical string ("en" / "zh-CN").

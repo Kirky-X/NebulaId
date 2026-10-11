@@ -24,6 +24,11 @@
 //! curl http://127.0.0.1:3000/api-docs/openapi.json
 //! ```
 
+// `t!` 是 lib crate 根 #[macro_export] 的宏，经 #[macro_use] extern crate
+// 拉入文本作用域（与 src/main.rs 同一机制），取进程默认 locale 翻译。
+#[macro_use]
+extern crate nebulaid;
+
 use std::sync::{Arc, OnceLock};
 
 use axum::response::IntoResponse;
@@ -68,7 +73,7 @@ static GENERATOR: OnceLock<Arc<IdGenerator>> = OnceLock::new();
 fn generator() -> &'static Arc<IdGenerator> {
     GENERATOR
         .get()
-        .expect("IdGenerator 未初始化（main 应先调用 build 并 set）")
+        .expect(&t!("error.sdk.generator_not_initialized"))
 }
 
 /// 把 `CoreError` 映射为 sdforge `ApiError`（500 内部错误）。
@@ -123,7 +128,7 @@ pub struct SdkBatchGenerateResponse {
     method = "POST",
     no_prefix = true,
     tool_name = "sdk_generate",
-    description = "通过嵌入式 SDK 生成单个 ID（snowflake，零 DB）"
+    description = "Generate a single ID via the embedded SDK (snowflake, zero DB)"
 )]
 async fn sdk_generate(req: SdkGenerateRequest) -> Result<SdkGenerateResponse, ApiError> {
     let id = generator()
@@ -141,7 +146,7 @@ async fn sdk_generate(req: SdkGenerateRequest) -> Result<SdkGenerateResponse, Ap
     method = "POST",
     no_prefix = true,
     tool_name = "sdk_batch_generate",
-    description = "通过嵌入式 SDK 批量生成 ID（snowflake，零 DB）"
+    description = "Generate IDs in batch via the embedded SDK (snowflake, zero DB)"
 )]
 async fn sdk_batch_generate(
     req: SdkBatchGenerateRequest,
@@ -193,9 +198,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr: std::net::SocketAddr = "127.0.0.1:3000".parse()?;
     println!("sdk_server listening on http://{addr}");
-    println!("  POST /generate            生成单个 ID");
-    println!("  POST /generate/batch      批量生成 ID");
-    println!("  GET  /api-docs/openapi.json  OpenAPI 文档");
+    println!("  {}", t!("log.example.sdk_server_routes_generate"));
+    println!("  {}", t!("log.example.sdk_server_routes_batch"));
+    println!("  {}", t!("log.example.sdk_server_routes_openapi"));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;

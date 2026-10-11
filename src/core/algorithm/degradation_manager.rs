@@ -14,8 +14,10 @@
 //!
 //! 1. **告警管道集成预留** 启用告警管道后，`record_request` 和 `get_metrics`
 //!    将作为 Prometheus 指标采集入口；`AlgorithmMetrics` 是指标导出的数据结构。
-//! 2. **熔断器与降级联动**：`can_make_request` 是熔断器在 HalfOpen 状态下的探针请求
-//!    判定入口，待 circuit_breaker 接入告警管道后启用。
+//! 2. **熔断器与降级联动**：本模块的熔断态是**纯观测态**——请求路径只读
+//!    `is_degraded` 做降级决策，`circuit_breaker_state` 仅供 `get_metrics`
+//!    与 Prometheus gauge 观测（`is_circuit_open` 仅被后台巡检自身调用）。
+//!    不存在 `can_make_request` 之类的请求级门禁入口。
 //! 3. **测试覆盖**：`default_degradation_config` 被多个单元测试用于快速构造默认配置，
 //!    删除会丢失测试便利性。
 //! 4. **API 完整性**：降级管理器对外应暴露完整的健康状态、指标查询、配置构造能力。
@@ -149,14 +151,28 @@ impl AlgorithmHealthState {
         }
     }
 
+    /// 饱和累加并发一条记录失败。
+    ///
+    /// 这两个计数器是 `AtomicU8`，而调用方（`record_generation_result`）在
+    /// **已降级后仍持续上报失败**——长时 outage 下同一个坏算法会被上报数百次。
+    /// 裸 `fetch_add` 在 256 次时：debug/test 构建直接 panic（本 crate 是
+    /// panic=abort，进程即死），release 不检查则静默回绕成 0、把指标与降级
+    /// 判定一起污染。饱和到 `u8::MAX` 的语义是「至少 255 次连续」，对所有
+    /// 阈值判定（阈值上限即 u8::MAX）无影响。
+    fn saturating_incr(counter: &AtomicU8) {
+        let _ = counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v: u8| {
+            Some(v.saturating_add(1))
+        });
+    }
+
     pub fn record_failure(&self) {
-        self.consecutive_failures.fetch_add(1, Ordering::SeqCst);
+        Self::saturating_incr(&self.consecutive_failures);
         *self.last_failure_time.write() = Some(Instant::now());
         self.consecutive_successes.store(0, Ordering::SeqCst);
     }
 
     pub fn record_success(&self) {
-        self.consecutive_successes.fetch_add(1, Ordering::SeqCst);
+        Self::saturating_incr(&self.consecutive_successes);
         *self.last_success_time.write() = Some(Instant::now());
         self.consecutive_failures.store(0, Ordering::SeqCst);
     }
@@ -811,6 +827,35 @@ pub struct AlgorithmHealthStateInfo {
     pub consecutive_successes: u8,
     pub is_degraded: bool,
     pub is_healthy: bool,
+}
+
+/// 并发一条记录失败 300 次（远超 AtomicU8 的 255）不得 panic、不得回绕。
+///
+/// 回归背景：`record_failure` 原用裸 `fetch_add`，而调用方在已降级后
+/// 仍持续上报失败（长时 outage 下同一坏算法被上报数百次）。256 次时
+/// debug/test 构建 panic（本 crate panic=abort → 进程即死），release
+/// 静默回绕成 0 污染指标与降级判定。现为饱和累加。
+#[test]
+fn test_consecutive_counters_saturate_instead_of_wrapping() {
+    let state = AlgorithmHealthState::new(AlgorithmType::Segment);
+    for _ in 0..300 {
+        state.record_failure();
+    }
+    let failures = state.consecutive_failures.load(Ordering::SeqCst);
+    assert_eq!(failures, u8::MAX, "应饱和到 u8::MAX 而非回绕");
+    // 饱和态仍应判定为需降级（阈值即 u8::MAX 时也要成立）
+    assert!(state.should_degrade(u8::MAX));
+
+    // 一次成功立即清零（consecutive 语义不被饱和破坏）
+    state.record_success();
+    assert_eq!(state.consecutive_failures.load(Ordering::SeqCst), 0);
+    assert_eq!(state.consecutive_successes.load(Ordering::SeqCst), 1);
+
+    // 成功侧同样饱和
+    for _ in 0..300 {
+        state.record_success();
+    }
+    assert_eq!(state.consecutive_successes.load(Ordering::SeqCst), u8::MAX);
 }
 
 #[cfg(test)]

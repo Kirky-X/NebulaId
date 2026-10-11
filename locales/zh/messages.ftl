@@ -665,3 +665,11 @@ error-sdk-repository_required_for_segment = Segment 算法需要数据库仓储�
 error-sdk-router_module_must_exist_on_ready_kit = RouterModule 能力在 Ready Kit 上必然存在（build 依赖图校验已保证）
 log-sdk-audit_logger_injection_confirmed = sdk: audit_logger 注入确认
 error-detail-segment_loader_not_configured = Segment 算法未接通数据源，需在装配处注入 DbSegmentLoader（SegmentRepository::allocate_segment）
+
+# examples/sdk_server.rs —— SDK 服务器示例二进制：启动横幅路由表与
+# IdGenerator 未初始化的 panic 文案，均经 `t!` 取值（进程默认 locale）。
+# 示例未调用 init_i18n，恒取 i18n 默认 en，无中文硬编码默认值。
+log-example-sdk_server_routes_generate = POST /generate            生成单个 ID
+log-example-sdk_server_routes_batch = POST /generate/batch      批量生成 ID
+log-example-sdk_server_routes_openapi = GET  /api-docs/openapi.json  OpenAPI 文档
+error-sdk-generator_not_initialized = IdGenerator 未初始化（main 应先调用 build 并 set）

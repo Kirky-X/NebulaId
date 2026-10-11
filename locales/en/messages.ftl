@@ -673,3 +673,12 @@ error-sdk-repository_required_for_segment = Segment algorithm requires a databas
 error-sdk-router_module_must_exist_on_ready_kit = RouterModule capability must exist on a Ready Kit (guaranteed by build dependency-graph validation)
 log-sdk-audit_logger_injection_confirmed = sdk: audit_logger injection confirmed
 error-detail-segment_loader_not_configured = Segment algorithm has no data source wired; inject DbSegmentLoader (SegmentRepository::allocate_segment) at the assembly site
+
+# examples/sdk_server.rs — SDK-server example binary: startup banner route
+# table and the IdGenerator-not-initialized panic message. Both resolve
+# through `t!` (process default locale). The example never calls
+# init_i18n, so the i18n default "en" applies — no Chinese default.
+log-example-sdk_server_routes_generate = POST /generate            Generate a single ID
+log-example-sdk_server_routes_batch = POST /generate/batch      Batch generate IDs
+log-example-sdk_server_routes_openapi = GET  /api-docs/openapi.json  OpenAPI documentation
+error-sdk-generator_not_initialized = IdGenerator is not initialized (main should call build() and set it first)

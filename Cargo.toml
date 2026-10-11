@@ -90,7 +90,7 @@ sdk = ["openapi", "dep:trait-kit"]
 # sdforge 宏还 emit 其他内部 feature 的 cfg gate，声明为已知 cfg 值以消除 check-cfg 警告
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = [
-    'cfg(feature, values("http", "grpc", "cli", "mcp", "openapi", "websocket", "streaming", "cache", "logging", "inklog", "i18n", "security", "ratelimit", "ratelimit-http", "docs", "limiteron-integration", "kit"))',
+    'cfg(feature, values("http", "grpc", "cli", "mcp", "openapi", "websocket", "streaming", "cache", "logging", "inklog", "i18n", "security", "ratelimit", "ratelimit-http", "docs", "lifecycle", "limiteron-integration", "kit"))',
 ] }
 
 [dependencies]
@@ -104,7 +104,10 @@ unexpected_cfgs = { level = "allow", check-cfg = [
 # progressive-reload，watch 不再单独声明。
 confers = { version = "0.6.0-rc.6", features = ["interpolation", "hot-reload-kit"] }
 oxcache = { version = "0.5.0-rc.4", optional = true }
-dbnexus = { version = "0.6.0-rc.5", optional = true, default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid", "migration"] }
+# dbnexus 的 migration feature 经 sqlparser 拉重依赖，且全仓零使用——
+# 本仓 DDL/幂等升级走 sea-orm execute_unprepared（connection.rs
+# run_migrations），不消费 dbnexus 的迁移编排面，按规则 12 不启用。
+dbnexus = { version = "0.6.0-rc.5", optional = true, default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
 sdforge = { version = "0.5.0-rc.5", default-features = false }
 inklog = { version = "0.3.0-rc.5", optional = true, default-features = false, features = ["fast-masking"] }
 # fast-masking：Aho-Corasick 多模式脱敏加速（凭证/密钥类日志字段的
@@ -182,9 +185,10 @@ metrics-exporter-prometheus = { version = "0.18", optional = true, default-featu
 # v5 无条件开在依赖面（本依赖恒编译）；使用侧经 uuid-v5 特性门控。
 # v5 = RFC 9562 name-based（SHA-1）确定性派生的既定原语，与 etyma 等
 # 消费方的 Uuid::new_v5 同 crate 同版本，保证派生数值逐位兼容。
-# 传递依赖为 sha1_smol（uuid crate 内部经其实现 SHA-1）；HEAD 的
-# Cargo.lock 已含同版本 sha1_smol（redis 路径引入），本 feature 零新增
-# crate 节点。
+# 传递依赖为 sha1_smol（uuid crate 内部经其实现 SHA-1）；e21834c 起已
+# 在 Cargo.lock（oxcache rc.6 → redis 1.7 路径引入），本 feature 只增
+# 一条 uuid→sha1_smol 依赖边、零新增 crate 节点（v5 与 v8 叶子包集合
+# 实测相同）。
 uuid = { version = "1.26", features = ["v4", "v7", "v8", "v5", "serde"] }
 # serde：AuditEvent（无条件编译）的 Serialize/Deserialize 派生含 DateTime<Utc>
 # 字段；此前经 sea-orm with-chrono 传递启用，sea-orm 转 optional 后须显式声明。
@@ -214,11 +218,15 @@ smallvec = "1.16"
 url = "2.5"
 
 # 速率限制和流量控制
-# 注：postgres / quota-control / ban-manager features 全仓零使用（只消费
-# core 的 TokenBucketLimiter / ConcurrencyLimiter / Limiter 原语），不启用——
-# 这同时解除了 limiteron → dbnexus ^0.4 的传递约束（postgres feature 是
-# optional dbnexus 的开关）。
-limiteron = { version = "0.3.0-rc.5", optional = true, default-features = false, features = ["audit-log", "circuit-breaker"] }
+# 注：postgres / quota-control / ban-manager / audit-log / circuit-breaker
+# features 全仓零使用（只消费 core 的 TokenBucketLimiter / ConcurrencyLimiter /
+# Limiter 原语与 error/limiters 无条件模块），不启用——这同时解除了
+# limiteron → dbnexus ^0.4 的传递约束（postgres feature 是 optional dbnexus
+# 的开关）。garrison 的 firewall-bruteforce 按其自身依赖关系拉取
+# limiteron/ban-manager，与本行声明正交。
+# req 写下界 0.3.0-rc.4 的上浮终点：garrison 0.9.0-rc.2 自身要求
+# ^0.3.0-rc.5，且 Cargo 在既有 req 边界内解析到 rc.6（同 RC 波次）。
+limiteron = { version = "0.3.0-rc.5", optional = true, default-features = false }
 
 # 国际化（统一基线 unify-rust-i18n：Fluent/ICU 栈，替换 rust-i18n YAML 后端）。
 # - FTL 资源 locales/{en,zh}/messages.ftl 经 include_str! 编译期内嵌，键集在

@@ -190,7 +190,7 @@ cargo build --release
 > nebulaid = { version = "0.3", default-features = false, features = ["uuid-v8"] }
 > ```
 >
-> 该组合依赖树 196 个 crate，较完整 default（526，实测 `cargo tree -e normal`）缩减约 63%；剪裁组合由 CI `Check feature trim` 步骤钉住，防止越界引用静默腐烂。
+> 该组合依赖树 196 个 crate，较完整 default（519）缩减约 62%（口径：`cargo tree -e normal --prefix none \| sort -u \| wc -l`，2026-10-11 实测）；剪裁组合由 CI `Check feature trim` 步骤钉住，防止越界引用静默腐烂。
 
 ### 💡 最小示例
 

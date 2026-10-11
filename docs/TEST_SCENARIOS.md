@@ -185,7 +185,7 @@ cargo bench --bench i18n
 
 ## 统计汇总
 
-截至 0.3.0-rc.2 工作区（口径：`grep -rc '#\[test\]\|#\[tokio::test'` 于 `src/` 与 `tests/`）：
+截至 0.3.0-rc.2 工作区（口径：`grep -rnE '#\[(tokio::)?test\]' --include='*.rs' src tests | wc -l`）：
 
 | 类别 | 数量 |
 |------|-----:|

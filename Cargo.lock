@@ -1323,11 +1323,9 @@ dependencies = [
  "chrono",
  "fluent-bundle",
  "icu",
- "regex",
  "sea-orm",
  "serde",
  "serde_json",
- "sqlparser",
  "sys-locale",
  "thiserror",
  "time",
@@ -3131,25 +3129,20 @@ dependencies = [
  "chrono",
  "dashmap",
  "fluent-bundle",
- "hex",
- "hmac",
  "ipnet",
  "log",
  "oxcache",
  "parking_lot",
- "scopeguard",
  "secrecy",
  "serde",
  "serde_json",
  "serde_yaml_ng",
- "sha2 0.11.0",
  "sys-locale",
  "thiserror",
  "tokio",
  "tokio-util",
  "toml",
  "tracing",
- "tracing-subscriber",
  "unic-langid",
  "uuid",
 ]
@@ -4267,26 +4260,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "recursive"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0786a43debb760f491b1bc0269fe5e84155353c67482b9e60d0cfb596054b43e"
-dependencies = [
- "recursive-proc-macro-impl",
- "stacker",
-]
-
-[[package]]
-name = "recursive-proc-macro-impl"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76009fbe0614077fc1a2ce255e3a1881a2e3a3527097d5dc6d8212c585e7e38b"
-dependencies = [
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "redis"
 version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5164,16 +5137,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 dependencies = [
  "lock_api",
-]
-
-[[package]]
-name = "sqlparser"
-version = "0.63.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3679862809bd1f92e563cf6fd820e28f39135303668001c10331d5027183e8b4"
-dependencies = [
- "log",
- "recursive",
 ]
 
 [[package]]

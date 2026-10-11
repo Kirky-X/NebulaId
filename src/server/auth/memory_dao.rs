@@ -35,11 +35,12 @@ pub use garrison::dao::InMemoryDao;
 /// 计数键只是丢掉该 IP 的失败计数（安全方向：少封禁）；淘汰一个封禁键
 /// 会让被封者重新获得失败预算（可接受：重建封禁仍需再失败满阈值）。
 ///
-/// `order` 双端队列记录插入意图，与 `inner` 的存在性允许漂移（键可能在
-/// inner 侧已过期）：淘汰一个已消失的键是一次无害空删。队列自身长度以
-/// `max_keys` 为上界，不会成为第二个无界结构。只有「新建键」路径
-/// （`set` / `set_permanent` / `rename` / CAS 成功 / `set_if_absent`
-/// 返回 created / `incr` 归一到 1）登记插入，避免对既有键重复记账。
+/// `order`（队列 + 已登记集合）记录插入意图，与 `inner` 的存在性允许漂移
+/// （键可能在 inner 侧已过期）：淘汰一个已消失的键是一次无害空删。集合使
+/// 「是否已登记」O(1) 可判，因此只有**首次**写入的键入队，对既有键的重复
+/// `set` 不产生重复记账——否则队列通胀后 FIFO 队首会是仍存活的热键，
+/// 淘汰它等于「重写热的键把它自己逐出」。队列长度以 `max_keys` 为上界，
+/// 不会成为第二个无界结构。
 ///
 /// 委托面与 `InMemoryDao` 的实现面一致（16 个方法）；其余 trait 成员
 /// 继承默认实现，行为与直连 `InMemoryDao` 相同（默认即 NotImplemented 或
@@ -47,15 +48,56 @@ pub use garrison::dao::InMemoryDao;
 pub struct BoundedDao {
     inner: InMemoryDao,
     max_keys: usize,
-    order: std::sync::Mutex<std::collections::VecDeque<String>>,
+    order: std::sync::Mutex<OrderIndex>,
+}
+
+/// 插入序索引：FIFO 队列 + 已登记键集合。
+///
+/// 集合使「是否已登记」O(1) 可判，从而 `track` 只对新键入队——否则对既有键
+/// 的重复 `set` 会把同一键反复压队，队列通胀后 FIFO 队首可能是仍存活的热键，
+/// 被淘汰时就是「重写热的键把它自己逐出」的自淘汰。
+struct OrderIndex {
+    queue: std::collections::VecDeque<String>,
+    present: std::collections::HashSet<String>,
+}
+
+impl OrderIndex {
+    fn new() -> Self {
+        Self {
+            queue: std::collections::VecDeque::new(),
+            present: std::collections::HashSet::new(),
+        }
+    }
+
+    /// 登记新键；已登记过的键直接跳过（返回是否真的入队）。
+    fn register(&mut self, key: &str) -> bool {
+        if self.present.contains(key) {
+            return false;
+        }
+        self.present.insert(key.to_string());
+        self.queue.push_back(key.to_string());
+        true
+    }
+
+    fn queue_len(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// 仅测试断言「登记集合与队列长度一致」时使用。
+    #[cfg(test)]
+    fn present_len(&self) -> usize {
+        self.present.len()
+    }
 }
 
 impl BoundedDao {
     pub fn new(inner: InMemoryDao, max_keys: usize) -> Self {
+        // 0 会让「写入即淘汰」，退化成不可用缓存；钳到至少保留一个键位
+        let max_keys = max_keys.max(1);
         Self {
             inner,
             max_keys,
-            order: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            order: std::sync::Mutex::new(OrderIndex::new()),
         }
     }
 
@@ -68,12 +110,16 @@ impl BoundedDao {
         let victims = {
             let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
             for key in new_keys {
-                order.push_back((*key).to_string());
+                order.register(key);
             }
             let mut victims = Vec::new();
-            while order.len() > self.max_keys {
-                match order.pop_front() {
-                    Some(victim) => victims.push(victim),
+            while order.queue_len() > self.max_keys {
+                match order.queue.pop_front() {
+                    Some(victim) => {
+                        // 同步移除登记态：该键被淘汰后若再次写入，须能重新登记
+                        order.present.remove(&victim);
+                        victims.push(victim);
+                    }
                     None => break,
                 }
             }
@@ -209,6 +255,65 @@ impl garrison::dao::GarrisonDao for BoundedDao {
     ) -> garrison::error::GarrisonResult<Vec<String>> {
         self.inner.eval_lua(script, keys, args).await
     }
+}
+
+/// BoundedDao 只登记新键：对既有键重复 `set` 不得重复入队，否则
+/// 队列通胀后 FIFO 队首可能是仍存活的热键，被 `track` 的 delete 直接
+/// 逐出（自淘汰）。钉住「反复 set 同一热键不会导致它被淘汰」。
+#[tokio::test]
+async fn test_bounded_dao_reset_hot_key_is_not_evicted() {
+    use garrison::dao::GarrisonDao;
+
+    let dao = BoundedDao::new(InMemoryDao::new(), 4);
+
+    // 4 个不同键填满容量
+    for i in 0..4 {
+        dao.set(&format!("cold-{i}"), "v", 0).await.unwrap();
+    }
+    // 反复重写热键远超容量轮次：若重复入队，热键会先被淘汰
+    for _ in 0..50 {
+        dao.set("hot", "v", 0).await.unwrap();
+    }
+    // 热键必须仍在（未被自淘汰）
+    assert_eq!(
+        dao.get("hot").await.unwrap(),
+        Some("v".to_string()),
+        "反复重写的热键不得被容量阀自淘汰"
+    );
+
+    // 未被重写的旧键按 FIFO 淘汰（这是容量阀的本职）
+    let mut evicted = 0;
+    for i in 0..4 {
+        if dao.get(&format!("cold-{i}")).await.unwrap().is_none() {
+            evicted += 1;
+        }
+    }
+    assert!(evicted > 0, "容量阀应淘汰最旧的冷键");
+}
+
+/// 天然去重后队列长度 == 存活登记数，两者都不超过 max_keys。
+#[tokio::test]
+async fn test_bounded_dao_queue_stays_bounded_under_reset_storm() {
+    use garrison::dao::GarrisonDao;
+
+    let dao = BoundedDao::new(InMemoryDao::new(), 8);
+    for i in 0..8 {
+        dao.set(&format!("k-{i}"), "v", 0).await.unwrap();
+    }
+    for _ in 0..200 {
+        dao.set("k-0", "v", 0).await.unwrap();
+    }
+    let order = dao.order.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(
+        order.queue_len() <= 8,
+        "队列长度 {} 超过 max_keys 8（重复登记通胀）",
+        order.queue_len()
+    );
+    assert_eq!(
+        order.present_len(),
+        order.queue_len(),
+        "登记集合与队列长度必须一致"
+    );
 }
 
 #[cfg(test)]

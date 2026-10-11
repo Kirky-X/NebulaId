@@ -127,7 +127,7 @@
 - `nebulaid::core::Cache` 公共 re-export 仅随 `server` 特性可见。
 
 ```toml
-# 只用 UUID v8 的最小依赖组合（196 个 crate；完整 default 为 526，实测 cargo tree）
+# 只用 UUID v8 的最小依赖组合（196 个 crate；完整 default 为 519；实测口径 cargo tree -e normal --prefix none | sort -u | wc -l）
 nebulaid = { version = "0.3", default-features = false, features = ["uuid-v8"] }
 ```
 

@@ -279,9 +279,9 @@ fn main() {
     println!("\n---- 门禁判定以纯命中路径为准 ----");
     let (p99_inc, tput_dec) = gate(p99_b, p99_g, tput_b, tput_g);
 
-    // 结果以机器可读形式落盘，供变更记录与 PR 描述引用。否决时不得被
-    // panic 吞掉（enforce 模式的 panic 发生在写盘之前之外不行）——故写盘
-    // 放在 gate 之后且不依赖 enforce 分支。
+    // 结果以机器可读形式落盘，供变更记录与 PR 描述引用。写盘放在 gate
+    // 之后且不依赖 enforce 分支：enforce 模式下门禁否决会 panic，若写盘
+    // 在其之前则数据反而留存，故此处保证两分支都能拿到同一份 JSON。
     let pass = p99_inc <= 10.0 && tput_dec <= 5.0;
     let report = format!(
         "{{\n  \"bench\": \"auth_cache_adoption\",\n  \"samples\": {SAMPLES},\n           \"key_count\": {KEY_COUNT},\n  \"p50_baseline_ns\": {},\n           \"p99_baseline_ns\": {},\n  \"p99_candidate_get_ns\": {},\n           \"p99_candidate_get_or_ns\": {},\n  \"throughput_baseline_ops\": {:.0},\n           \"throughput_candidate_get_ops\": {:.0},\n  \"throughput_candidate_get_or_ops\": {:.0},\n           \"p99_increase_pct\": {p99_inc:.4},\n  \"throughput_decrease_pct\": {tput_dec:.4},\n           \"thresholds\": {{\"p99_max_increase_pct\": 10.0, \"throughput_max_decrease_pct\": 5.0}},\n           \"verdict\": \"{}\"\n}}\n",

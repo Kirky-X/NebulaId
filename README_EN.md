@@ -188,7 +188,7 @@ cargo build --release
 > nebulaid = { version = "0.3", default-features = false, features = ["uuid-v8"] }
 > ```
 >
-> That combination pulls 196 crates vs 526 for the full default (measured via `cargo tree -e normal`, about 63% fewer); the trim combination is pinned by the CI `Check feature trim` step to prevent out-of-scope imports from silently rotting it.
+> That combination pulls 196 crates vs 519 for the full default (about 62% fewer; measured with `cargo tree -e normal --prefix none | sort -u | wc -l` on 2026-10-11); the trim combination is pinned by the CI `Check feature trim` step to prevent out-of-scope imports from silently rotting it.
 
 ### 💡 Minimal Example
 

@@ -182,12 +182,16 @@ pub fn global_translate(key: &str, args: &[(&str, String)]) -> String {
 /// 据此保留 utoipa 静态注册的英文规范串,OpenAPI 契约结构不变。
 pub fn translate_if_present(locale: &str, ftl_id: &str) -> Option<String> {
     let lang = lang_of(locale);
-    let empty: &[(&str, String)] = &[];
     if !is_registered_id(ftl_id) {
         return None;
     }
     ensure_registered();
-    Some(sdforge::i18n::translate_for(lang, ftl_id, empty))
+    // 命中判定用本地快照后，渲染也走本地快照（forge_translate），不再过
+    // sdforge 的进程级 REGISTRY 锁——OpenAPI 路径是"每次请求重建整份文档"
+    // 的数百次调用累积，且零锁快照语义已由 test_local_render_matches_sdforge
+    // 全键集对拍钉死。
+    let empty: &[(&str, String)] = &[];
+    Some(forge_translate(lang, ftl_id, empty))
 }
 
 // ============================================================================
@@ -209,7 +213,9 @@ static SNAPSHOT: OnceLock<
     std::collections::HashMap<String, std::collections::HashMap<String, std::sync::Arc<str>>>,
 > = OnceLock::new();
 
-/// 注册完成标志：`init_i18n` 与首次查询都可能触发注册，须幂等。
+/// 注册完成的幂等 latch：首次查询时经 [`ensure_registered`] 置位，之后
+/// 所有注册尝试直接命中。不单独读取其值，仅用 `OnceLock` 的 get-or-init
+/// 原子性保证「注册恰好发生一次」。
 static REGISTERED: OnceLock<()> = OnceLock::new();
 
 /// English (en) FTL 资源 — 编译期内嵌 locales/en/messages.ftl。
@@ -300,7 +306,8 @@ fn parse_ftl_entries(src: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// 把双语 FTL 键集注册进 sdforge i18n（幂等，首次查询或 `init_i18n` 触发）。
+/// 把双语 FTL 键集注册进 sdforge i18n（幂等，首次**查询**触发；
+/// `init_i18n` 只写全局 locale 原子量，不触发注册）。
 ///
 /// 注册的是**消息值**而非 FTL 原文：sdforge 的登记表是扁平的
 /// `(locale, key) -> value`，不做 Fluent 解析；其 `format_template` 负责

@@ -23,12 +23,12 @@
 
 ## 基准口径与诚实声明
 
-本仓库 `Cargo.toml` 中声明**两项** Criterion 基准（均为 `harness = false`）：
-
+本仓库 `Cargo.toml` 中声明**三项**基准（均为 `harness = false`；第三项为一次性性能门禁，非 Criterion 口径）：
 - `[[bench]] name = "i18n"`（`benches/i18n.rs`）：i18n 热路径，钉住性能修复的基线，保证后续 i18n 改动可量化；
 - `[[bench]] name = "algorithms"`（`benches/algorithms.rs`）：发号 / 限流 / 认证缓存热路径，覆盖 Snowflake 单条与批量、路由链路、令牌桶与认证缓存命中。
 
-**口径边界：两项均为算法 / 中间件层微基准，不覆盖 HTTP 全链路（认证中间件、TLS、序列化、网络），基线数字亦非 SLA 承诺。** Segment 算法未纳入基准（`SegmentAlgorithm` / `SegmentLoader` 为 `pub(crate)`，外部 bench 无法注入内存 stub 号段装载器）；端到端吞吐请以自身负载实测（见[优化建议](#优化建议)）。
+- `[[bench]] name = "auth_cache_adoption"`（`benches/auth_cache_adoption.rs`，`required-features = ["server", "garrison-auth"]`）——selfdev-lib-adoption-r1 条目 7 的**认证缓存收编性能门禁**。对比基线 `AuthCache`（类型化直存）与候选 oxcache `Cache` 在认证命中路径（键构造 + 命中读取）的 P99 与吞吐，阈值 P99 增幅 ≤ 10% 且吞吐降幅 ≤ 5%。判定为 reject（P99 +597%、吞吐 −53.8%，根因是 oxcache 的 `V: Serialize + DeserializeOwned` 使每次命中必经一次 JSON 反序列化）；设 `NEBULAID_AUTH_CACHE_GATE=1` 可在门禁否决时硬失败，机器可读结果落盘 `target/auth_cache_adoption-latest.json`。
+**口径边界：前两项为算法 / 中间件层微基准，第三项为一次性收编门禁，不覆盖 HTTP 全链路（认证中间件、TLS、序列化、网络），基线数字亦非 SLA 承诺。** Segment 算法未纳入基准（`SegmentAlgorithm` / `SegmentLoader` 为 `pub(crate)`，外部 bench 无法注入内存 stub 号段装载器）；端到端吞吐请以自身负载实测（见[优化建议](#优化建议)）。
 
 ---
 
@@ -186,22 +186,25 @@ lto = true
 
 ### i18n 热路径（`benches/i18n.rs`）
 
-环境与口径同上表（同日、同 commit、同机采集）：
+0.3.0-rc.2 起改实测（2026-10-11，同 commit `fbe5c32`+T010 门禁整改、WSL2 release）——实现已从
+FluentBundle 双束切换为 sdforge 注册 + OnceLock 快照零锁渲染（selfdev-lib-adoption-r1），
+下表为切换后的一手基线；切换前同机旧值（41.0 / 54.1 / 89.1 ns 一档）仅存于 git 历史，
+不再代表当前实现：
 
 | 基准用例 | 中位数 |
 |----------|-------:|
-| `translate_with_locale/en/no_args` | 41.0 ns |
-| `translate_with_locale/zh-CN/no_args` | 41.0 ns |
-| `translate_with_locale/fr_fallback/no_args` | 54.1 ns |
-| `translate_with_locale_args/en/1_arg` | 89.1 ns |
-| `translate_with_locale_args/zh-CN/1_arg` | 91.3 ns |
-| `to_localized_string/InvalidIdFormat/en` | 88.4 ns |
-| `to_localized_string/InvalidIdFormat/zh-CN` | 86.5 ns |
-| `to_localized_string/RateLimitExceeded/en` | 42.5 ns |
-| `to_localized_string/ClockMovedBackward/en` | 104.1 ns |
-| `parse_accept_language/typical_2` | 66.0 ns |
-| `parse_accept_language/longer_5` | 191.0 ns |
-| `parse_accept_language/unsupported_only` | 74.3 ns |
+| `translate_with_locale/en/no_args` | 52.1 ns |
+| `translate_with_locale/zh-CN/no_args` | 51.0 ns |
+| `translate_with_locale/fr_fallback/no_args` | 51.4 ns |
+| `translate_with_locale_args/en/1_arg` | 127.6 ns |
+| `translate_with_locale_args/zh-CN/1_arg` | 120.0 ns |
+| `to_localized_string/InvalidIdFormat/en` | 99.6 ns |
+| `to_localized_string/InvalidIdFormat/zh-CN` | 99.8 ns |
+| `to_localized_string/RateLimitExceeded/en` | 76.1 ns |
+| `to_localized_string/ClockMovedBackward/en` | 154.9 ns |
+| `parse_accept_language/typical_2` | 74.2 ns |
+| `parse_accept_language/longer_5` | 182.0 ns |
+| `parse_accept_language/unsupported_only` | 64.8 ns |
 
 ### HTTP 端到端（单实例，2026-09-18）
 

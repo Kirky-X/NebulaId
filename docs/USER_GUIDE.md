@@ -194,11 +194,13 @@ Segment 算法支持多数据中心部署，每个数据中心分配唯一的 DC
 
 | 消费形态 | 推荐组合 | 依赖树规模 |
 |---|---|---|
-| 部署完整服务 | default（`server` + 四算法 + `postgresql` + `garrison-auth`） | 526 |
-| 嵌入式 SDK | `sdk`（蕴含 `openapi`；不蕴含 `database`，仓储面另显式启用） | 197（`sdk,database` 组合为 289） |
-| 仅号段算法 | `segment`（蕴含 `database`） | 288 |
+| 部署完整服务 | default（`server` + 四算法 + `postgresql` + `garrison-auth`） | 519 |
+| 嵌入式 SDK | `sdk`（蕴含 `openapi`；不蕴含 `database`，仓储面另显式启用） | 197（`sdk,database` 组合为 283） |
+| 仅号段算法 | `segment`（蕴含 `database`） | 282 |
 | 仅 Snowflake / UUID v8 | `snowflake` 或 `uuid-v8` | 196 |
 | 仅 UUID v5 确定性派生 | `uuid-v5` | 196（kit 不参与：直调 `derive_uuid_v5`） |
+
+依赖树规模口径：`cargo tree -e normal --prefix none | sort -u | wc -l`（唯一 name+version 包数，2026-10-11 实测）。
 
 ```toml
 # Cargo.toml —— 只用 UUID v8 的剪裁示例

@@ -225,7 +225,7 @@ graph LR
     Handlers -->|错误转换| Helpers[helpers.rs<br/>core_error_to_response]
     Helpers --> I18n[i18n 模块<br/>src/core/i18n.rs]
     I18n -->|translate_with_locale_args| Locales[(locales/en/messages.ftl<br/>locales/zh/messages.ftl)]
-    Locales -->|fluent-bundle 编译期嵌入| I18n
+    Locales -->|include_str! + 键集注册快照| I18n
 
     style LocaleMW fill:#ffcc80
     style I18n fill:#ce93d8
@@ -234,11 +234,11 @@ graph LR
 
 **关键设计决策：**
 
-- **不修改全局 locale 状态**：`translate_with_locale*` 函数直接读取 `Locale` 参数并查询 `fluent-bundle` 编译期嵌入的静态数据，绝不调用 `set_locale`，因此可在并发请求间安全使用（无 `Mutex` / 全局可变状态）。
+- **不修改全局 locale 状态**：`translate_with_locale*` 函数直接读取 `Locale` 参数并查询编译期内嵌的静态数据，绝不调用 `set_locale`，因此可在并发请求间安全使用（查询路径无 `Mutex`，SDK 侧锁仅存在于进程级 `get_locale`）。
 - **中间件边界**：`locale_middleware` 仅作用于 `/api/v1/*` 路由（性能修复），避免 `/health` / `/ready` / `/metrics` / `/api-docs/openapi.json` 等不消费 `Locale` 的请求承担 `Accept-Language` 解析成本。
-- **fallback 链**：缺少 key 时 `fluent-bundle` 先回退到默认 locale (`en`)，再回退到 key 本身（绝不返回空串），保证错误响应永远有可读消息。
-- **隐藏 API 使用**：`translate_with_locale_cow` 通过 `fluent-bundle` 的 `FluentBundle::get_message()` + `FluentBundle::format_pattern()` 实现按 locale 翻译。国际化基线为 unify-rust-i18n（Fluent/ICU 栈）。
-- **依赖特性化（规则 28）**：`fluent-bundle = { version = "0.16", features = ["concurrent"] }` 使用 `concurrent` 特性（`Send+Sync` 的 `FluentBundle`），本项目在 `locale.rs` 中提供了更严格（RFC 7231 §5.3.5 + DoS 防护）的 `Accept-Language` 解析器，未使用第三方 `accept-language` 库。
+- **fallback 链**：缺少 key 时先回退到默认 locale (`en`)，再回退到 key 本身（绝不返回空串），保证错误响应永远有可读消息。
+- **隐藏 API 使用**：`translate_with_locale_cow` 经编译期 `include_str!` 内嵌的 `locales/{en,zh}/messages.ftl` + 注册期解析出的键集快照实现按 locale 翻译（FTL 的扁平 `key = value` 形态在注册期展开 `{ "\\u000A" }` 字符串字面量占位符）。国际化基线为 unify-rust-i18n。
+- **依赖特性化（规则 28）**：i18n 键集经 `sdforge`（非可选依赖、零 feature）的 `i18n::register_translation` 注册，`fluent-bundle` / `unic-langid` 已随之移除；本项目在 `locale.rs` 中提供了更严格（RFC 7231 §5.3.5 + DoS 防护）的 `Accept-Language` 解析器，未使用第三方 `accept-language` 库。
 
 ## 9. EtcdClientOps trait 关系图
 

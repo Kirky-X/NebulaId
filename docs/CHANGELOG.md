@@ -24,12 +24,14 @@
 - **新增 `uuid-v5` 零 DB 叶子特性**（default 开启）：`derive_uuid_v5(namespace, name)` 与 `derive_uuid_v5_batch(pairs)` 两个纯函数（无状态 / 无时钟 / 无 IO），随特性门控；SDK 面 `IdGenerator::derive_uuid_v5` 为同步薄包装（`sdk` 特性）。
 - **设计边界**：v5 刻意不进 `AlgorithmType` / `AlgorithmRouter` / `/generate`——派生失败没有 fallback 语义（回落发号算法会产出数值错误的非 v5 ID）；UUID v4/v7 在本仓同样不是算法族成员（仅 `FromStr` 输入别名）。
 - **数值兼容锚点**：与 `Uuid::new_v5` 同 crate 同版本逐位一致；测试以 etyma 340,566 个存量 ID 的钉死值（`ecdict|abandon|en` → `21e7d32f-5500-5e4a-a943-219059f73c94`）与 Python hashlib SHA-1 独立基准双重对拍。etyma 侧接入（统一生成入口）随其 0.6.0 迭代跟进。
+- **T010 发布门禁整改**：依赖树规模/测试数两处的数字改按可复现口径钉死（`cargo tree -e normal --prefix none | sort -u | wc -l` 与 `grep -rnE` 精确转义；此前 docs 的两个 grep 口径未转义、统计虚高约 30 项）；规格清单（README 双语 / API_REFERENCE / USER_GUIDE / CONTRIBUTING / FAQ）补 `uuid-v5`；API_REFERENCE 新增 v5 API 小节（含 v5-only 直调路径与命名空间约定）；TEST_SCENARIOS 补 ALG-09 场景行。
 
 ### feat（selfdev-lib-adoption-r1：自研库收编）
 
 - **i18n 收编 sdforge**：删除 fluent-bundle / unic-langid 直依赖，FTL 键集注册进 sdforge `register_translation`；查询路径经注册期 `OnceLock` 快照零锁查找 + 本地渲染（不经 sdforge 进程级注册表的全局 `Mutex`），本地渲染与 `translate_for` 全键集（全参 / 无参 / 多参）对拍。
 - **garrison 接管 API key 防爆破**：`InMemoryDao` 经本仓 `server::auth` 门面消费，外箍 `BoundedDao` 容量阀（100k 键 FIFO——补回 garrison DAO 缺失的键空间上界：其过期键只惰性清理、无 sweeper）；HTTP 与 gRPC 共享同一失败桶，观测故障 fail-closed。
-- **confers HotReloader 热加载接线**：notify 事件驱动 watcher + 丢弃增量显性上报（循环内逐次与通道关闭前收尾共用同一上报路径）。
+- **confers HotReloader 热加载接线**：notify 事件驱动 watcher + 丢弃增量显性上报（循环内逐次与通道关闭前收尾共用同一上报路径）；新增基准 `benches/auth_cache_adoption.rs`（认证缓存采用率性能门禁，verdict=reject：oxcache get P99 +690%，门禁代码化：P99 ≤ +10% / 吞吐 ≥ −5%）。
+- **T010 发布门禁整改**：移除两个零使用依赖特性（dbnexus `migration`——经 sqlparser 拉重依赖但 run_migrations 走 sea-orm 自有 SQL；limiteron `audit-log`/`circuit-breaker`——仅消费无条件 error/limiters 模块），default 依赖树 526→519；PERFORMANCE.md i18n 基准数字按新实现重测刷新（快照渲染 51ns/126ns 一档）；`sdforge_version` 字段语义（返回本 crate 版本）另行跟进，不在本批。
 - **发布前三审查整改**（安全 / 架构 / 性能并行 subagent，规则 10）：防爆破观测故障 fail-open → fail-closed（ErrDao 桩测试钉死极性）；DAO 无界增长 → 容量阀（BoundedDao）；i18n 热路径绕开全局锁；`test_support` 恢复 `#[cfg(test)]`（不再随发布库进公开面）；garrison 特性裁剪至 `firewall-bruteforce`（web-axum / protocol-apikey / cache-memory 零使用）；bench `required-features` 补齐（剪裁组合由编译失败改为正确跳过）。
 - **已知取舍**：① core 层自此无条件依赖 sdforge（收编决策的声明后果：纯算法消费方也编译 sdforge 树）；sdforge i18n 注册表是进程级共享可变全局——NebulaId 查询路径已绕开（本地快照），但同二进制内其他 sdforge 使用方与 NebulaId 的键共表，未来键命名须防冲突。② i18n 缺参渲染与旧 Fluent 有形符差（`{$name}` vs `{ $name }`），仅在调用点漏参（本身即 bug）时显现。③ gRPC 对禁用 / 过期 / 不存在 key 的错误码区分构成 key 状态枚举侧信道（批次前既有，未在本批引入，另行跟进）。
 

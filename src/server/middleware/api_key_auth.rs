@@ -25,14 +25,15 @@ pub use crate::core::database::ApiKeyRole;
 /// 认证失败滑窗窗口（秒）与阈值： garrison `BruteForceStrategy` 组装为
 /// `BruteForceConfig` 时使用的窗口值，两条传输线（HTTP 429 / gRPC
 /// ResourceExhausted）共享同一实例与同一组阈值。
-#[cfg(feature = "garrison-auth")]
+/// 认证失败滑窗窗口（秒）与阈值：两条路径共用同一策略定义，改一边即改
+/// 全部——阈值以「 garrison `record_failure` 的 `new_count > max_attempts`
+/// 触发封禁」为准，故 `max_attempts = MAX - 1`，第 `MAX` 次失败触发。
 const AUTH_FAILURE_WINDOW_SECS: u64 = 300;
+const AUTH_FAILURE_MAX_FAILURES: u64 = 10;
 
-/// 触发封禁所需的认证失败次数。 garrison `record_failure` 在
-/// `new_count > max_attempts` 时封禁，故取阈值减一：第 10 次失败即触发，
-/// 与手写版「窗口内失败达 10 次后拒绝」等价。
+/// garrison `BruteForceStrategy` 的 `max_attempts`（阈值减一）。
 #[cfg(feature = "garrison-auth")]
-const AUTH_FAILURE_MAX_ATTEMPTS: u32 = 9;
+const AUTH_FAILURE_MAX_ATTEMPTS: u32 = (AUTH_FAILURE_MAX_FAILURES - 1) as u32;
 
 /// 封禁时长（秒）。与窗口同值，避免封禁期长于计数窗口而导致「窗口滑出后
 /// 仍被拒」的行为偏离。
@@ -67,7 +68,8 @@ pub struct ApiKeyAuth {
     /// 不能静默去掉防爆破保护）。
     #[cfg(not(feature = "garrison-auth"))]
     auth_failures: Arc<RwLock<HashMap<String, Vec<Instant>>>>,
-    /// garrison cache-memory 认证决策缓存；`None` = 不缓存。
+    /// 本仓 `AuthCache`（类型化进程内认证决策缓存，经 garrison DAO 之上
+    /// 手写实现）；`None` = 不缓存。garrison `cache-memory` 特性零使用。
     #[cfg(feature = "garrison-auth")]
     cache: Option<Arc<crate::server::auth::AuthCache>>,
 }
@@ -214,7 +216,7 @@ impl ApiKeyAuth {
         let failures = failures_map.entry(client_ip.to_string()).or_default();
 
         // 移除 5 分钟前的记录
-        failures.retain(|t| now.duration_since(*t) < Duration::from_secs(300));
+        failures.retain(|t| now.duration_since(*t) < Duration::from_secs(AUTH_FAILURE_WINDOW_SECS));
 
         // Phase 9 — evict empty entries so a long-lived
         // process does not accumulate one dead `Vec` per unique IP ever
@@ -226,7 +228,7 @@ impl ApiKeyAuth {
         }
 
         // 如果 5 分钟内失败超过 10 次，则阻止
-        if failures.len() >= 10 {
+        if failures.len() as u64 >= AUTH_FAILURE_MAX_FAILURES {
             tracing::warn!(
                 client_ip = %client_ip,
                 failure_count = failures.len(),
@@ -1316,9 +1318,10 @@ mod tests {
         }
     }
 
-    /// 淘汰语义的替代保证： garrison DAO 计数键按窗口 TTL 自然过期，
-    /// 不存在整表清空路径，故灌注远超旧 `MAX_TRACKED_AUTH_FAILURE_IPS`
-    /// （10_000）的 IP 后，活跃攻击者的失败预算必须仍然有效。
+    /// 活跃攻击者存活语义：BoundedDao 的 FIFO 淘汰以
+    /// `MAX_TRACKED_AUTH_FAILURE_KEYS`（100k）为界，本测试灌注 10,002
+    /// 个其他 IP（未达阀），验证灌入不重置活跃攻击者的失败预算；有界性
+    /// 与淘汰极性由 `memory_dao.rs` 的 BoundedDao 测试直接锚定。
     #[tokio::test]
     async fn test_active_attacker_counter_survives_many_other_ips() {
         let auth = ApiKeyAuth::new(Arc::new(make_mock_repo()), true);

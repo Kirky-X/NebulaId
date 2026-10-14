@@ -1,16 +1,14 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! Phase 8 — End-to-end i18n integration test.
+//! End-to-end i18n integration test.
 //!
 //! Verifies the full chain: `Accept-Language` header → `locale_middleware`
-//! negotiates `Locale` → handler reads `Extension<Locale>` → produces a
-//! locale-translated error response via the helpers in
-//! `src/server/handlers/helpers.rs`.
+//! negotiates `Locale` → handler reads `Extension<Locale>` → localized error
+//! response via `core_error_to_response`.
 //!
-//! This test does NOT require PostgreSQL / etcd — it builds a minimal
-//! axum router with only `locale_middleware` + a test handler that
-//! deliberately returns a `CoreError` to exercise the translation path.
+//! Builds a minimal axum router (no PostgreSQL / etcd): `locale_middleware`
+//! + a handler that deliberately returns a `CoreError`.
 
 #![cfg(test)]
 
@@ -26,12 +24,10 @@ use nebulaid::server::handlers::helpers::core_error_to_response;
 use nebulaid::server::middleware::locale::{locale_middleware, Locale};
 use sdforge::tower::ServiceExt;
 
-/// Build a minimal router that exercises the i18n error-response path.
-///
-/// The handler reads `Extension<Locale>` (injected by `locale_middleware`)
-/// and converts a fixed `CoreError::InvalidInput("negative")` into a JSON
-/// `ErrorResponse` via `core_error_to_response`. This is the same path
-/// production handlers in `router.rs` use.
+/// Build a minimal router exercising the i18n error-response path: the
+/// handler converts a fixed `CoreError::InvalidInput("negative")` into an
+/// `ErrorResponse` via `core_error_to_response`, the path production
+/// handlers in `router.rs` use; `Locale` comes from `locale_middleware`.
 fn i18n_router() -> Router {
     Router::new()
         .route(
@@ -189,7 +185,6 @@ async fn t042_en_invalid_uuid_response_returns_english() {
 }
 
 /// Verifies that 5xx-class CoreError variants do NOT leak internal strings.
-/// This is the CWE-209 fix from the security review.
 #[tokio::test]
 async fn t042_5xx_database_error_does_not_leak_internal_string() {
     let app = Router::new()

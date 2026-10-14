@@ -3,34 +3,20 @@
 
 //! Nebula ID - Enterprise-grade distributed ID generation system
 //!
-//! This crate provides a unified API for distributed ID generation with support for
-//! multiple algorithms (Segment, Snowflake, UUID v8 / v7 / v4 as real minting
-//! algorithms selectable via `AlgorithmType` and its `from_str` string surface)
-//! plus RFC 9562 §5.5 name-based deterministic derivation (`uuid-v5`), and
-//! features like distributed coordination, caching, and monitoring.
-//!
-//! # Architecture
-//!
-//! - [`core`] - Core business logic for ID generation algorithms
-//! - [`server`] - HTTP/gRPC server implementations
-//!
-//! # Usage
+//! 多算法（Segment/Snowflake/UUID v8/v7/v5/v4）经 `AlgorithmType` 选择，辅以分布式协调、缓存与监控。
 //!
 //! ```rust
 //! use nebulaid::core::Config;
 //! ```
 
 // ============================================================================
-// t! — 进程级全局翻译宏（unify-rust-i18n 统一基线，替换 rust-i18n 的 t!）
+// t! — 进程级全局翻译宏（unify-rust-i18n 统一基线）
 // ============================================================================
 //
-// 定义在 crate 根且必须位于 `pub mod core;` / `pub mod server;` 之前,经宏的
-// 文本作用域覆盖全 crate 调用点(等价于原先 `#[macro_use] extern crate
-// rust_i18n;` 的作用域效果);`#[macro_export]` 同时把宏挂到 crate 根,
-// bin 侧(src/main.rs)经 `#[macro_use] extern crate nebulaid;` 引入。
-//
-// 运行时语义:进程默认 locale(经 `core::i18n::init_i18n` 设置)→ en 束 →
-// 键本身;参数按 Display 格式化为字符串后交给 Fluent 变量解析。
+// 文本作用域要求定义先于使用，故置于 pub mod 声明之前；#[macro_export] 挂到
+// crate 根，bin 侧经 #[macro_use] extern crate nebulaid 引入。
+// 运行时语义：按进程默认 locale 命中 FTL 键，未命中退 en 束并返回键本身，
+// 参数经 Display 格式化后交 Fluent 变量解析。
 #[macro_export]
 macro_rules! t {
     ($key:expr $(,)?) => {
@@ -44,13 +30,13 @@ macro_rules! t {
     };
 }
 
-// Core namespace - 核心业务逻辑
+// Core namespace：核心业务逻辑
 pub mod core;
 
-// Server namespace - HTTP/gRPC 服务
+// Server namespace：HTTP/gRPC 服务
 #[cfg(feature = "server")]
 pub mod server;
 
-// SDK namespace - 嵌入式一等公民入口（feature `sdk` 门控）
+// SDK namespace：嵌入式 SDK facade
 #[cfg(feature = "sdk")]
 pub mod sdk;

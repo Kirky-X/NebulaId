@@ -29,10 +29,8 @@ use std::sync::Arc;
 use tracing::warn;
 use tracing::{error, info};
 
-// unify-rust-i18n — bin 侧宏引入:t! 经 nebulaid 的 #[macro_export] 挂在
-// lib crate 根,`#[macro_use] extern crate` 把它拉入 bin crate 的文本作用域
-// (替换原 rust-i18n 的 `#[macro_use] extern crate rust_i18n;` + `i18n!`)。
-// FTL 资源由 lib 侧 core::i18n 编译期内嵌,bin 无需再独立加载。
+// t! 经 nebulaid 的 #[macro_export] 挂在 lib crate 根，#[macro_use] extern crate
+// 拉入本 bin crate 的文本作用域；FTL 资源由 lib 侧 core::i18n 编译期内嵌。
 #[macro_use]
 extern crate nebulaid;
 
@@ -40,8 +38,7 @@ const DEFAULT_CONFIG_PATH: &str = "config/config.toml";
 
 /// 服务器配置
 ///
-/// 端口默认值唯一归属 `core::config::NebulaIdConfig::default()`（8080/9091），
-/// 此处经 `NebulaIdConfig::default()` 派生，禁止再引入本地端口常量。
+/// 端口默认值唯一归属 `core::config::NebulaIdConfig::default()`，禁止本地再引入端口常量。
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     /// HTTP 服务端口
@@ -81,13 +78,11 @@ async fn load_api_keys(
 
     info!("{}", t!("log.main.loading_api_keys"));
 
-    // First, create API key from environment variable if configured
-    // Format: NEBULA_ADMIN_API_KEY_SECRET=your-secret-key
+    // 从环境变量装配 admin 键（secret 必填，key_id 可选透传）
     let admin_key_secret_from_env = env::var("NEBULA_ADMIN_API_KEY_SECRET").ok();
     let admin_key_id_from_env = env::var("NEBULA_ADMIN_API_KEY_ID").ok();
 
-    // Second, create API keys from config if configured
-    // Config format: api_keys = [{ key_secret = "xxx", workspace = "global", role = "admin", rate_limit = 100000, name = "Admin" }]
+    // 从 auth.api_keys 取首条装配（字段：key_secret/workspace/role/rate_limit/name）
     let configured_keys = if !config.auth.api_keys.is_empty() {
         Some(config.auth.api_keys.clone())
     } else {
@@ -97,7 +92,6 @@ async fn load_api_keys(
     #[cfg(debug_assertions)]
     let externally_bootstrapped = admin_key_secret_from_env.is_some() || configured_keys.is_some();
 
-    // If configured via env or config, create the key (key_id generated internally)
     match admin_key_secret_from_env {
         Some(secret) => create_admin_key_from_env(repo, &secret, admin_key_id_from_env).await,
         None => {
@@ -118,8 +112,7 @@ async fn load_api_keys(
     }
 }
 
-/// NEBULA_ADMIN_API_KEY_SECRET 环境变量装配：以给定 secret 建 admin 键
-/// （key_id 可选透传）。重复键属幂等启动语义，静默放行。
+/// NEBULA_ADMIN_API_KEY_SECRET 环境变量装配 admin 键；重复键静默放行（幂等启动）。
 async fn create_admin_key_from_env(
     repo: &Arc<database::SeaOrmRepository>,
     secret: &str,
@@ -155,8 +148,7 @@ async fn create_admin_key_from_env(
     }
 }
 
-/// 配置文件 `auth.api_keys[0]` 装配：role 按小写 admin 判定，workspace 为
-/// "global" 时表示跨工作空间（None）。重复键属幂等启动语义，静默放行。
+/// 配置文件 `auth.api_keys[0]` 装配：role 按小写 admin 判定，workspace "global" = 跨工作空间（None），重复键静默放行。
 async fn create_key_from_config(repo: &Arc<database::SeaOrmRepository>, first_key: &ApiKeyEntry) {
     use nebulaid::core::database::{ApiKeyRole, CreateApiKeyRequest};
     use uuid::Uuid;
@@ -205,8 +197,7 @@ async fn create_key_from_config(repo: &Arc<database::SeaOrmRepository>, first_ke
     }
 }
 
-/// 无任何外部配置时的兜底：admin 键已存在则确认后返回；不存在则生成——
-/// 非生产环境向控制台打印一次 secret（唯一一次展示），生产环境不打印。
+/// 无外部配置时的兜底：admin 键已存在则返回，否则生成；secret 仅非生产环境打印一次。
 async fn ensure_default_admin_key(repo: &Arc<database::SeaOrmRepository>) {
     use nebulaid::core::database::{ApiKeyRole, CreateApiKeyRequest};
     use uuid::Uuid;
@@ -221,7 +212,6 @@ async fn ensure_default_admin_key(repo: &Arc<database::SeaOrmRepository>) {
             );
         }
         Ok(None) => {
-            // Generate new admin API key
             let admin_request = CreateApiKeyRequest {
                 workspace_id: None,
                 name: "admin".to_string(),
@@ -259,10 +249,8 @@ async fn ensure_default_admin_key(repo: &Arc<database::SeaOrmRepository>) {
     }
 }
 
-/// 非 production 下的 secret 展示横幅：只在生成时刻打印一次，
-/// 用户必须立即保存。
+/// 非 production 下的 secret 展示横幅：仅生成时刻打印一次，用户必须立即保存。
 fn print_admin_key_banner(key_id: &str, secret: &str) {
-    // WARN: Print secret to console only once - user must save it
     println!("\n╔════════════════════════════════════════════════════════════════════╗");
     println!("║           ⚠️  ADMIN API KEY GENERATED - SAVE NOW!              ║");
     println!("╠════════════════════════════════════════════════════════════════════╣");
@@ -278,8 +266,7 @@ fn print_admin_key_banner(key_id: &str, secret: &str) {
     tracing::warn!("{}", t!("log.main.admin_api_key_secret_printed"));
 }
 
-/// debug 构建兜底测试键：仅当 env/config 均未提供装配时创建。
-/// 重复键属幂等启动语义，静默放行。
+/// debug 构建兜底测试键：env/config 均未提供装配时才创建；重复键静默放行（幂等启动）。
 #[cfg(debug_assertions)]
 async fn create_dev_test_admin_key(repo: &Arc<database::SeaOrmRepository>) {
     use nebulaid::core::database::{ApiKeyRole, CreateApiKeyRequest};
@@ -323,11 +310,11 @@ async fn create_id_generator(
     let audit_logger_for_core: nebulaid::core::algorithm::DynAuditLogger =
         audit_logger as Arc<dyn nebulaid::core::algorithm::AuditLogger>;
 
-    // Create CPU monitor（CpuMonitor 随 segment 特性门控，server 不蕴含 segment）
+    // CpuMonitor 随 segment 特性门控（server 不蕴含 segment）
     #[cfg(feature = "segment")]
     let cpu_monitor = Arc::new(nebulaid::core::algorithm::CpuMonitor::new());
-    // 启动 CPU 周期采样（仅 Linux：读取 /proc/stat）。任务 detached，
-    // 只要进程存活即持续更新共享的 current_usage，供 Segment 动态步长使用。
+    // 启动 CPU 周期采样（仅 Linux，读 /proc/stat）：detached 任务持续更新
+    // 共享 current_usage，供 Segment 动态步长使用。
     #[cfg(all(feature = "segment", target_os = "linux"))]
     let _cpu_sampler = cpu_monitor.start_monitoring();
     let router = AlgorithmRouter::new(config.clone(), Some(audit_logger_for_core));
@@ -360,11 +347,11 @@ async fn create_id_generator(
     let audit_logger_for_core: nebulaid::core::algorithm::DynAuditLogger =
         audit_logger as Arc<dyn nebulaid::core::algorithm::AuditLogger>;
 
-    // Create CPU monitor（CpuMonitor 随 segment 特性门控，server 不蕴含 segment）
+    // CpuMonitor 随 segment 特性门控（server 不蕴含 segment）
     #[cfg(feature = "segment")]
     let cpu_monitor = Arc::new(nebulaid::core::algorithm::CpuMonitor::new());
-    // 启动 CPU 周期采样（仅 Linux：读取 /proc/stat）。任务 detached，
-    // 只要进程存活即持续更新共享的 current_usage，供 Segment 动态步长使用。
+    // 启动 CPU 周期采样（仅 Linux，读 /proc/stat）：detached 任务持续更新
+    // 共享 current_usage，供 Segment 动态步长使用。
     #[cfg(all(feature = "segment", target_os = "linux"))]
     let _cpu_sampler = cpu_monitor.start_monitoring();
     let router = AlgorithmRouter::new(config.clone(), Some(audit_logger_for_core));
@@ -387,8 +374,7 @@ async fn start_http_server(
     config_service: Arc<dyn ConfigManagementService>,
     tls_manager: Option<Arc<TlsManager>>,
 ) -> Result<()> {
-    // 限流开关来自真实配置（此前该参数被忽略，
-    // `[rate_limit].enabled=false` 也照样挂限流层）。
+    // 限流开关取自真实配置：rate_limit.enabled=false 时不挂限流层。
     let rate_limit_enabled = config_service.get_config().rate_limit.enabled;
     let router = create_router_with_rate_limit(
         handlers,
@@ -401,13 +387,9 @@ async fn start_http_server(
     .layer(create_size_limit_middleware())
     .merge(merge_sdforge_routes(axum::Router::new()));
 
-    // 按配置选择明文或 TLS 监听（此前 http_acceptor 只构造
-    // 不消费，HTTPS 宣称启用却恒为明文）。
+    // 按配置选择明文或 TLS 监听。
     let tls_acceptor = tls_manager.as_ref().and_then(|tls| {
         if tls.is_http_enabled() {
-            // 文案纠偏 —— 后 DualListener 用 TlsAcceptor 在
-            // 该端口做真实 TLS 终结，不存在旧文案宣称的 "HTTP fallback"；
-            // 保留旧文案会让运维误判加密端口仍是明文。
             info!("HTTPS enabled: HTTP port terminates TLS (rustls acceptor)");
             tls.http_acceptor().cloned()
         } else {
@@ -419,9 +401,8 @@ async fn start_http_server(
     info!("{}", t!("log.main.starting_http_server", addr = bind_addr));
     let listener = DualListener::bind(bind_addr, tls_acceptor).await?;
 
-    // 注入 ConnectInfo<PeerAddr>，使限流键、认证失败计数、
-    // 审计 client_ip 恢复 per-IP 语义（缺失时 get_client_ip 恒 None，全站
-    // 共享单一 "anonymous" 桶——单攻击者可把 /health、/metrics 一并打成 429）。
+    // 注入 ConnectInfo<PeerAddr>：缺失时 get_client_ip 恒 None，全站共享单一
+    // anonymous 桶（限流/审计/client_ip 语义退化，单攻击者可打垮 /health、/metrics）。
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<PeerAddr>(),
@@ -513,9 +494,7 @@ async fn shutdown_signal() {
 
 /// 抽取 etcd / non-etcd 分支共用的 ApiHandlers 构造逻辑。
 ///
-/// 原代码在两个 cfg 分支重复调用 `ApiHandlers::with_api_key_repository`
-/// + `.with_key_rotation_grace_period`，未来新增 builder 方法需同步改两处
-/// （霰弹手术气味）。本 helper 集中构造逻辑。
+/// 集中 builder 调用，避免新增 builder 方法时同步修改两处 cfg 分支。
 #[allow(clippy::too_many_arguments, clippy::doc_lazy_continuation)]
 fn build_api_handlers(
     id_generator: Arc<nebulaid::core::algorithm::AlgorithmRouter>,
@@ -527,17 +506,10 @@ fn build_api_handlers(
         .with_key_rotation_grace_period(grace_period_seconds)
 }
 
-/// 生产环境强制 TLS 的判定核心（纯判定 + 一处逃生门 warn，便于单测）。
-///
-/// 规则（fail-fast）：
-/// - 非 production，或 `tls.enabled == true` → 放行；
-/// - production 且 TLS 关闭时：
-///   - `allow_insecure_tls == Some("1")`（即 `NEBULA_ALLOW_INSECURE_TLS=1`）→
-///     放行并 warn（仅限内网评估的显式豁免）；
-///   - 其余情形 → `Err`，调用方打印本地化 error 并以非零码退出。
-///
-/// production 判定含 反向默认：`NEBULA_ENV` 缺失/未知值按生产执行，
-/// 因此缺省部署同样被本校验覆盖。
+/// 生产环境强制 TLS 的判定核心（fail-fast）：非 production 或 TLS 开启 → 放行；
+/// production 且 TLS 关闭时，仅 `NEBULA_ALLOW_INSECURE_TLS=1` 显式豁免放行并 warn，
+/// 其余 `Err`（调用方打印本地化 error 后非零退出）。production 判定为反向默认：
+/// `NEBULA_ENV` 缺失/未知按生产执行，缺省部署同样受本校验覆盖。
 fn validate_tls_required_in_production(
     environment: Environment,
     tls_enabled: bool,
@@ -729,18 +701,10 @@ fn should_warn_default_worker_identity(
     !etcd_endpoints_configured && (worker_id == 0 || dc_id == 0)
 }
 
-/// (unify-rust-i18n)—— 进程默认 locale 解析(生产入口)。
-///
-/// 检测链(unify-rust-i18n 统一基线 §2,顺序不可调换):
-/// `NEBULA_LOCALE`(项目覆盖变量)
-/// → `config.app.locale`(用户显式配置,**优先于系统语言**)
-/// → `LC_ALL` → `LC_MESSAGES` → `LANG`(POSIX 环境链)
-/// → `sys-locale` 系统探测
-/// → `en`(终极回退,链尾必达)。
-///
-/// 用户配置优先于系统语言的语义:只有 NEBULA_LOCALE 与 config.app.locale
-/// 都未表达偏好(缺省/空串)时,系统语言才参与;config.app.locale 的
-/// serde 默认值为空串(auto),显式写入 "en"/"zh-CN" 即可钉死进程语言。
+/// 进程默认 locale 解析（生产入口），检测链顺序不可调换：`NEBULA_LOCALE`
+/// → `config.app.locale`（用户配置优先于系统语言，serde 缺省=空串 auto，
+/// 显式写入即钉死进程语言）→ `LC_ALL`/`LC_MESSAGES`/`LANG` → `sys-locale`
+/// → `en`（终极回退）。仅当前两级均未表达偏好时系统语言才参与。
 fn resolve_locale(nebula_locale_env: Option<&str>, config_locale: &str) -> (String, bool) {
     let lc_all = env::var("LC_ALL").ok();
     let lc_messages = env::var("LC_MESSAGES").ok();
@@ -830,28 +794,19 @@ fn normalize_posix_locale(raw: &str) -> Option<&'static str> {
 
 /// 可观测性初始化:inklog 日志 + 早期 `en` i18n。
 ///
-/// 日志初始化由 inklog 接管(替换原手写的 tracing_subscriber::fmt() 链)。
-/// 本地 ../inklog 已切换至 EnvFilter,自动从 RUST_LOG 读取按模块过滤规则
-/// (如 `RUST_LOG=nebulaid=debug,hyper=warn`),无需手动读取环境变量。
-/// format 是渲染模板(inklog 0.3 语义,非旧命名格式);JSON 行输出由
-/// console_json 开启。Arc 持有实例:热重载回调需借同一实例热调全局
-/// 级别(set_level 经内部 reload 句柄作用于 live subscriber)。
-///
-/// i18n 先以内置默认 en 初始化,覆盖配置加载前的极早期日志;配置与
-/// NEBULA_LOCALE 检测链解析完成后按生效 locale 重新初始化(
-/// 见 [`load_config`])。
+/// 日志经 inklog:EnvFilter 自动读 RUST_LOG(如 `nebulaid=debug,hyper=warn`);
+/// format 为 0.3 渲染模板,console_json 开 JSON 行输出;Arc 实例供热重载回调
+/// 借用同一 live subscriber。i18n 先以 en 初始化覆盖配置加载前日志,解析出
+/// 生效 locale 后由 [`load_config`] 重新初始化。
 async fn init_observability() -> Result<Arc<inklog::LoggerManager>> {
     let logger = Arc::new(
         inklog::LoggerManager::builder()
             .level("info")
             .format("{timestamp} [{level}] {target} - {message}")
             .console_json(true)
-            // 必须显式给 file sink 一个路径：inklog 的默认语义是 file_sink 未
-            // 配置（None）等价启用，主 async 通道指向 file 通道；但无路径时
-            // file worker 不排水，通道积压到 channel_capacity（默认 10000）后
-            // 每条日志经 send_timeout(100ms) 阻塞后降级——HTTP 每请求 ≥2 条
-            // 日志，审计锁又横跨日志调用，全服务随之串行化（历史事故：环满
-            // 后吞吐塌到 ~6 rps、每请求 ~11s）。显式路径让 worker 持续排水。
+            // 必须显式给 file sink 路径：无路径时 worker 不排水，通道积压到
+            // channel_capacity 后每条日志经 send_timeout 阻塞后降级（历史事故：
+            // 环满后吞吐塌到 ~6 rps）；显式路径让 worker 持续排水。
             .file("logs/nebula.log")
             .build()
             .await?,
@@ -870,27 +825,16 @@ fn parse_config_path(args: &[String]) -> (String, bool) {
     }
 }
 
-/// 配置加载合并与 fail-fast 校验。
-///
-/// 顺序与原 main 内联实现逐字节一致:resolve_startup_config(仅「未显式
-/// 指定 --config 且该路径确实不存在」允许回落内置默认值,且必须显式 warn)
-/// → 环境变量覆盖合并 → 进程默认 locale 检测链(NEBULA_LOCALE >
-/// config.app.locale > LC_ALL/LC_MESSAGES/LANG > sys-locale > "en",非法值
-/// 告警并继续走链)→ 无 etcd 默认
-/// worker 标识告警 → 生产环境强制 TLS(校验失败打印本地化 error 并
-/// 以非零码退出)。
-///
-/// 注:api_key_salt 的生产校验仍留在 [`init_repository`](与「DB 连接成功」
-/// 耦合),保持原有失败顺序不变。
+/// 配置加载合并与 fail-fast 校验，顺序不可调换：resolve_startup_config（仅
+/// 「未显式 --config 且该路径不存在」允许回落内置默认值并显式 warn）→ 环境变量
+/// 覆盖合并 → locale 检测链（非法值告警继续走链）→ 无 etcd 默认 worker 标识告警
+/// → 生产强制 TLS（失败打印本地化 error 并以非零码退出）。api_key_salt 生产校验
+/// 留在 [`init_repository`]（与 DB 连接成功耦合），保持原有失败顺序。
 fn load_config(config_path: &str, explicit_path: bool) -> Result<Config> {
     info!("{}", t!("log.main.loading_config", path = config_path));
 
-    // Load config from file first, then merge with environment variables
-    //
-    // 加载失败不再降级为 `Config::default()`。原实现把错误 `error!` 一行
-    // 后继续启动,等价于用一套没人审阅过的默认配置对外提供服务;坏配置现在直接让
-    // 进程以非零码退出,消息里带上路径与原因。只有"未显式指定 --config 且该路径确实
-    // 不存在"才允许回落内置默认值,且必须显式 warn。
+    // 加载失败不降级为默认配置：坏配置直接非零码退出（消息含路径与原因）；
+    // 仅「未显式 --config 且路径不存在」允许回落内置默认值并显式 warn。
     let (mut config, source) = resolve_startup_config(config_path, explicit_path).map_err(|e| {
         nebulaid::core::types::CoreError::ConfigurationError(t!(
             "error.main.config_load_failed",
@@ -1085,16 +1029,13 @@ struct AuthStack {
     auth_cache: Option<Arc<nebulaid::server::auth::AuthCache>>,
 }
 
-/// 认证栈装配:决策缓存、ApiKeyAuth、API key 初始化、审计 logger、
+/// 认证栈装配：决策缓存、ApiKeyAuth、API key 初始化、审计 logger、
 /// 热重载配置与文件监视。
 ///
-/// - 认证决策缓存 —— ApiKeyAuth 与 ApiHandlers 共享同一实例:前者读缓存
-///   加速校验,后者在吊销/轮换/重置时失效条目。`cache_ttl_seconds = 0`
-///   表示禁用,此时不再装配实例(装配了也不会写入,却仍要在每次校验后
-///   多打一次 get_api_key_by_id 判因,纯空转开销)。
-/// - —— 审计内存容量改用独立的 audit.memory_capacity;生产环境按
-///   audit.file_logging_enabled(默认 true)落盘 audit.file_logging_path
-///   (SOC2/GDPR 审计留痕);开发环境维持内存环形:最小意外原则。
+/// - 决策缓存由 ApiKeyAuth 与 ApiHandlers 共享：前者读缓存加速校验，后者在
+///   吊销/轮换/重置时失效条目；`cache_ttl_seconds = 0` 时不装配实例。
+/// - 审计内存容量取自 audit.memory_capacity；生产按 audit.file_logging_enabled
+///   （默认 true）落盘 audit.file_logging_path（SOC2/GDPR 留痕），开发维持内存环形。
 async fn init_auth_stack(
     config: &Config,
     repository: &Option<Arc<database::SeaOrmRepository>>,

@@ -44,16 +44,14 @@ async fn audit_logging_stays_fast_after_ring_and_channel_saturation() {
         start.elapsed()
     );
 
-    // 灌满 inklog async 通道（默认容量 10000）+ 审计环（100）：越过容量后
-    // 若 send_timeout 阻塞回归，下一段的断言会失败。
+    // 灌满 inklog async 通道（容量 10000）与审计环（100）：越过容量后若 send_timeout 阻塞回归，下一段断言即失败。
     for i in 0..10_500u64 {
         audit.log(ev(i)).await;
     }
 
-    // 容量饱和后的 log() 必须仍然快（每次耗时以 20ms 为上限，远宽于
-    // 修复后的微秒级、远紧于回归时的 ~100ms 阻塞）。
-    // llvm-cov 插桩（CI default leg 即插桩运行本测试）会把绝对时长整体拖高
-    // 数倍，20ms 恒定上限在插桩下偶发误报；检测到 LLVM_PROFILE_FILE（llvm-cov
+    // 容量饱和后的 log() 必须仍然快：单次上限 20ms（远宽于修复后的微秒级、
+    // 远紧于回归时的 ~100ms 阻塞）；llvm-cov 插桩（CI default leg 即插桩运行
+    // 本测试）会把绝对时长整体拖高数倍，检测到 LLVM_PROFILE_FILE（llvm-cov
     // 注入）时放宽到 80ms——仍在回归信号（~100ms 阻塞）之下，保持区分度。
     let instrumented = std::env::var_os("LLVM_PROFILE_FILE").is_some();
     let per_call_cap = if instrumented {
@@ -74,8 +72,7 @@ async fn audit_logging_stays_fast_after_ring_and_channel_saturation() {
          spans a blocking log call"
     );
 
-    // 64 并发 × 10 次灌压后同样断言（覆盖并发排队形态）；插桩下同样按比例
-    // 放宽（见上），真回归（每次 ~100ms 阻塞在锁上）仍远超上限。
+    // 64 并发 × 10 次灌压后同样断言（覆盖并发排队形态）；插桩下按比例放宽（见上），真回归仍远超上限。
     let audit = Arc::new(audit);
     let mut handles = Vec::new();
     for j in 0..64u64 {

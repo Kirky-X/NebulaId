@@ -19,6 +19,13 @@
 
 ## [Unreleased]
 
+### deps（2026-10-14 自研依赖升级至最新 RC 波次）
+
+- **8 个自研 crate 全部升级**：confers `0.6.0-rc.6`→`0.6.0-rc.10`、oxcache `0.5.0-rc.4`→`0.5.0-rc.8`、dbnexus `0.6.0-rc.5`→`0.6.0-rc.9`、sdforge `0.5.0-rc.5`→`0.5.0-rc.8`、inklog `0.3.0-rc.5`→`0.3.0-rc.9`、garrison `0.9.0-rc.2`→`0.9.0-rc.3`、trait-kit `0.5.0-rc.6`→`0.5.0-rc.9`、limiteron `0.3.0-rc.5`→`0.3.0-rc.7`。
+- **utoipa `5.5`→`6.0` 对齐**：sdforge rc.8 内部升级 utoipa 6.0，本 crate 直接依赖同步升级消除双版本类型冲突。
+- **自动收益**：confers YAML 后端迁移 serde-saphyr（消除 RUSTSEC-2024-0449 根源）、strict_booleans 泛型值解析修复；inklog 脱敏引擎缺陷修复（IPv6 压缩形式脱敏、api_key 单标记幂等、目录模式错误明细展开）；sdforge 删除 StructuredLogger 栈收敛 inklog.LoggerManager 公共面（本仓零使用）。
+- **验证**：`cargo check --all-features` 零错误；`cargo test --lib` 1662 通过 / 0 失败。
+
 ### feat（add-uuid-v5-derive：RFC 9562 v5 确定性派生）
 
 - **新增 `uuid-v5` 零 DB 叶子特性**（default 开启）：`derive_uuid_v5(namespace, name)` 与 `derive_uuid_v5_batch(pairs)` 两个纯函数（无状态 / 无时钟 / 无 IO），随特性门控；SDK 面 `IdGenerator::derive_uuid_v5` 为同步薄包装（`sdk` 特性）。

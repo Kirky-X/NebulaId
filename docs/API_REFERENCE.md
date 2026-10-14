@@ -1595,7 +1595,7 @@ GET /health/sdforge
 
 sdforge 集成健康检查。该端点通过
 `#[forge]` 宏注册（见 `src/server/sdforge_adapter.rs::sdforge_health`），
-并经 `sdforge` 0.5.0-rc.5 的 inventory 路由合并器对外暴露。它返回
+并经 `sdforge` 0.5.0-rc.8 的 inventory 路由合并器对外暴露。它返回
 Nebula ID crate 的版本号，调用方可据此确认该路由由
 正在运行的二进制提供服务。
 

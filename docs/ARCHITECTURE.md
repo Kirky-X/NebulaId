@@ -114,14 +114,14 @@ graph LR
 
 | 库 | 版本 | 角色 | 使用方式 |
 |----|------|------|----------|
-| `confers` | 0.6.0-rc.5 | 配置管理 | 提供 `ConfigProvider` trait、环境变量展开与 watch |
-| `oxcache` | 0.5.0-rc.4 | 多级缓存 | 提供 `Cache` 抽象（内存 + Redis） |
-| `dbnexus` | 0.6.0-rc.5 | 数据库抽象 | 提供 PostgreSQL 连接池与事务管理 |
-| `sdforge` | 0.5.0-rc.5 | 服务框架 | 提供 HTTP / gRPC / Web（OpenAPI）装配宏，非服务发现 |
-| `inklog` | 0.3.0-rc.5 | 日志 | 结构化日志与 fast-masking 脱敏 |
-| `garrison` | 0.9.0-rc.1 | 认证框架 | API key 验证（`garrison-auth` 门控） |
-| `trait-kit` | 0.5.0-rc.6 | Kit 接口中心 | AsyncKit 模块化装配（仅 `sdk` 门控拉入） |
-| `limiteron` | 0.3.0-rc.4 | 限流 | 提供 core 限流原语（TokenBucket / ConcurrencyLimiter） |
+| `confers` | 0.6.0-rc.10 | 配置管理 | 提供 `ConfigProvider` trait、环境变量展开与 watch |
+| `oxcache` | 0.5.0-rc.8 | 多级缓存 | 提供 `Cache` 抽象（内存 + Redis） |
+| `dbnexus` | 0.6.0-rc.9 | 数据库抽象 | 提供 PostgreSQL 连接池与事务管理 |
+| `sdforge` | 0.5.0-rc.8 | 服务框架 | 提供 HTTP / gRPC / Web（OpenAPI）装配宏，非服务发现 |
+| `inklog` | 0.3.0-rc.9 | 日志 | 结构化日志与 fast-masking 脱敏 |
+| `garrison` | 0.9.0-rc.3 | 认证框架 | API key 验证（`garrison-auth` 门控） |
+| `trait-kit` | 0.5.0-rc.9 | Kit 接口中心 | AsyncKit 模块化装配（仅 `sdk` 门控拉入） |
+| `limiteron` | 0.3.0-rc.7 | 限流 | 提供 core 限流原语（TokenBucket / ConcurrencyLimiter） |
 | `etcd-client` | 0.20 | 第三方 etcd 客户端 | 分布式协调（`etcd` 门控） |
 
 **依赖特性化原则（规则 28）：**

@@ -3,37 +3,8 @@
 
 #![cfg(test)]
 
-//! # 剩余功能模块端到端测试（remaining e2e tests）
-//!
-//! 本文件覆盖 `temp/功能场景穷举分析.md` 中尚未被其他 e2e 测试文件覆盖的剩余项：
-//!
-//! - **第 3.1 节 ParseRequest 验证**：`id` 无长度限制、`workspace` 1-64 边界、
-//!   `algorithm` 0-32 边界
-//! - **第 2.6 节 密钥轮换宽限期**：`ApiHandlers::with_key_rotation_grace_period`
-//!   在 `[1, 30天]` 范围内生效、低于下限 clamp 到 1、高于上限 clamp 到 30 天
-//! - **第 3.1 节 workspace 权限校验**：`verify_user_workspace` 匹配/不匹配/禁用认证
-//!   - 注：`verify_user_workspace` 是 `src/server/router.rs` 内的私有 `async fn`，
-//!     无法在外部 e2e 测试中直接调用。该函数已在 `router.rs` 内的 `#[cfg(test)]
-//!     mod tests` 中覆盖（见 `test_verify_user_workspace_without_repository_*`），
-//!     本文件不再重复，仅以注释形式记录跳过原因
-//! - **第 2.4 节 仓储 CRUD**：mock 实现 `ApiKeyRepository` trait，验证
-//!   create → get → list → revoke 完整链路
-//! - **第 2.6 节 告警通知**：`AlertManager::add_rule` / `remove_rule` /
-//!   `update_config` / `get_alerts` 等公共接口
-//!
-//! ## 与现有单元测试的区别
-//!
-//! - ParseRequest 单元测试（`models.rs::mod tests`）覆盖单字段边界；
-//!   本文件组合验证 `id` + `workspace` + `algorithm` 的边界语义
-//! - ApiKeyRepository 单元测试（`repository.rs`）依赖真实 SeaORM mock；
-//!   本文件用纯内存 mock 验证 trait 契约 + 业务编排
-//! - AlertManager 单元测试（`core.rs::mod tests`）覆盖单方法；
-//!   本文件覆盖 add → update → query → remove 完整生命周期
-//!
-//! ## 并行安全
-//!
-//! 所有 mock 实例独立，无全局状态共享；AlertManager 测试用独立 `GlobalMetrics`
-//! 实例和独立 broadcast channel。
+//! 剩余功能模块端到端测试：ParseRequest 边界、密钥轮换宽限期 clamp、仓储 CRUD、
+//! AlertManager 生命周期；workspace 权限校验因函数私有跳过（router.rs 单元测试已覆盖）。
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -59,16 +30,7 @@ use crate::server::models::ParseRequest;
 // 1. ParseRequest 验证
 // =============================================================================
 
-/// ParseRequest.workspace 长度边界 1-64。
-///
-/// 验证 min=1 / max=64 边界语义：
-/// - 0 字符 → Err
-/// - 1 字符 → Ok
-/// - 64 字符 → Ok
-/// - 65 字符 → Err
-///
-/// 与 `models.rs::test_parse_request_validation_rejects_empty_workspace` 区别：
-/// 单元测试只验证 0 字符拒绝，本测试完整覆盖 min/max 双侧边界。
+/// ParseRequest.workspace 长度边界 1-64：0 → Err，1 → Ok，64 → Ok，65 → Err。
 #[test]
 fn e2e_parse_request_validates_workspace_length() {
     // 长度 0 → 拒绝（低于 min=1）
@@ -100,15 +62,7 @@ fn e2e_parse_request_validates_workspace_length() {
     );
 }
 
-/// ParseRequest.algorithm 长度边界 0-32。
-///
-/// 验证 min=0 / max=32 边界语义：
-/// - 0 字符 → Ok（serde_default + min=0）
-/// - 32 字符 → Ok
-/// - 33 字符 → Err
-///
-/// 与 `models.rs::test_parse_request_validation_accepts_empty_algorithm` 区别：
-/// 单元测试只验证 0 字符通过，本测试完整覆盖 min/max 双侧边界。
+/// ParseRequest.algorithm 长度边界 0-32：0/32 → Ok，33 → Err（0 为 serde_default）。
 #[test]
 fn e2e_parse_request_validates_algorithm_length() {
     // 长度 0 → 通过（min=0，serde_default）
@@ -132,11 +86,7 @@ fn e2e_parse_request_validates_algorithm_length() {
     );
 }
 
-/// ParseRequest.id 无长度限制。
-///
-/// 验证 id 字段无 `#[validate(...)]` 约束：空字符串、超长字符串均通过校验。
-/// 这是 ParseRequest 与 GenerateRequest 的关键区别 —— id 是被解析的输入，
-/// 长度由调用方决定，校验在解析阶段进行而非模型层。
+/// ParseRequest.id 无长度约束：空串与超长（10KB）均通过校验。
 #[test]
 fn e2e_parse_request_empty_id_accepted() {
     // 空 id → 通过（id 无长度约束）
@@ -191,14 +141,8 @@ fn make_parse_request_with_id(id: &str) -> ParseRequest {
 // =============================================================================
 // 2. 密钥轮换宽限期（ApiHandlers::with_key_rotation_grace_period）
 // =============================================================================
-//
-// `ApiHandlers::key_rotation_grace_period_seconds` 字段为 `pub(super)`，
-// 无法在 `handlers` 模块外直接读取。本组测试通过 `handlers.rotate_api_key()`
-// 触发 `repo.rotate_api_key(key_id, grace_period_seconds)` 调用，用 mock repo
-// 捕获传入的 `grace_period_seconds` 参数，间接验证 clamp 行为。
-//
-// MIN：0 = 宽限期关闭（为默认值，合法配置，不再 clamp 到 1 秒）
-// MAX_GRACE_PERIOD_SECONDS = 30 * 24 * 60 * 60 = 2_592_000
+// 宽限期字段为 pub(super)，测试经 rotate_api_key → repo 捕获参数间接验证 clamp。
+// MIN=0（关闭宽限期，默认合法）、MAX=30 天 = 2_592_000 秒。
 
 /// grace_period 在 [0, 30天] 范围内时，原值传入 repo。
 ///
@@ -221,11 +165,7 @@ async fn e2e_key_rotation_grace_period_valid_range() {
     );
 }
 
-/// grace_period = 0 表示"关闭宽限期"，必须原值透传。
-///
-/// 曾经的实现把 0 clamp 到 1 秒，理由是"轮换瞬间拒掉进行中的
-/// 请求"；但 之后宽限期才真正生效，1 秒窗口意味着轮换后仍写入
-/// `prev_secret_hash` 并放行旧凭证 —— 与"默认关闭"的决策相矛盾，故下限取消。
+/// grace_period = 0 表示"关闭宽限期"，必须原值透传（不得抬高为非零窗口）。
 #[tokio::test]
 async fn e2e_key_rotation_grace_period_zero_disables_grace() {
     let mock_repo = Arc::new(RecordingApiKeyRepo::new());
@@ -267,11 +207,8 @@ async fn e2e_key_rotation_grace_period_above_maximum_clamped() {
 // 辅助：构造挂载了 mock repo + 指定 grace_period 的 ApiHandlers
 // -----------------------------------------------------------------------------
 
-/// 构造 ApiHandlers：
-/// - 使用 `MockIdGenerator` 提供 ID 生成（本测试不触发 generate，仅占位）
-/// - 使用最小化 `MockConfigService` 满足构造签名
-/// - 注入 `RecordingApiKeyRepo` 作为 `api_key_repo`
-/// - 通过 `with_key_rotation_grace_period` 设置 grace period
+/// 构造 ApiHandlers：MockIdGenerator 占位 + MinimalConfigService，
+/// 注入 RecordingApiKeyRepo 并设置 grace period。
 fn build_handlers_with_repo_and_grace(
     repo: Arc<RecordingApiKeyRepo>,
     grace_seconds: u64,
@@ -291,42 +228,16 @@ fn build_handlers_with_repo_and_grace(
 // 3. workspace 权限校验（verify_user_workspace）—— 跳过
 // =============================================================================
 //
-// 跳过原因：`verify_user_workspace` 定义在 `src/server/router.rs:318` 为
-// `async fn`（模块私有，非 `pub`），无法在 `src/core/tests/` 外部 e2e 测试中
-// 直接调用。该函数已在 `router.rs` 内 `#[cfg(test)] mod tests` 中覆盖：
-//
-// - `test_verify_user_workspace_without_repository_returns_internal_error` ——
-//   认证禁用时 key_workspace_id=None，但仍先走 workspace_repository 查询，
-//   repository 缺失 → 500
-// - `test_verify_user_workspace_with_matching_key_returns_error_from_repo` ——
-//   repository 缺失场景下的 500
-//
-// 任务原文要求的三个子场景（匹配返回 Ok / 不匹配返回 403 / 禁用认证允许）
-// 在 `verify_workspace_id_match`（router.rs:341，私有）中实现，行为如下：
-//
-// ```rust,ignore
-// fn verify_workspace_id_match(workspace_uuid, key_workspace_id, locale) {
-//     if key_workspace_id.is_none() { return Ok(()); }  // 禁用认证 → 允许
-//     if Some(workspace_uuid) != *key_workspace_id {
-//         return Err(workspace_mismatch_response(locale));  // 403
-//     }
-//     Ok(())  // 匹配 → Ok
-// }
-// ```
-//
-// 这三个分支在 router.rs 内部测试中已通过 `verify_workspace_id_match` 的
-// 直接调用覆盖。本 e2e 测试文件无法在不修改源码可见性的前提下重复验证，
-// 故跳过。如需在外部 e2e 覆盖，需将 `verify_user_workspace` 提升为
-// `pub(crate)` 或 `pub`。
+// 跳过原因：`verify_user_workspace` / `verify_workspace_id_match` 定义在
+// `src/server/router.rs`，为模块私有 `async fn`，外部 e2e 测试无法直接调用。
+// 匹配 Ok / 不匹配 403 / 禁用认证允许三分支已由 router.rs 内 `#[cfg(test)]`
+// 单元测试直接覆盖，故本文件不再重复。
 
 // =============================================================================
 // 4. 仓储 CRUD（ApiKeyRepository trait 内存 mock）
 // =============================================================================
 
-/// create_api_key 后可通过 get_api_key_by_id 查询到。
-///
-/// 验证 trait 契约：create 返回的 `ApiKeyWithSecret.key_id` 可作为
-/// `get_api_key_by_id` 的入参，且返回的 `ApiKeyInfo` 与 create 时写入的字段一致。
+/// create_api_key 后可通过 get_api_key_by_id 查询到，字段与写入一致。
 #[tokio::test]
 async fn e2e_repository_crud_create_and_get_api_key() {
     let repo = CrudApiKeyRepo::new();
@@ -352,7 +263,6 @@ async fn e2e_repository_crud_create_and_get_api_key() {
     assert!(created.key.enabled);
     assert!(!created.key_secret.is_empty());
 
-    // 通过 key_id 查询
     let fetched = repo
         .get_api_key_by_id(&created.key.key_id)
         .await
@@ -364,10 +274,7 @@ async fn e2e_repository_crud_create_and_get_api_key() {
     assert_eq!(fetched.role, ApiKeyRole::User);
 }
 
-/// list_api_keys 返回指定 workspace 下的所有 key。
-///
-/// 验证 trait 契约：create 多个 key 后，list 按 workspace_id 过滤返回；
-/// limit/offset 行为符合预期。
+/// create 多个 key 后 list 按 workspace_id 过滤，limit/offset 行为符合预期。
 #[tokio::test]
 async fn e2e_repository_crud_list_api_keys() {
     let repo = CrudApiKeyRepo::new();
@@ -439,9 +346,7 @@ async fn e2e_repository_crud_list_api_keys() {
     assert_eq!(other.len(), 1, "other_ws 下应有 1 个 key");
 }
 
-/// revoke_api_key 后不可通过 get_api_key_by_id 查询到。
-///
-/// 验证 trait 契约：revoke 后再 get 返回 None；revoke 不存在的 id 返回 NotFound。
+/// revoke 后 get 返回 None；revoke 不存在的 id 返回 NotFound。
 #[tokio::test]
 async fn e2e_repository_crud_revoke_api_key() {
     let repo = CrudApiKeyRepo::new();
@@ -468,7 +373,6 @@ async fn e2e_repository_crud_revoke_api_key() {
         .expect("E2E: get before revoke 必须成功");
     assert!(before.is_some(), "revoke 前必须能查到 key");
 
-    // revoke
     repo.revoke_api_key(created.key.id)
         .await
         .expect("E2E: revoke_api_key 必须成功");
@@ -495,12 +399,8 @@ async fn e2e_repository_crud_revoke_api_key() {
 // 内存版 ApiKeyRepository（CRUD 测试用）
 // -----------------------------------------------------------------------------
 
-/// 内存版 `ApiKeyRepository`，用 `Mutex<HashMap>` 存储 key。
-///
-/// 与 `auth_handlers_e2e_tests.rs::MockApiKeyRepo` 区别：
-/// - 那个聚焦 `validate_api_key`（密钥哈希 + 角色匹配）
-/// - 本 mock 聚焦 CRUD 完整链路（create / get / list / revoke），
-///   不实现 validate / rotate 等非 CRUD 方法（返回默认 Ok/None）
+/// 内存版 `ApiKeyRepository`（`Mutex<HashMap>` 存储），聚焦 CRUD 完整链路；
+/// 与 auth_handlers_e2e_tests.rs::MockApiKeyRepo（聚焦 validate_api_key）互补。
 struct CrudApiKeyRepo {
     keys: Mutex<HashMap<Uuid, ApiKeyInfo>>,
     /// key_id → id 的索引，便于 `get_api_key_by_id` 查询
@@ -650,8 +550,7 @@ impl ApiKeyRepository for CrudApiKeyRepo {
     }
 
     async fn revoke_api_key(&self, id: Uuid) -> Result<()> {
-        // 与 SeaOrmRepository::revoke_api_key 行为对齐：删除 key（标记 enabled=false 在
-        // 真实仓库中是软删除，本内存 mock 直接硬删除以简化测试断言）
+        // 对齐 SeaOrmRepository::revoke_api_key：真实仓库软删除，本 mock 硬删除以简化断言。
         self.delete_api_key(id).await
     }
 
@@ -704,10 +603,7 @@ impl ApiKeyRepository for CrudApiKeyRepo {
 // 录制式 ApiKeyRepository（密钥轮换宽限期测试用）
 // -----------------------------------------------------------------------------
 
-/// 录制 `rotate_api_key` 调用时传入的 `grace_period_seconds` 参数。
-///
-/// 与 `CrudApiKeyRepo` 区别：本 mock 只关心 rotate 调用的参数捕获，
-/// 其他方法返回最小化默认值。
+/// 录制 rotate_api_key 传入的 `grace_period_seconds`；其他方法返回最小默认值。
 struct RecordingApiKeyRepo {
     captured_grace: Mutex<Option<u64>>,
 }
@@ -801,7 +697,6 @@ impl ApiKeyRepository for RecordingApiKeyRepo {
         key_id: &str,
         grace_period_seconds: u64,
     ) -> Result<ApiKeyWithSecret> {
-        // 捕获 grace_period_seconds 参数
         *self.captured_grace.lock().unwrap() = Some(grace_period_seconds);
 
         Ok(ApiKeyWithSecret {
@@ -831,9 +726,7 @@ impl ApiKeyRepository for RecordingApiKeyRepo {
 // 最小化 ConfigManagementService mock（ApiHandlers 构造用）
 // -----------------------------------------------------------------------------
 
-/// 实现 `ConfigManagementService` trait 的最小化 mock —— 所有方法返回默认值。
-/// 仅用于满足 `ApiHandlers::new` / `with_api_key_repository` 构造签名，
-/// 本测试文件不触发 config 相关方法。
+/// `ConfigManagementService` 最小 mock：所有方法返回默认值，仅满足构造签名。
 struct MinimalConfigService;
 
 /// 构造 `AlgorithmConfigInfo`（该 struct 未实现 `Default`，需手动填充字段）。
@@ -1105,11 +998,7 @@ impl crate::server::config::management::ConfigManagementService for MinimalConfi
 // 5. 告警通知（AlertManager）
 // =============================================================================
 
-/// AlertManager::add_rule / remove_rule 完整生命周期。
-///
-/// 验证：
-/// - add_rule 后，rule 出现在 config.rules 中（通过 get_state 能查到对应状态）
-/// - remove_rule 后，rule 从 config 中移除（get_state 返回 None）
+/// AlertManager::add_rule / remove_rule：加规则后 get_state 可查，移除后返回 None。
 #[tokio::test]
 async fn e2e_alert_manager_add_and_remove_rule() {
     let (manager, _rx) = build_alert_manager();
@@ -1138,11 +1027,7 @@ async fn e2e_alert_manager_add_and_remove_rule() {
     );
 }
 
-/// AlertManager::update_config 替换整个配置。
-///
-/// 验证：
-/// - update_config 后，eval_interval 来自新 config
-/// - 旧 config 中的 rule 状态被新 config 的 rule 集合替换
+/// update_config 替换整个配置；新 rule 需经 add_rule 才会创建状态（实际行为）。
 #[tokio::test]
 async fn e2e_alert_manager_update_config() {
     let (mut manager, _rx) = build_alert_manager();
@@ -1176,11 +1061,8 @@ async fn e2e_alert_manager_update_config() {
     };
     manager.update_config(new_config);
 
-    // update_config 不清理 states（只是替换 config），但 new_rule 必须有对应状态
-    // （add_rule 会创建 state，但 update_config 是直接替换 config，
-    //  不会自动为新 rule 创建 state —— 这是 AlertManager 的实际行为）
-    // 这里验证 config 已被替换：通过 add_rule 添加 new_rule 后状态会存在
-    // 但更直接的验证：update_config 后再次调用 add_rule 添加同名 rule 会创建状态
+    // update_config 仅替换 config、不自动为新 rule 建 state（实际行为）；
+    // 这里经 add_rule 验证替换后的 new_rule 可创建状态。
     manager.add_rule(AlertRule {
         name: "new_rule".to_string(),
         expression: "id_generation_qps > 1000 100".to_string(),
@@ -1198,16 +1080,11 @@ async fn e2e_alert_manager_update_config() {
     );
 }
 
-/// AlertManager::get_alerts / get_alert_count 查询告警历史。
-///
-/// 验证：
-/// - 初始状态无告警历史（get_alerts 返回空，get_alert_count 返回 0）
-/// - clear_alert_history 后历史被清空
+/// AlertManager::get_alerts / get_alert_count：初始为空，clear_alert_history 清空。
 #[tokio::test]
 async fn e2e_alert_manager_query_alerts() {
     let (manager, _rx) = build_alert_manager();
 
-    // 初始状态：无告警历史
     let alerts = manager.get_alerts();
     assert!(
         alerts.is_empty(),
@@ -1237,9 +1114,7 @@ async fn e2e_alert_manager_query_alerts() {
 // 辅助：构造 AlertManager
 // -----------------------------------------------------------------------------
 
-/// 构造一个挂载了 Log channel + 单条初始 rule 的 AlertManager。
-///
-/// 返回 `(manager, receiver)` —— receiver 必须保留以避免 broadcast 通道关闭。
+/// 构造带 Log channel + 初始 rule 的 AlertManager（receiver 须保留，防 broadcast 通道关闭）。
 fn build_alert_manager() -> (
     AlertManager,
     tokio::sync::broadcast::Receiver<crate::core::monitoring::Alert>,

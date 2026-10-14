@@ -1,41 +1,9 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! # 服务层端到端测试（server layer e2e tests）
-//!
-//! 本文件覆盖 `temp/功能场景穷举分析.md` 第 3 节「服务层」的端到端场景，
-//! 跨越 `src/server/*` 多个模块组合验证真实 HTTP 流量下的协同行为：
-//!
-//! - **API 版本中间件**（`api_version.rs`）：默认 v1、v2 拒绝、大小写不敏感、
-//!   响应头回写
-//! - **请求体大小限制**（`size_limit.rs`）：1MB 边界、超限 413
-//! - **CORS 环境感知**（`config/cors.rs`）：生产缺 ALLOWED_ORIGINS → 空
-//!   CorsLayer、开发缺配 → localhost 默认、显式配置生效
-//! - **审计日志**（`audit/logger.rs` + `audit/middleware.rs`）：内存记录器
-//!   事件流转、文件持久化、路径遍历防护、IP 脱敏、事件 ID 单调递增、
-//!   审计中间件 end-to-end HTTP 流
-//! - **限流**（`rate_limit/limiter.rs` + `rate_limit/middleware.rs`）：Token
-//!   Bucket 放行/拒绝、按 key 隔离、限流中间件 429 响应
-//! - **Anonymous 拦截**（`router.rs::anonymous_block_middleware`）：禁用
-//!   认证场景下 Anonymous 角色被拒绝、User/Admin 放行、扩展缺失 fail-closed
-//!
-//! ## 与现有单元测试的区别
-//!
-//! 现有单元测试聚焦「函数孤立行为」（如 `ApiVersion::from_str` 解析、
-//! `AuditLogger::log` 单次调用、`RateLimiter::new` 构造）。本文件聚焦
-//! 「跨模块端到端协同」：
-//!
-//! - API 版本中间件用真实 axum Router + oneshot 验证 HTTP 请求/响应头
-//! - 审计中间件用真实 `ApiKeyAuth`（禁用模式）+ `RateLimiter` 组合验证
-//!   status_code → AuditResult 映射
-//! - 限流中间件用真实 axum Router 验证 X-RateLimit-* 响应头
-//! - Anonymous 拦截用 layer 顺序组合（outer auth → inner block）验证
-//!   fail-closed 语义
-//!
-//! ## 并行安全
-//!
-//! 所有测试用 `tempfile::tempdir()` 隔离文件 I/O；CORS 测试用
-//! `std::env::set_var` 时通过 `E2E_ENV_LOCK` 串行化避免环境变量竞争。
+//! 服务层端到端测试：API 版本中间件、请求体大小限制、CORS 环境感知、审计日志
+//! （记录/持久化/脱敏/中间件）、限流（Token Bucket/429/热更新/per-IP）、Anonymous 拦截。
+//! 用真实 axum Router + oneshot 验证跨模块协同；环境变量测试用 E2E_ENV_LOCK 串行化。
 use std::sync::Arc;
 
 use axum::{
@@ -72,17 +40,15 @@ static E2E_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 // 工具函数
 // ============================================================================
 
-/// 构造一个最小的 axum Router 并附加 `api_version_middleware` 作为
-/// 全局 layer，handler 返回 200 OK。
+/// 构造附 `api_version_middleware` 的最小 Router，handler 返回 200 OK。
 fn build_api_version_router() -> Router {
     Router::new()
         .route("/ping", get(|| async { "pong" }))
         .layer(from_fn(api_version_middleware))
 }
 
-/// 构造一个匿名处理器 + RequestBodyTooLarge 错误映射的 Router，挂上
-/// size_limit middleware。处理器必须实际读取 body 才能触发
-/// RequestBodyLimitLayer 的限制——否则 body 不被消费时 limit 不会生效。
+/// 构造处理器实际读取 body 的 Router 并挂 size_limit middleware
+/// （body 不被消费时 limit 不生效，故用 /echo 回显字节数）。
 fn build_size_limit_router() -> Router {
     Router::new()
         .route(
@@ -99,10 +65,8 @@ fn make_body(size: usize) -> String {
     "x".repeat(size)
 }
 
-/// Wrapper：把 `&self` 实例方法适配为 axum `from_fn_with_state` 兼容的
-/// `async fn(State<S>, Request, Next) -> Response` 签名。
-/// 不能用闭包，因为 axum 0.8 的 `FromFnLayer` 要求 `F: FnMut + Clone + Send + 'static`
-/// 且签名严格匹配；闭包虽然也能匹配但 `State<S>` extractor 必须显式声明。
+/// 把 `&self` 实例方法适配为 `from_fn_with_state` 签名：axum 0.8 要求
+/// `F: FnMut + Clone + Send + 'static` 且签名严格匹配，`State<S>` extractor 须显式声明。
 async fn rate_limit_handler(
     axum::extract::State(state): axum::extract::State<RateLimitMiddleware>,
     req: Request<Body>,
@@ -125,7 +89,6 @@ async fn e2e_api_version_default_v1_when_header_missing() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
-    // 响应头应包含默认版本 v1
     let v = resp
         .headers()
         .get(&API_VERSION_HEADER)
@@ -284,8 +247,8 @@ async fn e2e_api_version_numeric_only_header_v2_rejected() {
 async fn e2e_api_version_unknown_header_falls_back_to_default_v1() {
     let router = build_api_version_router();
 
-    // ApiVersion::from_str("v3") 返回 Err，middleware 用 unwrap_or_default()
-    // 回退到 V1（默认）。这是设计契约（unknown 不应阻断请求）。
+    // FromStr("v3") 返回 Err，middleware 用 unwrap_or_default() 回退 V1；
+    // 这是设计契约：unknown 版本不应阻断请求。
     let resp = router
         .oneshot(
             Request::builder()
@@ -353,7 +316,6 @@ async fn e2e_size_limit_exact_1mb_boundary_accepted() {
         .await
         .unwrap();
 
-    // 边界值（恰好等于上限）应当被接受
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
@@ -543,7 +505,6 @@ async fn e2e_audit_logger_in_memory_records_id_generation_event() {
     assert_eq!(e.result, AuditResult::Success);
     assert_eq!(e.duration_ms, 42);
     assert_eq!(e.client_ip.as_deref(), Some("192.168.1.100"));
-    // details 中应包含 algorithm 与 generated_id
     let details = e.details.as_ref().expect("details must be set");
     assert_eq!(details["algorithm"], "snowflake");
     assert_eq!(details["generated_id"], "123456789");
@@ -806,7 +767,6 @@ async fn e2e_audit_logger_path_traversal_falls_back_to_memory() {
         )
         .await;
 
-    // 内存记录器仍可访问事件
     let events = logger.get_recent_events(10).await;
     assert_eq!(events.len(), 1);
     assert_eq!(logger.total_logged(), 1);
@@ -966,9 +926,7 @@ async fn e2e_audit_logger_core_trait_impl_adapts_core_event() {
         timestamp: Utc::now(),
     };
 
-    // 通过 trait 调用（server AuditLogger impl CoreAuditLoggerTrait）。
-    // 必须用完全限定语法 `CoreAuditLoggerTrait::log(&logger, ...)`，
-    // 因为 AuditLogger 还有一个同名 inherent 方法 `log(&self, server AuditEvent)`，
+    // 须用完全限定语法调用 trait 方法：AuditLogger 有同名 inherent `log`，
     // 直接 `logger.log(core_event)` 会匹配 inherent 方法导致类型不匹配。
     CoreAuditLoggerTrait::log(&logger, core_event).await;
 
@@ -1015,8 +973,7 @@ async fn e2e_rate_limiter_rejects_after_burst_exhausted() {
     // 第 4 次应当被拒绝（rate=1 rps 无法立即补充 token）
     let result = limiter.check_rate_limit("key-B", None, None).await;
     assert!(!result.allowed, "超过 burst 后应被拒绝");
-    // Retry-After 取快照 reset_secs：3 个缺口按 1 token/s 补满需 3 秒
-    //（旧实现硬编码 1 秒，对本场景过早放行）。
+    // Retry-After 取快照 reset_secs：3 个缺口按 1 token/s 需 3 秒。
     assert_eq!(result.retry_after, Some(3));
 }
 
@@ -1042,14 +999,11 @@ async fn e2e_rate_limiter_per_key_isolation() {
 
 // ============================================================================
 // create_router 必须真实挂载全局限流中间件
-//
-// 背景：RateLimitMiddleware 曾仅以 Extension 注入（从不执行），全局限流
-// 是死代码。本测试用真实 create_router（mock 依赖）验证：公开端点请求
-// 超过 burst 容量后返回 429 且带 Retry-After。
+// 回归：中间件曾仅以 Extension 注入从不执行；这里用真实 create_router 验证
+// 公开端点超过 burst 后返回 429 且带 Retry-After。
 // ============================================================================
 
-/// 仅用于路由装配的空实现仓储：本测试只打公开端点 `/health`（不经过
-/// 认证中间件），所有仓储方法返回空值即可。
+/// 仅用于路由装配的空仓储：测试只打公开端点 `/health`（不过认证），所有方法返回空值。
 #[derive(Clone)]
 struct NoopApiKeyRepo;
 
@@ -1151,8 +1105,7 @@ async fn e2e_create_router_applies_global_rate_limit() {
 
     let app = create_router(handlers, auth, rate_limiter, audit_logger).await;
 
-    // 同一 key 连发 5 个请求 —— burst 容量内的前 2 个必须
-    // 严格 200（原 `assert_ne!(429)` 会让 500/503 一并放行，属假绿），
+    // 同一 key 连发 5 次：前 2 个必须严格 200（旧断言 assert_ne!(429) 会让 500/503 假绿），
     // 第 3 个起必须 429 且带 Retry-After，证明限流层真实挂在 create_router 栈上。
     for i in 0..5 {
         let resp = app
@@ -1219,7 +1172,6 @@ async fn e2e_swagger_ui_mounted_with_own_spec_endpoint() {
 
     let app = create_router(handlers, auth, rate_limiter, audit_logger).await;
 
-    // UI 首页可达且为 HTML
     let resp = app
         .clone()
         .oneshot(
@@ -1240,8 +1192,7 @@ async fn e2e_swagger_ui_mounted_with_own_spec_endpoint() {
         "Swagger UI 首页必须为 HTML"
     );
 
-    // spec 仍是本仓自有端点（未与 sdforge 捆绑路由冲突——冲突会在
-    // Router::merge 时 panic，这里再钉一层运行期断言）
+    // spec 仍是本仓自有端点（路由冲突会在 Router::merge 时 panic，这里再钉运行期断言）
     let resp = app
         .oneshot(
             Request::builder()
@@ -1256,9 +1207,7 @@ async fn e2e_swagger_ui_mounted_with_own_spec_endpoint() {
 
 // ============================================================================
 // 限流热更新必须作用于实际流量
-//
-// 背景：POST /config/rate-limit 写入的 override 与运行中的 RateLimiter
-// 是两个独立实例，热更新曾不生效于流量。
+// 回归：override 写入与运行中的 RateLimiter 曾是独立实例；经 with_rate_limiter 接线后生效。
 // ============================================================================
 
 #[tokio::test]
@@ -1320,10 +1269,8 @@ async fn e2e_rate_limit_hot_update_takes_effect() {
 
 // ============================================================================
 // 真实 TCP 请求必须按对端 IP 限流
-//
-// 背景：main.rs 曾未注入 ConnectInfo<SocketAddr>，get_client_ip 恒 None，
-// 全站流量共享 "anonymous" 单桶 —— 单个客户端即可把 /health、/metrics
-// 一并打成 429。本测试复刻 main.rs 的 serve 装配并验证桶键路由。
+// 回归：未注入 ConnectInfo<SocketAddr> 时 get_client_ip 恒 None，全站共享 "anonymous" 单桶，
+// 单客户端即可把 /health、/metrics 打成 429；本测试复刻 main.rs serve 装配验证桶键。
 // ============================================================================
 
 #[tokio::test]
@@ -1484,8 +1431,7 @@ async fn e2e_rate_limit_middleware_returns_429_on_reject() {
 
 #[tokio::test]
 async fn e2e_rate_limit_burst_two_allows_two_then_rejects_with_headers() {
-    // rps=2、burst=2：同一 key 连发 4 次 → 前 2 次严格 200（remaining 递减），
-    // 第 3 次起严格 429 且带 x-ratelimit-remaining: 0 与 Retry-After。
+    // rps=2、burst=2：同 key 连发 4 次 → 前 2 次 200（remaining 递减），第 3 次起 429。
     let limiter = Arc::new(RateLimiter::new(2, 2));
 
     let remaining_of = |resp: &axum::response::Response| {
@@ -1556,7 +1502,6 @@ async fn e2e_anonymous_block_middleware_rejects_anonymous_role() {
         .await
         .unwrap();
 
-    // Anonymous 应被拒绝为 401
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -1629,7 +1574,7 @@ async fn e2e_anonymous_block_middleware_fail_closed_when_extension_missing() {
         .await
         .unwrap();
 
-    // NEW-：扩展缺失时 fail-closed 返回 401
+    // 扩展缺失时 fail-closed 返回 401
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -1639,10 +1584,8 @@ async fn e2e_anonymous_block_middleware_fail_closed_when_extension_missing() {
 
 #[tokio::test]
 async fn e2e_audit_middleware_records_success_event_for_2xx_response() {
-    // 直接内联审计中间件逻辑（与 audit/middleware.rs 行为一致），用真实
-    // AuditLogger 验证完整事件流：HTTP 请求 → 状态码映射 → 事件记录。
-    // 不依赖 ApiKeyAuth / RateLimiter（audit/middleware.rs 的现有单测已覆盖
-    // 那部分），这里聚焦「status_code → AuditResult 映射 + 事件落库」。
+    // 内联审计中间件逻辑（与 audit/middleware.rs 一致），用真实 AuditLogger 验证
+    // 「status_code → AuditResult 映射 + 事件落库」；不依赖 ApiKeyAuth / RateLimiter。
     let audit_logger = Arc::new(AuditLogger::new(100));
     let logger_clone = audit_logger.clone();
 
@@ -1912,12 +1855,11 @@ async fn e2e_audit_middleware_records_client_ip_and_user_agent() {
 }
 
 // ============================================================================
-// E2E-APIVER-COMPOSE-001: API 版本 + 限流 + 安全头组合（多层 middleware）
+// API 版本 + 限流组合（多层 middleware 互不干扰）
 // ============================================================================
 
 #[tokio::test]
 async fn e2e_composed_middlewares_version_plus_rate_limit_works_together() {
-    // 组合多层 middleware 验证它们不会互相干扰
     let limiter = Arc::new(RateLimiter::new(100, 10));
     let rl_middleware = RateLimitMiddleware::new(limiter);
 
@@ -1937,16 +1879,13 @@ async fn e2e_composed_middlewares_version_plus_rate_limit_works_together() {
         .await
         .unwrap();
 
-    // 两个 middleware 都应正常工作
     assert_eq!(resp.status(), StatusCode::OK);
-    // API 版本头被回写
     assert!(resp.headers().get(&API_VERSION_HEADER).is_some());
-    // 限流头被回写
     assert!(resp.headers().get("X-RateLimit-Limit").is_some());
 }
 
 // ============================================================================
-// E2E-APIVER-ERROR-001: ApiVersionErrorResponse 直接转换
+// ApiVersionErrorResponse 直接转换为 400
 // ============================================================================
 
 #[test]
@@ -1961,7 +1900,7 @@ fn e2e_api_version_error_response_converts_to_bad_request() {
 }
 
 // ============================================================================
-// E2E-APIVER-CONST-001: 公共常量一致性
+// 公共常量一致性
 // ============================================================================
 
 #[test]

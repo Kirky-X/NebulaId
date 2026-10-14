@@ -27,8 +27,7 @@ use crate::server::rate_limit::limiter::RateLimiter;
 // 安全头注入端到端组
 // ============================================================================
 
-/// 构造一个带 6 个安全头 `SetResponseHeaderLayer` 的最小 Router，
-/// 复刻 `src/server/router.rs` L190-L214 的安全头注入配置。
+/// 构造带 6 个安全头 `SetResponseHeaderLayer` 的最小 Router（复刻 router.rs 的安全头注入配置）。
 fn build_security_headers_router() -> Router {
     Router::new()
         .route("/test", get(|| async { "ok" }))
@@ -68,7 +67,6 @@ async fn e2e_security_headers_injected_on_response() {
         .expect("oneshot should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
-    // 验证所有 6 个安全头都存在
     assert!(
         response.headers().get("x-content-type-options").is_some(),
         "X-Content-Type-Options 应被注入"
@@ -176,8 +174,7 @@ async fn e2e_security_header_hsts_max_age() {
 // E2E-IP 组：IP 提取端到端
 // ============================================================================
 
-/// 构造一个带指定 peer SocketAddr / X-Forwarded-For / X-Real-IP 的 Request，
-/// 复刻 `src/server/middleware/utils.rs` 测试中的 make_request 模式。
+/// 构造带指定 peer / XFF / X-Real-IP 的 Request（复刻 middleware/utils.rs 测试的 make_request）。
 fn make_request(peer: Option<SocketAddr>, xff: Option<&str>, xri: Option<&str>) -> Request<Body> {
     let mut builder = Request::builder().uri("/").body(Body::empty()).unwrap();
     if let Some(addr) = peer {
@@ -250,7 +247,6 @@ async fn e2e_get_client_ip_ignores_xff_when_untrusted() {
 /// 无 peer SocketAddr 且非信任场景，返回 None。
 #[tokio::test]
 async fn e2e_get_client_ip_returns_none_when_no_headers() {
-    // 无 peer SocketAddr 扩展，且 trusted_proxies 为空 → 无法确定 IP
     let req = make_request(None, Some("1.2.3.4"), None);
     assert!(
         get_client_ip(&req, &[]).is_none(),
@@ -279,11 +275,8 @@ async fn e2e_rate_limiter_cleanup_removes_idle_buckets() {
 
     assert_eq!(limiter.bucket_count(), 0, "空闲桶应被后台清理任务移除");
 
-    // 「停机后清理任务停止」：abort 必须真正终止后台 task。
-    // tokio 语义：task 在 `.await` 点被取消后，JoinHandle::await 返回
-    // Err(Cancelled)。两种假绿场景都会在这里被抓住：
-    //   1) task 提前自行退出（loop 意外 return）→ await 返回 Ok；
-    //   2) task 阻塞在不响应取消的位置 → await 永不返回（测试超时）。
+    // 「停机后清理任务停止」：abort 后 task 须在 `.await` 点被取消，JoinHandle::await
+    // 返回 Err(Cancelled)；提前退出会返回 Ok、阻塞不响应取消会永不返回，两种假绿都会被抓住。
     handle.abort();
     let joined = handle.await;
     assert!(
@@ -313,7 +306,7 @@ async fn e2e_rate_limiter_cleanup_keeps_active_buckets() {
         "活跃桶应仍可查询 usage"
     );
 
-    // 「停机后清理任务停止」：与 001 同理，abort 必须使 task 真正终止。
+    // abort 后清理任务必须真正终止（同 001）。
     handle.abort();
     let joined = handle.await;
     assert!(
@@ -326,15 +319,11 @@ async fn e2e_rate_limiter_cleanup_keeps_active_buckets() {
 // E2E-DB 组：数据库连接端到端
 // ============================================================================
 
-/// run_migrations 在所有 execute 成功时返回 Ok（迁移创建表）。
-///
-/// run_migrations 发出 1 个 CREATE SCHEMA + 5 个 CREATE TABLE + 1 个宽限期列的
-/// 幂等 ALTER = 7 个 execute 语句。用 MockDatabase 模拟真实数据库全部成功执行，
-/// 验证迁移逻辑的完整性（所有语句都被发出且无错误）。
+/// run_migrations 在全部 execute 成功时返回 Ok（建 schema/表并补宽限期列）。
 #[tokio::test]
 async fn e2e_database_run_migrations_creates_tables() {
-    // 1 schema + 4 enum types（2 CREATE + 2 ADD VALUE）+ 2 upgrade ALTERs + 5 tables
-    //   + 1 constraint backfill + 1 grace-column ALTER = 14 个成功的 execute
+    // 14 个 execute：1 schema + 4 enum types（2 CREATE + 2 ADD VALUE）+ 2 upgrade ALTER
+    // + 5 tables + 1 constraint backfill + 1 grace-column ALTER，全部成功。
     let results: Vec<MockExecResult> = (0..14)
         .map(|_| MockExecResult {
             last_insert_id: 0,
@@ -353,11 +342,7 @@ async fn e2e_database_run_migrations_creates_tables() {
     );
 }
 
-/// 密码含 `${}` 环境变量占位符时拒绝连接。
-///
-/// 验证 `src/core/database/connection.rs` L60 的安全检查：未替换的
-/// `${VAR}` 占位符（CWE-1188 / 环境变量未展开）应返回
-/// ConfigurationError，防止用字面量 `${...}` 作为密码连接数据库。
+/// 密码含未展开的 `${VAR}` 占位符时应拒绝连接（CWE-1188，防字面量密码）。
 #[tokio::test]
 async fn e2e_database_password_with_env_var_rejected() {
     let config = DatabaseConfig {
@@ -391,11 +376,9 @@ async fn e2e_database_password_with_env_var_rejected() {
 // E2E-TLS 组：TLS 初始化端到端
 // ============================================================================
 
-/// 用 rcgen 生成自签证书 + 密钥的 PEM 临时文件，用于 TLS 初始化测试。
-/// 复刻 `src/server/config/tls.rs` 测试中的 generate_test_cert_files 模式。
+/// 生成 rcgen 自签证书与密钥 PEM 临时文件（复刻 tls.rs 测试的 generate_test_cert_files）。
 fn generate_test_cert_files() -> (NamedTempFile, NamedTempFile) {
-    // 安装 ring crypto provider（rustls 0.23 + rcgen 0.13 需要）
-    // install_default() 幂等，多次调用安全。
+    // 安装 ring crypto provider（rustls 0.23 + rcgen 0.13 需要；install_default 幂等）。
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
@@ -504,10 +487,7 @@ async fn e2e_tls_initialize_with_valid_cert_succeeds() {
 }
 
 // ============================================================================
-// DualListener 真实 TLS 握手（HTTP 端口）
-//
-// 背景：TlsManager.http_acceptor 曾只构造不消费，HTTP 恒明文。
-// DualListener 实现 axum::serve::Listener，使 HTTPS 真实生效。
+// DualListener 真实 TLS 握手（HTTP 端口）：实现 axum::serve::Listener 使 HTTPS 生效。
 // ============================================================================
 
 /// 构造信任 rcgen 自签证书的 tokio-rustls 客户端连接器（TLS e2e 共用）。
@@ -590,11 +570,7 @@ async fn e2e_dual_listener_serves_https_request_end_to_end() {
     server.abort();
 }
 
-/// 挂起的 TLS 握手不得冻结监听端口。
-///
-/// 旧实现在 accept 循环内串行 `await` 握手：客户端只要 TCP 建连后不发
-/// ClientHello，后续所有连接（含正常 TLS 客户端）都无法被受理 —— 未认证
-/// 远程 DoS。并发握手 + 超时修复后，正常连接必须立即可用。
+/// 挂起的 TLS 握手不得冻结监听端口（未认证远程 DoS 防护：并发握手 + 超时）。
 #[tokio::test]
 async fn e2e_dual_listener_slow_handshake_does_not_block_other_connections() {
     use crate::server::config::tls::DualListener;
@@ -631,8 +607,7 @@ async fn e2e_dual_listener_slow_handshake_does_not_block_other_connections() {
         .await
         .expect("stall tcp connect");
 
-    // 2) 正常 TLS 客户端必须在远小于握手超时的窗口内完成握手并获得响应。
-    //    串行握手实现下本请求会被 _stalled 阻塞直至超时。
+    // 2) 正常 TLS 客户端须在远小于握手超时的窗口内完成（串行握手会在此阻塞至超时）。
     let connector = build_test_rustls_connector(&cert_file);
     let result = tokio::time::timeout(Duration::from_secs(5), async {
         let tcp = tokio::net::TcpStream::connect(addr)
@@ -664,8 +639,7 @@ async fn e2e_dual_listener_slow_handshake_does_not_block_other_connections() {
     server.abort();
 }
 
-/// DualListener 必须把真实对端地址交给
-/// `get_client_ip`，否则生产 per-IP 限流/认证失败计数/审计退化为共享单桶。
+/// DualListener 须把真实对端地址交给 `get_client_ip`，否则 per-IP 限流/审计退化为共享单桶。
 #[tokio::test]
 async fn e2e_dual_listener_exposes_peer_addr_to_client_ip_extraction() {
     use crate::server::config::tls::{DualListener, PeerAddr};
@@ -711,8 +685,7 @@ async fn e2e_dual_listener_exposes_peer_addr_to_client_ip_extraction() {
     );
 }
 
-/// 未配置 TLS 时 DualListener 行为与纯
-/// TcpListener 一致（明文 HTTP 回归无差异）。
+/// 未配置 TLS 时 DualListener 行为与纯 TcpListener 一致（明文 HTTP 无差异）。
 #[tokio::test]
 async fn e2e_dual_listener_plain_serves_http_when_tls_absent() {
     use crate::server::config::tls::DualListener;

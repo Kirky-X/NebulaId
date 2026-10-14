@@ -14,18 +14,15 @@ mod tests {
             .await
             .expect("Failed to create cache");
 
-        // set - 需要使用 Vec<u8>
         let value1 = b"value1".to_vec();
         cache
             .set(&"key1".to_string(), &value1)
             .await
             .expect("Failed to set");
 
-        // get
         let value = cache.get(&"key1".to_string()).await.expect("Failed to get");
         assert_eq!(value, Some(value1));
 
-        // exists
         assert!(cache
             .exists(&"key1".to_string())
             .await
@@ -35,7 +32,6 @@ mod tests {
             .await
             .expect("Failed to check"));
 
-        // delete
         cache
             .delete(&"key1".to_string())
             .await
@@ -59,7 +55,7 @@ mod tests {
             .expect("Failed to get_or");
         assert_eq!(value, b"fallback");
 
-        // 再次获取应该从缓存
+        // 再次获取应命中缓存（fallback 永不完成）
         let value2: Vec<u8> = cache
             .get_or(&"key1".to_string(), || async {
                 std::future::pending().await
@@ -95,8 +91,7 @@ mod tests {
             .await
             .expect("Failed to create cache");
 
-        // oxcache 0.3.8 health_check returns OxCacheResult<()>; reaching here
-        // without panic means the cache is healthy.
+        // oxcache 0.3.8 的 health_check 返回 Ok 即健康；此处不 panic 即通过。
         cache.health_check().await.expect("Failed to health check");
     }
 
@@ -120,14 +115,12 @@ mod tests {
             name: "test".to_string(),
         };
 
-        // 序列化并存储
         let bytes = serde_json::to_vec(&test_data).expect("Failed to serialize");
         cache
             .set(&"data".to_string(), &bytes)
             .await
             .expect("Failed to set");
 
-        // 读取并反序列化
         let retrieved = cache.get(&"data".to_string()).await.expect("Failed to get");
         let retrieved_data: TestData =
             serde_json::from_slice(&retrieved.expect("None")).expect("Failed to deserialize");

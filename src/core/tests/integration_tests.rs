@@ -24,14 +24,12 @@ async fn test_full_id_generation_workflow() {
         prefix: None,
     };
 
-    // Generate single ID
     let id = algorithm
         .generate(&ctx)
         .await
         .expect("Failed to generate ID");
     assert!(id.as_u128() > 0);
 
-    // Generate batch
     let batch = algorithm
         .batch_generate(&ctx, 10)
         .await
@@ -52,8 +50,7 @@ async fn test_algorithm_health_check() {
         .expect("Failed to build algorithm");
 
     let health = algorithm.health_check();
-    // Health status could be Healthy, Degraded, or Unhealthy depending on initialization
-    // We just verify it can be retrieved without panicking
+    // 仅验证 health_check 可调用且不 panic，状态值不限
     let _ = health;
 }
 
@@ -104,7 +101,6 @@ async fn test_algorithm_metrics() {
         prefix: None,
     };
 
-    // Generate some IDs
     for _ in 0..10 {
         algorithm
             .generate(&ctx)
@@ -112,7 +108,6 @@ async fn test_algorithm_metrics() {
             .expect("Failed to generate ID");
     }
 
-    // Check metrics
     let metrics = algorithm.metrics();
     assert!(metrics.total_generated > 0);
 }

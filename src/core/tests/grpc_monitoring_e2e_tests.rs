@@ -3,17 +3,8 @@
 
 #![cfg(test)]
 
-//! gRPC 服务与监控模块端到端测试
-//!
-//! 覆盖《功能场景穷举分析》以下章节的端到端场景：
-//! - 第 3.5 节（gRPC 服务）：Generate/BatchGenerate/Parse/HealthCheck
-//! - 第 2.6 节（监控）：QPS 滑动窗口、告警评估、告警通知
-//! - 第 3.6 节（热重载）：配置文件变更检测与重载失败处理
-//!
-//! 测试策略：
-//! - gRPC 测试直接调用 NebulaIdService trait 方法（无需启动真实 tonic server）
-//! - 监控测试直接调用 DefaultEvaluator / AlertManager 公共 API
-//! - 热重载测试使用 tempfile 创建临时配置文件
+//! gRPC 服务与监控端到端测试：Generate/BatchGenerate/Parse/HealthCheck、QPS 滑动窗口、
+//! 告警评估/通知、热重载变更检测；直接调 trait/公共 API（流式除外，走真实传输）。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -44,8 +35,7 @@ use crate::server::proto::nebula::id::v1::{
 // 测试辅助：构造 GrpcServer
 // =============================================================================
 
-/// 构造一个连接到 MockIdGenerator + ConfigManager 的 GrpcServer。
-/// 复用 grpc.rs 内 create_test_grpc_server 的构造模式。
+/// 构造连接 MockIdGenerator + ConfigManager 的 GrpcServer（复用 grpc.rs 测试构造模式）。
 fn create_test_grpc_server() -> GrpcServer {
     let config = Config::default();
     let hot_config = Arc::new(HotReloadConfig::new(
@@ -275,7 +265,6 @@ async fn e2e_grpc_health_check_returns_serving() {
 
 #[test]
 fn e2e_qps_window_initial_zero() {
-    // 新建的 QpsWindow 初始 QPS 应为 0
     let window = QpsWindow::new(10);
     assert_eq!(window.get_qps(), 0, "初始 QPS 应为 0");
     assert_eq!(window.window_size(), 10);
@@ -283,10 +272,8 @@ fn e2e_qps_window_initial_zero() {
 
 #[test]
 fn e2e_qps_window_records_requests() {
-    // 记录请求后 QPS 应增加（不为 0）
     let window = QpsWindow::new(10);
-    // 记录 10 次请求：current=10, last=0
-    // qps = (10*7 + 0*3) / 10 = 7
+    // 记录 10 次：current=10, last=0 → qps=(10*7+0*3)/10=7
     for _ in 0..10 {
         window.record();
     }
@@ -311,9 +298,8 @@ async fn e2e_qps_window_weighted_average() {
     // 等待 1 秒让秒切换自然发生
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    // 新的一秒：记录 1 次请求，触发秒切换
-    // 秒切换后：last=10（之前的 current），current=1
-    // qps = (1*7 + 10*3) / 10 = 37/10 = 3
+    // 新秒记录 1 次触发切换：last=10（之前的 current），current=1
+    // qps = (1*7 + 10*3) / 10 = 3
     window.record();
     let qps_second = window.get_qps();
     assert_eq!(
@@ -321,8 +307,7 @@ async fn e2e_qps_window_weighted_average() {
         "第二秒：current=1, last=10 → (1*7 + 10*3)/10 = 3，验证 70/30 加权"
     );
 
-    // 验证加权平均公式：(current*7 + last*3) / 10
-    // 此时 current=1, last=10，加权平均 = 0.7 + 3.0 = 3.7 → 整数除法 = 3
+    // 加权平均 (current*7 + last*3)/10 = 0.7 + 3.0 = 3.7 → 整数除法 = 3
 }
 
 // =============================================================================
@@ -349,7 +334,6 @@ fn e2e_alert_evaluator_non_matching_expression_does_not_fire() {
     // 不匹配阈值的表达式不应触发告警
     let evaluator = DefaultEvaluator;
     let metrics = GlobalMetrics::new();
-    // total_errors = 0，id_generation_failed 不应触发
 
     let rule = AlertRule::new("gen_fail", "id_generation_failed", AlertSeverity::Critical);
     let (firing, value) = evaluator.evaluate(&rule, &metrics);
@@ -359,16 +343,8 @@ fn e2e_alert_evaluator_non_matching_expression_does_not_fire() {
 
 #[tokio::test]
 async fn e2e_alert_manager_records_state_transitions() {
-    // 验证 AlertManager 状态管理 API：
-    // 1. 初始状态：所有规则状态为 Pending，history 为空
-    // 2. add_rule 增加状态条目
-    // 3. remove_rule 移除状态条目
-    // 4. update_config 更新配置后仍可正常查询
-    //
-    // 注意：完整的 Pending→Firing→Resolved 状态转换需要调用私有的
-    // evaluate_rule 方法（在 core.rs 的 #[cfg(test)] mod tests 内
-    // 已有 test_evaluate_rule_fires_when_condition_met_and_for_duration_zero
-    // 等单元测试覆盖）。e2e 层仅验证公共 API 的状态管理行为。
+    // 公共 API 状态管理：初始 Pending/history 空 → add_rule → remove_rule → update_config。
+    // 完整 Pending→Firing→Resolved 转换依赖私有 evaluate_rule，由 core.rs 单元测试覆盖。
 
     let metrics = Arc::new(GlobalMetrics::new());
     let sender = Arc::new(AlertNotificationSender::new(vec![]));
@@ -423,7 +399,6 @@ async fn e2e_alert_manager_records_state_transitions() {
     };
     manager.update_config(new_config);
 
-    // 验证查询 API 正常工作
     assert_eq!(manager.get_alerts().len(), 0);
     assert_eq!(manager.get_firing_alerts().len(), 0);
     assert_eq!(
@@ -500,7 +475,6 @@ async fn e2e_hot_reload_config_reload_failure_handled() {
         config_path.to_str().unwrap().to_string(),
     );
 
-    // 验证初始配置
     assert_eq!(hot_config.get_config().app.name, "before-failure");
 
     // 写入 malformed TOML
@@ -542,9 +516,7 @@ mod grpc_auth {
     use sdforge::tonic::{Code, Status};
     use uuid::Uuid;
 
-    /// 测试固定 workspace UUID：key 绑定（`AuthenticatedKey.workspace_id`）与
-    /// 目录反查（`get_workspace` 返回的 `WorkspaceResponse.id`）共用，保证
-    /// 资源级授权的「自身 namespace」判定能对上。
+    /// 固定 workspace UUID：key 绑定与目录反查共用，保证「自身 namespace」判定能对上。
     const WS_AUTH: Uuid = uuid::Uuid::from_u128(0x5e1f_7ea7_0001);
 
     /// 固定凭证：grpc-key / grpc-secret → workspace ws-grpc + User 角色
@@ -632,9 +604,7 @@ mod grpc_auth {
         }
     }
 
-    /// 构造启用认证 + workspace 目录的 handlers：目录把任意名称解析到
-    /// `WS_AUTH`（资源级授权需要 namespace 反查 UUID 成功且与 key
-    /// 绑定一致，才能走通 generate 类接口的成功路径）。
+    /// 构造启用认证 + workspace 目录的 handlers（目录把任意名称解析到 WS_AUTH，走通授权成功路径）。
     fn workspace_aware_handlers() -> Arc<ApiHandlers> {
         let mut mock_config = MockConfigManagementService::new();
         mock_config.expect_get_workspace().returning(move |name| {
@@ -690,8 +660,7 @@ mod grpc_auth {
         req
     }
 
-    /// 在真实 tonic 传输上起一个启用认证的 gRPC server，返回监听地址与任务句柄。
-    /// 流式入口的 `Streaming<T>` 无法在测试侧凭空构造，只能走真实传输。
+    /// 在真实 tonic 传输上起启用认证的 gRPC server（`Streaming<T>` 只能由传输层构造）。
     async fn spawn_auth_server() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
         use sdforge::tonic::transport::Server;
         use v1::nebula_id_service_server::NebulaIdServiceServer;
@@ -747,13 +716,10 @@ mod grpc_auth {
 
     // ===== 失败判因（禁用/过期 vs 凭证无效）=====
 
-    /// 按 key 状态建模的仓储。
+    /// 按 key 状态建模的仓储：`validate_api_key` 复刻真实仓储语义（禁用/过期一律返回 None）。
     ///
-    /// `validate_api_key` 复刻真实仓储 `repository.rs:1018-1026` 的语义：
-    /// 禁用或已过期的 key 一律返回 `None`（不区分原因）。正因如此 gRPC 侧
-    /// 必须靠 `get_api_key_by_id` 回查 key 行才能判因 —— 本 mock 提供该回查
-    /// 数据，使「禁用/过期 → permission_denied」与「凭证无效 →
-    /// unauthenticated」两条路径可分别验证。
+    /// 因此 gRPC 侧须靠 `get_api_key_by_id` 回查判因，使「禁用/过期 → permission_denied」
+    /// 与「凭证无效 → unauthenticated」两条路径可分别验证。
     struct StatefulKeyRepo;
 
     /// 构造 key 行（`ApiKeyInfo = ApiKey`，字段见 `api_key_entity.rs`）
@@ -803,8 +769,7 @@ mod grpc_auth {
                 "live-key" => Ok(Some(key_row(key_id, true, None))),
                 "disabled-key" => Ok(Some(key_row(key_id, false, None))),
                 "expired-key" => Ok(Some(key_row(key_id, true, Some(yesterday())))),
-                // 有效期内的 key 但 secret 不符 —— 用于验证「凭证无效」不会被
-                // 误判为 permission_denied
+                // 有效期内但 secret 不符：验证「凭证无效」不会被误判为 permission_denied
                 "future-key" => Ok(Some(key_row(key_id, true, Some(tomorrow())))),
                 _ => Ok(None),
             }
@@ -960,8 +925,7 @@ mod grpc_auth {
 
     #[tokio::test]
     async fn wrong_secret_on_existing_valid_key_returns_unauthenticated() {
-        // key 行存在、enabled、未过期，但 secret 不符 → 判因必须落回
-        // unauthenticated（否则任何 secret 猜错都会变成 403）
+        // 行存在、启用、未过期但 secret 不符 → 判因必须落回 unauthenticated（否则误 403）
         let server = stateful_server();
         let err = NebulaIdService::generate(&server, generate_request_with("live-key", "nope"))
             .await
@@ -988,10 +952,8 @@ mod grpc_auth {
 
     #[tokio::test]
     async fn repeated_auth_failures_hit_resource_exhausted() {
-        // 同 peer 连续认证失败超阈值（5 分钟 10 次）后必须返回
-        // ResourceExhausted：失败桶与 HTTP 中间件同源（HTTP 对应 429），
-        // 每次拒绝都经 reject 入桶，下一次请求先查桶再解析凭证。
-        // 直连 trait 方法时 peer_ip 兜底 "unknown"，天然同一桶。
+        // 同 peer 连续失败超阈值（5 分钟 10 次）→ ResourceExhausted（HTTP 429 的 gRPC 对应）；
+        // 每次拒绝经 reject 入桶，直连 trait 时 peer_ip 兜底 "unknown" 天然同一桶。
         let server = auth_server(ApiKeyAuth::new(Arc::new(FixedKeyRepo), true));
         let bad_request = || {
             let mut req = Request::new(GrpcGenerateRequest {
@@ -1037,8 +999,7 @@ mod grpc_auth {
 
     #[tokio::test]
     async fn health_check_enforces_auth_and_passes_valid_key() {
-        // 清理 health_check 死绑定的回归：认证副作用与错误传播都不能丢，
-        // 且判因映射在 health_check 入口同样生效
+        // 回归：health_check 也须认证并传播判因（认证副作用与错误映射不可丢）
         let server = stateful_server();
         let no_creds = Request::new(HealthCheckRequest {
             service: String::new(),
@@ -1122,9 +1083,7 @@ mod grpc_auth {
         );
     }
 
-    /// 流式 RPC 认证：起真实 tonic server（认证启用），客户端无凭证调用
-    /// BatchGenerateStream —— 必须收到 Unauthenticated。
-    /// （`Streaming<T>` 无法在测试侧凭空构造，必须走真实传输。）
+    /// 流式 RPC 认证：真实传输上无凭证调 BatchGenerateStream 必须收到 Unauthenticated。
     #[tokio::test]
     async fn stream_rpc_is_intercepted_over_real_transport() {
         let (addr, jh) = spawn_auth_server().await;
@@ -1158,11 +1117,11 @@ mod grpc_auth {
         jh.abort();
     }
 
-    // ===== 第 3 轮：ApiKey 格式 / 禁用放行 / 5 RPC 全覆盖的证据缺口 =====
+    // ===== 补充覆盖：ApiKey 格式 / 禁用放行 / 5 RPC 全覆盖 =====
 
     #[tokio::test]
     async fn api_key_format_credentials_are_accepted() {
-        // gRPC 侧此前只走 Basic：ApiKey 分支一旦断裂只有 HTTP 侧能发现。
+        // 覆盖 gRPC 的 ApiKey 格式分支（只走 Basic 时断裂无法被发现）。
         let server = stateful_server();
         let resp = NebulaIdService::generate(&server, api_key_request("live-key", "grpc-secret"))
             .await
@@ -1172,8 +1131,7 @@ mod grpc_auth {
 
     #[tokio::test]
     async fn api_key_format_wrong_secret_returns_unauthenticated() {
-        // 格式正确不代表凭证正确：secret 不符必须仍落 unauthenticated，
-        // 不得因为走了另一条解析分支而变成 permission_denied 或直接放行
+        // 格式正确不代表凭证正确：secret 不符仍须 unauthenticated，不得误判或放行
         let server = stateful_server();
         let err = NebulaIdService::generate(&server, api_key_request("live-key", "nope"))
             .await
@@ -1188,9 +1146,7 @@ mod grpc_auth {
 
     #[tokio::test]
     async fn disabled_auth_passes_with_and_without_credentials() {
-        // `auth.enabled=false` 的放行必须与凭证内容无关，否则「禁用认证」
-        // 形同虚设（无效凭证反被拒）。同时不得注入真实角色 —— 对齐 HTTP 侧
-        // 降级为 Anonymous 的语义。断言只看行为（放行 + 不注入），不断日志。
+        // auth.enabled=false 的放行与凭证内容无关，且不注入真实角色（对齐 HTTP Anonymous 语义）。
         let server = auth_server(ApiKeyAuth::new(Arc::new(FixedKeyRepo), false));
 
         let anonymous = Request::new(GrpcGenerateRequest {
@@ -1219,10 +1175,9 @@ mod grpc_auth {
         assert!(!resp.into_inner().id.is_empty());
     }
 
-    /// 覆盖度：启用认证后 **全部 5 个 RPC 方法**（含双向流）缺
-    /// `authorization` metadata 时一律 `Code::Unauthenticated`。走真实传输而非
-    /// 直接调 trait —— 流式入口的 `Streaming<T>` 只能由传输层构造，只有这样才能
-    /// 把五个方法放进同一张参数化断言表，不给「某个入口漏调 authenticate」留死角。
+    /// 启用认证后全部 5 个 RPC（含双向流）缺 `authorization` 一律 `Code::Unauthenticated`。
+    ///
+    /// 走真实传输以便参数化覆盖五个入口，不给「某个入口漏调 authenticate」留死角。
     #[tokio::test]
     async fn every_rpc_method_rejects_missing_credentials() {
         let (addr, jh) = spawn_auth_server().await;
@@ -1348,8 +1303,7 @@ mod grpc_auth {
         assert_eq!(err.code(), Code::Unauthenticated);
     }
 
-    /// 判因回查失败时保守拒绝：`validate` miss 且 key 行读不到（DB 异常）
-    /// 不得放行，给 `Unauthenticated` 而非 `permission_denied`。
+    /// 判因回查失败（DB 异常）时保守拒绝：给 `Unauthenticated`，不得放行。
     #[tokio::test]
     async fn authenticate_db_lookup_failure_is_conservative() {
         use crate::server::handlers::mock_tests::MockApiKeyRepository;
@@ -1377,8 +1331,7 @@ mod grpc_auth {
         assert_eq!(err.message(), "invalid or unknown api key");
     }
 
-    /// 认证通过的流式调用走真实传输：首个流项必须产出有效 ID。
-    /// 覆盖 `batch_generate_stream` 的成功发送路径。
+    /// 认证通过的流式调用（真实传输）首个流项必须产出有效 ID。
     #[tokio::test]
     async fn authenticated_stream_yields_ids_over_real_transport() {
         let (addr, jh) = spawn_auth_server().await;
@@ -1414,9 +1367,8 @@ mod grpc_auth {
         jh.abort();
     }
 
-    /// 流式 batch 失败分支（后语义）：count=0 触发批大小校验错误，
-    /// 流以 `Err(Status::InvalidArgument)` 终止 —— 不再把错误串塞进
-    /// `algorithm` 字段伪装成正常项。
+    /// 流式 batch 的 count=0 校验错误：流以 `Err(Status::InvalidArgument)` 终止，
+    /// 不再把错误串塞进 `algorithm` 字段伪装正常项。
     #[tokio::test]
     async fn stream_batch_validation_error_terminates_stream_with_status() {
         let (addr, jh) = spawn_auth_server().await;
@@ -1624,8 +1576,7 @@ mod grpc_authz {
 
     #[tokio::test]
     async fn user_key_cross_tenant_namespace_is_permission_denied() {
-        // User key 请求他人 namespace → permission_denied（HTTP 403
-        // workspace_mismatch 同语义），generate 与 batch_generate 同一判定点。
+        // User key 请求他人 namespace → permission_denied（HTTP workspace_mismatch 同语义）。
         let server = authz_server();
         let err: Status =
             NebulaIdService::generate(&server, generate_request("user-a-key", "ws-b"))
@@ -1655,8 +1606,7 @@ mod grpc_authz {
 
     #[tokio::test]
     async fn admin_key_generate_is_permission_denied() {
-        // Admin key 调 generate 类接口 → permission_denied（与 HTTP
-        // verify_user_role 的 admin_cannot_perform 语义一致）。
+        // Admin key 调 generate → permission_denied（HTTP admin_cannot_perform 同语义）。
         let server = authz_server();
         let err: Status = NebulaIdService::generate(&server, generate_request("admin-key", "ws-a"))
             .await
@@ -1699,8 +1649,7 @@ mod grpc_authz {
         );
     }
 
-    /// 流式入口的逐项授权：跨租户 namespace 的首个流项以
-    /// `Err(Status::PermissionDenied)` 终止流（走真实传输）。
+    /// 流式入口逐项授权：跨租户 namespace 首个流项以 PermissionDenied 终止流（真实传输）。
     #[tokio::test]
     async fn stream_cross_tenant_item_terminates_stream_with_permission_denied() {
         let server_impl = authz_server();

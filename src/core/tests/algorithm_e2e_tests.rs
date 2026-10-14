@@ -1,18 +1,8 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! 核心算法层端到端测试
-//!
-//! 覆盖 `temp/功能场景穷举分析.md` 第 1 节中描述的跨模块协同场景：
-//! - Snowflake 通过 AlgorithmBuilder 构建并接入 Router 的完整生命周期
-//! - Snowflake 时钟回拨触发 health_check 不健康，并被 Router 通过 fallback chain 切换
-//! - DegradationManager 内建熔断状态机包裹真实算法的端到端熔断-恢复周期
-//! - DegradationManager 记录生成结果并决定降级状态
-//! - AlgorithmRouter 与真实 AuditLogger 协同记录生成事件
-//!
-//! 这些测试聚焦跨模块协同路径，避免与各模块的单元测试（snowflake.rs /
-//! circuit_breaker.rs / router.rs / degradation_tests.rs 内的 `#[cfg(test)] mod tests`）
-//! 重复。
+//! 核心算法层端到端测试：Builder 生命周期、时钟回拨 fallback、降级/熔断周期、
+//! Router+AuditLogger 协同等跨模块路径；与各模块单元测试不重复。
 
 use crate::core::algorithm::degradation_manager::DegradationState;
 use crate::core::algorithm::DynAuditLogger;
@@ -74,9 +64,7 @@ fn make_ctx(biz_tag: &str) -> GenerateContext {
 // 测试辅助：本地 MockIdAlgorithm
 // =============================================================================
 //
-// 注意：degradation_tests.rs 内已有 MockIdAlgorithm，但它对模块私有（`struct`
-// 无 `pub`）。为避免修改 degradation_tests.rs（规则 6：外科手术式修改），这里
-// 定义本地版本。两个文件保持实现一致（async_trait impl IdAlgorithm）。
+// degradation_tests.rs 的 MockIdAlgorithm 为模块私有，此处定义本地副本，实现保持一致。
 
 struct MockIdAlgorithm {
     alg_type: AlgorithmType,
@@ -158,20 +146,15 @@ impl IdAlgorithm for MockIdAlgorithm {
 // Snowflake 端到端
 // =============================================================================
 
-/// Snowflake 通过 AlgorithmBuilder 构建后的完整生命周期。
+/// Snowflake 经 AlgorithmBuilder 构建的完整生命周期
+/// （build → generate → batch → metrics → health → shutdown）。
 ///
-/// 覆盖场景：AlgorithmBuilder.build → initialize → 单次生成 → 批量生成 →
-/// ID 唯一性 → metrics 反映生成数 → health_check Healthy → shutdown Ok。
-///
-/// 与 snowflake.rs 内单元测试的区别：单元测试直接 `SnowflakeAlgorithm::new`，
-/// 这里走工厂注册表路径（AlgorithmBuilder + SnowflakeFactory），验证工厂与
-/// 算法实现的协作链路完整可用。
+/// 与 snowflake.rs 单元测试的区别：走工厂注册表（AlgorithmBuilder + SnowflakeFactory）路径。
 #[tokio::test]
 #[cfg(feature = "snowflake")]
 async fn e2e_snowflake_full_lifecycle_via_builder() {
-    // Builder 路径不注入模块私有状态目录：改为配置级 state_dir 指向本测试
-    // 专属临时目录——避免向默认 `./data` 落守卫文件（残留文件会让后续运行
-    // 在时钟回拨环境下假性失败，也会覆盖同目录真实服务的守卫基准）。
+    // 配置级 state_dir 指向测试专属临时目录，避免向默认 ./data 落守卫文件
+    // （残留会导致后续运行假性失败，也会覆盖同目录真实服务的守卫基准）。
     let state_dir =
         std::env::temp_dir().join(format!("nebulaid-e2e-sf-state-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&state_dir);
@@ -232,19 +215,10 @@ async fn e2e_snowflake_full_lifecycle_via_builder() {
     let _ = std::fs::remove_dir_all(&state_dir);
 }
 
-// Snowflake 时钟回拨 → health_check Unhealthy 路径已由单元测试覆盖。
-//
-// 原计划通过访问 `SnowflakeAlgorithm` 私有字段 `last_timestamp` / `clock_drift_ms`
-// 模拟时钟回拨并断言 health_check 反映状态，但这些字段对模块外私有。修改源码
-// 仅为了启用测试违反规则 6（外科手术式修改），因此移除该 e2e 测试。
-//
-// 覆盖保持不变——以下 snowflake.rs 单元测试已完整覆盖该场景：
-// - `test_generate_id_clock_backward_exceeds_threshold_returns_error`
-// - `test_health_check_unhealthy_when_drift_exceeds_threshold`
+// 时钟回拨 → health_check Unhealthy 场景由 snowflake.rs 单元测试覆盖：
+// test_generate_id_clock_backward_exceeds_threshold_returns_error 等。
 
-/// Snowflake 批量生成在 size=0 时返回空批次（边界场景）。
-///
-/// 覆盖功能场景穷举分析第 1 节 Snowflake 批量生成行的"size=0 返回空批次"边界。
+/// Snowflake 在 size=0 时返回空批次（功能场景穷举分析第 1 节边界）。
 #[tokio::test]
 #[cfg(feature = "snowflake")]
 async fn e2e_snowflake_batch_generate_zero_size_returns_empty_batch() {
@@ -267,11 +241,9 @@ async fn e2e_snowflake_batch_generate_zero_size_returns_empty_batch() {
 // 跨算法端到端
 // =============================================================================
 
-/// 全部 3 种算法均通过 AlgorithmBuilder 成功构建并生成唯一 ID。
+/// 3 种算法均经 AlgorithmBuilder 构建并生成跨算法唯一的 ID。
 ///
-/// 覆盖功能场景穷举分析第 1 节各算法行：验证工厂注册表 (`algorithm_factories()`)
-/// 中每个 Factory 都能正确构建并通过 trait 接口生成有效 ID，且跨算法不撞号。
-/// （原写"4 种"是 uuid_v4 时代的遗留，数组里 UuidV8 被重复列了两次。）
+/// 验证工厂注册表（`algorithm_factories()`）中每个 Factory 都能构建并通过 trait 接口生成。
 #[tokio::test]
 #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
 async fn e2e_all_algorithm_types_built_via_builder_generate_unique_ids() {
@@ -328,13 +300,7 @@ async fn e2e_all_algorithm_types_built_via_builder_generate_unique_ids() {
 // AlgorithmRouter 端到端
 // =============================================================================
 
-/// Router.initialize 在默认配置下应注册本构建特性集内的全部算法。
-///
-/// 覆盖功能场景穷举分析第 1 节算法路由行的"按 biz_tag 选算法"前置条件：
-/// 主算法 + fallback chain 全部就绪。add-uuid-v4-v7 后 `AlgorithmType` 有
-/// 五个真算法（Segment / Snowflake / UuidV8 / UuidV4 / UuidV7，各随特性
-/// 门控进注册表）；`UuidV4` 曾按旧 spec 约束「移除」，该约束已被本次
-/// 变更推翻（v4 作为独占「随机零元数据」能力的真算法回归）。
+/// Router.initialize 应注册本构建特性集内的全部算法（路由前置条件：主算法 + fallback 就绪）。
 #[tokio::test]
 async fn e2e_router_initialize_registers_all_enabled_algorithms() {
     let config = Config::default();
@@ -397,9 +363,8 @@ async fn e2e_router_initialize_registers_all_enabled_algorithms() {
     );
 
     for (alg_type, status) in &health_statuses {
-        // Segment 在没有数据库连接时 health_check 返回 Degraded("No active buffers")
-        // 这是设计行为——Segment 需要数据库加载号段。其他算法不依赖外部状态，
-        // 应返回 Healthy。
+        // Segment 无数据库时 health_check 返回 Degraded("No active buffers")，属设计行为；
+        // 其他算法不依赖外部状态，应为 Healthy。
         match alg_type {
             AlgorithmType::Segment => {
                 assert!(
@@ -420,9 +385,8 @@ async fn e2e_router_initialize_registers_all_enabled_algorithms() {
     }
 }
 
-/// add-uuid-v4-v7 回归锚点（F-01）：v4/v7 经路由 `generate_with_algorithm`
-/// 产出**各自布局**的 ID——initialize 漏注册曾让本路径静默 fallback 到
-/// fallback 链（表现为「请求 v7 得 v8」）。
+/// 回归锚点：v4/v7 经路由 `generate_with_algorithm` 须产出各自布局的 ID
+/// （曾因 initialize 漏注册而静默 fallback，表现为「请求 v7 得 v8」）。
 #[tokio::test]
 #[cfg(all(feature = "uuid-v4", feature = "uuid-v7"))]
 async fn e2e_router_generate_v4_v7_yields_correct_layout_no_fallback() {
@@ -458,10 +422,7 @@ async fn e2e_router_generate_v4_v7_yields_correct_layout_no_fallback() {
     assert_ne!(v7_bits, v4_bits);
 }
 
-/// Router 按 biz_tag 覆盖默认算法。
-///
-/// 覆盖功能场景穷举分析第 1 节算法路由行的"biz_tag 算法覆盖"场景：
-/// set_algorithm 为某 biz_tag 设定 Snowflake 后，该 biz_tag 的生成走 Snowflake。
+/// Router 按 biz_tag 覆盖默认算法：set_algorithm 后该 biz_tag 的生成走 Snowflake。
 #[tokio::test]
 async fn e2e_router_set_algorithm_per_biz_tag_routes_correctly() {
     let config = Config::default();
@@ -492,10 +453,7 @@ async fn e2e_router_set_algorithm_per_biz_tag_routes_correctly() {
     );
 }
 
-/// Router 在主算法成功时直接返回，不触发 fallback。
-///
-/// 验证功能场景穷举分析中"主算法成功直接返回"的预期行为。
-/// 默认配置下 main=Segment，fallback chain=[Snowflake, UuidV8, UuidV8]。
+/// Router 在主算法成功时直接返回、不触发 fallback（默认 main=Segment，链=[Snowflake, UuidV8]）。
 #[tokio::test]
 #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
 async fn e2e_router_primary_succeeds_no_fallback_invoked() {
@@ -526,10 +484,7 @@ async fn e2e_router_primary_succeeds_no_fallback_invoked() {
 
 /// Router 接受 AuditLogger trait object 注入且不 panic。
 ///
-/// 覆盖功能场景穷举分析第 1 节审计 Trait 行的"记录审计事件不阻塞主流程"。
-/// 通过 CapturingAuditLogger 注入 Router，验证 trait object 注入路径正常。
-/// 注意：生产路径中 IdGeneration 审计事件由 handlers 层调用（非 Router），
-/// 因此 Router.generate 不应触发审计日志——本测试钉住该设计契约。
+/// 设计契约：IdGeneration 审计由 handlers 层负责，Router.generate 不写审计日志。
 #[tokio::test]
 #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
 async fn e2e_router_accepts_audit_logger_without_panic_and_does_not_log() {
@@ -554,8 +509,7 @@ async fn e2e_router_accepts_audit_logger_without_panic_and_does_not_log() {
         .await
         .expect("E2E: batch_generate should succeed");
 
-    // 设计契约：Router 不直接调用 AuditLogger 记录 IdGeneration 事件
-    // （该职责在 handlers 层）。钉住该不变量，避免后续误改 Router 调用 logger。
+    // 设计契约：Router 不调用 AuditLogger 记录 IdGeneration 事件（职责在 handlers 层）。
     assert_eq!(
         capturing.log_count(),
         0,
@@ -567,18 +521,12 @@ async fn e2e_router_accepts_audit_logger_without_panic_and_does_not_log() {
 // DegradationManager 端到端
 // =============================================================================
 
-/// DegradationManager 端到端降级-恢复周期。
+/// DegradationManager 完整降级-恢复周期：主算法失败 → Degraded(fallback) → 恢复 → Normal。
 ///
-/// 覆盖功能场景穷举分析第 1 节降级管理器行：
-/// 主算法失败 → Degraded 切换 fallback → 主算法恢复 → Normal。
-///
-/// 使用真实 MockIdAlgorithm（不是 mockall mock），与 degradation_tests.rs
-/// 中的单元测试相比，此测试覆盖完整的"主→fallback→恢复"循环，并验证
-/// DegradationState 在每个阶段的转移。
+/// 使用本地 MockIdAlgorithm；相比 degradation_tests.rs 单元测试，覆盖完整循环与状态转移。
 #[tokio::test]
 async fn e2e_degradation_manager_full_degrade_recover_cycle() {
     use crate::core::algorithm::degradation_manager::DegradationConfig;
-    // 使用本文件定义的本地 MockIdAlgorithm，不依赖 degradation_tests 私有项
 
     let config = DegradationConfig {
         enabled: true,
@@ -629,12 +577,9 @@ async fn e2e_degradation_manager_full_degrade_recover_cycle() {
 }
 
 /// DegradationManager 在所有 fallback 失败时进入 Critical 状态。
-///
-/// 覆盖功能场景穷举分析第 1 节降级管理器行的"所有算法降级 → Critical 状态"。
 #[tokio::test]
 async fn e2e_degradation_manager_all_algorithms_fail_enters_critical() {
     use crate::core::algorithm::degradation_manager::DegradationConfig;
-    // 使用本文件定义的本地 MockIdAlgorithm
 
     let config = DegradationConfig {
         enabled: true,
@@ -653,7 +598,6 @@ async fn e2e_degradation_manager_all_algorithms_fail_enters_critical() {
     manager.set_primary_algorithm(AlgorithmType::Segment);
     manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
 
-    // 全部失败
     primary.set_should_fail(true);
     fallback.set_should_fail(true);
     for _ in 0..3 {
@@ -680,13 +624,9 @@ async fn e2e_degradation_manager_all_algorithms_fail_enters_critical() {
 // 跨模块协同端到端
 // =============================================================================
 
-/// Router + AlgorithmBuilder + 真实 4 种算法完整集成路径。
+/// Router + AlgorithmBuilder + 真实算法完整集成路径（main.rs 启动后用户请求的调用链）。
 ///
-/// 端到端验证：Config 默认 → AlgorithmRouter::new → initialize → 4 种算法注册 →
-/// 通过 IdGenerator trait 调用 generate / batch_generate / generate_with_algorithm
-/// 全部接口 → health_check / metrics 反映状态。
-///
-/// 这条路径是 main.rs 启动后用户请求会经过的完整调用链。
+/// Config 默认 → initialize → 算法注册 → IdGenerator trait 各接口 → health/metrics。
 #[tokio::test]
 #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
 async fn e2e_router_full_id_generator_trait_integration() {
@@ -703,7 +643,6 @@ async fn e2e_router_full_id_generator_trait_integration() {
         .expect("E2E: IdGenerator::generate should succeed");
     assert!(id.as_u128() > 0);
 
-    // IdGenerator::batch_generate
     let ids = IdGenerator::batch_generate(&router, "ws", "g", "bt", 5)
         .await
         .expect("E2E: IdGenerator::batch_generate should succeed");
@@ -736,20 +675,14 @@ async fn e2e_router_full_id_generator_trait_integration() {
         "E2E: all algorithms healthy should aggregate to Healthy"
     );
 
-    // IdGenerator::get_primary_algorithm
     let primary = IdGenerator::get_primary_algorithm(&router).await;
     assert_eq!(primary, "Segment");
 
-    // IdGenerator::get_degradation_manager
     let dm = IdGenerator::get_degradation_manager(&router);
     assert!(Arc::strong_count(dm) >= 1);
 }
 
-/// Router fallback chain 在所有真实算法都健康时不会触发。
-///
-/// 默认配置下 main=Segment，fallback=[Snowflake, UuidV8, UuidV8]。
-/// 主算法 Segment 在初始化后是健康的，所有生成请求都应通过 Segment 完成。
-/// 此测试验证在正常工况下 fallback chain 不会被错误触发。
+/// Router fallback chain 在真实算法均健康时不被触发（正常工况下不得误触发）。
 #[tokio::test]
 #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
 async fn e2e_router_fallback_chain_not_triggered_on_healthy_primary() {
@@ -775,7 +708,7 @@ async fn e2e_router_fallback_chain_not_triggered_on_healthy_primary() {
     assert!(!segment_state.is_degraded);
     assert!(segment_state.consecutive_successes >= 10);
 
-    // Snowflake / UuidV8 / UuidV8 未被调用，consecutive_successes == 0
+    // 未调用的 fallback 算法 consecutive_successes 应为 0
     for alg in [
         AlgorithmType::Snowflake,
         AlgorithmType::UuidV8,

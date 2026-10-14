@@ -3,8 +3,7 @@
 
 #![cfg(test)]
 
-//! Segment algorithm end-to-end tests covering the live public-API paths that
-//! exercise the default loader and health reporting.
+//! Segment 算法端到端测试：覆盖默认 loader 与健康上报的公开 API 路径。
 
 use crate::core::algorithm::segment::SegmentAlgorithm;
 use crate::core::algorithm::{GenerateContext, HealthStatus, IdAlgorithm};
@@ -22,7 +21,7 @@ fn make_ctx() -> GenerateContext {
 
 #[tokio::test]
 async fn e2e_segment_generate_via_default_loader_returns_id() {
-    // DefaultSegmentLoader returns a timestamp-based segment (start_id = ts*10000), always > 0
+    // DefaultSegmentLoader: timestamp-based segment (start_id = ts*10000), > 0
     let algo = SegmentAlgorithm::new(0);
     let id = algo.generate(&make_ctx()).await.unwrap();
     assert!(id.as_u128() > 0, "generated ID should be positive");

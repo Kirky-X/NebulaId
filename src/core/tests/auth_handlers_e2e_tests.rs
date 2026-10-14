@@ -3,34 +3,8 @@
 
 #![cfg(test)]
 
-//! # 认证与请求验证端到端测试（auth handlers e2e tests）
-//!
-//! 本文件覆盖 `temp/功能场景穷举分析.md` 第 2.1 节（认证）和
-//! 第 3.1/3.7 节（认证中间件 + HTTP 处理器验证）的端到端场景。
-//!
-//! ## 测试分组
-//!
-//! - **E2E-AUTH 组**（认证中间件 e2e）：Basic / ApiKey 头解析、
-//!   缺失头、格式错误、空凭证、错误密钥、禁用认证注入 Anonymous、
-//!   失败速率限制（10 次失败后 429、<10 次放行）
-//! - **E2E-ADMIN 组**（Admin 权限检查 e2e）：Admin 放行、User 拒绝、
-//!   无 ApiKeyRole 扩展 fail-closed
-//! - **E2E-VAL 组**（请求验证 e2e）：GenerateRequest / BatchGenerateRequest
-//!   字段长度与范围边界
-//!
-//! ## 与现有单元测试的区别
-//!
-//! `api_key_auth.rs` 内的 `#[cfg(test)] mod tests` 聚焦「函数孤立行为」
-//! （如 `validate_key` 单次调用、`auth_middleware` 单次请求）。本文件
-//! 聚焦「真实 HTTP 流量下的端到端行为」：用 `axum::Router` +
-//! `tower::ServiceExt::oneshot` 构造完整请求链路，验证中间件 layer 顺序
-//! 组合（auth → admin）与请求模型验证的协同。
-//!
-//! ## 并行安全
-//!
-//! 所有测试用独立的 `MockApiKeyRepo` 实例和独立的 `ApiKeyAuth` 实例，
-//! `auth_failures` 状态在 `Arc<RwLock<HashMap>>` 中按测试隔离，无共享
-//! 状态竞争。
+//! 认证与请求验证端到端测试：Basic/ApiKey 解析、禁用注入 Anonymous、失败限流、
+//! Admin 权限 fail-closed、Generate/BatchGenerate 字段边界；用 axum oneshot 走完整链路。
 
 use std::sync::Arc;
 
@@ -62,8 +36,7 @@ use crate::server::models::{BatchGenerateRequest, GenerateRequest};
 // MockApiKeyRepo —— 参考 api_key_auth.rs 测试中的 mock 实现
 // ============================================================================
 
-/// 内存版 `ApiKeyRepository`，用 sha256 哈希存储密钥（与真实仓库的
-/// Argon2id 不同，但足够测试认证中间件的逻辑分支）。
+/// 内存版 `ApiKeyRepository`：sha256 存密钥（真实仓库为 Argon2id，足以覆盖分支逻辑）。
 #[derive(Clone)]
 struct MockApiKeyRepo {
     keys: std::collections::HashMap<String, (String, ApiKeyRole)>,
@@ -215,8 +188,7 @@ fn build_auth_router(auth: Arc<ApiKeyAuth>) -> Router {
         .layer(from_fn_with_state(auth, auth_middleware_fn))
 }
 
-/// 构造挂载了 auth middleware 且 handler 回显注入的 ApiKeyRole 的 Router，
-/// 用于验证 auth middleware 注入的角色扩展。
+/// 构造挂载 auth middleware 且 handler 回显注入 ApiKeyRole 的 Router。
 fn build_role_check_router(auth: Arc<ApiKeyAuth>) -> Router {
     Router::new()
         .route(
@@ -232,8 +204,7 @@ fn build_role_check_router(auth: Arc<ApiKeyAuth>) -> Router {
         .layer(from_fn_with_state(auth, auth_middleware_fn))
 }
 
-/// 构造挂载了 admin_required_middleware 的 Router（无 auth），
-/// 用于隔离测试 admin 权限检查。
+/// 构造挂载 admin_required_middleware 的 Router（无 auth），隔离测试 admin 权限检查。
 fn build_admin_router() -> Router {
     Router::new()
         .route("/test", get(|| async { "ok" }))
@@ -435,16 +406,13 @@ async fn e2e_auth_failure_rate_blocks_after_10_failures() {
 
 #[tokio::test]
 async fn e2e_auth_failure_rate_allows_after_window_expires() {
-    // 由于 `check_auth_failure_rate` 使用 `Instant::now()` 且无法注入
-    // mock 时间，这里采用「<10 次失败仍放行」的策略验证窗口边界：
-    // 9 次失败后，第 10 次请求仍应返回 401（而非 429），
-    // 表明失败窗口未满 10 次时不会误阻断。
+    // check_auth_failure_rate 使用 Instant::now() 且无法注入 mock 时间，
+    // 故以「<10 次失败仍放行」验证窗口边界：9 次失败后第 10 次仍 401 而非 429。
     let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
     let auth = Arc::new(ApiKeyAuth::new(repo, true));
     let router = build_auth_router(auth);
 
     let bad_header = basic_auth_header("user-key", "wrong");
-    // 发送 9 次失败请求
     for _ in 0..9 {
         let resp = router
             .clone()
@@ -477,7 +445,6 @@ async fn e2e_auth_failure_rate_allows_after_window_expires() {
             .await
             .unwrap();
     }
-    // 用有效凭证请求应返回 200
     let good_header = basic_auth_header("user-key", "user-secret");
     let resp = router2
         .oneshot(make_request(Some(&good_header)))
@@ -630,9 +597,8 @@ fn e2e_batch_generate_request_validates_size_zero_fails() {
 
 #[test]
 fn e2e_batch_generate_request_validates_size_101_passes_struct_validation() {
-    // 结构校验仅保留 min=1；max 由 config.batch_generate.max_batch_size
-    // （默认 100）在 handler 层运行时校验。此处断言 101 通过结构校验，
-    // 超限拒绝行为由 id_handlers/grpc 的边界测试覆盖。
+    // 结构校验仅保留 min=1；max 由 config.batch_generate.max_batch_size（默认 100）
+    // 在 handler 层运行时校验，超限拒绝由 id_handlers/grpc 边界测试覆盖。
     let request = BatchGenerateRequest {
         workspace: "ws".to_string(),
         group: "g".to_string(),
@@ -680,10 +646,8 @@ fn e2e_batch_generate_request_validates_size_boundary_1_and_100_pass() {
 // ============================================================================
 // GET /api/v1/biz-tags 租户隔离（CWE-639 / IDOR）
 //
-// 背景：handler 曾把 `None` workspace 透传给分页查询，底层回退为 nil UUID
-// 过滤 —— 既拿不到本租户数据（功能失效），又会匹配 workspace_id 为 nil 的
-// 脏数据行（越权泄露）。本组测试走真实 create_router 全栈（认证中间件 +
-// Anonymous 拦截 + 限流 + 审计），断言过滤键只能来自认证身份或显式参数。
+// 过滤键必须来自认证身份或显式参数；None 透传会回退 nil UUID 过滤（功能失效 + 越权泄露）。
+// 走真实 create_router 全栈（认证 + Anonymous 拦截 + 限流 + 审计）。
 // ============================================================================
 
 mod biz_tag_tenant_isolation {
@@ -774,11 +738,9 @@ mod biz_tag_tenant_isolation {
         build_app_with(make_auth(), Arc::new(make_config_service())).await
     }
 
-    /// 用指定 auth / config service 组装真实 `create_router` 全栈
-    /// （认证中间件 + Anonymous 拦截 + 限流 + 审计）。
+    /// 用指定 auth / config service 组装真实 `create_router` 全栈（认证 + Anonymous 拦截 + 限流 + 审计）。
     ///
-    /// `pub(super)`：同文件的 Anonymous 端点组需要以「认证禁用」的 auth 复用
-    /// 同一套全栈装配，避免复制路由代码。
+    /// `pub(super)`：同文件 Anonymous 端点组需以禁用认证的 auth 复用同一装配。
     pub(super) async fn build_app_with(
         auth: Arc<ApiKeyAuth>,
         config_service: Arc<dyn ConfigManagementService>,
@@ -876,11 +838,7 @@ mod biz_tag_tenant_isolation {
 
 // ============================================================================
 // biz-tags 端点对 Anonymous 身份一律 401
-//
-// 走真实 `create_router` 全栈逐端点断言 401，锁定「Anonymous 无 biz-tags 业务
-// 权限」这一可观测契约。注意：路由层的 `anonymous_block_middleware` 与 handler
-// 内的 `verify_user_role` 是两道防线，本组无法区分二者（响应相同），中间件自身
-// 行为由 `router.rs` 的单元用例覆盖。
+// 契约：Anonymous 无 biz-tags 业务权限（路由中间件 + handler verify_user_role 双防线）。
 // ============================================================================
 
 mod biz_tag_anonymous_guard {
@@ -896,12 +854,8 @@ mod biz_tag_anonymous_guard {
         Arc::new(ApiKeyAuth::new(Arc::new(repo), false))
     }
 
-    /// 零期望的 config service：钉住「拒绝发生在服务层之前」。
-    ///
-    /// 五个 biz-tag handler 自身也在调用服务前拒绝 Anonymous（`verify_user_role`
-    /// / list 内的显式分支），与路由层的 `anonymous_block_middleware` 构成两道
-    /// 防线；本组断言的是端点的可观测契约。若未来退化为「先查库再鉴权」，
-    /// mockall 会因未预期的方法调用直接 panic。
+    /// 零期望的 config service：钉住「拒绝发生在服务层之前」
+    /// （若退化为先查库再鉴权，mockall 会因未预期调用 panic）。
     fn untouched_config_service() -> Arc<dyn ConfigManagementService> {
         Arc::new(MockConfigManagementService::new())
     }
@@ -932,8 +886,7 @@ mod biz_tag_anonymous_guard {
         Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap()
     }
 
-    /// Anonymous 即使显式带上 ?workspace_id= 也必须被拒（拒绝基于身份，
-    /// 而非参数可解析性）。
+    /// Anonymous 即使显式带上 ?workspace_id= 也必须被拒（拒绝基于身份，而非参数可解析性）。
     #[tokio::test]
     async fn anonymous_list_biz_tags_is_401() {
         let uri = format!("/api/v1/biz-tags?workspace_id={}", sample_uuid());
@@ -1002,19 +955,9 @@ mod auth_cache_wiring {
     use crate::server::handlers::ApiHandlers;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    /// 共享仓储 mock（替代手写 `CountingRepo` 的 11 个样板方法）。
-    ///
-    /// 只登记本组测试真正触及的两个方法：
-    /// - `validate_api_key`：合法凭证返回 User 身份并累计调用次数；`revoked`
-    ///   置位后一律未命中（模拟吊销已落库）。
-    /// - `delete_api_key`：置位 `revoked`（`ApiHandlers::revoke_api_key` 的副作用）。
-    ///
-    /// 其余方法不写期望：mockall 对未登记的调用直接 panic，与旧实现里
-    /// `"not implemented in CountingRepo"` 的桩等价，但不必付样板代码。
-    ///
-    /// `validate_times` **就是缓存语义断言本身**：多一次 = 缓存没命中，
-    /// 少一次 = 吊销 / TTL 过期后没回源（mock 释放时校验）。
-    /// 返回的计数器供测试在中间点位断言进度（旧实现的 `validate_calls()` 断言）。
+    /// 共享仓储 mock：只登记 `validate_api_key`（合法凭证返回 User 并计数，revoked 后未命中）
+    /// 与 `delete_api_key`（置 revoked）；其余方法不写期望，未登记调用直接 panic。
+    /// `validate_times` 即缓存语义断言：多一次 = 缓存未命中，少一次 = 吊销/TTL 后未回源。
     fn mock_repo(
         workspace_id: Uuid,
         validate_times: usize,
@@ -1052,10 +995,8 @@ mod auth_cache_wiring {
         (repo, validate_calls, revoked)
     }
 
-    /// 登记「校验成功 → 写缓存」路径要读的 key 行（仅 `key_id == "cache-key"`）。
-    ///
-    /// 次数即"缓存被写入了几次"的断言；其他 key_id 不匹配本期望，
-    /// 由调用方按需另登记（未登记的 key_id 会 panic）。
+    /// 登记「校验成功 → 写缓存」路径要读的 key 行（仅 `key_id == "cache-key"`）；
+    /// `times` 即"缓存被写入次数"的断言。
     fn expect_cache_key_row(repo: &mut MockApiKeyRepository, times: usize, workspace_id: Uuid) {
         let info = ApiKey {
             id: Uuid::new_v4(),
@@ -1134,11 +1075,8 @@ mod auth_cache_wiring {
         );
     }
 
-    /// 双代凭证仓储 mock：`cache-secret` 是当代凭证，`previous-secret`
-    /// 代表轮换后仍在宽限期内的上一代凭证（`used_previous_credential = true`）。
-    ///
-    /// `times` 就是断言本身：它限制"允许回源仓储几次"，缓存若意外命中/未命中都
-    /// 会在 mock 释放时报违反。
+    /// 双代凭证仓储 mock：`cache-secret` 为当代，`previous-secret` 为宽限期内上一代
+    /// （`used_previous_credential = true`）；`times` 即允许回源次数，缓存意外命中/未命中会报违反。
     fn mock_repo_two_generations(
         workspace_id: Uuid,
         times: usize,
@@ -1166,9 +1104,8 @@ mod auth_cache_wiring {
         (repo, validate_calls)
     }
 
-    /// 宽限期命中的决策有时效性（受 `rotate_expires_at` 约束），
-    /// 缓存 TTL 表达不了这个绝对截止时间，因此这类命中不得写入认证决策缓存 ——
-    /// 否则上一代凭证在宽限期结束后仍会被缓存放行到 TTL 到期，等于变相延长窗口。
+    /// 宽限期命中的决策有时效性（受 `rotate_expires_at` 约束），缓存 TTL 表达不了绝对截止：
+    /// 这类命中不得写缓存，否则上一代凭证会被缓存放行到 TTL 到期，变相延长窗口。
     #[tokio::test(flavor = "multi_thread")]
     async fn test_grace_credential_hit_is_not_cached() {
         let workspace_id = Uuid::new_v4();
@@ -1238,15 +1175,12 @@ mod auth_cache_wiring {
     #[tokio::test(flavor = "multi_thread")]
     async fn revoked_key_is_rejected_immediately_via_middleware() {
         let workspace_id = Uuid::new_v4();
-        // 2 次回源 = 吊销前首次校验 + 吊销后即时回源；
-        // 缓存若失效（第二次请求也回源）或吊销后仍命中缓存都会违反 .times(2)
+        // 2 次回源 = 吊销前首次 + 吊销后即时回源；缓存失效或吊销后仍命中都会违反 .times(2)
         let (mut repo, validate_calls, revoked) = mock_repo(workspace_id, 2);
         // 真实吊销路径按行 id 查询（查不到）；缓存写入路径按 key_id 查询
         expect_cache_key_row(&mut repo, 1, workspace_id);
-        // 吊销守卫改用 `find_api_key_by_row_id`（按行主键），不再用
-        // `get_api_key_by_id`（按 key_id 字符串）。本用例吊销的是与本组缓存键
-        // 无关的随机行 id → 查不到 → 守卫跳过 → 删除照常执行。
-        // 刻意不登记 `count_admin_keys`：行不存在时守卫不得进入计数分支。
+        // 吊销守卫经 find_api_key_by_row_id 判因；本用例吊销随机行 id → 查不到 → 删除照常。
+        // 刻意不登记 count_admin_keys：行不存在时守卫不得进入计数分支。
         repo.expect_find_api_key_by_row_id()
             .times(1)
             .returning(|_| Ok(None));
@@ -1364,13 +1298,8 @@ mod auth_cache_wiring {
 // admin key 吊销守卫 e2e
 // ============================================================================
 
-/// 有状态内存仓储：把「key 行」完整建模（行 UUID + key_id + role + enabled +
-/// secret 哈希），使 `find_api_key_by_row_id` / `count_admin_keys` 能像真实 SQL
-/// 那样回答（含 `role='admin' AND enabled=true` 的双重过滤）。
-///
-/// 目的：把守卫缺陷钉在 **handler 集成层**。repository 单测只能证明新增的两个
-/// 查询方法本身正确，证明不了 handler 真的用对了它们 —— 旧实现正是"方法没问题、
-/// 调用点查错列"才让守卫整块跳过的。
+/// 有状态内存仓储：完整建模 key 行，使 `find_api_key_by_row_id` / `count_admin_keys`
+/// 能像真实 SQL 一样回答，从而在 handler 集成层（而非仓储单测）钉住守卫缺陷。
 mod admin_key_guard_e2e {
     use super::*;
     use crate::core::types::error::CoreError;
@@ -1421,8 +1350,7 @@ mod admin_key_guard_e2e {
             )
         }
 
-        /// 行 → 对外 `ApiKeyInfo`（`get_api_key_by_id` 与
-        /// `find_api_key_by_row_id` 共用，避免重复整段 struct 字面量）。
+        /// 行 → 对外 `ApiKeyInfo`（两个查询方法共用，避免重复 struct 字面量）。
         fn to_info(row: &KeyRow) -> ApiKeyInfo {
             ApiKeyInfo {
                 id: row.id,
@@ -1498,9 +1426,8 @@ mod admin_key_guard_e2e {
             _limit: Option<u32>,
             _offset: Option<u32>,
         ) -> Result<Vec<ApiKeyInfo>> {
-            // 刻意恒空：真实库里全局 admin 行的 `workspace_id` 是 NULL，
-            // `NULL = nil_uuid` 在 SQL 中不成立 —— 这正是旧守卫失效的根因。
-            // 若实现退回 `list_api_keys` 扫描，这里会让它再次看不见 admin 行。
+            // 刻意恒空：全局 admin 行 workspace_id 为 NULL，SQL 中 NULL = nil_uuid 不成立，
+            // 这正是旧守卫失效的根因；实现若退回 list 扫描会再次看不见 admin 行。
             Ok(vec![])
         }
 
@@ -1528,7 +1455,7 @@ mod admin_key_guard_e2e {
             Ok(0)
         }
 
-        /// 按行主键取行 —— 守卫的新查询路径（旧实现错用 `get_api_key_by_id`）。
+        /// 按行主键取行（守卫的判因查询路径）。
         async fn find_api_key_by_row_id(&self, id: Uuid) -> Result<Option<ApiKeyInfo>> {
             Ok(self
                 .rows
@@ -1572,11 +1499,8 @@ mod admin_key_guard_e2e {
         ApiHandlers::with_api_key_repository(Arc::new(MockIdGenerator::new()), config_service, repo)
     }
 
-    /// 唯一启用中的 admin key 不得被吊销，且吊销被拒后该凭证仍可用。
-    ///
-    /// 缺陷形态：旧守卫用 `get_api_key_by_id(&id.to_string())` 查行 UUID
-    /// （该方法按 `key_id` 过滤）→ 恒 `None` → 整块守卫跳过 → 管理员把自己
-    /// 锁在系统外。本用例在 handler 集成层覆盖，不断言 HTTP 状态码。
+    /// 唯一启用中的 admin key 不得被吊销，且拒绝后该凭证仍可用。
+    /// 回归点：旧守卫按行 UUID 错查 key_id 过滤 → 恒 None → 守卫整块跳过，管理员自锁。
     #[tokio::test]
     async fn e2e_revoke_only_admin_key_is_rejected_and_key_still_usable() {
         let (repo, admin_row_id) = StatefulKeyRepo::with_single_enabled_admin();
@@ -1589,7 +1513,7 @@ mod admin_key_guard_e2e {
             "唯一启用中的 admin key 必须被拒绝吊销，实际返回：{err:?}"
         );
 
-        // 守卫拦截 → 删除路径未执行 → 行仍启用（旧实现会把它置为 disabled）
+        // 守卫拦截 → 删除路径未执行 → 行仍启用。
         assert_eq!(
             repo.enabled_of(admin_row_id),
             Some(true),

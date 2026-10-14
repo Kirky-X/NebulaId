@@ -1,18 +1,8 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! 核心支撑层端到端测试
-//!
-//! 覆盖 `temp/功能场景穷举分析.md` 第 2 节中描述的跨模块协同场景：
-//! - Config 从 TOML 文件加载 + 环境变量展开 + validate 完整链路
-//! - Config 所有 validate 失败路径（端口/dc_id/连接数/限流/算法位数/batch 上限）
-//! - Config::merge 优先级语义（非默认值字段覆盖）
-//! - Id 类型跨格式端到端转换（u128 ↔ UUID 字符串 ↔ prefixed/hex/base36）
-//! - AlgorithmType 别名解析（uuid_v8/uuid8/uuid_v7/uuid_v4 系列 + 大小写不敏感）
-//! - CoreError i18n 跨 locale 翻译链路
-//!
-//! 这些测试聚焦跨子模块协同，避免与 app_config.rs / id.rs / error.rs 内
-//! `#[cfg(test)] mod tests` 的单元测试重复（那些覆盖单函数边界）。
+//! 核心支撑层端到端测试：Config 加载/校验/merge、Id 跨格式转换、
+//! AlgorithmType 别名解析、CoreError i18n 翻译等跨子模块路径；与单元测试不重复。
 
 use crate::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
 use crate::core::config::Config;
@@ -27,25 +17,15 @@ use uuid::Uuid;
 // Config 端到端
 // =============================================================================
 
-/// Config::load_from_file 完整路径 ——TOML 解析 + 环境变量展开 + validate。
+/// Config::load_from_file 完整链路：TOML 解析 + `${VAR}` 环境变量展开 + validate。
 ///
-/// 覆盖功能场景穷举分析第 2.2 节配置文件加载行：
-/// - 读取 TOML 文件
-/// - ${VAR_NAME} 语法环境变量替换
-/// - 通过 validate 校验
-///
-/// 与 app_config.rs 单元测试的区别：单元测试分步验证 expand_env_vars / parse / validate，
-/// 这里验证完整链路：写入临时 TOML 文件 → load_from_file → 字段值正确。
-///
-/// 实现策略：用 `Config::default()` + 手动修改特定字段，再 `toml::to_string` 生成完整
-/// TOML。这样能保证所有必填字段都齐全，避免手写 TOML 遗漏字段导致的解析错误。
-/// 修改字段值用于验证 load_from_file 后能正确读取（区别于 default）。
+/// 用 `Config::default()` 改字段后 `toml::to_string` 生成完整 TOML，避免手写遗漏必填字段。
 #[tokio::test]
 async fn e2e_config_load_from_file_with_env_expansion_and_validation() {
     let dir = tempdir().expect("E2E: tempdir should succeed");
     let file_path = dir.path().join("test_config.toml");
 
-    // 构造与 default 不同的配置，用于验证 load_from_file 真正读取字段而非依赖默认值
+    // 字段值均与 default 不同，验证 load_from_file 真正读取而非回退默认值
     let mut original = Config::default();
     original.app.http_port = 18080;
     original.app.grpc_port = 19091;
@@ -56,7 +36,7 @@ async fn e2e_config_load_from_file_with_env_expansion_and_validation() {
     original.rate_limit.default_rps = 100;
     original.rate_limit.burst_size = 200;
     original.batch_generate.max_batch_size = 5000;
-    // 设置一个固定的 url 值，便于后续替换为 ${VAR} 占位符
+    // 先设固定 url，便于随后替换为 ${VAR} 占位符
     original.database.url = "postgres://user:placeholder@localhost:5432/nebulaid".to_string();
 
     let toml_content = toml::to_string(&original).expect("E2E: serialize Config to TOML");
@@ -74,7 +54,6 @@ async fn e2e_config_load_from_file_with_env_expansion_and_validation() {
     let config = Config::load_from_file(file_path.to_str().unwrap())
         .expect("E2E: load_from_file should succeed");
 
-    // 验证字段
     assert_eq!(config.app.http_port, 18080);
     assert_eq!(config.app.grpc_port, 19091);
     assert_eq!(config.app.dc_id, 5);
@@ -97,11 +76,7 @@ async fn e2e_config_load_from_file_with_env_expansion_and_validation() {
     std::env::remove_var("E2E_TEST_DB_PASSWORD");
 }
 
-/// Config::load_from_file 在文件不存在时返回 FileNotFound。
-///
-/// 覆盖功能场景穷举分析第 2.2 节"文件不存在 → FileNotFound"。
-/// 之前该场景与权限/IO 失败共用 FileError，启动期无法安全区分"可降级为默认
-/// 值的缺失"与"必须显性失败的读取错误"。
+/// Config::load_from_file 在文件不存在时返回 FileNotFound（与读取 IO 错误可区分）。
 #[tokio::test]
 async fn e2e_config_load_from_file_missing_returns_file_not_found() {
     let result = Config::load_from_file("/nonexistent/path/to/config.toml");
@@ -132,9 +107,7 @@ async fn e2e_config_load_from_file_invalid_toml_returns_invalid_value() {
     );
 }
 
-/// Config::validate 在 http_port=0 时返回 InvalidValue。
-///
-/// 覆盖功能场景穷举分析第 2.2 节配置校验行的"端口 1-65535"边界。
+/// http_port=0 时 validate 返回 InvalidValue（端口 1-65535 边界）。
 #[test]
 fn e2e_config_validate_http_port_zero_fails() {
     let mut config = Config::default();
@@ -145,8 +118,7 @@ fn e2e_config_validate_http_port_zero_fails() {
     ));
 }
 
-/// Config::validate 在 dc_id 超出位宽（默认 datacenter_id_bits=3，上限 7）时
-/// 返回 InvalidValue。
+/// dc_id 超出位宽（默认 datacenter_id_bits=3，上限 7）时 validate 返回 InvalidValue。
 #[test]
 fn e2e_config_validate_dc_id_over_width_fails() {
     let mut config = Config::default();
@@ -252,11 +224,7 @@ fn e2e_config_validate_switch_threshold_out_of_range_fails() {
     ));
 }
 
-/// Config::merge 优先级 ——非默认值字段覆盖。
-///
-/// 覆盖功能场景穷举分析第 2.2 节配置合并行的"非默认值字段覆盖"。
-/// Config::merge 用默认值作为哨兵判断"用户是否显式设置"，所以显式设为
-/// 默认值的字段会被忽略（已知限制，本测试钉住此行为）。
+/// Config::merge 以默认值为哨兵：other 中显式设为默认值的字段不覆盖 base（已知限制）。
 #[test]
 fn e2e_config_merge_overrides_non_default_fields() {
     let mut base = Config::default();
@@ -275,9 +243,7 @@ fn e2e_config_merge_overrides_non_default_fields() {
     assert_eq!(base.app.dc_id, 7, "E2E: non-default dc_id should override");
 }
 
-/// Config::merge 在 other 字段等于默认值时不覆盖。
-///
-/// 钉住 merge 的"默认值哨兵"语义：other 中显式设为默认值的字段不会覆盖 base。
+/// Config::merge 在 other 字段等于默认值时不覆盖 base。
 #[test]
 fn e2e_config_merge_default_value_does_not_override() {
     let mut base = Config::default();
@@ -297,11 +263,7 @@ fn e2e_config_merge_default_value_does_not_override() {
 // Id 类型跨格式端到端
 // =============================================================================
 
-/// 从真实 Snowflake 算法生成的 ID 转换为多种格式并反向解析。
-///
-/// 覆盖功能场景穷举分析第 2.7 节 ID 类型行的"多格式解析与展示"。
-/// 这条路径验证：算法生成 → Id 包装 → to_string / to_hex / to_base36 / to_prefixed
-/// 全部格式化接口在真实算法输出上工作正常。
+/// 真实 Snowflake 生成的 ID 往返多种格式：to_string / to_hex / to_base36 / to_prefixed。
 #[tokio::test]
 async fn e2e_id_format_conversion_roundtrip_from_real_algorithm() {
     let config = Config::default();
@@ -349,9 +311,7 @@ async fn e2e_id_format_conversion_roundtrip_from_real_algorithm() {
     assert_eq!(prefixed_value, value);
 }
 
-/// UUID v7 字符串 roundtrip 通过 Id::from_string 解析。
-///
-/// 覆盖功能场景穷举分析第 2.7 节 ID 类型行的"36 位含 - 按 UUID 解析"。
+/// UUID v7 字符串经 Id::from_string 解析后 roundtrip（36 位含 '-'）。
 #[test]
 fn e2e_id_from_string_uuid_v7_roundtrip() {
     let uuid = Uuid::now_v7();
@@ -375,9 +335,7 @@ fn e2e_id_from_string_uuid_v4_preserves_version() {
     assert_eq!(back.get_version(), Some(uuid::Version::Random));
 }
 
-/// Id::from_string 在空字符串 / 非数字 / 非UUID 时返回 InvalidIdString。
-///
-/// 覆盖功能场景穷举分析第 2.7 节 ID 类型行的"from_string 解析失败 → InvalidIdString"。
+/// 空串/非数字/非 UUID 时 Id::from_string 返回 InvalidIdString。
 #[test]
 fn e2e_id_from_string_invalid_returns_error() {
     assert!(matches!(
@@ -406,13 +364,9 @@ fn e2e_id_batch_from_u64s_and_new_consistent() {
 // AlgorithmType 别名解析端到端
 // =============================================================================
 
-/// AlgorithmType::from_str 接受所有名称与大小写变体。
+/// AlgorithmType::from_str 接受所有名称与大小写变体（大小写不敏感）。
 ///
-/// 覆盖功能场景穷举分析第 2.7 节"算法类型解析"行：
-/// - 大小写不敏感
-/// - add-uuid-v4-v7（破坏性反转）：uuid_v7 / uuid_v4 系列名称从「UuidV8 的
-///   向后兼容别名」反转为真算法（UuidV7 / UuidV4）；存量串使用面实测为零，
-///   语义声明见 docs/CHANGELOG.md
+/// uuid_v7 / uuid_v4 系列已反转为真算法 UuidV7 / UuidV4（破坏性变更，语义见 CHANGELOG）。
 #[test]
 fn e2e_algorithm_type_from_str_all_aliases_and_case_variants() {
     // 标准名称
@@ -429,7 +383,7 @@ fn e2e_algorithm_type_from_str_all_aliases_and_case_variants() {
         AlgorithmType::UuidV8
     );
 
-    // 变体：uuid_v8 自身别名
+    // uuid_v8 自身别名
     assert_eq!(
         AlgorithmType::from_str("uuidv8").unwrap(),
         AlgorithmType::UuidV8
@@ -438,7 +392,7 @@ fn e2e_algorithm_type_from_str_all_aliases_and_case_variants() {
         AlgorithmType::from_str("uuid8").unwrap(),
         AlgorithmType::UuidV8
     );
-    // 真算法：v7 组（反转后指向 UuidV7）
+    // v7 组：指向真算法 UuidV7
     assert_eq!(
         AlgorithmType::from_str("uuid_v7").unwrap(),
         AlgorithmType::UuidV7
@@ -451,7 +405,7 @@ fn e2e_algorithm_type_from_str_all_aliases_and_case_variants() {
         AlgorithmType::from_str("uuid7").unwrap(),
         AlgorithmType::UuidV7
     );
-    // 真算法：v4 组（反转后指向 UuidV4）
+    // v4 组：指向真算法 UuidV4
     assert_eq!(
         AlgorithmType::from_str("uuid_v4").unwrap(),
         AlgorithmType::UuidV4
@@ -527,18 +481,10 @@ fn e2e_algorithm_config_get_default_algorithm_invalid_falls_back_to_segment() {
 /// 串行化相邻的环境变量/locale 敏感测试(与 core::i18n::test_support 同一意图),避免并行竞态。
 static E2E_LOCALE_LOCK: Mutex<()> = Mutex::new(());
 
-/// E2E-I18N-001: 算法生成路径触发的 CoreError 通过 to_localized_string 翻译为用户可读消息。
+/// CoreError 经 to_localized_string 在 en/zh-CN 下翻译（端到端跨层）。
 ///
-/// 覆盖功能场景穷举分析第 2.7 节错误 i18n 行的"按 locale 翻译错误"。
-/// 这是端到端跨层场景：Snowflake 时钟回拨产生 CoreError::ClockMovedBackward →
-/// to_localized_string 在 en/zh-CN 下返回对应翻译。
-///
-/// 注：原计划通过 SnowflakeAlgorithm 私有字段模拟时钟回拨以触发真实错误，
-/// 但 `last_timestamp` / `generate_id` 对模块外私有。修改源码仅为启用测试
-/// 违反规则 6（外科手术式修改），因此改为直接构造 CoreError::ClockMovedBackward
-/// 验证 i18n 翻译路径（key + args → 翻译消息）。snowflake.rs 单元测试
-/// `test_generate_id_clock_backward_exceeds_threshold_returns_error` 已覆盖
-/// 「算法 → 错误」路径，这里钉住「错误 → 翻译」路径。
+/// 直接构造 ClockMovedBackward 钉「错误 → 翻译」路径；「算法 → 错误」路径由
+/// snowflake.rs 单元测试 test_generate_id_clock_backward_exceeds_threshold_returns_error 覆盖。
 #[test]
 fn e2e_core_error_from_algorithm_to_localized_string_en_zh_cn() {
     let _lock = E2E_LOCALE_LOCK.lock().unwrap();
@@ -563,10 +509,7 @@ fn e2e_core_error_from_algorithm_to_localized_string_en_zh_cn() {
     );
 }
 
-/// E2E-I18N-002: 所有 24 个 CoreError 变体在 en 下都能产生非空翻译消息。
-///
-/// 覆盖功能场景穷举分析第 2.7 节错误 i18n 行的"24 个变体，i18n_key+i18n_args 双源"
-/// 完整性检查——确保任何新增变体都有对应 i18n 翻译，避免运行时返回空字符串。
+/// 所有 24 个 CoreError 变体在 en 下都有非空翻译（防新增变体漏 i18n）。
 #[test]
 fn e2e_core_error_all_variants_have_en_translation() {
     let _lock = E2E_LOCALE_LOCK.lock().unwrap();
@@ -611,9 +554,7 @@ fn e2e_core_error_all_variants_have_en_translation() {
     }
 }
 
-/// E2E-I18N-003: 不支持的 locale 应回退到 en 而不 panic。
-///
-/// 覆盖功能场景穷举分析第 2.7 节错误 i18n 行的"不支持 locale 回退 en"。
+/// 不支持的 locale 回退到 en 而不 panic。
 #[test]
 fn e2e_core_error_unsupported_locale_falls_back_to_en() {
     let _lock = E2E_LOCALE_LOCK.lock().unwrap();

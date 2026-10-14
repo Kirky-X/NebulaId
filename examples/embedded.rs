@@ -1,11 +1,7 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! SDK 纯算法嵌入示例（Kit 范式，）。
-//!
-//! 零数据库、零网络：仅使用 Snowflake / UuidV8 纯算法。默认算法改为
-//! `snowflake`（`Config::default()` 的 `segment` 需要数据库，未注入仓储时
-//! 会被 SDK 以 `ConfigurationError` 拒绝）。
+//! SDK 纯算法嵌入示例（Kit 范式）：零数据库、零网络，仅用 Snowflake / UuidV8。
 //!
 //! 运行：
 //! ```bash
@@ -18,7 +14,7 @@ use nebulaid::sdk::NebulaIdKitBuilder;
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
-    // 纯算法嵌入：默认算法设为 snowflake，避开需要数据库的 segment。
+    // 默认算法须为 snowflake：Config::default() 的 segment 需数据库，未注入会被拒绝。
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
 

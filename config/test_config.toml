@@ -1,46 +1,24 @@
-# ============================================
-# Nebula ID 测试配置文件
-# ============================================
-#
-# 说明:
-#   - 此文件为测试脚本提供默认配置
-#   - 环境变量会覆盖此文件的配置
-#   - 优先级: 环境变量 > 配置文件 > 默认值
-#
-# 使用方法:
-#   1. 复制此文件并重命名为 test_config.toml
-#   2. 修改配置值
-#   3. 运行测试脚本
-#
-# 环境变量覆盖示例:
-#   export NEBULA_API_BASE="http://your-server:8080"
-#   export TEST_AUTH_HEADER="Authorization: Basic ..."
-#
-# ============================================
+# Nebula ID 测试脚本默认配置；环境变量覆盖文件值（优先级：环境变量 > 配置文件 > 默认值）。
+# 用法：复制本文件为 test_config.toml 后修改并运行测试脚本。
 
 # API 服务器配置
 [api]
-# API 基础地址
-# 环境变量: NEBULA_API_BASE
+# API 基础地址；环境变量 NEBULA_API_BASE 覆盖。
 api_base = "http://localhost:8080"
 
 # 认证配置
 [auth]
-# 认证头格式
-# 环境变量: TEST_AUTH_HEADER
-# 示例格式: "Authorization: Basic dGVzdC1rZXktaWQ6dGVzdC1zZWNyZXQ="
+# 认证头；环境变量 TEST_AUTH_HEADER 覆盖，格式 "Authorization: Basic <base64>"。
 auth_header = ""
 
 # 测试工作空间配置
 [workspace]
-# 默认测试工作空间
-# 环境变量: TEST_WORKSPACE
+# 默认测试工作空间；环境变量 TEST_WORKSPACE 覆盖。
 default_workspace = "test-workspace"
 
 # 测试参数配置
 [test]
-# 是否在测试后清理数据
-# 环境变量: CLEANUP_ENABLED (true/false)
+# 是否在测试后清理数据；环境变量 CLEANUP_ENABLED 覆盖。
 cleanup_enabled = true
 
 # 并发测试配置

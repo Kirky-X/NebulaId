@@ -19,9 +19,7 @@ name = "nebula-id"
 path = "src/main.rs"
 required-features = ["server"]
 
-# 集成测试引用 server 门控面（nebulaid::server/axum/sdforge），声明
-# required-features 使剪裁组合（--no-default-features 系）自动跳过，
-# 而非编译失败（与 bins 的 required-features 同一机制）。
+# 集成测试引用 server 门控面，required-features 使剪裁组合自动跳过而非编译失败。
 [[test]]
 name = "i18n_e2e"
 path = "tests/i18n_e2e.rs"
@@ -33,114 +31,54 @@ path = "tests/audit_ring_stall_repro.rs"
 required-features = ["server"]
 
 [features]
-# 特性模型（模块级门控）：
-# - `--all-features` 可构建（= default + etcd + alerting + sdk +
-#   integration-tests + openapi）。dbnexus 的 embedded/server 互斥不再被触发：
-#   sqlite feature 已删除，dbnexus/postgres 仅由本清单的 postgresql 声明控制。
-# - `--no-default-features` 是有效的轻量编译目标：按需启用算法特性
-#   （如 `--features uuid-v8`）即得纯算法路径；database/server/alerting
-#   未启用时对应模块经 cfg 门控排除（CI fmt-clippy job 钉住该组合）。
-#   core::database 仅随 `database`（经 segment/server 蕴含，SDK 仓储面经
-#   sdk,database 组合）参与编译。
+# 特性模型（模块级门控）：--all-features 可构建；--no-default-features 为有效轻量目标（未启用模块经 cfg 门控排除）。
 default = ["server", "segment", "snowflake", "uuid-v8", "uuid-v5", "uuid-v4", "uuid-v7", "postgresql", "garrison-auth"]
 postgresql = ["dbnexus/postgres"]
 etcd = ["dep:etcd-client"]
-# 分层与算法特性（feature-isolation）：database 为仓储层开关，
-# segment 蕴含 database；snowflake/uuid-v8/uuid-v5/uuid-v4/uuid-v7 为零 DB
-# 叶子算法；server 为整层开关（蕴含 database + http/grpc + Web/gRPC 全栈依赖）。
+# database 为仓储层开关（segment 蕴含 database）；snowflake/uuid-v* 为零 DB 叶子算法；server 为整层开关。
 database = ["dep:dbnexus", "dep:sea-orm", "dep:argon2", "dep:subtle"]
 segment = ["database"]
 snowflake = []
 uuid-v8 = []
-# uuid-v5: RFC 9562 §5.5 name-based 确定性派生（src/core/algorithm/uuid_v5.rs）。
-# 与 snowflake/uuid-v8 同为可独立启用的零 DB 叶子特性：纯函数（无时钟、无
-# 协调、无状态），随 uuid-v5 门控的 derive_uuid_v5/derive_uuid_v5_batch 与
-# SDK 方法构成该特性的全部代码面。入 default：语义是零成本（仅 uuid crate 一个
-# feature flag，传递依赖 sha1_smol 在 HEAD 的 Cargo.lock 已存在（redis 路径），
-# 零新增 crate 节点；不为省它引入同 crate 双依赖名的 optional 重复依赖写法）。
+# uuid-v5: RFC 9562 §5.5 name-based 确定性派生；零 DB 叶子特性，纯函数（无时钟/协调/状态）。
 uuid-v5 = []
-# uuid-v4: RFC 9562 §5.4 随机 UUID 发号（src/core/algorithm/uuid_v4.rs）。零 DB
-# 叶子特性（零状态：无时钟、无计数器、无协调）。独占能力：122 位不可猜测 +
-# 完全零元数据（连创建时间都不泄漏）——request id / 能力令牌类场景。
+# uuid-v4: RFC 9562 §5.4 随机发号；零 DB 叶子特性。122 位不可猜测且完全零元数据，适合 request id/能力令牌。
 uuid-v4 = []
-# uuid-v7: RFC 9562 §5.7 时间有序 UUID 发号（src/core/algorithm/uuid_v7.rs）。
-# 零 DB 叶子特性（零自持状态：uuid crate 进程级单调上下文即得进程内保序）。
-# 独占能力：标准时间有序布局（时间戳可被任何 RFC 9562 工具直取）+ 零配置
-# （无 dc/worker/shard，不泄漏部署拓扑）。三者 v4/v7/v8 正交分工：
-# v8 独占租户上下文嵌入，v5 独占确定性派生。
+# uuid-v7: RFC 9562 §5.7 时间有序发号；零 DB 叶子特性。时间戳可直取，无 dc/worker/shard 不泄漏部署拓扑。
 uuid-v7 = []
 server = ["database", "http", "grpc", "sdforge/http", "sdforge/grpc", "sdforge/openapi", "sdforge/context", "sdforge/docs", "dep:oxcache", "dep:inklog", "dep:axum", "dep:tonic", "dep:tonic-prost", "dep:prost", "dep:utoipa", "dep:limiteron", "dep:tokio-stream", "dep:metrics-exporter-prometheus"]
-# alerting: 门控告警子系统(src/core/monitoring 的 AlertManager/AlertRule/
-# 告警状态机/通知通道/broadcast 事件流)与 webhook 分发 reqwest 路径。
-# 生产路径默认不含以缩小产物；CI test job 经 --all-features 覆盖，
-# 本地 plain `cargo test` 需 --features alerting 恢复告警单测。
+# alerting: 门控告警子系统（AlertManager/规则/状态机/通知通道/broadcast）与 webhook 分发；默认不含以缩小产物。
 alerting = ["dep:reqwest"]
 # integration-tests: 门控需要真实数据库的 #[ignore] 集成测试
 integration-tests = []
-# sdforge 宏在 #[forge] 展开时 emit #[cfg(feature = "http"/"grpc"/"openapi")]，
-# 这里声明空镜像 feature 使其在 nebulaid crate 上下文中求值为 true。
-# 缺 openapi 镜像 feature 时，#[forge] 的 OpenAPI 路由信息不注册，
-# /api-docs/openapi.json 的 paths 为空。
+# sdforge 宏 emit 的 cfg 镜像 feature；缺 openapi 时 #[forge] 不注册 OpenAPI 路由（paths 为空）。
 http = []
 grpc = []
 openapi = []
-# garrison-auth: 启用 garrison 接管 API key 验证（替代手写 Argon2id + key_id:key_secret 方案）
+# garrison-auth: 门控 garrison 集成（认证防爆破 BruteForceStrategy + 进程内 DAO/BoundedDao）。
 garrison-auth = ["dep:garrison"]
-# sdk: 门控嵌入式 SDK facade（src/sdk/，Kit 范式装配）。
-# 引入 trait-kit（async/lifecycle/health）：SDK 以 AsyncKit 模块化装配
-# （分布式锁/仓储/路由/ID 生成，仓储模块随 `database` 门控），依赖图由
-# kit.build() 校验，取代手写顺序装配。不开 sdk 的构建不含 trait-kit
-#（依赖树零影响）。
-# 蕴含 openapi：SDK 示例（sdk_server）需产出含路径的 OpenAPI 文档。
-# 不蕴含 database：仓储面（RepositoryModule/with_repository/has_repository）
-# 随 `database` 特性 cfg 门控——纯算法嵌入方开 sdk 得零 DB 编译树；
-# 需要仓储的组合显式启用 sdk,database（或经 segment/server 间接蕴含）。
+# sdk: 门控嵌入式 SDK facade（src/sdk/）；蕴含 openapi，不蕴含 database；不开 sdk 时依赖树零影响。
 sdk = ["openapi", "dep:trait-kit"]
 
-# sdforge 宏还 emit 其他内部 feature 的 cfg gate，声明为已知 cfg 值以消除 check-cfg 警告
+# sdforge 宏 emit 的其他内部 feature cfg gate，声明为已知 cfg 值以消除 check-cfg 警告。
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = [
     'cfg(feature, values("http", "grpc", "cli", "mcp", "openapi", "websocket", "streaming", "cache", "logging", "inklog", "i18n", "security", "ratelimit", "ratelimit-http", "docs", "lifecycle", "limiteron-integration", "kit"))',
 ] }
 
 [dependencies]
-# 自研生态（Kirky-X）：统一走 crates.io registry（与 garrison/sdforge 等同一
-# RC 波次），不再使用 ../base、../garrison 兄弟仓库路径依赖——本仓库可独立
-# 构建，CI 无需 checkout 兄弟目录。pre-release 语义下 req 下界即各库当前
-# 最新发布版，后续小版本按 semver 自动上浮。
-# confers: 0.6.0-rc.6 是热加载收编的最低依赖版本——watcher::HotReloader 与
-# hot-reload-kit feature 自 rc.6 起提供（rc.5 仅 watch/progressive-reload），
-# req ^0.6.0-rc.5 本就按 semver 上浮至此。hot-reload-kit = watch +
-# progressive-reload，watch 不再单独声明。
+# 自研生态（Kirky-X）：统一走 crates.io registry，不再使用兄弟仓库路径依赖，本仓库可独立构建、CI 无需 checkout 兄弟目录。
+# confers: 0.6.0-rc.6 起提供 watcher::HotReloader 与 hot-reload-kit（热加载最低依赖版本）。
 confers = { version = "0.6.0-rc.6", features = ["interpolation", "hot-reload-kit"] }
 oxcache = { version = "0.5.0-rc.4", optional = true }
-# dbnexus 的 migration feature 经 sqlparser 拉重依赖，且全仓零使用——
-# 本仓 DDL/幂等升级走 sea-orm execute_unprepared（connection.rs
-# run_migrations），不消费 dbnexus 的迁移编排面，按规则 12 不启用。
+# dbnexus: 不启用 migration（sqlparser 重依赖且零使用）；DDL 走 sea-orm execute_unprepared。
 dbnexus = { version = "0.6.0-rc.5", optional = true, default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
 sdforge = { version = "0.5.0-rc.5", default-features = false }
 inklog = { version = "0.3.0-rc.5", optional = true, default-features = false, features = ["fast-masking"] }
-# fast-masking：Aho-Corasick 多模式脱敏加速（凭证/密钥类日志字段的
-# 自动脱敏是本服务合规刚需；开 feature 即得，无接线代码）
-# garrison: 一站式身份认证框架（同作者 Kirky.X），通过 garrison-auth feature 启用，
-# 接管 API key 防爆破滑窗与封禁存储（BruteForceStrategy），并提供进程内 DAO
-# （InMemoryDao，经本仓 server::auth 门面消费，外箍 BoundedDao 容量阀）。
-# 实际消费面只有 firewall-bruteforce（strategy::firewall::brute_force）与
-# 无特性门控的 dao 模块；web-axum / protocol-apikey / cache-memory 三个特性
-# 全仓零使用（API key 校验始终是 NebulaId 自有 repo.validate_api_key），
-# 按规则 12 显式最小化，不为它们白拉依赖树。
-# 0.9.0-rc.1 起内部与本项目同一 RC 波次（confers 0.6.0-rc.6 / oxcache 0.5.0-rc.4 /
-# sdforge 0.5.0-rc.5 / inklog 0.3.0-rc.5），旧 0.8.x 的类型不跨边界技术债已随升级收敛。
-# rc.2 是 firewall-bruteforce 的最低可用版本：rc.1 的 limiteron/ban.rs 对
-# limiteron::BanTarget 非穷尽匹配（缺 Cidr 变体），开启该 feature 即编译失败。
-# rc.2 连带要求 limiteron ^0.3.0-rc.5，故 limiteron 同步上浮；两者均在既有 req
-# 边界内，非主动升级。
+# fast-masking: Aho-Corasick 多模式脱敏加速；凭证/密钥类日志字段自动脱敏是合规刚需，开 feature 即得。
+# garrison: 同作者认证框架；rc.2 为 firewall-bruteforce 最低可用版（rc.1 编译失败），需 limiteron ^0.3.0-rc.5。
 garrison = { version = "0.9.0-rc.2", optional = true, default-features = false, features = ["firewall-bruteforce"] }
-# trait-kit: 模块定义标准接口与 Kit 能力管理中心（同作者自研生态，
-# garrison/limiteron/dbnexus/sdforge 均提供 trait-kit 集成面）。
-# 锁定 0.5.0-rc.6（与 confers 0.6.0-rc.6 / garrison 0.9.0-rc.2 同一 RC 生态）；
-# 正式版发布后按 semver 上浮。
-# 仅 sdk feature 拉入（dep:trait-kit）：不开 sdk 的构建依赖树零影响。
+# trait-kit: 模块标准接口与 Kit 能力管理中心；仅 sdk feature 拉入（dep:trait-kit），不开 sdk 依赖树零影响。
 trait-kit = { version = "0.5.0-rc.6", optional = true, default-features = false, features = ["async", "lifecycle", "health"] }
 
 # 工具
@@ -154,23 +92,17 @@ tokio = { version = "1.53", features = ["fs", "io-util", "macros", "net", "rt", 
 tokio-stream = { version = "0.1", optional = true }
 futures-util = "0.3"
 
-# Web 框架：axum 直接依赖（0.5.0-rc.4 的 sdforge::axum 精选门面收窄，
-# 不再导出 body::to_bytes/extract::State/routing::delete/http::* 等；
-# tower/tower-http/tonic/prost/utoipa 仍走 sdforge 整体 re-export）。
-# 版本必须与 sdforge 内部 axum 同 minor（0.8），保证 Router 跨边界类型一致。
+# axum: 直接依赖（sdforge::axum 门面收窄）；版本须与 sdforge 内部同 minor（0.8），保证 Router 跨边界类型一致。
 axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "form", "matched-path", "original-uri", "query", "tokio"] }
 
 # gRPC / Protobuf（通过 sdforge::tonic / sdforge::prost re-export使用）
 
-# Derive 宏直接依赖：展开时生成 `::crate_name::` 绝对路径，必须是直接依赖。
-# 属性宏通过 `#[sdforge::crate::macro]` 调用，不受 extern prelude 限制。
+# Derive 宏直接依赖：展开时生成 ::crate_name:: 绝对路径，属性宏经 #[sdforge::crate::macro] 调用。
 utoipa = { version = "5.5", optional = true, default-features = false, features = ["macros", "uuid", "chrono"] }
 prost = { version = "0.14", optional = true, default-features = false, features = ["derive"] }
 sea-orm = { version = "2.0", optional = true, default-features = false, features = ["macros", "with-json", "with-uuid", "with-chrono"] }
 tonic-prost = { version = "0.14", optional = true, default-features = false }
-# 直接依赖 tonic：仅为启用 `tls` 特性（sdforge 的 tonic 未开该特性，
-# transport::{Certificate, Identity, ServerTlsConfig} 被特性门控）。
-# 特性联合使 sdforge::tonic 指向同一构建体，版本须与 sdforge 内部一致（0.14）。
+# tonic: 直接依赖仅为启用 tls 特性（sdforge 的 tonic 未开）；版本须与 sdforge 内部一致（0.14）。
 tonic = { version = "0.14", optional = true, default-features = false, features = ["transport", "tls-ring"] }
 
 # 分布式协调
@@ -182,38 +114,24 @@ parking_lot = "0.12"
 # 日志追踪（tracing-subscriber 由 inklog 间接引入，日志初始化通过 inklog 接管）
 tracing = "0.1"
 
-# 指标（metrics facade + Prometheus 文本 exporter）：
-# /metrics 渲染路径把既有原子快照灌入 exporter 自有 registry（见
-# router.rs PrometheusMetricsBridge），generate 热路径零改动。
-# http-listener/push-gateway 不启用——指标经本服务自身 HTTP 端点暴露，
-# 不另起监听器。
-# metrics 0.24 起无任何 feature 开关（facade 本体），default-features = false 为显式表态。
+# metrics: /metrics 经 exporter 自有 registry 渲染既有原子快照（generate 热路径零改动）；不自起监听器。
 metrics = { version = "0.24", default-features = false }
 metrics-exporter-prometheus = { version = "0.18", optional = true, default-features = false }
 
 # 工具库
-# v5 无条件开在依赖面（本依赖恒编译）；使用侧经 uuid-v5 特性门控。
-# v5 = RFC 9562 name-based（SHA-1）确定性派生的既定原语，与 etyma 等
-# 消费方的 Uuid::new_v5 同 crate 同版本，保证派生数值逐位兼容。
-# 传递依赖为 sha1_smol（uuid crate 内部经其实现 SHA-1）；e21834c 起已
-# 在 Cargo.lock（oxcache rc.6 → redis 1.7 路径引入），本 feature 只增
-# 一条 uuid→sha1_smol 依赖边、零新增 crate 节点（v5 与 v8 叶子包集合
-# 实测相同）。
+# uuid: v5 无条件开在依赖面（使用侧经 uuid-v5 门控）；与消费方 Uuid::new_v5 同 crate 同版本，保证派生数值逐位兼容。
 uuid = { version = "1.26", features = ["v4", "v7", "v8", "v5", "serde"] }
-# serde：AuditEvent（无条件编译）的 Serialize/Deserialize 派生含 DateTime<Utc>
-# 字段；此前经 sea-orm with-chrono 传递启用，sea-orm 转 optional 后须显式声明。
+# chrono: AuditEvent 的 serde 派生含 DateTime<Utc> 字段；sea-orm 转 optional 后须显式声明。
 chrono = { version = "0.4", features = ["std", "serde"] }
 hex = "0.4"
 base64 = "0.23"
 sha2 = "0.11"
 rand = "0.10"
 subtle = { version = "2.6", optional = true }
-# Argon2id 用于 API key 密钥哈希（CWE-916 修复）；0.6 起 std 废弃，salt 的
-# OsRng 由 getrandom feature 提供
+# argon2: API key 密钥哈希（CWE-916 修复）；0.6 起 std 废弃，OsRng 由 getrandom feature 提供。
 argon2 = { version = "0.6", optional = true, default-features = false, features = ["alloc", "password-hash", "getrandom"] }
 reqwest = { version = "0.13", optional = true, default-features = false, features = ["json", "rustls"] }
-# validator: 经 sdforge::validator re-export 消费（0.5.0-rc.5 起提供该面，
-# http feature 门控；本 crate 的 sdforge 依赖恒开 http），直接依赖移除。
+# validator 经 sdforge::validator re-export 消费（http 门控且本 crate 恒开），不列直接依赖。
 serde_with = "3.23"
 
 # 错误处理
@@ -228,24 +146,10 @@ smallvec = "1.16"
 url = "2.5"
 
 # 速率限制和流量控制
-# 注：postgres / quota-control / ban-manager / audit-log / circuit-breaker
-# features 全仓零使用（只消费 core 的 TokenBucketLimiter / ConcurrencyLimiter /
-# Limiter 原语与 error/limiters 无条件模块），不启用——这同时解除了
-# limiteron → dbnexus ^0.4 的传递约束（postgres feature 是 optional dbnexus
-# 的开关）。garrison 的 firewall-bruteforce 按其自身依赖关系拉取
-# limiteron/ban-manager，与本行声明正交。
-# req 写下界 0.3.0-rc.4 的上浮终点：garrison 0.9.0-rc.2 自身要求
-# ^0.3.0-rc.5，且 Cargo 在既有 req 边界内解析到 rc.6（同 RC 波次）。
+# limiteron: 只消费 core 原语，postgres/quota-control/ban-manager 等 feature 全仓零使用不启用。
 limiteron = { version = "0.3.0-rc.5", optional = true, default-features = false }
 
-# 国际化（统一基线 unify-rust-i18n：Fluent/ICU 栈，替换 rust-i18n YAML 后端）。
-# - FTL 资源 locales/{en,zh}/messages.ftl 经 include_str! 编译期内嵌，键集在
-#   init 期注册进 sdforge i18n（2026-10-10 selfdev-lib-adoption-r1 条目 8 收编，
-#   fluent-bundle / unic-langid 两个直接依赖随之移除）；
-# - sys-locale：系统语言自动探测（检测链见 main.rs resolve_locale：
-#   NEBULA_LOCALE → config.app.locale → LC_ALL/LC_MESSAGES/LANG → sys-locale → en）。
-# - icu 按需不引入：本项目消息均为纯文本插值（t!/translate_with_locale），
-#   无数字/日期/复数/排序格式化需求（见 design.md Non-Goals）。
+# sys-locale: 系统语言自动探测（检测链见 main.rs）；FTL 资源编译期内嵌，icu 按需不引入（消息纯文本插值）。
 sys-locale = "0.3"
 
 [dev-dependencies]
@@ -273,8 +177,7 @@ name = "auth_cache_adoption"
 harness = false
 required-features = ["server", "garrison-auth"]
 
-# SDK 示例 —— 仅启用 `sdk` 特性时构建（示例引用被 #[cfg(feature = "sdk")]
-# 门控的 `nebulaid::sdk`）。未启用时 `cargo build`/`cargo test` 跳过它们。
+# SDK 示例：仅启用 sdk 特性时构建（引用被 cfg 门控的 nebulaid::sdk），未启用时 cargo build/test 跳过。
 [[example]]
 name = "embedded"
 required-features = ["sdk"]

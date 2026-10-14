@@ -52,6 +52,16 @@ pub fn derive_uuid_v5_batch(pairs: &[(Uuid, &str)]) -> Result<Vec<Id>> {
         .collect()
 }
 
+/// 字节级确定性派生：与 [`derive_uuid_v5`] 同算法（SHA-1(namespace 网络序
+/// || name)），差异仅在 name 已是原始字节、不再经 UTF-8 编解码。
+///
+/// 消费方把 v5 键建在非文本负载上时（如 u64 偏移的 16 字节大端缓冲，含
+/// ≥0x80 字节、非法 UTF-8）必须走本函数；与 `Uuid::new_v5(ns, bytes)` 逐位
+/// 一致，数值契约不因切换原语而变。
+pub fn derive_uuid_v5_bytes(namespace: Uuid, name: &[u8]) -> Result<Id> {
+    Ok(Id::from_uuid_v8(Uuid::new_v5(&namespace, name)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,5 +139,32 @@ mod tests {
 
         let nil_id = derive_uuid_v5(Uuid::nil(), "etyma.dev/sense/v1").unwrap();
         assert_eq!(canonical(&nil_id), "ec7527a2-140f-51b0-9d78-23badb6adcf8");
+    }
+
+    /// 字节级入口与文本入口口径一致：ASCII name 走两条路径同值，且非 UTF-8
+    /// 负载（u64 大端缓冲形）与 `Uuid::new_v5(ns, bytes)` 逐位一致。
+    #[test]
+    fn test_bytes_entry_matches_uuid_crate() {
+        let ns = ecdict_namespace();
+
+        // ASCII 负载应能经文本入口复算（两条路径同算法）。
+        let via_str = derive_uuid_v5(ns, "ecdict|ad|en").unwrap();
+        let via_bytes = derive_uuid_v5_bytes(ns, b"ecdict|ad|en").unwrap();
+        assert_eq!(via_str, via_bytes);
+
+        // u64 大端 + 8×NUL 缓冲（etyma WordNet synset_uuid 的构造，含 ≥0x80
+        // 字节、非法 UTF-8）：与 uuid crate 逐位一致是迁移的数值契约。
+        let mut buf = [0u8; 16];
+        buf[..8].copy_from_slice(&12345678u64.to_be_bytes());
+        let id = derive_uuid_v5_bytes(ns, &buf).unwrap();
+        assert_eq!(
+            id.to_uuid_v8(),
+            Uuid::new_v5(&ns, &buf),
+            "byte-level derive must be bit-identical to Uuid::new_v5"
+        );
+
+        // name 为空（纯 namespace 哈希）不为错误路径。
+        let empty = derive_uuid_v5_bytes(ns, &[]).unwrap();
+        assert_eq!(empty.to_uuid_v8(), Uuid::new_v5(&ns, &[]));
     }
 }

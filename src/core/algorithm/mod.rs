@@ -22,7 +22,10 @@ pub(crate) mod uuid_v8;
 // RFC 9562 v5 确定性派生的稳定公开路径：直调消费者（嵌入方不需要 Kit 装配）
 // 与 SDK 薄包装（IdGenerator::derive_uuid_v5）共用同一实现。
 #[cfg(feature = "uuid-v5")]
-pub use uuid_v5::{derive_uuid_v5, derive_uuid_v5_batch};
+pub use uuid_v5::{derive_uuid_v5, derive_uuid_v5_batch, derive_uuid_v5_bytes};
+// RFC 9562 §5.4 v4 同步发号叶子入口：发电电路径（UuidV4Impl）与同步调用点共用同一实现。
+#[cfg(feature = "uuid-v4")]
+pub use uuid_v4::mint_uuid_v4;
 
 pub use traits::*;
 

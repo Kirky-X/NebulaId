@@ -21,6 +21,17 @@ use crate::core::algorithm::{
 use crate::core::config::Config;
 use crate::core::HealthStatus;
 
+/// RFC 9562 §5.4 随机 UUID v4 发号（同步叶子入口）。
+///
+/// 与 [`UuidV4Impl`] 的发电电路径共用同一实现（`generate_inner` 即委托本函数），
+/// 差异仅在同步/异步：消费方把 v4 用在同步调用点（错误信封 trace_id、仓储插入
+/// 等）时无需为一次 122 位随机数拉起 async 工厂面。
+///
+/// 零状态：无时钟、无计数器、无协调、无 DB；互异性由生日界保证。
+pub fn mint_uuid_v4() -> Uuid {
+    Uuid::new_v4()
+}
+
 /// RFC 9562 §5.4 随机 UUID v4 发号器。
 /// 零状态：无时钟、无计数器、无协调、无 DB——互异性由 122 位随机的
 /// 生日界保证（任意现实速率下可忽略）。每次调用产出不可预测、无任何
@@ -33,7 +44,7 @@ impl UuidV4Impl {
     }
 
     async fn generate_inner(&self) -> Result<Id> {
-        Ok(Id::from_uuid_v8(Uuid::new_v4()))
+        Ok(Id::from_uuid_v8(mint_uuid_v4()))
     }
 }
 
@@ -125,6 +136,18 @@ mod tests {
         let v = id.to_uuid_v8().as_u128();
         assert_eq!((v >> 76) & 0xF, 4, "version nibble must be 4");
         assert_eq!((v >> 62) & 0x3, 0b10, "variant must be 0b10");
+    }
+
+    /// 同步叶子入口与原语同源：version/variant 位与随机分布形貌一致。
+    #[test]
+    fn test_mint_uuid_v4_bits_and_uniqueness() {
+        let mut set = std::collections::HashSet::new();
+        for _ in 0..1000 {
+            let u = mint_uuid_v4();
+            assert_eq!(u.get_version_num(), 4, "version nibble must be 4");
+            assert_eq!((u.as_u128() >> 62) & 0x3, 0b10, "variant must be 0b10");
+            assert!(set.insert(u.as_u128()), "1000 次发号不得重复");
+        }
     }
 
     /// 与 `Uuid::new_v4` 同源布局：canonical 字符串 parse roundtrip 无损。

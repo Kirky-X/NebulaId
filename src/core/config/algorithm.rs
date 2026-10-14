@@ -31,12 +31,11 @@ impl Default for SegmentAlgorithmConfig {
     }
 }
 
-/// 防猜测混淆配置（change: fix-audit-defects-r1）。
+/// 防猜测混淆配置。
 #[derive(Clone, Default, Deserialize, Serialize)]
 pub struct ObfuscationConfig {
-    /// 部署混淆密钥：16 个 hex 字符 = u64。None 时 `IdFormat::Obfuscated`
-    /// 渲染显性报错（fail-closed，不生成默认弱密钥）。同一部署所有实例
-    /// 必须持同一密钥，否则编码结果互不一致。
+    /// 部署混淆密钥：16 个 hex 字符 = u64。None 时 `IdFormat::Obfuscated` 渲染显性报错
+    /// （fail-closed，不生成默认弱密钥）；同一部署所有实例必须持同一密钥。
     #[serde(default)]
     pub key_hex: Option<String>,
 }
@@ -51,9 +50,9 @@ impl std::fmt::Debug for ObfuscationConfig {
 }
 
 impl ObfuscationConfig {
-    /// 解析密钥为 [`crate::core::types::obfuscation::IdObfuscator`]。
-    /// 未配置返回 `Ok(None)`；hex 非法返回 `Err`（SDK 直构路径绕过
-    /// `Config::validate` 时，不得把"配错格式"伪装成"未配置"）。
+    /// 解析密钥为 [`crate::core::types::obfuscation::IdObfuscator`]：未配置返回 `Ok(None)`；
+    /// hex 非法返回 `Err`（SDK 直构路径绕过 `Config::validate` 时，不得把「配错格式」
+    /// 伪装成「未配置」）。
     pub fn obfuscator(
         &self,
     ) -> Result<Option<crate::core::types::obfuscation::IdObfuscator>, String> {
@@ -80,13 +79,12 @@ pub struct SnowflakeAlgorithmConfig {
     pub sequence_bits: u8,
     /// Clock drift threshold (milliseconds)
     pub clock_drift_threshold_ms: u64,
-    /// 重启时钟守卫：运行期把最后发号时间戳持久化到 `./data/`，启动时
-    /// 检测跨重启时钟回拨并 fail-closed（默认开启）。关闭后回拨检测
-    /// 只剩运行中阈值机制，跨重启重复 ID 风险自负。
+    /// 重启时钟守卫：运行期把最后发号时间戳持久化到 `./data/`，启动时检测跨重启时钟
+    /// 回拨并 fail-closed（默认开启）；关闭后仅剩运行中阈值检测，重复 ID 风险自负。
     #[serde(default = "default_true")]
     pub state_guard: bool,
-    /// 守卫状态文件目录（缺省 `./data`，相对进程 CWD——容器化部署请给
-    /// 绝对路径；只读文件系统需配合 state_guard=false 或指定可写目录）。
+    /// 守卫状态文件目录（缺省 `./data`，相对进程 CWD——容器化部署请给绝对路径；只读
+    /// 文件系统需指定可写目录或配合 state_guard=false）。
     #[serde(default)]
     pub state_dir: Option<String>,
 }

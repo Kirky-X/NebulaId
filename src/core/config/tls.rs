@@ -10,9 +10,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
 pub enum TlsVersion {
-    /// TLS 1.2
     Tls12,
-    /// TLS 1.3 (推荐)
+    /// TLS 1.3（推荐，`Default` 取该值）
     #[default]
     Tls13,
 }

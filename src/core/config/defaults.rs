@@ -3,26 +3,14 @@
 
 //! 跨模块共享的默认值常量统一注册表。
 //!
-//! 收录规则：仅迁移被 **≥2 个文件**引用的 `DEFAULT_*` 常量；单文件使用的
-//! 常量保留在原定义处，不为搬而搬。历史教训见
-//! [`crate::core::config::auth`] 中 grace period 曾三处重复的自述。
+//! 仅收录被 ≥2 个文件引用的 `DEFAULT_*` 常量；单文件使用的保留在原定义处，不为搬而搬。
 
-/// API key 轮换宽限期默认值：`0` = 关闭。
+/// API key 轮换宽限期默认值：`0` = 关闭（不写 `prev_secret_hash`，上一代凭证立即失效）。
 ///
-/// `0` 表示轮换后上一代凭证立即失效：`rotate_api_key` 不写 `prev_secret_hash`
-/// / `rotate_expires_at`，`validate_api_key` 只校验当代凭证。需要"轮换不掉请求"
-/// 时由运维显式配置 `auth.key_rotation_grace_period_seconds`（上限 30 天）。
-/// 默认值取关闭而非 7 天：宽限期在语义上是"让一个已知/可能泄露的旧凭证继续有效"，
-/// 该取舍必须由显式配置承担，不能作为出厂默认。
-///
-/// 原定义于 `core/config/auth.rs`，因被 `core/config/auth.rs`（serde 默认值）与
-/// `server/handlers/mod.rs`（未注入配置时的兜底）两域共同消费而迁入本注册表；
-/// 全仓仅此一处定义。
+/// 关闭而非 7 天：宽限期在语义上是"让已知/可能泄露的旧凭证继续有效"，该取舍必须由
+/// 显式配置承担。需"轮换不掉请求"时由运维显式配置 `auth.key_rotation_grace_period_seconds`。
 pub const DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS: u64 = 0;
 
 /// 宽限期上限：30 天（秒）。超限值在配置校验阶段即被拒绝（fail-fast），
 /// 避免静默传递到 handler 层才被 clamp。
-///
-/// 提取为 `pub const`，与 `DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`
-/// 同属注册表，`Config::validate()` 直接引用。
 pub const MAX_KEY_ROTATION_GRACE_PERIOD_SECONDS: u64 = 30 * 24 * 60 * 60;

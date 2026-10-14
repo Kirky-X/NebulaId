@@ -7,7 +7,6 @@ pub mod metrics;
 pub mod obfuscation;
 pub mod segment_info;
 
-// Re-export HealthStatus from algorithm module for convenience
 pub use crate::core::algorithm::HealthStatus;
 
 pub use error::*;

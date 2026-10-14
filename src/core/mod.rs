@@ -14,7 +14,7 @@ pub mod i18n;
 pub mod monitoring;
 pub mod types;
 
-// Coordinator module - conditionally compiled based on feature flags
+// Coordinator module (按 feature 条件编译)
 pub mod coordinator;
 
 #[cfg(test)]
@@ -36,7 +36,6 @@ pub use config::{Config, TlsConfig};
 #[cfg(feature = "server")]
 pub use oxcache::Cache;
 
-// Re-export coordinator types that need to be accessed externally
 #[cfg(feature = "etcd")]
 pub use coordinator::{
     DistributedLock, EtcdClusterHealthMonitor, EtcdDistributedLock, EtcdLockGuard, LockError,

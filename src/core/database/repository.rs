@@ -1,12 +1,9 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! 仓储核心:`SeaOrmRepository` 类型、跨域共享构件（集中式语句超时 helper）
-//! 以及各资源域仓储模块（segment / workspace / biz_tag / api_key）的聚合 re-export。
-//!
-//! 仓储实现按资源域拆分到同级子模块；本模块保留类型定义与构造装配，
-//! 并对 trait 做 `pub use` 以维持 `crate::core::database::repository::XxxRepository`
-//! 既有路径可用（调用方零改动）。
+//! 仓储核心：`SeaOrmRepository` 类型、共享语句超时 helper，以及各资源域
+//! 仓储（segment/workspace/biz_tag/api_key）的聚合 re-export。
+//! 仓储实现按资源域拆到同级子模块，本模块保留类型定义与构造装配。
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -20,16 +17,11 @@ pub use crate::core::database::segment_repository::SegmentRepository;
 pub use crate::core::database::workspace_repository::{GroupRepository, WorkspaceRepository};
 use crate::core::types::Result;
 
-/// 语句超时默认值（秒）。与 `DatabaseConfig::statement_timeout_secs`
-/// 的 serde 默认一致；仓储未经 `with_statement_timeout` 接线配置时按此兜底。
+/// 语句超时默认值（秒）；与 `DatabaseConfig::statement_timeout_secs` 的 serde 默认一致。
 const DEFAULT_STATEMENT_TIMEOUT_SECS: u64 = 5;
 
-/// 集中式语句超时 helper：热查询经 `tokio::time::timeout` 包裹，
-/// 防止 DB 挂起拖死生成/认证热路径。
-///
-/// 超时错误映射选择既有 [`crate::core::CoreError::TimeoutError`]（而非
-/// `DatabaseError(String)`）：语义精确（调用方可匹配区分"慢"与"坏"），
-/// 且避免把超时伪装成 DB 故障误导告警。
+/// 集中式语句超时 helper：热查询经 `tokio::time::timeout` 包裹，防 DB 挂起拖死热路径。
+/// 超时映射为 `CoreError::TimeoutError`，调用方可匹配区分"慢"与"坏"。
 pub(crate) async fn with_statement_timeout<T, F>(timeout: Duration, fut: F) -> Result<T>
 where
     F: std::future::Future<Output = Result<T>>,
@@ -40,14 +32,12 @@ where
     }
 }
 
-/// 分割（`db` 为连接池廉价克隆、`key_hasher` 为 `Arc<dyn KeyHasher>`、
-/// `distributed_lock` 为 `Option<Arc<..>>`）；SDK Kit 化（trait-kit TypeMap
-/// 注入，`RepositoryInput` 需 `Clone`）依赖此 trait。
+/// 连接池句柄与各 `Arc` 字段均为廉价克隆；SDK Kit 化（trait-kit TypeMap
+/// 注入，`RepositoryInput` 需 `Clone`）依赖其 `Clone` 实现。
 #[derive(Clone)]
 pub struct SeaOrmRepository {
     pub(crate) db: dbnexus::sea_orm::DatabaseConnection,
-    /// API Key 凭证哈希器：默认 [`Argon2KeyHasher`]（pepper/salt 语义随实现体
-    /// 走），可经 [`Self::with_key_hasher`] 注入定制实现。
+    /// API Key 凭证哈希器：默认 [`Argon2KeyHasher`]，可经 [`Self::with_key_hasher`] 注入。
     pub(crate) key_hasher: Arc<dyn KeyHasher>,
     /// 分布式锁（可选，用于 segment 分配）
     #[cfg(feature = "etcd")]
@@ -57,13 +47,11 @@ pub struct SeaOrmRepository {
     #[cfg(not(feature = "etcd"))]
     pub(crate) distributed_lock:
         Option<std::sync::Arc<dyn crate::core::coordinator::DistributedLock + Send + Sync>>,
-    /// last_used 写节流表：`key_id -> 上次触发 UPDATE 的时刻`。挂在 `Arc` 上
-    /// 是刻意的 —— `SeaOrmRepository` 按 `Clone` 传播（SDK Kit 化克隆连接池），
-    /// 各克隆必须共享同一份节流状态，否则节流形同虚设。
+    /// last_used 写节流表：`key_id -> 上次触发 UPDATE 的时刻`。
+    /// 挂在 `Arc` 上是刻意的：克隆（SDK Kit 化）必须共享同一份节流状态。
     pub(crate) last_used_writes: Arc<Mutex<HashMap<String, Instant>>>,
-    /// 单语句执行超时。热查询经 `with_statement_timeout` 包裹；
-    /// 构造默认 [`DEFAULT_STATEMENT_TIMEOUT_SECS`]，可经
-    /// [`Self::with_statement_timeout`] 接线 `DatabaseConfig::statement_timeout_secs`。
+    /// 单语句执行超时；默认 [`DEFAULT_STATEMENT_TIMEOUT_SECS`]，
+    /// 可经 [`Self::with_statement_timeout`] 接线 `DatabaseConfig::statement_timeout_secs`。
     pub(crate) statement_timeout: Duration,
 }
 
@@ -71,9 +59,7 @@ impl SeaOrmRepository {
     pub fn new(db: dbnexus::sea_orm::DatabaseConnection, salt: String) -> Self {
         Self {
             db,
-            // 构造入口签名（`db`, `salt`）保持不变：默认提供 Argon2id 哈希器
-            // fallback，既有装配（main.rs / sdk::kit / router / management）
-            // 零改动；定制实现经 [`Self::with_key_hasher`] 注入。
+            // 签名（db, salt）不变，默认 Argon2id；定制哈希器经 with_key_hasher 注入。
             key_hasher: Arc::new(Argon2KeyHasher::new(salt)),
             distributed_lock: None,
             last_used_writes: Arc::new(Mutex::new(HashMap::new())),
@@ -98,12 +84,8 @@ impl SeaOrmRepository {
         self
     }
 
-    /// Inject a distributed lock implementation (fix).
-    ///
-    /// 生产环境必须调用此方法注入分布式锁，否则 `allocate_segment` 会返回
-    /// `ConfigurationError`。默认构建（无 etcd feature）可注入
-    /// `LocalDistributedLock`（进程内互斥），etcd feature 构建可注入
-    /// `EtcdDistributedLock`。
+    /// 注入分布式锁实现：未注入时 `allocate_segment` 返回 `ConfigurationError`。
+    /// 无 etcd 构建可注入 `LocalDistributedLock`，etcd 构建注入 `EtcdDistributedLock`。
     pub fn with_distributed_lock(
         mut self,
         lock: std::sync::Arc<dyn crate::core::coordinator::DistributedLock + Send + Sync>,
@@ -112,7 +94,7 @@ impl SeaOrmRepository {
         self
     }
 
-    /// Get the underlying database connection for advanced operations
+    /// 获取底层数据库连接（高级操作用）。
     pub fn get_db_connection(&self) -> &dbnexus::sea_orm::DatabaseConnection {
         &self.db
     }
@@ -138,10 +120,7 @@ impl SeaOrmRepository {
     }
 
     /// 读取注入的分布式锁（兼容/诊断用途）。
-    ///
-    /// 号段分配自 改为单语句原子 `UPDATE ... RETURNING`，并发正确性由
-    /// 数据库行锁保证，**热路径不再获取该锁**；注入 setter 与本读取器仅为
-    /// 兼容既有装配 API（main.rs / sdk::kit）而保留。
+    /// 号段分配已改为单语句原子 UPDATE，热路径不再取锁；保留仅为兼容既有装配 API。
     pub fn distributed_lock(
         &self,
     ) -> Option<&std::sync::Arc<dyn crate::core::coordinator::DistributedLock + Send + Sync>> {
@@ -162,9 +141,7 @@ mod mock_tests {
     use crate::core::database::group_entity::Model as GroupModel;
     use crate::core::database::segment_entity::Model as SegmentModel;
     use crate::core::database::workspace_entity::Model as WorkspaceModel;
-    // Fix path resolution: tests below use `workspace_entity::Model` etc. as
-    // path expressions, which requires the modules themselves to be in scope
-    // (the `use` imports above only bring the `Model` aliases into scope).
+    // 测试用 `workspace_entity::Model` 等路径表达式，需要模块本身在作用域内。
     use crate::core::database::testing::*;
     use crate::core::database::{
         api_key_entity, biz_tag_entity, group_entity, segment_entity, workspace_entity,
@@ -216,12 +193,12 @@ mod mock_tests {
         assert_eq!(repo.statement_timeout, Duration::from_secs(2));
     }
 
-    // --- SeaOrmRepository constructor helpers ---
+    // --- SeaOrmRepository 构造 helper ---
 
     #[test]
     fn test_new_does_not_panic_with_mock_db() {
         let repo = SeaOrmRepository::new(empty_pg_connection(), "salt".to_string());
-        // Smoke check: get_db_connection returns a reference.
+        // 冒烟检查：get_db_connection 可返回引用。
         let _ = repo.get_db_connection();
     }
 
@@ -230,7 +207,7 @@ mod mock_tests {
         let lock: Arc<dyn DistributedLock + Send + Sync> = Arc::new(DummyDistributedLock);
         let repo = SeaOrmRepository::new(empty_pg_connection(), "salt".to_string())
             .with_distributed_lock(lock);
-        // 后锁仅为兼容注入保留（号段热路径不再取锁），getter 可诊断。
+        // 锁仅为兼容注入保留（号段热路径不再取锁），getter 可诊断。
         assert!(repo.distributed_lock().is_some());
     }
 
@@ -241,22 +218,13 @@ mod mock_tests {
         assert!(repo.distributed_lock().is_some());
     }
 
-    // ==================================================================
-    // Additional error-path coverage (Phase 2 P0: bring repository.rs to ≥95%)
-    //
-    // These tests close the remaining gaps in map_err closure coverage
-    // for find/exec/insert calls that previously only had success-path
-    // tests. Each test forces a DbErr and asserts it propagates as
-    // CoreError::DatabaseError.
-    // ==================================================================
+    // ===== 补充 error-path 覆盖：强制注入 DbErr，断言以 DatabaseError 传播 =====
 
-    // ----- DistributedLock::is_healthy coverage -----
+    // ----- DistributedLock::is_healthy 覆盖 -----
 
     #[test]
     fn test_dummy_distributed_lock_is_healthy_returns_true() {
-        // Cover the `fn is_healthy(&self) -> bool { true }` body in
-        // DummyDistributedLock (used as the "happy path" lock in segment
-        // allocation tests).
+        // 覆盖 DummyDistributedLock::is_healthy 的 true 分支（segment 分配测试的 happy path 锁）。
         let lock = DummyDistributedLock;
         assert!(
             lock.is_healthy(),
@@ -266,9 +234,7 @@ mod mock_tests {
 
     #[test]
     fn test_failing_distributed_lock_is_healthy_returns_false() {
-        // Cover the `fn is_healthy(&self) -> bool { false }` body in
-        // FailingDistributedLock (used to exercise the InternalError path
-        // in allocate_segment / allocate_segment_with_dc).
+        // 覆盖 FailingDistributedLock::is_healthy 的 false 分支（触发 allocate_segment 的 InternalError 路径）。
         let lock = FailingDistributedLock;
         assert!(
             !lock.is_healthy(),
@@ -277,37 +243,26 @@ mod mock_tests {
     }
 }
 
-/// Integration tests requiring a live database.
-///
-/// Gated behind the `integration-tests` feature so that default builds
-/// (and the coverage report) do not include the ~520 lines of `#[ignore]d`
-/// test bodies. Enable with `--features integration-tests` and supply a real
-/// `DATABASE_URL` together with `--ignored` to execute them.
+/// 需要真实数据库的集成测试，门控于 `integration-tests` feature：
+/// 以 `--features integration-tests` + 真实 `DATABASE_URL` + `--ignored` 运行。
 #[cfg(all(test, feature = "integration-tests"))]
 mod tests {
     use super::*;
     use dbnexus::sea_orm::{ConnectOptions, ConnectionTrait, Database, Statement};
-    // 请求/枚举类型需显式导入：仓储按资源域拆分后这些类型不再经
-    // `use super::*` 进入本模块作用域（本模块仅 integration-tests 构建
-    // 参与编译，拆分当时未被发现）。
+    // 请求/枚举类型需显式导入：仓储按资源域拆分后不再经 `use super::*` 进作用域。
     use crate::core::database::api_key_entity::{ApiKeyRole, CreateApiKeyRequest};
     use crate::core::database::biz_tag_entity::CreateBizTagRequest;
     use crate::core::database::group_entity::CreateGroupRequest;
     use crate::core::database::workspace_entity::CreateWorkspaceRequest;
 
     async fn setup_test_db(db: &dbnexus::sea_orm::DatabaseConnection) {
-        // 直接复用生产迁移建表（`nebula-id migrate` 的同一代码路径）。
-        // 此前手写 DDL 与实体定义漂移（表名 segments vs nebula_segments、
-        // key_id VARCHAR(36) vs VARCHAR(64)、status 枚举列 vs VARCHAR(20)），
-        // 在真实 PostgreSQL 上导致全部集成测试失败；以生产迁移为唯一
-        // schema 事实源后不再漂移。
+        // 复用生产迁移建表（唯一 schema 事实源），避免手写 DDL 与实体定义漂移。
         crate::core::database::connection::run_migrations(db)
             .await
             .unwrap();
     }
 
-    /// 测试连接 URL：注入 search_path（与生产 `create_connection` 同一
-    /// 规则），否则 sea-orm 枚举 CAST 解析不到 nebula_id 下的类型。
+    /// 测试连接 URL：注入 search_path（与生产 `create_connection` 同规则），否则枚举 CAST 解析不到。
     fn test_db_url() -> String {
         let raw = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
         crate::core::database::connection::ensure_pg_search_path(&raw)
@@ -322,7 +277,7 @@ mod tests {
 
         let repo = SeaOrmRepository::new(db, "test_salt".to_string());
 
-        // Use unique names to avoid conflicts
+        // 唯一命名避免冲突
         let unique_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
         let workspace_name = format!("test_workspace_{}", unique_id);
         let biz_tag = format!("test_tag_{}", unique_id);
@@ -368,7 +323,7 @@ mod tests {
 
         let repo = SeaOrmRepository::new(db, "test_salt".to_string());
 
-        // Use unique names to avoid conflicts
+        // 唯一命名避免冲突
         let unique_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
         let workspace_name = format!("test_workspace_{}", unique_id);
 
@@ -529,7 +484,7 @@ mod tests {
         assert_eq!(biz_tags_in_group2_after_delete.len(), 0);
     }
 
-    /// Test Admin API key prefix (niad_) is correctly applied
+    /// 验证 Admin API key 前缀 `niad_` 正确拼接。
     #[tokio::test]
     #[ignore]
     async fn test_admin_api_key_prefix() {
@@ -553,26 +508,26 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify key_id has correct prefix
+        // key_id 前缀正确
         assert!(
             admin_key.key.key_id.starts_with("niad_"),
             "Admin key_id should start with 'niad_', got: {}",
             admin_key.key.key_id
         );
 
-        // Verify key_prefix field matches
+        // key_prefix 字段一致
         assert_eq!(
             admin_key.key.key_prefix, "niad_",
             "Admin key_prefix should be 'niad_'"
         );
 
-        // Verify key_id contains prefix exactly once at start
+        // 前缀只出现在开头一次
         assert!(
             admin_key.key.key_id.len() > 5,
             "key_id should be longer than prefix"
         );
 
-        // Verify consistency: key_id should be prefix + uuid
+        // key_id = 前缀 + UUID
         let key_id_without_prefix = &admin_key.key.key_id[5..];
         let uuid_validation = uuid::Uuid::parse_str(key_id_without_prefix);
         assert!(
@@ -582,7 +537,7 @@ mod tests {
         );
     }
 
-    /// Test User API key prefix (nino_) is correctly applied
+    /// 验证 User API key 前缀 `nino_` 正确拼接。
     #[tokio::test]
     #[ignore]
     async fn test_user_api_key_prefix() {
@@ -592,11 +547,11 @@ mod tests {
 
         let repo = SeaOrmRepository::new(db, "test_salt".to_string());
 
-        // Use unique names to avoid conflicts
+        // 唯一命名避免冲突
         let unique_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
         let workspace_name = format!("Test_Workspace_{}", unique_id);
 
-        // First create a workspace for the user key
+        // 先为 user key 建 workspace
         let workspace = repo
             .create_workspace(&CreateWorkspaceRequest {
                 name: workspace_name,
@@ -621,26 +576,26 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify key_id has correct prefix
+        // key_id 前缀正确
         assert!(
             user_key.key.key_id.starts_with("nino_"),
             "User key_id should start with 'nino_', got: {}",
             user_key.key.key_id
         );
 
-        // Verify key_prefix field matches
+        // key_prefix 字段一致
         assert_eq!(
             user_key.key.key_prefix, "nino_",
             "User key_prefix should be 'nino_'"
         );
 
-        // Verify key_id contains prefix exactly once at start
+        // 前缀只出现在开头一次
         assert!(
             user_key.key.key_id.len() > 5,
             "key_id should be longer than prefix"
         );
 
-        // Verify consistency: key_id should be prefix + uuid
+        // key_id = 前缀 + UUID
         let key_id_without_prefix = &user_key.key.key_id[5..];
         let uuid_validation = uuid::Uuid::parse_str(key_id_without_prefix);
         assert!(
@@ -650,7 +605,7 @@ mod tests {
         );
     }
 
-    /// Test that API key with provided secret is handled correctly
+    /// 验证提供自定义 secret 的 API key 处理。
     #[tokio::test]
     #[ignore]
     async fn test_api_key_with_custom_secret() {
@@ -676,7 +631,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify prefix is still correct with custom secret
+        // 自定义 secret 不影响前缀
         assert!(
             admin_key.key.key_id.starts_with("niad_"),
             "Prefix should be applied even with custom secret"
@@ -687,7 +642,7 @@ mod tests {
         );
     }
 
-    /// Test API key prefix and key_id consistency
+    /// 验证 API key 前缀与 key_id 一致性。
     #[tokio::test]
     #[ignore]
     async fn test_api_key_prefix_consistency() {
@@ -697,7 +652,7 @@ mod tests {
 
         let repo = SeaOrmRepository::new(db, "test_salt".to_string());
 
-        // Create multiple keys and verify all are consistent
+        // 多 key 校验前缀一致性
         for i in 0..3 {
             let admin_key = repo
                 .create_api_key(&CreateApiKeyRequest {
@@ -713,19 +668,19 @@ mod tests {
                 .await
                 .unwrap();
 
-            // Each key should have unique UUID portion
+            // UUID 部分唯一
             let key_id_without_prefix = &admin_key.key.key_id[5..];
 
-            // Verify it's a valid UUID (and therefore unique)
+            // 合法 UUID（因而唯一）
             let _ = uuid::Uuid::parse_str(key_id_without_prefix)
                 .expect("key_id after prefix should be a valid UUID");
 
-            // Verify structure: prefix + uuid format
+            // 结构：前缀 + UUID
             assert_eq!(admin_key.key.key_prefix, "niad_");
         }
     }
 
-    /// Test validation rejects invalid key_secret length
+    /// 验证 key_secret 长度校验拒绝非法值。
     #[tokio::test]
     #[ignore]
     async fn test_api_key_secret_length_validation() {
@@ -735,7 +690,7 @@ mod tests {
 
         let repo = SeaOrmRepository::new(db, "test_salt".to_string());
 
-        // Test too short secret
+        // 过短 secret
         let result = repo
             .create_api_key(&CreateApiKeyRequest {
                 workspace_id: None,
@@ -761,7 +716,7 @@ mod tests {
             );
         }
 
-        // Test too long secret
+        // 过长 secret
         let too_long = "a".repeat(129);
         let result = repo
             .create_api_key(&CreateApiKeyRequest {
@@ -782,7 +737,7 @@ mod tests {
         );
     }
 
-    /// Test get_api_key_by_id works with prefixed key_id
+    /// 验证带前缀 key_id 可被 `get_api_key_by_id` 查询。
     #[tokio::test]
     #[ignore]
     async fn test_get_api_key_by_id_with_prefix() {
@@ -806,7 +761,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Retrieve using the full prefixed key_id
+        // 用完整带前缀 key_id 查询
         let retrieved = repo.get_api_key_by_id(&admin_key.key.key_id).await.unwrap();
 
         assert!(retrieved.is_some(), "Should find key with prefixed key_id");

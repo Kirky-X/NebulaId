@@ -1,20 +1,13 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! Local fallback implementations for the coordinator module.
+//! etcd feature 关闭时的进程内降级实现，使系统无 etcd 集群也能运行。
 //!
-//! These types are compiled when the `etcd` feature is disabled. They
-//! provide stub/in-process behavior so the rest of the system can run
-//! without an external etcd cluster (rule 25: implementations live in
-//! sub-modules; mod.rs only declares traits + re-exports).
+//! `LocalCacheEntry` 与两种分布式锁类型在两种 feature 下均编译，其余项仅 `not(etcd)`。
 
-// LocalCacheEntry is shared with the etcd sub-module via `super::LocalCacheEntry`,
-// so it must compile under both feature flags. All other items below are
-// `#[cfg(not(feature = "etcd"))]` and their imports follow the same gate.
-//
-// 例外：`LocalDistributedLock` / `LocalLockGuard` 也在两种 feature 下编译，
-// 因为 etcd 模式下 `main.rs` 需要 `LocalDistributedLock` 作为 etcd 失败时的
-// 进程内 fallback（避免单点故障导致服务完全不可用）。
+// LocalCacheEntry 与 etcd 子模块共用（`super::LocalCacheEntry`），两种 feature 下均编译。
+// 例外：LocalDistributedLock / LocalLockGuard 也无条件编译——etcd 模式下
+// main.rs 需要它作 etcd 失败时的进程内 fallback（避免单点故障致服务不可用）。
 use serde::{Deserialize, Serialize};
 
 // Items needed only by the no-etcd stub implementations.
@@ -108,7 +101,7 @@ impl WorkerIdAllocator for LocalWorkerAllocator {
     }
 }
 
-/// Placeholder type when etcd feature is disabled.
+/// etcd feature 关闭时的占位类型。
 #[cfg(not(feature = "etcd"))]
 #[derive(Clone)]
 pub struct EtcdClusterHealthMonitor;
@@ -154,11 +147,9 @@ impl EtcdClusterHealthMonitor {
     pub async fn start_cache_persistence(&self, _interval: std::time::Duration) {}
 }
 
-/// 本地分布式锁实现（无 etcd 时使用）。
-/// 注意：这是一个降级实现，只能在单机环境工作。
+/// 本地分布式锁（降级实现，仅单机有效）。
 ///
-/// 在 etcd feature 下也编译：当 `EtcdClientWrapper` 或 `EtcdDistributedLock`
-/// 创建失败时，`main.rs` 用它作为 fallback，避免服务完全不可用。
+/// 两种 feature 下均编译：etcd 锁创建失败时由 main.rs 作 fallback。
 #[derive(Clone)]
 pub struct LocalDistributedLock {
     locks: Arc<parking_lot::Mutex<std::collections::HashMap<String, bool>>>,
@@ -239,10 +230,8 @@ impl LockGuard for LocalLockGuard {
 // ============================================================================
 // Tests
 // ============================================================================
-// LocalDistributedLock / LocalLockGuard / LocalCacheEntry 在两种 feature 下都
-// 编译，因此其单元测试放在 `#[cfg(test)]` 模块中，确保 `--features etcd` 下
-// 也能跑（提高覆盖率）。LocalWorkerAllocator / EtcdClusterHealthMonitor stub
-// 仅在 `not(feature = "etcd")` 下编译，其测试沿用原有 cfg gate。
+// 两种 feature 下都编译的类型，其单测确保 `--features etcd` 下也跑；
+// stub 类型测试沿用 not(etcd) gate。
 
 #[cfg(test)]
 mod tests {
@@ -258,8 +247,7 @@ mod tests {
         guard.release().await.unwrap();
     }
 
-    /// 重复 acquire 同一 key 必须失败，返回 `LockError::AcquireFailed`。
-    /// 验证本地互斥语义。
+    /// 重复 acquire 同一 key 必须失败，返回 `LockError::AcquireFailed`（本地互斥语义）。
     #[tokio::test]
     async fn test_local_distributed_lock_double_acquire_fails() {
         let lock = LocalDistributedLock::new();
@@ -267,9 +255,7 @@ mod tests {
 
         let result = lock.acquire("shared-key", 30).await;
         assert!(result.is_err(), "second acquire must fail");
-        // `Box<dyn LockGuard>` doesn't implement `Debug`, so we cannot use
-        // `unwrap_err()`. Use `if let` to destructure the error variant
-        // without requiring `Debug` on the `Ok` type.
+        // `Box<dyn LockGuard>` 无 Debug，不能用 unwrap_err()；用 if let 解构错误变体。
         if let Err(LockError::AcquireFailed { key, reason }) = result {
             assert_eq!(key, "shared-key");
             assert!(reason.contains("Lock already held"));
@@ -307,18 +293,16 @@ mod tests {
         assert!(lock.is_healthy());
     }
 
-    /// `Clone` 必须共享底层状态（Arc<Mutex<...>>）。
-    /// 克隆的实例必须能观察到原实例已持有的锁。
+    /// `Clone` 必须共享底层状态（Arc<Mutex<...>>）：克隆实例能观察到已持有的锁。
     #[tokio::test]
     async fn test_local_distributed_lock_clone_shares_state() {
         let lock = LocalDistributedLock::new();
         let lock_clone = lock.clone();
 
         let _guard = lock.acquire("clone-key", 30).await.unwrap();
-        // 克隆必须观察到锁已被持有 — 共享 Arc 状态。
         let result = lock_clone.acquire("clone-key", 30).await;
         assert!(result.is_err(), "clone must observe shared lock state");
-        // Avoid `unwrap_err()` — `Box<dyn LockGuard>` does not implement Debug.
+        // `Box<dyn LockGuard>` 无 Debug，用 matches! 断言错误变体。
         assert!(
             matches!(result, Err(LockError::AcquireFailed { .. })),
             "Expected AcquireFailed"
@@ -331,7 +315,6 @@ mod tests {
         let lock = LocalDistributedLock::new();
         assert!(lock.is_healthy());
 
-        // 即使持有锁，is_healthy 仍为 true。
         let lock2 = LocalDistributedLock::new();
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
@@ -407,18 +390,16 @@ mod no_etcd_tests {
         assert_eq!(allocator.get_allocated_id(), Some(1));
     }
 
-    /// `default_worker_id = 0` 时 `get_allocated_id` 返回 `None`
-    /// （0 是"未初始化"哨兵值）。
+    /// `default_worker_id = 0` 时 `get_allocated_id` 返回 None（0 是"未初始化"哨兵）。
     #[tokio::test]
     async fn test_local_worker_allocator_zero_id_returns_none() {
         let allocator = LocalWorkerAllocator::new(1, 0);
         assert_eq!(allocator.get_allocated_id(), None);
         assert!(allocator.is_healthy());
 
-        // allocate 仍返回 0（配置值），但 get_allocated_id 视 0 为未初始化。
+        // allocate 仍返回 0，但 get_allocated_id 视 0 为未初始化。
         let id = allocator.allocate().await.unwrap();
         assert_eq!(id, 0);
-        // 仍为 None（0 被视为未初始化）。
         assert_eq!(allocator.get_allocated_id(), None);
     }
 
@@ -467,8 +448,7 @@ mod no_etcd_tests {
 
     // ===== EtcdClusterHealthMonitor (no-etcd stub) =====
 
-    /// no-etcd stub 总是返回 `Failed` 状态和 `is_using_cache = true`
-    /// （降级模式）。
+    /// no-etcd stub 恒返回 `Failed` 且 `is_using_cache = true`（降级模式）。
     #[tokio::test]
     async fn test_etcd_cluster_health_monitor_stub_status() {
         let config = EtcdConfig::default();
@@ -478,8 +458,7 @@ mod no_etcd_tests {
         assert!(monitor.is_using_cache());
     }
 
-    /// `set_status` 在 stub 中是 no-op — 调用 `set_status(Healthy)` 后
-    /// `get_status` 仍返回 `Failed`。
+    /// `set_status` 是 no-op：调用后 `get_status` 仍返回 `Failed`。
     #[test]
     fn test_etcd_cluster_health_monitor_stub_set_status_noop() {
         let config = EtcdConfig::default();
@@ -513,22 +492,19 @@ mod no_etcd_tests {
         monitor.save_local_cache().await.unwrap();
     }
 
-    /// `get_from_cache` 恒返回 `None`；`put_to_cache` / `delete_from_cache`
-    /// 是 no-op（stub 不真正存储）。
+    /// `get_from_cache` 恒返回 None；`put_to_cache` / `delete_from_cache` 是 no-op。
     #[tokio::test]
     async fn test_etcd_cluster_health_monitor_stub_cache_ops() {
         let config = EtcdConfig::default();
         let monitor = EtcdClusterHealthMonitor::new(config, "cache.json".to_string());
         assert!(monitor.get_from_cache("any-key").is_none());
         monitor.put_to_cache("k".to_string(), "v".to_string(), 1);
-        // 仍为 None — stub 不真正存储。
         assert!(monitor.get_from_cache("k").is_none());
         monitor.delete_from_cache("k");
         assert!(monitor.get_from_cache("k").is_none());
     }
 
-    /// `start_health_check` / `start_cache_persistence` 接受任意 duration
-    /// 并立即返回（no-op stub）。
+    /// `start_health_check` / `start_cache_persistence` 接受任意 duration 并立即返回（no-op stub）。
     #[tokio::test]
     async fn test_etcd_cluster_health_monitor_stub_background_tasks() {
         let config = EtcdConfig::default();
@@ -552,7 +528,6 @@ mod no_etcd_tests {
         let config = EtcdConfig::default();
         let monitor = EtcdClusterHealthMonitor::new(config, "cache.json".to_string());
         let _cloned = monitor.clone();
-        // 克隆后状态一致。
         assert_eq!(monitor.get_status(), EtcdClusterStatus::Failed);
     }
 
@@ -569,8 +544,7 @@ mod no_etcd_tests {
         assert!(m2.get_from_cache("x").is_none());
     }
 
-    /// 综合验证：LocalDistributedLock 在 no-etcd 模式下也可用
-    /// （它无条件编译，但此测试确保 cfg gate 不影响其行为）。
+    /// LocalDistributedLock 在 no-etcd 模式下同样可用（无条件编译，cfg gate 不影响行为）。
     #[tokio::test]
     async fn test_local_distributed_lock_available_without_etcd() {
         let lock = LocalDistributedLock::new();

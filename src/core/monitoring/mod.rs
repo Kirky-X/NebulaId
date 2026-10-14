@@ -5,9 +5,7 @@
 
 pub mod core;
 
-// 告警子系统 re-export 随纯 `alerting` feature 门控(与
-// core.rs 的项级门控一致;本地 plain test 需 --features alerting,
-// CI 经 --all-features 覆盖)。
+// 告警 re-export 与 core.rs 项级门控一致：plain test 加 --features alerting，CI 用 --all-features。
 #[cfg(feature = "alerting")]
 pub use core::{
     Alert, AlertError, AlertManager, AlertNotificationSender, AlertRule, AlertSeverity, AlertState,

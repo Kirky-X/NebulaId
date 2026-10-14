@@ -16,8 +16,7 @@ use std::str::FromStr;
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct HotReloadSettings {
-    /// 是否在启动时自动监视配置文件 mtime 并热加载。缺省 false：
-    /// 行为与历史版本完全一致，仅能通过 POST /config/reload 手动触发。
+    /// 是否在启动时自动监视配置文件 mtime 并热加载。缺省 false：仅可经 POST /config/reload 手动触发。
     #[serde(default)]
     pub auto_watch_enabled: bool,
 }
@@ -59,8 +58,7 @@ pub struct Config {
 
 /// 使用 confers 从 TOML 字符串解析 Config。
 ///
-/// confers 不直接支持 serde 反序列化，需通过 `AnnotatedValue → serde_json::Value
-/// → Config` 两步转换。统一封装避免调用点重复（DRY）。
+/// confers 不直接支持 serde 反序列化，需 `AnnotatedValue → serde_json::Value → Config` 两步转换。
 pub(crate) fn parse_toml_config(content: &str, source_id: &str) -> ConfigResult<Config> {
     let annotated = confers::parse_content(
         content,
@@ -75,10 +73,8 @@ pub(crate) fn parse_toml_config(content: &str, source_id: &str) -> ConfigResult<
 
 /// 配置文件原文 → 可用配置的公共管线：环境变量展开 → 解析 → 校验。
 ///
-/// 启动期（[`Config::load_from_file`]）与运行期热重载必须共用本函数。此前热重载只调
-/// [`parse_toml_config`]，跳过了 `validate` 和 `${VAR}` 展开 —— 一份启动期必定拒绝
-/// 的配置（未知键、端口为 0、密码仍是未展开的字面量 `${...}`）能在进程运行中被换进
-/// 来。收敛为单一管线后，两类入口对配置严格性的口径不可能再分叉。
+/// 启动期（[`Config::load_from_file`]）与运行期热重载必须共用本函数，
+/// 保证两类入口对配置严格性的口径一致。
 ///
 /// # Errors
 ///
@@ -111,16 +107,15 @@ pub enum StartupConfig {
 /// 按 design 判定矩阵解析启动配置（确定性、无启发式）。
 ///
 /// - 文件存在但解析/校验失败 → 原样 `Err`（消息含缺失或未知字段名）→ 启动失败
-/// - 文件不存在且 `explicit_path` → `Err(FileNotFound)` → 运维指定的文件必须存在
+/// - 文件不存在且 `explicit_path` → `Err(FileNotFound)`：运维指定的文件必须存在
 /// - 文件不存在且非 `explicit_path` → `Ok((Config::default(), DefaultsBecauseMissing))`
 /// - 权限/IO 类失败（非 `NotFound`）→ 原样 `Err(FileError)`，不得降级为默认值
 ///
-/// 环境变量覆盖由 `Config::load_from_env()?` 单独承担（其消息已含变量名），
-/// 不在本函数职责内。
+/// 环境变量覆盖由 `Config::load_from_env()` 单独承担（其消息已含变量名），不在本函数职责内。
 ///
 /// # Errors
 ///
-/// 见上述矩阵：除"默认路径且文件不存在"外，任何失败都原样上抛。
+/// 除"默认路径且文件不存在"外，任何失败都原样上抛。
 pub fn resolve_startup_config(
     path: &str,
     explicit_path: bool,
@@ -133,9 +128,8 @@ pub fn resolve_startup_config(
             },
         )),
         Err(ConfigError::FileNotFound(_)) if !explicit_path => {
-            // 内置默认值同样过 validate：剪裁/server-only 组合下默认
-            // default_algorithm 可能未随特性启用，fail-fast 到启动期而非
-            // 第一个请求（与文件路径的 validate 口径一致）。
+            // 内置默认值同样过 validate：server-only/剪裁组合下默认算法可能未随特性
+            // 启用，fail-fast 到启动期而非第一个请求。
             let config = Config::default();
             config.validate()?;
             Ok((config, StartupConfig::DefaultsBecauseMissing))
@@ -145,13 +139,14 @@ pub fn resolve_startup_config(
 }
 
 impl Config {
-    /// Load configuration from file with environment variable expansion
-    /// Supports ${VAR_NAME} syntax for environment variable substitution
+    /// Load configuration from file with environment variable expansion.
+    ///
+    /// 支持 `${VAR_NAME}` 语法做环境变量替换。
     ///
     /// # Errors
     ///
-    /// * [`ConfigError::FileNotFound`] - 文件确实不存在，payload 为传入路径。
-    ///   这是唯一允许回落到内置默认值的情形（见 `resolve_startup_config`，）。
+    /// * [`ConfigError::FileNotFound`] - 文件确实不存在；唯一允许回落内置默认值的情形
+    ///   （见 `resolve_startup_config`）。
     /// * [`ConfigError::FileError`] - 读取失败但原因不是缺失（权限、路径是目录、磁盘错误）。
     /// * [`ConfigError::InvalidValue`] - TOML 解析、字段缺失/未知、或 `validate` 不通过。
     pub fn load_from_file(path: &str) -> ConfigResult<Self> {
@@ -175,8 +170,7 @@ impl Config {
 
     /// Validate configuration values are reasonable.
     ///
-    /// 按资源域拆分为子校验器；各子校验器依序执行，首个失败即返回，
-    /// 与拆分前的检查顺序逐条一致。
+    /// 按资源域拆分执行子校验器；依序执行，首个失败即返回。
     pub fn validate(&self) -> ConfigResult<()> {
         self.validate_app()?;
         self.validate_database()?;
@@ -228,9 +222,8 @@ impl Config {
             ));
         }
 
-        // 0 会经 `Duration::from_secs(0)` 直接传给连接池
-        // （`src/core/database/connection.rs:103`），连接一建立就被判定空闲并回收，
-        // 等价于"永不复用连接"。与 `acquire_timeout_seconds` 同口径拒绝。
+        // 0 会经 `Duration::from_secs(0)` 直接传给连接池，连接一建立就被判空闲回收，
+        // 等价于"永不复用连接"；与 `acquire_timeout_seconds` 同口径拒绝。
         if self.database.idle_timeout_seconds == 0 {
             return Err(ConfigError::InvalidValue(
                 "Database idle_timeout_seconds must be greater than 0".to_string(),
@@ -238,7 +231,7 @@ impl Config {
         }
 
         // 0 会经 `Duration::from_secs(0)` 传给 `tokio::time::timeout`，
-        // 热查询立即超时，等价于数据库全拒。与 `acquire_timeout_seconds` 同口径拒绝。
+        // 热查询立即超时，等价于数据库全拒；与 `acquire_timeout_seconds` 同口径拒绝。
         if self.database.statement_timeout_secs == 0 {
             return Err(ConfigError::InvalidValue(
                 "Database statement_timeout_secs must be greater than 0".to_string(),
@@ -262,9 +255,8 @@ impl Config {
                 ));
             }
 
-            // `saturating_mul`：`default_rps` 接近 `u32::MAX` 时普通乘法会在 debug 构建
-            // 直接 panic（attempt to multiply with overflow），在 release 构建回绕成一个
-            // 更小的数、把本该拒绝的配置放行。
+            // `saturating_mul`：`default_rps` 接近 `u32::MAX` 时普通乘法在 debug 构建
+            // panic、release 回绕成更小的数，把本该拒绝的配置放行。
             if self.rate_limit.burst_size > self.rate_limit.default_rps.saturating_mul(10) {
                 return Err(ConfigError::InvalidValue(
                     "Rate limit burst_size should not exceed 10x default_rps".to_string(),
@@ -276,9 +268,7 @@ impl Config {
     }
 
     fn validate_algorithm(&self) -> ConfigResult<()> {
-        // 串面唯一映射源：AlgorithmType::from_str（add-uuid-v4-v7 后
-        // v4/v7 为真算法；别名面与 set_algorithm 同源，不再手维护双份
-        // 白名单）。错误消息列五个规范名。
+        // 串面唯一映射源：AlgorithmType::from_str（v4/v7 为真算法，别名面与 set_algorithm 同源）。
         if crate::core::types::AlgorithmType::from_str(&self.algorithm.default).is_err() {
             return Err(ConfigError::InvalidValue(
                 "Default algorithm must be one of: segment, snowflake, uuid_v8, uuid_v4, uuid_v7"
@@ -286,10 +276,9 @@ impl Config {
             ));
         }
 
-        // 部署形态一致性 fail-fast：默认算法必须随本构建的算法特性一起启用，
-        // 否则 server-only / 剪裁组合能正常启动、/health 正常，但所有 generate
-        // 在请求期才显性报错。错配必须暴露在启动期而非第一个请求。测试构建
-        // 允许合成组合（默认 config + 任意 feature 集），不做拦截。
+        // 部署形态一致性 fail-fast：默认算法必须随本构建的特性一起启用，否则
+        // server-only/剪裁组合能启动，但所有 generate 在请求期才显性报错。
+        // 测试构建允许合成组合，不做拦截。
         #[cfg(all(not(test), not(feature = "segment")))]
         if self.algorithm.get_default_algorithm() == crate::core::types::AlgorithmType::Segment {
             return Err(ConfigError::InvalidValue(t!(
@@ -347,11 +336,9 @@ impl Config {
     }
 
     fn validate_snowflake(&self) -> ConfigResult<()> {
-        // u32 求和，而非 u8 相加：`datacenter_id_bits=100, worker_id_bits=100,
-        // sequence_bits=60` 的 u8 和是 260 —— debug 构建直接 panic，release 构建回绕成
-        // 4 并通过 `< 64` 校验，随后 `SnowflakeAlgorithmConfig::timestamp_bits()` 与
-        // `1 << bits`（`src/core/config/algorithm.rs:61-75`）才在算法侧炸出来。
-        // 和 < 64 同时也保证了每个分量 < 64，移位量合法。
+        // u32 求和：三位 u8 相加（如 100+100+60=260）在 debug 构建 panic、
+        // release 回绕成 4 并通过 <64 校验，溢出要到算法侧 `1 << bits` 才炸。
+        // 和 <64 即保证每个分量 < 64，移位量合法。
         let total_bits = u32::from(self.algorithm.snowflake.datacenter_id_bits)
             + u32::from(self.algorithm.snowflake.worker_id_bits)
             + u32::from(self.algorithm.snowflake.sequence_bits);
@@ -362,12 +349,9 @@ impl Config {
             )));
         }
 
-        // ID 值必须落在各自位宽的可表示域内：construct_id 直接 OR 不掩码，
-        // 超界 dc_id/worker_id 会污染高位（时间戳）位，造成跨 DC 组合碰撞。
-        // 移位量守卫：dc_id/worker_id 是 u8，位宽 ≥ 8 时全域合法；
-        // 位宽 < 8 时移位量 ≤ 7，u16 移位安全。极端位宽（如 200）已被
-        // 上面的 total_bits 求和校验拦截，但求和校验在先不依赖顺序——
-        // 此处守卫独立保证不 panic。
+        // ID 值必须落在各自位宽可表示域内：construct_id 直接 OR 不掩码，超界
+        // dc_id/worker_id 会污染高位（时间戳）位造成跨 DC 碰撞。u8 位宽 ≥ 8 时
+        // 全域合法；< 8 时移位量 ≤ 7，u16 移位安全（总位宽校验已拦截极端值）。
         let dc_bits = self.algorithm.snowflake.datacenter_id_bits;
         if dc_bits < 8 {
             let dc_limit = 1u16 << dc_bits;
@@ -429,11 +413,10 @@ impl Config {
     }
 
     fn validate_auth_secrets(&self) -> ConfigResult<()> {
-        // SAST- 修复：宽限期上限校验。
-        // `api_key_salt` 为空是 dev/test 的安全默认值（garrison 生产路径已 panic），
-        // 不在 config validate 层拒绝，避免破坏测试。宽限期 > 30 天在 handler 层被
-        // clamp 但配置文件中的值是静默的，运维无法从文件判断生效值，fail-fast 比
-        // silent clamp 更安全。
+        // SAST 修复：宽限期上限校验（handler 层 clamp 是静默的，配置文件中的值与
+        // 生效值不一致，运维无法从文件判断，fail-fast 比 silent clamp 更安全）。
+        // `api_key_salt` 空串是 dev/test 的安全默认值（garrison 生产路径已 panic），
+        // 不在 config validate 层拒绝，避免破坏测试。
         if self.auth.key_rotation_grace_period_seconds
             > crate::core::config::defaults::MAX_KEY_ROTATION_GRACE_PERIOD_SECONDS
         {
@@ -444,11 +427,9 @@ impl Config {
         }
 
         // 未定义的环境变量在 `expand_env_vars` 中按设计保留字面量 `${VAR}`（见
-        // `expand_env_vars_preserves_missing_var`）。对字符串型字段，字面量是"看起来
-        // 合法的值"：`database.password` 会在建连时被
-        // `src/core/database/connection.rs:58-68` 显性拒绝，而 auth 侧的凭证材料没有任
-        // 何等价防线 —— `api_key_salt = "${NEBULA_API_KEY_SALT}"` 变量缺失时，盐值就是
-        // 那段字面量，全部密钥哈希从此共享一个可预测的 pepper，且静默无告警。
+        // `expand_env_vars_preserves_missing_var`）。字符串型字段的字面量是"看起来
+        // 合法的值"：`database.password` 有建连层显性拒绝，而 auth 凭证没有任何等价
+        // 防线 —— 变量缺失时盐值就是字面量，全部密钥哈希共享一个可预测 pepper。
         let mut unexpanded = Vec::new();
         if self.auth.api_key_salt.contains("${") {
             unexpanded.push("auth.api_key_salt");
@@ -471,10 +452,9 @@ impl Config {
         Ok(())
     }
 
-    /// `${VAR}` / `${VAR:default}` 环境变量展开（confers `interpolation`
-    /// feature 引擎，替换手写 regex：获得 `${VAR:default}` 默认值与嵌套
-    /// 深度防护）。`allow_unresolved` 保持既有设计——缺失变量保留
-    /// `${VAR}` 字面量，由 `validate()` 对 auth 凭证字段显性报错。
+    /// `${VAR}` / `${VAR:default}` 环境变量展开（confers `interpolation` 引擎）。
+    /// `allow_unresolved` 保持既有设计：缺失变量保留 `${VAR}` 字面量，由
+    /// `validate()` 对 auth 凭证字段显性报错。
     fn expand_env_vars(content: &str) -> String {
         static CONFIG: std::sync::OnceLock<confers::interpolation::InterpolationConfig> =
             std::sync::OnceLock::new();
@@ -489,8 +469,8 @@ impl Config {
             interpolation_config,
         )
         .unwrap_or_else(|e| {
-            // 展开引擎报错（如病态嵌套）时保留原文并告警：行为与
-            // allow_unresolved 一致，残留 `${` 由 validate() 兜底显性化。
+            // 展开引擎报错（如病态嵌套）时保留原文并告警，与 allow_unresolved 口径
+            // 一致，残留 `${` 由 validate() 兜底显性化。
             tracing::warn!(error = ?e, "config interpolation failed; keeping raw content");
             content.to_string()
         })
@@ -576,10 +556,9 @@ impl Config {
             self.auth.api_keys = other.auth.api_keys;
         }
 
-        // `key_rotation_grace_period_seconds` 不参与 merge。
-        // 该值是部署期决策（运维显式配置一次即可），热重载变更它没有意义：
-        // 进行中的轮换窗口会因阈值突变而产生不一致的凭证判定。
-        // 如需调整，必须重启进程，由 `resolve_startup_config` 重新读取。
+        // `key_rotation_grace_period_seconds` 不参与 merge：部署期一次决策，热重载
+        // 变更会让进行中的轮换窗口产生不一致凭证判定；调整必须重启进程，由
+        // `resolve_startup_config` 重新读取。
 
         if other.algorithm.default != "segment" {
             self.algorithm.default = other.algorithm.default;
@@ -737,10 +716,10 @@ mod tests {
     }
 
     /// 传入目录时读文件失败属于 IO 错误而非"文件不存在"，必须保持 `FileError`，
-    /// 否则权限/IO 类失败会被误判为文件缺失而在 `DefaultsBecauseMissing` 分支被静默降级。
+    /// 否则会被误判为缺失而在 `DefaultsBecauseMissing` 分支被静默降级。
     ///
-    /// 跨平台实测：Windows 读取目录返回 `PermissionDenied`（os error 5），
-    /// Linux 返回 `IsADirectory` —— 两者都不是 `NotFound`，因此两条路径都落到 FileError。
+    /// 跨平台：Windows 读目录返回 `PermissionDenied`、Linux 返回 `IsADirectory` ——
+    /// 两者都非 `NotFound`，因此都落到 FileError。
     #[test]
     fn test_load_from_file_directory_path_still_returns_file_error() {
         let dir = tempfile::tempdir().expect("创建临时目录应成功");
@@ -771,12 +750,9 @@ mod tests {
         assert_eq!(config.auth.key_rotation_grace_period_seconds, 3600);
     }
 
-    /// 判定矩阵第 1 行：文件存在但解析失败 —— 错误必须原样上抛，且点名出错的键。
-    /// 形状复现历史事故：配置里把 `[algorithm.uuid_v8]` 误写成 `[algorithm.uuid_v7]`，
-    /// 此前会被静默降级为默认值并"正常启动"。
-    ///
-    /// 加上 `deny_unknown_fields` 后，误写的段名在反序列化阶段就以 `unknown field`
-    /// 暴露 —— 比原先的 `missing field uuid_v8` 更早，且直接点名误写的键。
+    /// 判定矩阵第 1 行：文件存在但解析失败 —— 错误必须原样上抛，且点名出错/期望字段。
+    /// 段名误写 `[algorithm.uuid_v7]` 会被 `deny_unknown_fields` 在反序列化阶段以
+    /// `unknown field` 暴露，比 `missing field` 更早。
     #[test]
     fn test_resolve_startup_config_propagates_parse_error_with_field_name() {
         let original = Config::default();
@@ -897,8 +873,8 @@ mod tests {
         );
     }
 
-    /// 判定矩阵第 4 行的另一半（补空）：同一类 IO 失败在**显式**路径下同样必须
-    /// `Err(FileError)`。此前只测了 `explicit_path=false`，而显式路径那一格没测过。
+    /// 判定矩阵第 4 行的另一半：显式路径下的 IO 失败同样必须 `Err(FileError)`，
+    /// 且消息点名出问题的路径。
     #[test]
     fn test_resolve_startup_config_io_error_with_explicit_path_errors() {
         let dir = tempfile::tempdir().expect("创建临时目录应成功");
@@ -916,9 +892,8 @@ mod tests {
         }
     }
 
-    /// 判定矩阵第 1 行 × 非显式路径（补空）：没写 `--config` 但默认路径下的文件
-    /// 坏了，同样不得回落内置默认值。这是最贴近生产开箱形状的一格 —— 发行包自带
-    /// `config/config.toml`，运维改坏它就落在这一格。
+    /// 判定矩阵第 1 行 × 非显式路径：默认路径文件损坏同样不得回落内置默认值 ——
+    /// 发行包自带 `config/config.toml`，运维改坏它就落在这一格。
     #[test]
     fn test_resolve_startup_config_broken_file_without_explicit_path_errors() {
         let original = Config::default();
@@ -1018,8 +993,7 @@ mod tests {
     #[test]
     fn validate_rejects_dc_id_overflowing_datacenter_bits() {
         let mut config = Config::default();
-        // 默认 datacenter_id_bits = 3，上限 7；历史校验只拦 dc_id > 31，
-        // 8..=31 的配置会静默通过并在发号侧位溢出。
+        // 默认位宽 3 → 上限 7；8 即越界，必须拒绝。
         config.app.dc_id = 8;
         match config.validate() {
             Err(ConfigError::InvalidValue(msg)) => {
@@ -1033,13 +1007,11 @@ mod tests {
         }
     }
 
-    /// worker_id 超出 worker_id_bits 位宽同样必须在配置校验期拒绝
-    /// （历史校验完全没有 worker_id 维度）。
+    /// worker_id 超出 worker_id_bits 位宽同样必须在配置校验期拒绝。
     #[test]
     fn validate_rejects_worker_id_overflowing_worker_bits() {
         let mut config = Config::default();
-        // 默认 worker_id_bits = 8，上限 255；把位宽降到 4（上限 15）后
-        // worker_id=300（超 u8 上限的合法输入路径不存在，取 20 即越界）。
+        // 位宽降到 4 → 上限 15；worker_id=20 已越界。
         config.algorithm.snowflake.worker_id_bits = 4;
         config.app.worker_id = 20;
         match config.validate() {
@@ -1155,8 +1127,8 @@ mod tests {
         );
     }
 
-    /// 凭证字段的 `Debug` 必须脱敏。此前 `derive(Debug)` 让任何一次
-    /// `{:?}`（日志、panic 消息、断言失败输出）都把明文密钥落盘，且编译期零告警。
+    /// 凭证字段的 `Debug` 必须脱敏：任何 `{:?}`（日志、panic、断言输出）都不得含
+    /// 明文密钥、pepper、口令或内嵌口令的 URL。
     #[test]
     fn config_debug_output_never_renders_credential_material() {
         const SECRET: &str = "super-secret-material";
@@ -1285,10 +1257,9 @@ mod tests {
         }
     }
 
-    /// 新契约：顶层未知表必须被拒绝（覆盖 `Config` 自身的 deny_unknown_fields）。
+    /// 新契约：顶层未知表必须被拒绝（`Config` 自身的 deny_unknown_fields）。
     ///
-    /// 本例替换旧测试 `load_from_file_ignores_unknown_fields_like_toml_crate` ——
-    /// 旧断言固化的正是被废弃的"静默忽略未知键"契约：段名拼错的整段配置会被无声丢弃。
+    /// 段名拼错的整段配置不得被无声丢弃（替代旧测试固化的"静默忽略未知键"契约）。
     #[test]
     fn load_from_file_rejects_unknown_fields() {
         let base = toml::to_string(&Config::default()).expect("序列化 Config 应成功");
@@ -1339,13 +1310,11 @@ mod tests {
         assert_rejected_unknown_key(&injected, "[[auth.api_keys]] 条目");
     }
 
-    /// 回归：`[auth]` 段之后出现多字节字符时，加载不得 panic。
+    /// 回归：`[auth]` 段之后出现多字节字符时，加载不得 panic（字节切片落在字符
+    /// 中间会 `is not a char boundary` panic，且与日志级别无关）。
     ///
-    /// 原实现在 `tracing::debug!` 之前就对 `[auth_start..auth_start+100]` 做字节切片，
-    /// 边界落在字符中间会 panic（`is not a char boundary`），且与日志级别无关。
-    /// 本用例把中文注释长度算准，使第 100 字节必定落在某个汉字的中间：
-    /// `[auth]\n` 占 7 字节，注释行 `# ` 占 2 字节，其后每字 3 字节 →
-    /// 偏移 100 即注释内第 93 字节 = 2 + 30×3 + 1，落在第 31 个汉字内部。
+    /// 本用例构造中文注释使第 100 字节必定落在汉字中间：`[auth]\n` 占 7 字节、
+    /// `# ` 占 2 字节，其后每字 3 字节 → 偏移 100 = 2 + 30×3 + 1，落在第 31 个汉字内部。
     #[test]
     fn load_from_file_with_non_ascii_comments_does_not_panic() {
         let base = toml::to_string(&Config::default()).expect("序列化 Config 应成功");
@@ -1361,16 +1330,11 @@ mod tests {
         assert_eq!(config.auth.enabled, Config::default().auth.enabled);
     }
 
-    /// 回归：仓库随附的**服务端**配置必须在严格模式下干净加载。
+    /// 回归：仓库随附的**服务端**配置必须在严格模式下干净加载；失败修配置文件，
+    /// 不得放宽 `deny_unknown_fields`。
     ///
-    /// 失败时修配置文件，不得放宽 `deny_unknown_fields`。
-    ///
-    /// 范围说明：任务原文点名的第三份 `config/test_config.toml` **不在清单内** —— 它的
-    /// 唯一消费方是 `tests/lib.sh`（bash 测试夹具），段形状是 `[api]`/`[workspace]`/
-    /// `[test]`/`[concurrency]`/`[performance]`，既没有 `[app]` 也没有 `[database]`，
-    /// 因此服务端加载器从来读不了它（在加严格模式之前就会因 `[auth]` 缺 `enabled` 而
-    /// 失败）。把它纳入"必须干净加载"要么需要为 shell 夹具发明服务端配置面，要么需要
-    /// 放宽严格模式 —— 两者都不是正确方向，故按真相排除并留档。
+    /// 范围：`config/test_config.toml` 的唯一消费方是 `tests/lib.sh`（bash 夹具，
+    /// `[api]`/`[workspace]` 形状），服务端加载器读不了它，不在本清单内。
     #[test]
     fn test_shipped_config_files_load_cleanly() {
         let path = "config/config.toml";
@@ -1457,9 +1421,8 @@ mod tests {
         assert_invalid_value(config.validate(), "gRPC port must be between 1 and 65535");
     }
 
-    /// dc_id 超出默认位宽（datacenter_id_bits=3，上限 7）时校验失败。
-    /// 旧实现按固定上限 31 拒绝——既放行 8..=31 的位溢出配置，又在宽位宽
-    /// 下误拒合法值；位宽校验取代后按实际位宽判定。
+    /// dc_id 超出实际位宽（datacenter_id_bits=3，上限 7）时校验失败：按位宽判定，
+    /// 不放行 8..=31 的位溢出配置。
     #[test]
     fn validate_dc_id_over_default_width_fails() {
         let mut config = Config::default();
@@ -1546,7 +1509,7 @@ mod tests {
         let mut config = Config::default();
         config.rate_limit.enabled = true;
         config.rate_limit.default_rps = 10;
-        config.rate_limit.burst_size = 101; // 10 * 10 = 100, 101 > 100
+        config.rate_limit.burst_size = 101; // 101 > 100 = 10×10
         assert_invalid_value(
             config.validate(),
             "Rate limit burst_size should not exceed 10x default_rps",
@@ -1574,7 +1537,7 @@ mod tests {
         );
     }
 
-    /// add-uuid-v4-v7：uuid_v4 / uuid_v7 为合法默认算法（反转后）。
+    /// uuid_v4 / uuid_v7 为合法默认算法。
     #[test]
     fn validate_algorithm_default_accepts_uuid_v4_v7() {
         for default in ["uuid_v4", "uuid_v7"] {
@@ -1651,7 +1614,7 @@ mod tests {
         let mut config = Config::default();
         config.algorithm.snowflake.datacenter_id_bits = 32;
         config.algorithm.snowflake.worker_id_bits = 16;
-        config.algorithm.snowflake.sequence_bits = 16; // 32 + 16 + 16 = 64
+        config.algorithm.snowflake.sequence_bits = 16;
         assert_invalid_value(config.validate(), "Snowflake total bits");
     }
 
@@ -1708,8 +1671,7 @@ mod tests {
         assert_eq!(result, "value=${NEBULA_TEST_EXPAND_MISSING}");
     }
 
-    /// confers interpolation 引擎新增能力：`${VAR:default}` 缺省值语法——
-    /// 变量缺失时取默认值，存在时仍以环境变量优先
+    /// `${VAR:default}` 缺省值语法：变量缺失时取默认值，存在时环境变量优先。
     #[test]
     fn expand_env_vars_default_value_syntax() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -1891,10 +1853,9 @@ mod tests {
 
     // ==================== merge 测试 ====================
 
-    /// 自定义 other 应覆盖 base 的所有可覆盖字段（覆盖各 if 的 true 分支）
+    /// 自定义 other 应覆盖 base 的所有可覆盖字段（覆盖各 if 的 true 分支）。
     ///
-    /// 加 ENV_LOCK：`Config::default()` 内部读取 `DATABASE_URL` 环境变量，
-    /// 与 `load_from_env_*` 测试并行运行时会因 env var 时序导致 panic。
+    /// 加 ENV_LOCK：`Config::default()` 读 `DATABASE_URL`，与并行 env 测试有时序竞争。
     #[test]
     fn merge_with_custom_other_overrides_all_fields() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -1951,10 +1912,9 @@ mod tests {
         assert_eq!(base.logging.level, LogLevel::Debug);
     }
 
-    /// 默认 other 不应覆盖 base 的自定义字段（覆盖各 if 的 false 分支）
+    /// 默认 other 不应覆盖 base 的自定义字段（覆盖各 if 的 false 分支）。
     ///
-    /// 加 ENV_LOCK：`Config::default()` 内部读取 `DATABASE_URL` 环境变量，
-    /// 与 `load_from_env_*` 测试并行运行时会因 env var 时序导致 panic。
+    /// 加 ENV_LOCK：`Config::default()` 读 `DATABASE_URL`，与并行 env 测试有时序竞争。
     #[test]
     fn merge_with_default_other_preserves_base_customizations() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -1973,15 +1933,8 @@ mod tests {
 
         let mut other = Config::default();
         // 显式设置触发 false 分支的字段
-        other.database.max_connections = 100; // == 100 → 不覆盖
-        other.etcd.endpoints = vec![]; // 空 → 不覆盖
-                                       // database.url: other 用默认值，与 base 相同 → 不覆盖
-                                       // auth.api_keys: 默认空 → 不覆盖
-                                       // algorithm.default: 默认 "segment" → 不覆盖
-                                       // monitoring.metrics_path: 默认 "/metrics" → 不覆盖
-                                       // monitoring.tracing_enabled: 默认 false → 不覆盖
-                                       // monitoring.otlp_endpoint: 默认空 → 不覆盖
-                                       // logging.level: 默认 Info → 不覆盖
+        other.database.max_connections = 100;
+        other.etcd.endpoints = vec![];
 
         base.merge(other);
 
@@ -1998,11 +1951,9 @@ mod tests {
         assert_eq!(base.logging.level, LogLevel::Warn);
     }
 
-    /// merge 空的 etcd.endpoints 不应覆盖 base 的非空 endpoints
+    /// merge 空的 etcd.endpoints 不应覆盖 base 的非空 endpoints。
     ///
-    /// 加 ENV_LOCK：`Config::default()` 内部读取 `DATABASE_URL` 环境变量，
-    /// 与 `load_from_env_*` 测试并行运行时会因 env var 时序导致 panic
-    /// （`std::env::var("DATABASE_URL").unwrap()` 在 `.is_ok()` 通过后失败）。
+    /// 加 ENV_LOCK：`Config::default()` 读 `DATABASE_URL`，与并行 env 测试有时序竞争。
     #[test]
     fn merge_preserves_etcd_endpoints_when_other_empty() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -2014,12 +1965,10 @@ mod tests {
         assert_eq!(base.etcd.endpoints, vec!["custom:2379".to_string()]);
     }
 
-    /// merge 相同的 database.url 不应覆盖（条件中 url != self.database.url 为 false）
+    /// merge 相同的 database.url 不应覆盖（条件中 url != self.database.url 为 false）。
     ///
-    /// 加 ENV_LOCK：`Config::default()` 内部读取 `DATABASE_URL` 环境变量，
-    /// 若不串行化，与 `load_from_env_database_url` 并行运行时会出现两次
-    /// `Config::default()` 返回不同 URL（一次 postgres 一次 sqlite::memory:），
-    /// 导致 merge 后 URL 被覆盖，破坏 "url 相同不覆盖" 的断言。
+    /// 显式移除 DATABASE_URL：其他模块测试可能在本模块不持锁时设置该变量，
+    /// 导致两次 `Config::default()` 返回不同 URL，破坏"相同不覆盖"的断言。
     #[test]
     fn merge_preserves_database_url_when_same() {
         let _guard = ENV_LOCK.lock().unwrap();

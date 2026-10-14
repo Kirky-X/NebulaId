@@ -1,22 +1,9 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! 告警子系统 feature 门控。
-//!
-//! 本文件的非测试项(AlertManager/AlertRule/告警状态机/通知通道/webhook
-//! 分发/broadcast 事件流)整体属于告警子系统,生产路径零引用
-//! (/metrics 仅消费 core::types::GlobalMetrics,与 monitoring::core 无关),
-//! 经 `#[cfg(feature = "alerting")]` 纯门控:
-//! - 默认构建(不含 alerting feature)不编译告警子系统,产物不再携带
-//!   生产死代码;
-//! - `--features alerting` 显式启用;CI test job 经 `--all-features`
-//!   覆盖,告警单测与 e2e 在 CI 照常跑;
-//! - 本地 plain `cargo test` 不再编译告警单测,需 `--features alerting` 恢复.
-//!
-//! 此前头注释声称存在 file-level `#![allow(dead_code)]` 并以 Phase 9
-//! 理由保留死代码 —— 该 allow 从未存在,描述与真实机制不符,已更正。
-//! 指标采集/环缓冲等生产在用部分位于 core/types/metrics.rs
-//! (GlobalMetrics/QpsWindow),不在本文件、不受本门控影响。
+//! 告警子系统 feature 门控：告警相关项（AlertManager/告警状态机/通知通道/webhook 分发）
+//! 生产路径零引用，整体经 `#[cfg(feature = "alerting")]` 门控：默认构建不编译，
+//! `--features alerting` 启用（CI 经 --all-features 覆盖）；指标采集在 core/types/metrics.rs。
 
 #[cfg(feature = "alerting")]
 use crate::core::types::GlobalMetrics;
@@ -618,11 +605,8 @@ impl AlertNotificationSender {
     }
 
     async fn send_webhook(url: &str, payload: &serde_json::Value) {
-        // （CWE-918 SSRF）：验证 webhook URL 防止服务端请求伪造。
-        // 1. 仅允许 http/https scheme
-        // 2. 禁止解析到私有/保留 IP（127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12,
-        //    192.168.0.0/16, 169.254.0.0/16, ::1, fc00::/7）
-        // 3. 禁用重定向（避免重定向到内网）
+        // SSRF 防护（CWE-918）：仅允许 http/https；禁止解析到私有/保留 IP
+        // （127/8、10/8、172.16/12、192.168/16、169.254/16、::1、fc00::/7）；禁用重定向
         if let Err(reason) = Self::validate_webhook_url(url) {
             warn!(
                 url = url,
@@ -664,24 +648,22 @@ impl AlertNotificationSender {
         }
     }
 
-    /// 验证 webhook URL 是否安全（SSRF 防护）。
-    ///
-    /// 返回 `Err(reason)` 表示 URL 不安全，不应发起请求。
+    /// 验证 webhook URL 安全性（SSRF 防护）；`Err(reason)` 表示不应发起请求。
     fn validate_webhook_url(url: &str) -> Result<(), &'static str> {
         let parsed = url::Url::parse(url).map_err(|_| "invalid URL format")?;
 
-        // 1. 仅允许 http/https scheme
+        // 仅允许 http/https scheme
         match parsed.scheme() {
             "http" | "https" => {}
             _ => return Err("non-http(s) scheme not allowed"),
         }
 
-        // 2. 禁止 userinfo（避免 `http://user:pass@internal/` 形式）
+        // 禁止 userinfo（避免 `http://user:pass@internal/` 形式）
         if parsed.username() != "" || parsed.password().is_some() {
             return Err("userinfo in URL not allowed");
         }
 
-        // 3. 解析 host，检查是否为私有/保留 IP 或 localhost
+        // 解析 host，检查私有/保留 IP 或 localhost
         let host = parsed.host_str().ok_or("missing host")?;
         if Self::is_blocked_host(host) {
             return Err("host resolves to private/reserved address");
@@ -702,10 +684,8 @@ impl AlertNotificationSender {
             return Self::is_blocked_ip(&ip);
         }
 
-        // 非 IP 主机名（域名）— 允许通过，依赖 DNS 解析后的 IP 检查。
-        // 注意：这仍有 DNS rebinding 风险，但完整防护需要在 reqwest 层
-        // 注入 DNS resolver，超出当前修复范围。生产环境建议在出口防火墙
-        // 阻止对私有 IP 的访问。
+        // 非 IP 主机名放行，依赖 DNS 解析后的 IP 检查；仍有 DNS rebinding 风险，
+        // 完整防护需在 reqwest 层注入 resolver（超出当前范围），建议出口防火墙阻断私有 IP。
         false
     }
 
@@ -1264,7 +1244,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Phase A — Display impls, Default impls, AlertError, Alert::is_firing
+    // Display impls, Default impls, AlertError, Alert::is_firing
     // =========================================================================
 
     #[test]
@@ -1629,7 +1609,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Phase B — DefaultEvaluator::evaluate all branches + parse_threshold
+    // DefaultEvaluator::evaluate all branches + parse_threshold
     // =========================================================================
 
     #[test]
@@ -1762,9 +1742,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_latency_ms_greater_than_returns_none_due_to_pattern_mismatch() {
-        // The "latency_ms > " branch's parse_threshold uses pattern "latency_ms {} "
-        // (with literal "{}"), so expression "latency_ms > 100" cannot match
-        // (">" vs "{}"). This is a known production quirk; verify the else path.
+        // "latency_ms > 100" 与 parse_threshold 的 "{}" 模式不匹配 → else 路径（已知生产怪癖）。
         let evaluator = DefaultEvaluator;
         let metrics = GlobalMetrics::new();
         let rule = AlertRule::new("lat_ms", "latency_ms > 100", AlertSeverity::Warning);
@@ -1819,7 +1797,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_clock_backward_does_not_fire_on_latency_samples_only() {
-        // 回归钉桩：旧实现用"有延迟样本"当时钟回拨证据，只要跑过请求就恒真。
+        // 回归钉桩：仅有延迟样本、无回拨计数时不得告警。
         let evaluator = DefaultEvaluator;
         let metrics = GlobalMetrics::new();
         let alg = metrics.get_or_create_metrics(crate::core::types::AlgorithmType::Snowflake);
@@ -1902,16 +1880,14 @@ mod tests {
 
     #[test]
     fn test_default_evaluator_is_send_sync() {
-        // Compile-time assertion: DefaultEvaluator must be Send + Sync to be
-        // usable as Arc<dyn AlertEvaluator> in AlertManager.
+        // 编译期断言：DefaultEvaluator 须 Send + Sync 才能作 Arc<dyn AlertEvaluator>。
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<DefaultEvaluator>();
     }
 
     #[test]
     fn test_alert_evaluator_trait_can_be_implemented_with_custom_logic() {
-        // Verify the AlertEvaluator trait is usable from outside the crate
-        // by providing a simple stub implementation.
+        // 用 stub 实现验证 AlertEvaluator trait 可在 crate 外实现。
         struct StubEvaluator;
         impl AlertEvaluator for StubEvaluator {
             fn evaluate(
@@ -1932,8 +1908,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Phase C — AlertNotificationSender: send / send_to_channel / send_webhook
-    //           / validate_webhook_url / is_blocked_host / is_blocked_ip
+    // AlertNotificationSender: send / channel dispatch / webhook / URL 校验
     // =========================================================================
 
     fn make_alert(severity: AlertSeverity) -> Alert {
@@ -2083,8 +2058,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_to_channel_slack_with_critical_severity_uses_danger_color() {
-        // Use a localhost URL so send_webhook rejects (no real HTTP request).
-        // Still exercises the Slack payload construction including severity color match.
+        // localhost URL 使 send_webhook 拒绝（不发起真实请求），仍覆盖 Slack payload/颜色分支。
         let sender = AlertNotificationSender::new(vec![]);
         let mut config = HashMap::new();
         config.insert(
@@ -2111,8 +2085,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_webhook_rejects_private_ipv4_url_without_sending() {
-        // send_webhook is private but accessible via super::*; call it directly
-        // with a localhost URL to cover the reject path (returns early, no HTTP).
+        // 直接调用 send_webhook（同模块可见）：私有 IP 进入拒绝路径，不发起 HTTP。
         let payload = serde_json::json!({"rule": "test"});
         AlertNotificationSender::send_webhook("http://10.0.0.1/hook", &payload).await;
         // No assertion needed: the SSRF guard returns early without sending.
@@ -2120,9 +2093,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_webhook_handles_network_error_for_unresolvable_host() {
-        // .invalid TLD is reserved by RFC 2606 — DNS resolution always fails.
-        // validate_webhook_url passes (it's a public-looking host), then the
-        // actual HTTP request fails with a network error → covers the Err(e) arm.
+        // .invalid TLD（RFC 2606 保留）DNS 必然失败：URL 校验通过，HTTP 请求走 Err(e) 分支。
         let payload = serde_json::json!({"rule": "test"});
         AlertNotificationSender::send_webhook(
             "http://this-host-definitely-does-not-exist-92837492.invalid/hook",
@@ -2158,12 +2129,8 @@ mod tests {
 
     #[test]
     fn test_validate_webhook_url_returns_ok_for_empty_host_documenting_actual_behavior() {
-        // http:///path is parsed by url::Url with host_str() = Some("") (empty
-        // string, not None). is_blocked_host("") returns false (not parseable
-        // as IP, not "localhost"), so the URL passes validation.
-        // The "missing host" branch (host_str() == None) is only reachable for
-        // URL schemes that omit the authority component (e.g. mailto:), which
-        // cannot happen for http(s) URLs after the scheme check passes.
+        // url::Url 对 "http:///path" 给出 host_str()=Some("")，is_blocked_host("") 返回 false，
+        // 故校验通过（记录实际行为）；host_str()==None 分支仅非 http(s) scheme 可达，已被排除。
         let result = AlertNotificationSender::validate_webhook_url("http:///path");
         assert_eq!(result, Ok(()));
     }
@@ -2215,12 +2182,8 @@ mod tests {
 
     #[test]
     fn test_validate_webhook_url_returns_ok_for_ipv6_with_brackets_due_to_url_host_str_format() {
-        // url::Url::parse stores IPv6 hosts with brackets in host_str() (e.g.
-        // "[::1]"). Parsing "[::1]" as IpAddr fails because the bracket is not
-        // part of an IP string representation, so is_blocked_host returns false
-        // and validate_webhook_url returns Ok. This is a known limitation of
-        // the SSRF guard for IPv6 URLs. The IPv6 blocking logic itself is
-        // covered by is_blocked_host / is_blocked_ip direct tests above.
+        // 已知限制：url::Url 的 host_str() 带方括号（"[::1]"），IpAddr 解析失败 → 校验放行；
+        // IPv6 阻断逻辑由 is_blocked_host/is_blocked_ip 直接测试覆盖。
         let result = AlertNotificationSender::validate_webhook_url("http://[::1]/hook");
         assert_eq!(result, Ok(()));
     }
@@ -2438,7 +2401,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Phase D — AlertManager public API + private helpers + default_alerting_config
+    // AlertManager public API + private helpers + default_alerting_config
     // =========================================================================
 
     fn make_test_manager_with_config(
@@ -2561,9 +2524,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_alert_manager_start_returns_because_shutdown_sender_already_dropped() {
-        // Use a very long eval_interval so the second tick never fires; the
-        // loop breaks via shutdown_rx.recv() returning None (sender dropped in
-        // new()).
+        // eval_interval 设 1 小时使 tick 不触发；循环经 shutdown_rx.recv() 返回 None 退出（sender 已丢弃）。
         let config = AlertingConfig {
             enabled: true,
             evaluation_interval_ms: 3_600_000, // 1 hour
@@ -2575,8 +2536,7 @@ mod tests {
 
         let result = tokio::time::timeout(Duration::from_secs(2), manager.start()).await;
         assert!(result.is_ok(), "start() should return within 2 seconds");
-        // start() sets running to true and never resets it (the loop exits via
-        // shutdown_rx.recv() returning None, not via shutdown() being called).
+        // 循环经 shutdown_rx None 退出而非 shutdown()，故 running 保持 true。
         assert!(manager.running.load(Ordering::SeqCst));
     }
 
@@ -2793,8 +2753,7 @@ mod tests {
 
         manager.evaluate_all_rules().await;
 
-        // Both rules should fire (id_generation_failed fires because
-        // total_errors>0; segment_exhausted always fires).
+        // id_generation_failed（total_errors>0）与 segment_exhausted（恒真）都应触发。
         assert_eq!(manager.get_alert_count(), 2);
     }
 

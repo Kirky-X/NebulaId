@@ -1,7 +1,7 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! API Key 仓储:`ApiKeyRepository` trait 及其 SeaORM 实现，含 Argon2id 凭证
+//! API Key 仓储：`ApiKeyRepository` trait 与 SeaORM 实现，含 Argon2id 凭证
 //! 哈希/校验、两代凭证宽限期轮换、validate 冷路径与 last_used 写节流。
 
 use async_trait::async_trait;
@@ -23,14 +23,12 @@ use crate::core::database::api_key_entity::{
 use crate::core::database::repository::{with_statement_timeout, SeaOrmRepository};
 use crate::core::types::Result;
 
-/// `validate_api_key` 冷路径的 last_used 写节流窗口：窗口内同一 key 的重复
-/// 认证不再触发第二次 `last_used_at` UPDATE（写入最多滞后一个窗口，仅影响
-/// 用量统计的粒度，不影响认证结论）。
+/// last_used 写节流窗口：窗口内同一 key 的重复认证不再触发第二次 UPDATE
+/// （写入最多滞后一个窗口，仅影响用量统计粒度，不影响认证结论）。
 const LAST_USED_THROTTLE_WINDOW: Duration = Duration::from_secs(60);
 
-/// last_used 写节流表的容量上限。与 `api_key_auth` 失败表同量级
-/// （`MAX_TRACKED_AUTH_FAILURE_IPS`）：超限逐出"最旧写入"的条目，
-/// 保证恶意扫描大量伪造 key_id 也不会让节流表无界增长。
+/// last_used 节流表容量上限（与 `MAX_TRACKED_AUTH_FAILURE_IPS` 同量级）：
+/// 超限逐出「最旧写入」，防止伪造 key_id 扫描使节流表无界增长。
 const MAX_TRACKED_LAST_USED_KEYS: usize = 10_000;
 
 #[async_trait]
@@ -39,9 +37,8 @@ pub trait ApiKeyRepository: Send + Sync {
     async fn get_api_key_by_id(&self, key_id: &str) -> Result<Option<ApiKeyInfo>>;
     /// 校验凭证并返回认证结果。
     ///
-    /// 返回 `None` 表示不予采信（key 不存在、被禁用、已过期或两代凭证都不匹配）；
-    /// 返回 `Some` 时结果里的 `used_previous_credential` 说明命中的是当代凭证还是
-    /// 宽限期内的上一代凭证 —— 调用方必须据此决定是否可缓存该决策。
+    /// `None` = 不予采信（key 不存在/禁用/过期/两代都不匹配）；`Some` 时
+    /// `used_previous_credential` 标明命中当代还是宽限期内上一代，调用方据此决定可否缓存。
     async fn validate_api_key(
         &self,
         key_id: &str,
@@ -55,27 +52,24 @@ pub trait ApiKeyRepository: Send + Sync {
     ) -> Result<Vec<ApiKeyInfo>>;
     async fn delete_api_key(&self, id: Uuid) -> Result<()>;
     async fn revoke_api_key(&self, id: Uuid) -> Result<()>;
-    /// 标记 key 已被使用（单语句 UPDATE，写入 `last_used_at`/`updated_at`）。
+    /// 标记 key 已被使用（单语句 UPDATE 写 `last_used_at`/`updated_at`）。
     ///
-    /// key 行不存在时静默返回 `Ok(())`（约定俗成：用量标记不得影响主流程）。
-    /// 认证冷路径的调用方 [`Self::validate_api_key`] 额外做了 60 秒按 key
-    /// 节流；本方法自身不做节流，handler 显式调用时"调用即写"。
+    /// key 行不存在时静默返回 `Ok(())`；本方法不节流（调用即写），
+    /// 认证冷路径的 60 秒节流在 [`Self::validate_api_key`] 调用点完成。
     async fn update_last_used(&self, id: Uuid) -> Result<()>;
     async fn get_admin_api_key(&self, workspace_id: Uuid) -> Result<Option<ApiKeyInfo>>;
     async fn count_api_keys(&self, workspace_id: Uuid) -> Result<u64>;
 
-    /// 按**行主键 `id`**（UUID）查找 API Key。
+    /// 按**行主键 `id`**（UUID）查找，而非对外凭证标识 `key_id`（`niad_…`）。
     ///
-    /// 与 [`Self::get_api_key_by_id`] 的区别是入参语义：后者的 `key_id` 是对外凭证标识
-    /// （`niad_…` 字符串，按 `ApiKeyColumn::KeyId` 过滤），本方法按主键 `id` 过滤。
-    /// handler 层拿到的是行 UUID，必须用本方法——用 `get_api_key_by_id` 会永远查不到。
+    /// [`Self::get_api_key_by_id`] 按 `ApiKeyColumn::KeyId` 过滤；handler 层拿到行 UUID，
+    /// 必须用本方法（用另一个会永远查不到）。
     async fn find_api_key_by_row_id(&self, id: Uuid) -> Result<Option<ApiKeyInfo>>;
 
-    /// 统计**启用中的全局 admin key** 数量（`role = 'admin' AND enabled = true`）。
+    /// 统计启用中的全局 admin key（`role = 'admin' AND enabled = true`）。
     ///
-    /// 不带 workspace 过滤是有意为之：全局 admin key 的 `workspace_id` 为 NULL，
-    /// `list_api_keys` 的 `WorkspaceId.eq(...)` 谓词匹配不到 NULL 行，因此不能复用
-    /// 它来做 admin 计数（那是"最后一个 admin key"守卫恒不生效的根因）。
+    /// 有意不带 workspace 过滤：全局 admin key 的 `workspace_id` 为 NULL，
+    /// `WorkspaceId.eq(...)` 匹配不到，不能复用 `list_api_keys` 计数。
     async fn count_admin_keys(&self) -> Result<u64>;
 
     /// 轮换 API Key（生成新密钥，保持旧密钥在宽限期内有效）
@@ -90,15 +84,10 @@ pub trait ApiKeyRepository: Send + Sync {
 }
 
 impl SeaOrmRepository {
-    /// 冷路径 last_used 写节流判定：该 key 当前**是否允许**触发一次
-    /// `last_used_at` UPDATE。
+    /// 冷路径 last_used 写节流判定：该 key 当前是否允许触发一次 UPDATE。
     ///
-    /// - 窗口内（60 秒）已写过 → 返回 `false`，跳过第二次写库；
-    /// - 允许写入时登记当前时刻；触顶（[`MAX_TRACKED_LAST_USED_KEYS`]）时
-    ///   先逐出"最旧写入"的一条再插入，界内内存 O(10_000)。
-    ///
-    /// 判定与登记在同一临界区内完成，并发验证同一 key 只有一个调用方拿到
-    /// `true`（写库次数不放大）。
+    /// 窗口内已写过 → false；允许时登记当前时刻，触顶先逐出最旧条目。
+    /// 判定与登记同临界区完成，并发下同一 key 只有一个调用方拿到 true。
     fn should_touch_last_used(&self, key_id: &str) -> bool {
         let now = Instant::now();
         let mut writes = self.last_used_writes.lock();
@@ -108,8 +97,7 @@ impl SeaOrmRepository {
             }
         }
         if writes.len() >= MAX_TRACKED_LAST_USED_KEYS {
-            // 逐出最旧写入的一条。O(n) 扫描只在触顶瞬间发生（10_000 量级
-            // 的比较开销远低于一次 DB 往返），平时零成本。
+            // 逐出最旧写入；O(n) 扫描仅在触顶瞬间发生（远低于一次 DB 往返）。
             if let Some(oldest) = writes
                 .iter()
                 .min_by_key(|(_, instant)| **instant)
@@ -122,32 +110,26 @@ impl SeaOrmRepository {
         true
     }
 
-    /// 构造"按行主键取 api_keys 行"的查询。
+    /// 构造「按行主键取 api_keys 行」的查询。
     ///
-    /// 抽成函数是为了可测试性：`MockDatabase` 不执行 SQL，桩数据无法区分
-    /// `find_by_id` 与 `filter(KeyId.eq(..))`，只有把查询构造暴露出来，测试才能
-    /// 用 `build(DatabaseBackend::Postgres)` 钉住谓词。
+    /// 抽成函数是测试接缝：MockDatabase 不执行 SQL，只有暴露查询构造才能钉住谓词。
     fn select_api_key_by_row_id(id: Uuid) -> dbnexus::sea_orm::Select<ApiKeyEntity> {
         ApiKeyEntity::find().filter(ApiKeyColumn::Id.eq(id))
     }
 
-    /// 构造"启用中的全局 admin key"查询（admin 守卫的计数来源）。
+    /// 构造「启用中的全局 admin key」查询（admin 守卫计数来源）。
     ///
-    /// 谓词只有 `role` 与 `enabled` 两项 —— 不能加 `workspace_id` 过滤，全局 admin key
-    /// 的该列是 NULL。
+    /// 谓词只能有 `role` 与 `enabled`：全局 admin key 的 `workspace_id` 为 NULL。
     fn select_enabled_admin_keys() -> dbnexus::sea_orm::Select<ApiKeyEntity> {
         ApiKeyEntity::find()
             .filter(ApiKeyColumn::Role.eq(ApiKeyRole::Admin.to_string()))
             .filter(ApiKeyColumn::Enabled.eq(true))
     }
 
-    /// 推导轮换后要写入的宽限期两列值：`(prev_secret_hash, rotate_expires_at)`。
+    /// 推导轮换后写入的宽限期两列：`(prev_secret_hash, rotate_expires_at)`。
     ///
-    /// - `grace == 0`（默认）返回 `(None, None)`：新凭证立即生效，旧凭证不再被采信。
-    /// - `grace > 0` 把**轮换前的当前哈希**降级为宽限期凭证，到期时刻为 `now + grace`
-    ///   （绝对时刻，后续判定不再依赖配置，避免热更新宽限期反而延长旧凭证寿命）。
-    ///
-    /// 超出可表示范围时返回 `InvalidInput`，不走 `Duration::seconds` / `+` 的 panic 路径。
+    /// `grace == 0` 返回 `(None, None)`；`grace > 0` 把轮换前哈希降级为宽限期凭证，
+    /// 到期为绝对时刻 `now + grace`（不依赖配置热更新）。超范围返回 `InvalidInput`。
     fn grace_columns_for_rotation(
         grace_period_seconds: u64,
         current_hash: String,
@@ -176,9 +158,8 @@ impl SeaOrmRepository {
 
     /// 构造轮换写库的 changeset。
     ///
-    /// 宽限期两列**总是** `Set(..)` 而非 `NotSet`：关闭宽限期时也必须把该行遗留的
-    /// 上一代凭证与到期时刻清成 NULL，否则旧窗口会一直有效。抽成独立函数同样是
-    /// 测试接缝 —— sea-orm 2.0 的 `MockDatabase` 不捕获 UPDATE 语句。
+    /// 宽限期两列总是 `Set(..)`：关闭宽限期时也必须把遗留凭证与到期时刻清成 NULL。
+    /// 抽成独立函数是测试接缝（MockDatabase 不捕获 UPDATE 语句）。
     fn rotate_changeset(
         id: Uuid,
         new_secret_hash: String,
@@ -196,17 +177,9 @@ impl SeaOrmRepository {
         }
     }
 
-    /// 列出一次请求允许尝试校验的凭证哈希：`(哈希, 是否为上一代)`，按顺序短路。
-    ///
-    /// 当代凭证永远排第一（常见路径只验一次）；上一代只有在**同时满足**
-    /// "`prev_secret_hash` 非 NULL" 与 "`rotate_expires_at > now`" 时才进入候选，
-    /// 因此到期时刻之后旧凭证立即不再被采信（惰性时间判定，无需清理任务）。
-    /// 抽成纯函数是为了把"候选只有几项"这一性质变成可断言的测试目标 ——
-    /// Argon2 校验次数无法从 `MockDatabase` 观测。
-    ///
-    /// INVARIANT: 此函数桥接 DB schema（`key_secret_hash` + `prev_secret_hash` +
-    /// `rotate_expires_at`）与 auth 决策层。若 `Model` 结构体重构（如拆分读写投影），
-    /// 此函数必须同步更新，否则双窗口判定静默失效。
+    /// 列出一次请求允许尝试校验的凭证哈希 `(哈希, 是否上一代)`，按序短路：当代排第一；
+    /// 上一代仅在 `prev_secret_hash` 非 NULL 且 `rotate_expires_at > now` 时入选（惰性判定）。
+    /// INVARIANT: 桥接 DB schema 与 auth 决策层，`Model` 重构时必须同步更新。
     fn credential_candidates(model: &ApiKeyModel, now: NaiveDateTime) -> Vec<(String, bool)> {
         let mut candidates = vec![(model.key_secret_hash.clone(), false)];
 
@@ -222,25 +195,18 @@ impl SeaOrmRepository {
         candidates
     }
 
-    /// Hash API key：委托构造注入的 [`KeyHasher`](crate::core::auth::KeyHasher)。
-    ///
-    /// 前此处内联 Argon2id 实现（replaces SHA256, CWE-916 fix）；哈希
-    /// 算法与 pepper/salt 材料编码现迁至 `crate::core::auth::key_hasher`
-    /// （默认 [`Argon2KeyHasher`](crate::core::auth::Argon2KeyHasher)），仓储
-    /// 不再直接依赖 argon2。行为逐字节一致。
+    /// 哈希 API key：委托注入的 [`KeyHasher`](crate::core::auth::KeyHasher)（默认 Argon2id）。
     fn hash_key(&self, key_id: &str, key_secret: &str) -> Result<String> {
         self.key_hasher.hash(key_id, key_secret)
     }
 
-    /// Verify API key against stored PHC-format hash（委托注入的 KeyHasher，
-    /// constant-time 比较由实现体保证）。
+    /// 校验 PHC 哈希（委托 KeyHasher，constant-time 比较由实现体保证）。
     fn verify_key(&self, key_id: &str, key_secret: &str, stored_hash: &str) -> bool {
         self.key_hasher.verify(key_id, key_secret, stored_hash)
     }
 
-    /// `validate_api_key` 的执行体（抽出到 inherent 方法，使 trait
-    /// 方法处能以手工 span + `Instrument` 包住真实执行范围——async_trait
-    /// 反序列化会让 `#[instrument]` 属性的覆盖语义不可靠）。
+    /// `validate_api_key` 执行体：抽到 inherent 方法，使 trait 方法处能手工建 span +
+    /// `Instrument` 覆盖全程（async_trait 下 `#[instrument]` 覆盖语义不可靠）。
     async fn validate_api_key_inner(
         &self,
         key_id: &str,
@@ -258,8 +224,7 @@ impl SeaOrmRepository {
             })?;
 
         if let Some(model) = key_model {
-            // 同一次请求只用一个 `now`：key 有效期判定与宽限期窗口判定共享同一时刻，
-            // 否则可能出现"按两个时钟一个通过一个拒绝"的自相矛盾结论。
+            // 同一次请求只用一个 `now`：有效期与宽限期判定共享时刻，避免自相矛盾结论。
             let now = chrono::Utc::now().naive_utc();
 
             if !model.enabled {
@@ -279,10 +244,8 @@ impl SeaOrmRepository {
                     continue;
                 }
 
-                // 冷路径读已经是单 SELECT（行内自带启用状态/角色/过期时间/哈希，
-                // 无需二次查询）。last_used 写按 key 节流：60 秒内的重复验证
-                // 不再触发第二次 UPDATE，把认证冷路径的 DB 往返从
-                // 「SELECT + find_by_id + UPDATE + 回读刷新」压到 1 读 + 最多 1 写。
+                // 冷路径 1 条 SELECT 自带启用/角色/过期/哈希；last_used 写按 key 节流
+                // （60 秒内不重复 UPDATE），往返压到 1 读 + 最多 1 写。
                 if self.should_touch_last_used(key_id) {
                     let _ = self.update_last_used(model.id).await;
                 }
@@ -308,7 +271,7 @@ impl SeaOrmRepository {
     }
 }
 
-/// Generate a cryptographically secure random secret
+/// 生成密码学安全的随机 secret。
 fn generate_secret() -> String {
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
     const SECRET_LENGTH: usize = 32;
@@ -327,7 +290,7 @@ fn generate_secret() -> String {
 #[async_trait]
 impl ApiKeyRepository for SeaOrmRepository {
     async fn create_api_key(&self, request: &CreateApiKeyRequest) -> Result<ApiKeyWithSecret> {
-        // Validate key_secret length if provided (prevent DoS attacks)
+        // 校验 key_secret 长度（防 DoS）。
         if let Some(ref secret) = request.key_secret {
             if secret.len() < 8 || secret.len() > 128 {
                 return Err(crate::core::CoreError::InvalidInput(
@@ -339,11 +302,8 @@ impl ApiKeyRepository for SeaOrmRepository {
         let prefix = match request.role {
             ApiKeyRole::Admin => "niad_",
             ApiKeyRole::User => "nino_",
-            // fail-fast 拒绝
-            // Anonymous 持久化。原代码返回 "nianon_" 前缀让后续逻辑
-            // "隐式失败"，但实际会成功持久化 Anonymous 密钥。
-            // Anonymous 只在禁用认证时注入 extensions，不应通过 API 创建。
-            // 若调用方误传 Anonymous，立即返回 InvalidInput 防止污染数据库。
+            // Anonymous 仅禁用认证时注入内存 extensions，不应被 API 持久化；
+            // 误传时 fail-fast 返回 InvalidInput，防止污染数据库。
             ApiKeyRole::Anonymous => {
                 return Err(crate::core::types::error::CoreError::InvalidInput(
                     "Anonymous role cannot be persisted to database".to_string(),
@@ -362,12 +322,12 @@ impl ApiKeyRepository for SeaOrmRepository {
             format!("{}{}", prefix, uuid)
         };
 
-        // Use provided secret or generate a new one
+        // 使用给定 secret，否则生成新 secret。
         let key_secret = request.key_secret.clone().unwrap_or_else(generate_secret);
 
         let key_secret_hash = self.hash_key(&full_key_id, &key_secret)?;
 
-        // Calculate expiration: use provided or default to 30 days from now
+        // 过期时间：使用给定值，否则默认 30 天。
         let now = chrono::Utc::now();
         let expires_at = request.expires_at.or_else(|| {
             now.naive_utc()
@@ -378,7 +338,7 @@ impl ApiKeyRepository for SeaOrmRepository {
             id: Set(Uuid::new_v4()),
             key_id: Set(full_key_id.clone()),
             key_secret_hash: Set(key_secret_hash),
-            // 新建的 key 没有上一代凭证，也不处于宽限期内。
+            // 新建 key 无上一代凭证，不在宽限期。
             prev_secret_hash: Set(None),
             rotate_expires_at: Set(None),
             key_prefix: Set(prefix.to_string()),
@@ -402,10 +362,10 @@ impl ApiKeyRepository for SeaOrmRepository {
         })?;
 
         let response = ApiKeyWithSecret {
-            // 复用 `impl From<Model> for ApiKeyResponse`（api_key_entity.rs），不手抄字段表
+            // 复用 `impl From<Model> for ApiKeyResponse`，不手抄字段表。
             key: inserted.into(),
             key_secret,
-            // 新建 key 没有上一代凭证，宽限期概念不适用
+            // 新建 key 无上一代凭证，宽限期不适用。
             grace_expires_at: None,
         };
 
@@ -432,10 +392,8 @@ impl ApiKeyRepository for SeaOrmRepository {
         key_id: &str,
         key_secret: &str,
     ) -> Result<Option<AuthenticatedKey>> {
-        // 热路径观测：手工建 span 并显式 instrument 执行体（async_trait
-        // 反序列化后 `#[instrument]` 属性覆盖语义不可靠）。span 只携带
-        // key_id 长度，绝不携带 key/secret/凭据。
-        // 执行体再经集中式语句超时包裹（span 覆盖含超时等待的全程）。
+        // 手工建 span 并显式 Instrument 执行体（async_trait 下 `#[instrument]` 不可靠）；
+        // span 仅含 key_id 长度，不携带 key/secret；执行体经集中式语句超时包裹。
         let span = tracing::info_span!("db.validate_api_key", key_id_len = key_id.len());
         with_statement_timeout(
             self.statement_timeout,
@@ -531,13 +489,10 @@ impl ApiKeyRepository for SeaOrmRepository {
 
     /// 更新 last_used_at（单语句 UPDATE）。
     ///
-    /// 旧实现 `find_by_id` → `ActiveModel::update` 实为三次往返（find SELECT、
-    /// UPDATE、update 后的回读刷新）；现改为 `update_many().set(..)` 单语句，
-    /// 无行命中（key 已删除）时 `rows_affected == 0`，与旧行为一致返回 `Ok(())`。
+    /// `update_many().set(..)` 一条语句完成；无行命中（key 已删）时返回 `Ok(())`。
     ///
-    /// 节流不在本方法内做：`update_last_used` 也被 handler 侧直接调用（显式
-    /// 标记用量），语义是"调用即写"；认证冷路径的节流在
-    /// [`Self::should_touch_last_used`] + `validate_api_key` 调用点完成。
+    /// 本方法不节流（handler 直接调用语义为"调用即写"）；认证冷路径的节流在
+    /// [`Self::should_touch_last_used`] 与 `validate_api_key` 调用点完成。
     async fn update_last_used(&self, id: Uuid) -> Result<()> {
         let now = chrono::Utc::now().naive_utc();
         ApiKeyEntity::update_many()
@@ -560,8 +515,8 @@ impl ApiKeyRepository for SeaOrmRepository {
     }
 
     async fn get_admin_api_key(&self, _workspace_id: Uuid) -> Result<Option<ApiKeyInfo>> {
-        // Admin keys are global (workspace_id is NULL), so we don't filter by workspace_id
-        // The workspace_id parameter is kept for backward compatibility but not used
+        // admin key 是全局的（workspace_id 为 NULL），故不按 workspace 过滤；
+        // 参数仅为兼容既有签名保留。
         let result = ApiKeyEntity::find()
             .filter(ApiKeyColumn::Role.eq(super::api_key_entity::ApiKeyRole::Admin.to_string()))
             .filter(ApiKeyColumn::KeyPrefix.eq("niad_"))
@@ -625,8 +580,8 @@ impl ApiKeyRepository for SeaOrmRepository {
         key_id: &str,
         grace_period_seconds: u64,
     ) -> Result<ApiKeyWithSecret> {
-        // 直接取 `Model` 而非 `ApiKeyInfo`：宽限期需要"轮换前的当前哈希"，
-        // 而 `ApiKeyInfo`/`ApiKeyResponse` 都不携带哈希（原实现因此只能丢掉宽限期）。
+        // 取 `Model` 而非 `ApiKeyInfo`：宽限期需要轮换前的当前哈希，
+        // 而 `ApiKeyInfo`/`ApiKeyResponse` 不携带哈希。
         let model = ApiKeyEntity::find()
             .filter(ApiKeyColumn::KeyId.eq(key_id))
             .one(&self.db)
@@ -648,7 +603,6 @@ impl ApiKeyRepository for SeaOrmRepository {
             now,
         )?;
 
-        // 生成新密钥
         let new_secret = generate_secret();
         let new_secret_hash = self.hash_key(&model.key_id, &new_secret)?;
 
@@ -668,14 +622,11 @@ impl ApiKeyRepository for SeaOrmRepository {
             )
         })?;
 
-        // 返回新密钥
         Ok(ApiKeyWithSecret {
-            // 全部字段单一来源 = `UPDATE ... RETURNING` 的实际行
-            // （复用 `impl From<Model> for ApiKeyResponse`），杜绝逐字段混用轮换前后的行。
+            // 全部字段单一来源 = UPDATE RETURNING 的实际行，避免混用轮换前后字段。
             key: updated.into(),
             key_secret: new_secret,
-            // 与写入 `rotate_expires_at` 列的值同源：调用方看到的截止时间
-            // 必须等于落库的截止时间，而不是重新推导一次。
+            // 与落库值同源：调用方看到的截止时间必须等于写入值，不得重新推导。
             grace_expires_at: rotate_expires_at,
         })
     }
@@ -699,7 +650,7 @@ impl ApiKeyRepository for SeaOrmRepository {
     }
 }
 
-/// Test prefix logic without database (pure logic tests)
+/// 无需数据库的前缀逻辑测试。
 #[cfg(test)]
 mod prefix_tests {
     use super::*;
@@ -710,8 +661,7 @@ mod prefix_tests {
         let prefix = match role {
             ApiKeyRole::Admin => "niad_",
             ApiKeyRole::User => "nino_",
-            // 后，Anonymous 不再返回前缀而是 fail-fast
-            // （生产代码返回 Err）。本测试用 _ 兜底覆盖 Anonymous 分支。
+            // Anonymous 在生产代码中 fail-fast，本测试用 _ 兜底覆盖该分支。
             _ => "nianon_",
         };
         assert_eq!(prefix, "niad_", "Admin role should use 'niad_' prefix");
@@ -770,9 +720,7 @@ mod mock_tests {
     use crate::core::database::group_entity::Model as GroupModel;
     use crate::core::database::segment_entity::Model as SegmentModel;
     use crate::core::database::workspace_entity::Model as WorkspaceModel;
-    // Fix path resolution: tests below use `workspace_entity::Model` etc. as
-    // path expressions, which requires the modules themselves to be in scope
-    // (the `use` imports above only bring the `Model` aliases into scope).
+    // 测试用 `workspace_entity::Model` 等路径表达式，需要模块本身在作用域内。
     use crate::core::database::testing::*;
     use crate::core::database::{
         api_key_entity, biz_tag_entity, group_entity, segment_entity, workspace_entity,
@@ -786,9 +734,7 @@ mod mock_tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    // ==================================================================
-    // Pure-logic functions (no DB)
-    // ==================================================================
+    // ============== Pure-logic functions (no DB) ==============
 
     // --- generate_secret ---
 
@@ -801,8 +747,7 @@ mod mock_tests {
     #[test]
     fn test_generate_secret_uses_only_allowed_charset() {
         const ALLOWED: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
-        // Run multiple times because randomness could theoretically hit
-        // any character at any position.
+        // 多跑几次：随机字符可能覆盖不全，单次不足以验证字符集。
         for _ in 0..20 {
             let s = generate_secret();
             for c in s.bytes() {
@@ -818,8 +763,7 @@ mod mock_tests {
 
     #[test]
     fn test_generate_secret_is_random_across_calls() {
-        // Probabilistic: 62^32 space means collision is astronomically
-        // unlikely. If this ever flakes, it indicates RNG seeding broke.
+        // 概率性：62^32 空间碰撞概率极低；偶发失败说明 RNG 播种坏了。
         let s1 = generate_secret();
         let s2 = generate_secret();
         let s3 = generate_secret();
@@ -848,7 +792,7 @@ mod mock_tests {
 
     #[test]
     fn test_hash_key_generates_unique_salt_per_call() {
-        // Two hashes of the same input must differ (salt is random).
+        // 相同输入两次哈希必须不同（salt 随机）。
         let repo = make_repo(empty_pg_connection());
         let h1 = repo.hash_key("kid1", "secret1").unwrap();
         let h2 = repo.hash_key("kid1", "secret1").unwrap();
@@ -857,10 +801,8 @@ mod mock_tests {
 
     #[test]
     fn test_hash_key_phc_params_stable_across_argon2_0_6_upgrade() {
-        // argon2 0.5 → 0.6 升级的存量数据兼容回归：算法（argon2id）、版本
-        // （v=19）、默认参数（m=19456,t=2,p=1）与 PHC 序列化格式必须保持
-        // 不变 —— DB 中已有的 key_secret_hash 全部是 0.5 时代生成的，任何
-        // 一项漂移都会让全量存量凭证静默验不过。
+        // argon2 0.5 → 0.6 升级的存量兼容回归：算法（argon2id/v=19）、默认参数
+        // 与 PHC 格式必须不变，任何漂移都会让 DB 中存量凭证静默验不过。
         let repo = make_repo(empty_pg_connection());
         let h = repo.hash_key("kid1", "secret1").unwrap();
         assert!(
@@ -876,10 +818,8 @@ mod mock_tests {
 
     #[test]
     fn test_verify_key_accepts_legacy_pinned_hash_vector() {
-        // 升级前钉死的固定向量：固定 salt（[0x5A; 16]）+ `password_material`
-        // 确定性输入。Argon2（RFC 9106）对相同 salt+输入+参数产出字节级一致
-        // 的 PHC，因此该字面量等价于 argon2 0.5 时代写入 DB 的真实存量哈希
-        // （sample_api_key_model 里的串是占位假数据，钉不住该不变量）。
+        // 升级前钉死的固定向量（固定 salt [0x5A; 16] + 确定性输入）：Argon2 对相同
+        // salt+输入+参数产出字节级一致的 PHC，等价于 0.5 时代写入 DB 的真实存量哈希。
         // 任何让存量凭证验不过的实现变更都会被本用例拦截。
         const LEGACY_PINNED_HASH: &str =
             "$argon2id$v=19$m=19456,t=2,p=1$WlpaWlpaWlpaWlpaWlpaWg$RO2LFuOid0m4cf+SroCSSvFC2OPkluKtEY4ZLZ2dqpU";
@@ -916,8 +856,7 @@ mod mock_tests {
 
     #[test]
     fn test_verify_key_fails_with_wrong_key_id() {
-        // The key_id is part of the peppered password; changing it must
-        // cause verification to fail.
+        // key_id 参与 peppered password：改变 key_id 必须导致校验失败。
         let repo = make_repo(empty_pg_connection());
         let h = repo.hash_key("kid1", "secret1").unwrap();
         assert!(!repo.verify_key("kid2", "secret1", &h));
@@ -935,9 +874,8 @@ mod mock_tests {
         assert!(!repo.verify_key("kid1", "secret1", ""));
     }
 
-    /// `with_key_hasher` 可在默认 Argon2id fallback 之上注入定制
-    /// 哈希器：注入不同 salt 的 `Argon2KeyHasher` 后，哈希结果随之改变
-    /// （注入生效），且输出仍为合法 PHC 格式。
+    /// `with_key_hasher` 可在默认 Argon2id 之上注入定制哈希器：换不同 salt 的
+    /// `Argon2KeyHasher` 后哈希结果改变，且输出仍为合法 PHC 格式。
     #[test]
     fn test_with_key_hasher_overrides_default_hasher() {
         let repo = SeaOrmRepository::new(empty_pg_connection(), "salt_a".to_string())
@@ -953,9 +891,7 @@ mod mock_tests {
         );
     }
 
-    // ==================================================================
-    // ApiKeyRepository tests
-    // ==================================================================
+    // ============== ApiKeyRepository tests ==============
 
     #[tokio::test]
     async fn test_api_key_create_rejects_anonymous_role() {
@@ -1064,7 +1000,7 @@ mod mock_tests {
 
         assert!(key.key.key_id.starts_with("niad_"));
         assert_eq!(key.key.key_prefix, "niad_");
-        // Returned secret must be 32 chars (generated).
+        // 生成的 secret 必须为 32 字符。
         assert_eq!(key.key_secret.len(), 32);
     }
 
@@ -1133,7 +1069,7 @@ mod mock_tests {
             .await
             .unwrap();
 
-        // Custom key_id without prefix gets prefix prepended.
+        // 无前缀的自定义 key_id 会被补上前缀。
         assert!(key.key.key_id.starts_with("niad_"));
         assert!(key.key.key_id.contains(custom_uuid));
     }
@@ -1204,7 +1140,7 @@ mod mock_tests {
             .await
             .unwrap();
 
-        // Provided secret must be returned verbatim, not regenerated.
+        // 给定 secret 必须原样返回，不得重新生成。
         assert_eq!(key.key_secret, custom_secret);
     }
 
@@ -1287,13 +1223,11 @@ mod mock_tests {
         let model = sample_api_key_model(id, "niad_x", "admin");
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![model]])
-            // update_last_used query result (None, since key not found in
-            // second pass) — we don't append another result; mock returns
-            // empty by default.
+            // 不追加第二次 update_last_used 结果；mock 默认返回空。
             .into_connection();
         let repo = make_repo(db);
 
-        // The stored hash is for "correct-secret"; wrong secret must fail.
+        // 桩哈希对应 "correct-secret"，错误 secret 必须失败。
         let result = repo
             .validate_api_key("niad_x", "wrong-secret-value-xxx")
             .await
@@ -1301,8 +1235,8 @@ mod mock_tests {
         assert!(result.is_none(), "wrong secret must not validate");
     }
 
-    /// 造一行"轮换后带宽限期"的 key：两代凭证都是真实 Argon2 哈希，
-    /// 因为 `validate_api_key` 走的是密码学校验，桩里放占位串永远验不过。
+    /// 造一行「轮换后带宽限期」的 key：两代凭证均为真实 Argon2 哈希
+    /// （`validate_api_key` 走密码学校验，占位串永远验不过）。
     fn grace_rotated_model(
         repo: &SeaOrmRepository,
         id: Uuid,
@@ -1323,8 +1257,8 @@ mod mock_tests {
         chrono::Utc::now().naive_utc() + chrono::Duration::seconds(seconds)
     }
 
-    /// 宽限期内旧凭证必须仍然可用，并且要标记为"命中的是上一代凭证"
-    /// （据此跳过认证决策缓存，否则窗口关闭后缓存还会放行旧凭证）。
+    /// 宽限期内旧凭证仍可用，且必须标记为「命中上一代凭证」
+    /// （据此跳过认证决策缓存，否则窗口关闭后缓存仍放行旧凭证）。
     #[tokio::test]
     async fn test_validate_within_grace_window_accepts_previous_credential() {
         let id = fixed_uuid(140);
@@ -1388,9 +1322,8 @@ mod mock_tests {
         );
     }
 
-    /// `rotate_expires_at` 到期后旧凭证立即失效，但新凭证不受影响。
-    ///
-    /// "到期即断"是本变更的核心承诺 —— 只断旧凭证，不能把整把 key 一起判死。
+    /// `rotate_expires_at` 到期后旧凭证立即失效，新凭证不受影响。
+    /// 「到期即断」只断旧凭证，不能把整把 key 一起判死。
     #[tokio::test]
     async fn test_validate_after_grace_expiry_rejects_previous_credential() {
         let id = fixed_uuid(142);
@@ -1424,10 +1357,8 @@ mod mock_tests {
         assert!(!auth.used_previous_credential);
     }
 
-    /// 没有上一代凭证时只允许一次哈希校验（不得凭空开窗口）。
-    ///
-    /// 校验次数无法从 `MockDatabase` 观测，所以钉住候选列表本身：
-    /// 窗口时刻有效但 `prev_secret_hash` 为 NULL 时，候选必须只有当前哈希一项。
+    /// 无上一代凭证时只允许一次哈希校验（不得凭空开窗口）：窗口有效但
+    /// `prev_secret_hash` 为 NULL 时，候选必须只有当前哈希（校验次数无法从 mock 观测）。
     #[test]
     fn test_validate_without_grace_window_only_checks_current_credential() {
         let now = fixed_datetime(1_700_000_000);
@@ -1476,9 +1407,7 @@ mod mock_tests {
             .collect()
     }
 
-    /// 冷路径往返钉桩：一次成功认证 = 恰好 1 条 SELECT（行内自带启用状态/
-    /// 角色/过期时间/两代哈希）+ 至多 1 条节流后的 last_used UPDATE。
-    /// 旧实现为 3 次 SELECT（key 行 + find_by_id + update 后的回读刷新）+ 1 UPDATE。
+    /// 冷路径往返钉桩：成功认证 = 恰好 1 条 SELECT + 至多 1 条节流后 UPDATE。
     #[tokio::test]
     async fn test_validate_cold_path_is_single_select() {
         let id = fixed_uuid(150);
@@ -1754,9 +1683,8 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_api_key_update_last_used_succeeds_when_key_missing() {
-        // Per the implementation, update_last_used returns Ok(()) even
-        // when the key is not found (single-statement UPDATE affecting 0
-        // rows). This is a documented behavior to test.
+        // key 不存在时 update_last_used 仍返回 Ok(())（单语句 UPDATE 命中 0 行），
+        // 本用例钉住该已记录行为。
         let id = fixed_uuid(87);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_exec_results(vec![MockExecResult {
@@ -1868,20 +1796,16 @@ mod mock_tests {
 
     /// 取 SQL 的 WHERE 子句部分。
     ///
-    /// 谓词断言必须只看 WHERE：`SELECT` 的投影列里必然出现 `"api_keys"."key_id"` 与
-    /// `"api_keys"."workspace_id"`，拿整条 SQL 做"不含某列"的负向断言会误报。
+    /// 谓词断言必须只看 WHERE：投影列必然含 key_id/workspace_id，全语句负向断言会误报。
     fn where_clause(sql: &str) -> &str {
         sql.split_once("WHERE")
             .map(|(_, tail)| tail)
             .unwrap_or_else(|| panic!("statement has no WHERE clause: {sql}"))
     }
 
-    /// `find_api_key_by_row_id` 必须按主键 `id` 过滤，而不是按 `key_id` 字符串
-    /// （后者是 `get_api_key_by_id` 的语义，也是原 admin 守卫恒不生效的根因）。
-    ///
-    /// `MockDatabase` 不执行 SQL —— 桩数据无法区分两种过滤方式，所以谓词正确性只能
-    /// 从构造出的语句上断言。绑定值用整条语句的 `Debug` 渲染做包含检查，兼容
-    /// 内联字面量与 `$n` 占位两种渲染形式。
+    /// `find_api_key_by_row_id` 必须按主键 `id` 过滤（而非 `key_id` 字符串）。
+    /// MockDatabase 不执行 SQL，谓词正确性只能从构造语句上断言；绑定值用语句
+    /// `Debug` 渲染做包含检查，兼容内联字面量与 `$n` 占位。
     #[test]
     fn test_select_api_key_by_row_id_filters_primary_key_not_key_id() {
         let id = fixed_uuid(11);
@@ -1903,10 +1827,8 @@ mod mock_tests {
         );
     }
 
-    /// admin 计数谓词只允许 `role` + `enabled` 两项，且值正确。
-    ///
-    /// `workspace_id` 一旦出现在谓词里就会重蹈根因：全局 admin key 的该列是 NULL，
-    /// `WorkspaceId.eq(..)` 永远匹配不到它。
+    /// admin 计数谓词只允许 `role` + `enabled`，且值正确。
+    /// `workspace_id` 一旦入谓词就会重蹈根因：全局 admin key 的该列为 NULL，匹配不到。
     #[test]
     fn test_select_enabled_admin_keys_filters_role_and_enabled_without_workspace() {
         let stmt = SeaOrmRepository::select_enabled_admin_keys().build(DatabaseBackend::Postgres);
@@ -2023,9 +1945,9 @@ mod mock_tests {
         let id = fixed_uuid(94);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![
-                // get_api_key_by_id query.
+                // get_api_key_by_id 查询。
                 vec![sample_api_key_model(id, "niad_x", "admin")],
-                // Update RETURNING query.
+                // UPDATE RETURNING 查询。
                 vec![sample_api_key_model(id, "niad_x", "admin")],
             ])
             .into_connection();
@@ -2041,10 +1963,8 @@ mod mock_tests {
         assert_ne!(rotated.key_secret, "", "rotated secret must not be empty");
     }
 
-    /// `grace == 0`（新默认值）时轮换必须把两列**显式写 NULL**。
-    ///
-    /// 关键是 `Set(None)` 而不是 `NotSet` —— `NotSet` 不会出现在 UPDATE 语句里，
-    /// 该行历史遗留的宽限期就会被无限延续，等于关不掉宽限期。
+    /// `grace == 0` 时轮换必须把两列显式写 NULL。
+    /// 关键是 `Set(None)` 而非 `NotSet`：后者不进 UPDATE，历史宽限期会被无限延续。
     #[test]
     fn test_rotate_with_zero_grace_clears_previous_credential() {
         let now = fixed_datetime(1_700_000_000);
@@ -2083,8 +2003,7 @@ mod mock_tests {
         );
     }
 
-    /// `grace > 0` 时轮换必须把**轮换前的当前哈希**移入 `prev_secret_hash`，
-    /// 并把 `rotate_expires_at` 设为 `now + grace`（旧凭证只在窗口内可被采信）。
+    /// `grace > 0` 时轮换必须把轮换前的哈希移入 `prev_secret_hash`，到期设为 `now + grace`。
     #[test]
     fn test_rotate_with_grace_keeps_previous_hash_and_expiry() {
         let now = fixed_datetime(1_700_000_000);
@@ -2132,10 +2051,8 @@ mod mock_tests {
         );
     }
 
-    /// 宽限期秒数超出可表示范围必须返回 `InvalidInput`，而不是 panic 或溢出回绕。
-    ///
-    /// 走完整的 `rotate_api_key` 才有意义 —— 桩只给 1 个 SELECT 结果，实现若忽略该
-    /// 参数继续写库，就会消费到空桩并返回 `DatabaseError` 而非 `InvalidInput`，本用例即失败。
+    /// 宽限期秒数超范围必须返回 `InvalidInput`，不得 panic 或溢出回绕。
+    /// 须走完整 rotate_api_key：实现若忽略该参数会消费空桩并返回 DatabaseError。
     #[tokio::test]
     async fn test_rotate_with_out_of_range_grace_returns_invalid_input() {
         let id = fixed_uuid(98);
@@ -2151,15 +2068,14 @@ mod mock_tests {
         );
     }
 
-    /// `grace > 0` 时轮换必须把**实际写入的**窗口截止时刻回传给调用方，
-    /// 响应体据此回显，调用方才知道上一代凭证何时彻底失效。
+    /// `grace > 0` 时轮换必须回传实际写入的窗口截止时刻；
+    /// 调用方据此知道上一代凭证何时彻底失效。
     #[tokio::test]
     async fn test_rotate_returns_grace_expiry_to_caller() {
         let id = fixed_uuid(144);
         let model = sample_api_key_model(id, "niad_echo", "admin");
-        // 1st = 轮换前 SELECT，2nd = UPDATE ... RETURNING。两行的 `expires_at` 故意
-        // 不同：若响应错误地取自轮换前的旧行，这条断言就会失败 —— 否则桩里两个来源
-        // 永远相等，该缺陷不可能被测出。
+        // 1st = 轮换前 SELECT，2nd = UPDATE RETURNING；两行 expires_at 故意不同，
+        // 若响应取自旧行，断言失败（两个来源相等时该缺陷测不出）。
         let mut returning = model.clone();
         returning.expires_at = Some(fixed_datetime(1_900_000_000));
         let repo = make_repo(
@@ -2219,8 +2135,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_api_key_create_propagates_insert_db_error() {
-        // insert returns a query result on Postgres (RETURNING). Appending a
-        // query error forces the insert to fail.
+        // Postgres 下 insert 走 RETURNING：追加 query 错误即令 insert 失败。
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "api_key insert boom".to_string(),
@@ -2346,7 +2261,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_api_key_revoke_propagates_update_db_error() {
-        // find succeeds, update fails.
+        // find 成功、update 失败。
         let id = fixed_uuid(74);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![sample_api_key_model(id, "niad_74", "admin")]])
@@ -2368,8 +2283,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_api_key_update_last_used_propagates_db_error() {
-        // 单语句 UPDATE 后不再有 find/update 两次失败面 —— mock 的 exec
-        // 结果缓冲为空即 UPDATE 失败，错误必须透传为 DatabaseError。
+        // 单语句 UPDATE 无 find 失败面：mock exec 缓冲为空即 UPDATE 失败，错误须透传。
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
         let repo = make_repo(db);
         let result = repo.update_last_used(fixed_uuid(75)).await;
@@ -2423,7 +2337,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_api_key_rotate_propagates_get_db_error() {
-        // get_api_key_by_id internally runs a find query that fails.
+        // get_api_key_by_id 内部 find 查询失败。
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "api_key rotate get boom".to_string(),
@@ -2443,7 +2357,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_api_key_rotate_propagates_update_db_error() {
-        // get succeeds, update fails.
+        // get 成功、update 失败。
         let id = fixed_uuid(79);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![sample_api_key_model(id, "niad_79", "admin")]])
@@ -2482,14 +2396,9 @@ mod mock_tests {
         );
     }
 
-    // ----- prefix_tests: cover the Anonymous role default branch -----
-    //
-    // The existing prefix_tests only exercise Admin and User branches.
-    // Add a test that hits the `_ => "nianon_"` default branch (which
-    // represents the Anonymous role that production code rejects with
-    // InvalidInput, but the test-only match must cover for completeness).
-    // This test lives in prefix_tests (above), but we add a parallel
-    // assertion here to keep the additional-coverage block self-contained.
+    // ----- prefix_tests: 覆盖 Anonymous 默认分支 -----
+    // 既有 prefix_tests 只走 Admin/User；此处补测 `_ => "nianon_"` 分支
+    // （生产代码拒绝 Anonymous，但测试的 match 需覆盖完整）。
 
     #[test]
     fn test_anonymous_role_prefix_hits_default_branch() {

@@ -2,20 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! ID 防猜测混淆：4 轮 Feistel 网络上的 u64 双射编解码。
-//!
-//! 动机：雪花/号段 ID 单调可预测——外部持有者可用连号请求遍历业务规模
-//! （「这平台一天才 3 万单」）或定向枚举资源。混淆在展示层给 ID 套一层
-//! 与内部序无关的表象：`encode` 把连号输入映射到 u64 空间上离散分布的
-//! 输出，不可从输出推断发号速率。
-//!
-//! 性质与边界：
-//! - **双射**：Feistel 结构对任意轮函数均可逆，`decode(encode(x)) == x`，
-//!   唯一性零损耗，无需存储映射表；
-//! - **可逆混淆，非加密**：轮函数是确定性算术，不抗密钥穷举（64 位密钥
-//!   空间对离线爆破无防御）；目标是防枚举/防规模推断，不承担机密性。
-//!   需要不可逆标识的场景应使用独立随机 ID；
-//! - **仅 u64 域**：雪花（64 位）与号段（u64 游标）可混淆；UUID 类
-//!   128 位 ID 超域，调用方须显式拒绝而非截断。
+//! 可逆混淆非加密（不抗密钥穷举），仅防枚举/防规模推断；UUID 类超 u64 域须显式拒绝，不截断。
 
 /// 轮数：4 轮足以打散连号局部性，编码/解码开销 O(1)。
 const ROUNDS: usize = 4;
@@ -38,8 +25,7 @@ pub struct IdObfuscator {
 }
 
 impl IdObfuscator {
-    /// 由部署密钥构建混淆器。同一部署所有实例必须持同一密钥，否则
-    /// 各实例编码结果互不一致（decode 侧同样按此密钥还原）。
+    /// 由部署密钥构建。同一部署所有实例必须持同一密钥，否则编码结果不一致。
     pub fn new(key: u64) -> Self {
         let mut state = key;
         let mut round_keys = [0u64; ROUNDS];
@@ -114,8 +100,7 @@ mod tests {
         }
     }
 
-    /// 连号输入 0..1000 的输出两两不同，且排序后不存在长度 ≥3 的
-    /// 公差等差段（防遍历的核心：输出不保留输入的算术局部性）。
+    /// 连号输入 0..1000 输出两两不同，且排序后无长度 ≥3 的公差等差段。
     #[test]
     fn test_consecutive_inputs_scatter_without_arithmetic_progressions() {
         let obf = obfuscator();
@@ -166,8 +151,7 @@ mod tests {
     #[test]
     fn test_encode_is_total_over_u64() {
         let obf = obfuscator();
-        // 任意输入都可得任意输出，此性质由轮往返（roundtrip）测试覆盖；此处钉住
-        // encode 自身恒为全 u64 域上的函数（抽样 + roundtrip 即可）。
+        // 全域性质由 roundtrip 测试覆盖；此处钉住 encode 在 u64 全域有定义。
         for x in pseudo_random_seq(7, 1_000) {
             let _ = obf.encode(x);
         }

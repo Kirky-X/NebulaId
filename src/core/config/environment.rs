@@ -14,9 +14,8 @@ static UNKNOWN_ENV_WARN: Once = Once::new();
 
 /// Application runtime environment
 ///
-/// 反向默认（fail-closed）：[`Environment::Production`] 是 `Default`。
-/// 只有显式设置 `NEBULA_ENV=development|dev` 才进入开发模式；
-/// 缺失或无法识别的取值一律按生产校验执行（见 [`Environment::from_env`]）。
+/// 反向默认（fail-closed）：缺省即 [`Environment::Production`]，只有显式设置
+/// `NEBULA_ENV=development|dev` 才进入开发模式（见 [`Environment::from_env`]）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Environment {
     /// Development environment（显式 `NEBULA_ENV=development|dev` 才生效）
@@ -57,8 +56,7 @@ impl From<String> for Environment {
 }
 
 impl From<&str> for Environment {
-    /// 反向默认（fail-closed）：只有显式 `development|dev` 是开发，
-    /// `production|prod` 与一切无法识别的取值一律按生产处理。
+    /// 反向默认（fail-closed）：只有显式 `development|dev` 是开发，其余一律按生产处理。
     fn from(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "development" | "dev" => Environment::Development,
@@ -80,12 +78,8 @@ impl Environment {
 
     /// Get the current environment from NEBULA_ENV environment variable
     ///
-    /// 反向默认（fail-closed）：
-    /// - `NEBULA_ENV` 缺失 → [`Environment::Production`]，启动时 warn 一次
-    ///   （提示未显式设置、按生产校验执行；显式 `NEBULA_ENV=development` 可回到开发模式）
-    /// - 无法识别的取值 → [`Environment::Production`] + warn 一次
-    /// - 显式 `development` / `dev` → [`Environment::Development`]
-    /// - 显式 `production` / `prod` → [`Environment::Production`]
+    /// 反向默认（fail-closed）：缺失或无法识别的取值 → Production 且 warn 一次；
+    /// 显式 `development|dev` → Development，显式 `production|prod` → Production。
     pub fn from_env() -> Self {
         match std::env::var("NEBULA_ENV") {
             Err(_) => {

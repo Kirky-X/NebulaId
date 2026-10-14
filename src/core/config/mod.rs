@@ -3,10 +3,7 @@
 
 //! Configuration module for Nebula ID.
 //!
-//! This module aggregates configuration types split by business domain.
-//! Each sub-module owns a specific domain (app/auth/algorithm/logging etc.);
-//! mod.rs only re-exports public types and declares sub-modules
-//! (rule 25: mod.rs 只放 trait + pub re-export).
+//! 按业务域拆分配置类型；本文件只做子模块声明与公开类型 re-export。
 
 // Implementation sub-modules (config management services)
 pub(crate) mod dynamic;
@@ -29,8 +26,7 @@ pub mod rate_limit;
 pub mod redis;
 pub mod tls;
 
-// Re-export public types for backward compatibility (downstream uses
-// `crate::core::config::NebulaIdConfig` etc., which must continue to resolve).
+// Re-export 公开类型以保持向后兼容（下游引用 `crate::core::config::NebulaIdConfig` 等）
 pub use algorithm::{
     AlgorithmConfig, SegmentAlgorithmConfig, SnowflakeAlgorithmConfig, UuidV8Config,
 };

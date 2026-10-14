@@ -13,8 +13,7 @@ pub enum IdFormat {
     Numeric,
     Prefixed,
     Uuid,
-    /// 防猜测混淆格式：Feistel u64 双射编码（`obfuscation` 模块）。
-    /// 密钥未配置或 ID 超 u64 域时渲染显性报错（见 [`Id::render`]）。
+    /// 防猜测混淆：Feistel u64 双射编码；密钥未配置或 ID 超 u64 域时报错（见 [`Id::render`]）。
     Obfuscated,
 }
 
@@ -48,16 +47,12 @@ pub struct Id(u128);
 
 impl fmt::Display for Id {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // 检测是否是 UUID 格式（版本在高位 12-15 位）
-        // UUID v7: 版本位 (12-15) 值为 7
-        // UUID v4: 版本位 (12-15) 值为 4
-        let version_bits = (self.0 >> 76) & 0xF; // 76 = 64 + 12
+        // 版本位在 u128 的 76-79 位：值为 4/7/8 视为 UUID 形态，输出标准 UUID 字符串
+        let version_bits = (self.0 >> 76) & 0xF;
         if version_bits == 7 || version_bits == 4 || version_bits == 8 {
-            // 是 UUID 格式，输出标准字符串格式
             let uuid = Uuid::from_u128(self.0);
             write!(f, "{}", uuid)
         } else {
-            // 数值格式（Segment、Snowflake）
             write!(f, "{}", self.0)
         }
     }
@@ -112,15 +107,9 @@ impl Id {
 
     /// 按目标格式渲染 ID 字符串。
     ///
-    /// - `Numeric`：十进制原值（与 [`Display`] 一致）；
-    /// - `Prefixed`：前缀 + 十进制（前缀缺省视为空前缀）；
-    /// - `Uuid`：标准 UUID 字符串；
-    /// - `Obfuscated`：Feistel 双射编码后的十进制，可组合前缀。
-    ///   混淆器未提供（密钥未配置）→ `ConfigurationError`（fail-closed，
-    ///   不静默退回明文——那会让「已按防猜测部署」的调用方拿到裸 ID）；
-    ///   ID 超 u64 域（UUID 类）→ `InvalidInput`。
-    ///
-    /// 内部存储与 `as_u128` 原值不变：混淆只是展示层编解码。
+    /// `Prefixed` 为前缀 + 十进制（前缀缺省视为空）；`Obfuscated` 为 Feistel 双射编码
+    /// 十进制，可组合前缀。混淆器未提供 → `ConfigurationError`（fail-closed，不退回
+    /// 明文）；ID 超 u64 域 → `InvalidInput`。内部存储与 `as_u128` 原值不变。
     pub fn render(
         &self,
         format: &IdFormat,
@@ -130,9 +119,7 @@ impl Id {
         let body = match format {
             IdFormat::Numeric => return Ok(self.to_string()),
             IdFormat::Uuid => return Ok(Uuid::from_u128(self.0).to_string()),
-            // 注意：与 `to_prefixed`（恒十进制）在 UUID 形态 ID 上语义不同——
-            // 本分支走 Display（UUID 形态渲染为 UUID 字符串）。两入口未来
-            // 接线时须统一口径。
+            // 与 `to_prefixed`（恒十进制）不同：本分支走 Display，UUID 形态渲染为 UUID 串。
             IdFormat::Prefixed => self.to_string(),
             IdFormat::Obfuscated => {
                 let obf = obfuscator.ok_or_else(|| {
@@ -142,8 +129,7 @@ impl Id {
                 })?;
                 let raw = self.0;
                 if raw > u64::MAX as u128 {
-                    // 不回显明文 ID：防枚举格式的失败路径不得把原值交给
-                    // 错误消费方（CWE-209 变体）。
+                    // 不回显明文 ID：失败路径不得把原值交给错误消费方（CWE-209 变体）。
                     return Err(CoreError::InvalidInput(t!(
                         "error.core.types.id.obfuscation_id_exceeds_u64"
                     )));
@@ -218,8 +204,7 @@ pub enum AlgorithmType {
     UuidV8,
     /// RFC 9562 §5.4 随机 UUID（122 位不可猜测、零元数据）。
     UuidV4,
-    /// RFC 9562 §5.7 时间有序 UUID（标准布局：时间戳可被标准工具直取，
-    /// 零 dc/worker 配置）。
+    /// RFC 9562 §5.7 时间有序 UUID（时间戳可被标准工具直取，零 dc/worker 配置）。
     UuidV7,
 }
 
@@ -243,10 +228,7 @@ impl FromStr for AlgorithmType {
             "segment" => Ok(AlgorithmType::Segment),
             "snowflake" => Ok(AlgorithmType::Snowflake),
             "uuid_v8" | "uuidv8" | "uuid8" => Ok(AlgorithmType::UuidV8),
-            // add-uuid-v4-v7（破坏性反转）：v4/v7 不再是 v8 的输入别名，
-            // 各自解析为真算法。存量串使用面 config 层面实测为零
-            // （config/*.toml 无使用；tests/*.sh 的用例反转后反而从
-            // 结构性必败转为通过）。语义声明见 docs/CHANGELOG.md。
+            // v4/v7 各自解析为真算法，非 v8 输入别名（破坏性变更见 docs/CHANGELOG.md）。
             "uuid_v4" | "uuidv4" | "uuid4" => Ok(AlgorithmType::UuidV4),
             "uuid_v7" | "uuidv7" | "uuid7" => Ok(AlgorithmType::UuidV7),
             _ => Err(CoreError::InvalidAlgorithmType(s.to_string())),
@@ -342,8 +324,7 @@ mod tests {
         assert_eq!(rendered.matches('-').count(), 4, "UUID 渲染必须是标准格式");
     }
 
-    /// render Obfuscated：配置密钥后编码输出，且 decode 可还原原值；
-    /// 支持与前缀组合。
+    /// render Obfuscated：配置密钥后编码，decode 可还原原值并支持前缀。
     #[test]
     fn test_render_obfuscated_encodes_and_roundtrips() {
         let obf = crate::core::types::obfuscation::IdObfuscator::new(0x0011_2233_4455_6677);
@@ -365,8 +346,7 @@ mod tests {
         assert!(prefixed.starts_with("order_"), "混淆格式必须支持前缀组合");
     }
 
-    /// render Obfuscated：密钥未配置必须显性报错（fail-closed，不得静默
-    /// 退回明文——那会让调用方误以为拿到的是混淆 ID）。
+    /// render Obfuscated：密钥未配置必须 fail-closed 报错，不得静默退回明文。
     #[test]
     fn test_render_obfuscated_without_key_fails_closed() {
         let id = Id::from_u128(12345);
@@ -520,9 +500,8 @@ mod tests {
 
     #[test]
     fn test_id_from_string_invalid_uuid_falls_back_to_numeric() {
-        // 长度为 36 且含 '-' 但不是合法 UUID → 应回退到 u128 解析
-        let s = "------------------------------1234"; // 36 chars, 含 '-'，但不是 UUID
-                                                      // 这个字符串不能解析为 u128，应返回 InvalidIdString
+        // 长度为 36 且含 '-' 但不是合法 UUID → 回退 u128 解析后失败
+        let s = "------------------------------1234";
         let result = Id::from_string(s);
         assert!(result.is_err());
         match result {
@@ -644,7 +623,7 @@ mod tests {
     #[test]
     fn test_id_display_numeric_for_small_value() {
         let id = Id::from_u128(12345);
-        // 12345 的高位版本位 (76-79) 不是 4 或 7，应输出数值
+        // 版本位非 4/7/8 → 输出数值
         assert_eq!(id.to_string(), "12345");
     }
 
@@ -652,7 +631,6 @@ mod tests {
     fn test_id_display_uuid_format_for_v7() {
         let uuid = Uuid::now_v7();
         let id = Id::from_uuid_v8(uuid);
-        // UUID v7 应输出标准 UUID 字符串
         assert_eq!(id.to_string(), uuid.to_string());
         assert_eq!(id.to_string().len(), 36);
     }
@@ -661,7 +639,6 @@ mod tests {
     fn test_id_display_uuid_format_for_v4() {
         let uuid = Uuid::new_v4();
         let id = Id::from_uuid_v8(uuid);
-        // UUID v4 应输出标准 UUID 字符串
         assert_eq!(id.to_string(), uuid.to_string());
         assert_eq!(id.to_string().len(), 36);
     }
@@ -676,7 +653,6 @@ mod tests {
         assert!(!batch.is_empty());
         assert_eq!(batch.algorithm, AlgorithmType::Segment);
         assert_eq!(batch.biz_tag, "");
-        // 验证每个 ID 的值
         for (i, v) in values.iter().enumerate() {
             assert_eq!(batch.ids[i].as_u128(), *v as u128);
         }
@@ -730,8 +706,7 @@ mod tests {
 
     // ===== AlgorithmType FromStr 全部分支（别名 + 错误） =====
 
-    /// add-uuid-v4-v7：`uuid_v4`/`uuid_v7` 从「折叠 v8 的输入别名」反转为
-    /// 真解析（破坏性变更，存量串使用面实测为零，见 CHANGELOG 条目）。
+    /// `uuid_v4`/`uuid_v7` 解析为真算法（破坏性反转，见 CHANGELOG）。
     #[test]
     fn test_algorithm_type_from_str_uuid_v4_v7_are_real() {
         // v4 组

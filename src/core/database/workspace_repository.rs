@@ -1,8 +1,8 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! 工作区与工作区组仓储:`WorkspaceRepository` / `GroupRepository` 两个 trait
-//! 及其 SeaORM 实现（含关联 biz_tags 的级联读取与级联删除）。
+//! 工作区与工作区组仓储：`WorkspaceRepository` / `GroupRepository` trait 与 SeaORM 实现，
+//! 含关联 biz_tags 的级联读取与级联删除。
 
 use async_trait::async_trait;
 use dbnexus::sea_orm::{
@@ -137,7 +137,6 @@ impl WorkspaceRepository for SeaOrmRepository {
                 )
             })?;
 
-        // 使用ok_or_else替代is_none+unwrap模式，避免冗余和潜在panic风险
         let existing = existing.ok_or_else(|| {
             crate::core::CoreError::NotFound(t!("error.detail.workspace_not_found", id = id))
         })?;
@@ -224,7 +223,6 @@ impl WorkspaceRepository for SeaOrmRepository {
                 )
             })?;
 
-        // 使用if let Some模式，避免冗余unwrap
         if let Some(ws) = workspace_entity {
             let workspace: Workspace = ws.into();
 
@@ -251,7 +249,7 @@ impl WorkspaceRepository for SeaOrmRepository {
         &self,
         id: Uuid,
     ) -> Result<Option<(Workspace, Vec<(Group, Vec<BizTag>)>)>> {
-        // 使用预加载一次性获取 workspace, groups 和 biz_tags
+        // 预加载 workspace 与 groups（避免逐组查询）。
         let workspace_with_relations = WorkspaceEntity::find_by_id(id)
             .find_also_related(GroupEntity)
             .all(&self.db)
@@ -267,17 +265,14 @@ impl WorkspaceRepository for SeaOrmRepository {
             return Ok(None);
         }
 
-        // 获取 workspace
         let (workspace_entity, _) = &workspace_with_relations[0];
         let workspace: Workspace = workspace_entity.clone().into();
 
-        // 收集所有 group IDs
         let group_ids: Vec<Uuid> = workspace_with_relations
             .iter()
             .filter_map(|(_, group_opt)| group_opt.as_ref().map(|g| g.id))
             .collect();
 
-        // 一次性查询所有 biz_tags
         let all_biz_tags_models: Vec<crate::core::database::biz_tag_entity::Model> =
             BizTagEntity::find()
                 .filter(BizTagColumn::GroupId.is_in(group_ids))
@@ -290,7 +285,6 @@ impl WorkspaceRepository for SeaOrmRepository {
                     )
                 })?;
 
-        // 按 group_id 组织 biz_tags
         let mut biz_tags_by_group: std::collections::HashMap<Uuid, Vec<BizTag>> =
             std::collections::HashMap::new();
         for biz_tag_model in all_biz_tags_models {
@@ -300,7 +294,6 @@ impl WorkspaceRepository for SeaOrmRepository {
                 .push(biz_tag_model.into());
         }
 
-        // 构建结果
         let mut result_groups: Vec<(Group, Vec<BizTag>)> = Vec::new();
         for (_, group_opt) in workspace_with_relations.iter() {
             if let Some(group) = group_opt {
@@ -319,7 +312,6 @@ impl WorkspaceRepository for SeaOrmRepository {
 #[async_trait]
 impl GroupRepository for SeaOrmRepository {
     async fn create_group(&self, group: &CreateGroupRequest) -> Result<Group> {
-        // 检查工作空间是否存在
         let workspace_exists = WorkspaceEntity::find_by_id(group.workspace_id)
             .one(&self.db)
             .await
@@ -403,7 +395,6 @@ impl GroupRepository for SeaOrmRepository {
                 )
             })?;
 
-        // 使用ok_or_else替代is_none+unwrap模式
         let existing = existing.ok_or_else(|| {
             crate::core::CoreError::NotFound(t!("error.detail.group_not_found", id = id))
         })?;
@@ -485,7 +476,6 @@ impl GroupRepository for SeaOrmRepository {
                 )
             })?;
 
-        // 使用if let Some模式，避免冗余unwrap
         if let Some(g) = group_entity {
             let group: Group = g.into();
 
@@ -573,9 +563,7 @@ mod mock_tests {
     use crate::core::database::group_entity::Model as GroupModel;
     use crate::core::database::segment_entity::Model as SegmentModel;
     use crate::core::database::workspace_entity::Model as WorkspaceModel;
-    // Fix path resolution: tests below use `workspace_entity::Model` etc. as
-    // path expressions, which requires the modules themselves to be in scope
-    // (the `use` imports above only bring the `Model` aliases into scope).
+    // 测试用 `workspace_entity::Model` 等路径表达式，需要模块本身在作用域内。
     use crate::core::database::testing::*;
     use crate::core::database::{
         api_key_entity, biz_tag_entity, group_entity, segment_entity, workspace_entity,
@@ -589,14 +577,11 @@ mod mock_tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    // ==================================================================
-    // WorkspaceRepository tests
-    // ==================================================================
+    // ============== WorkspaceRepository tests ==============
 
     #[tokio::test]
     async fn test_workspace_create_returns_workspace_with_default_limits() {
-        // `insert(...).await` on Postgres uses RETURNING; mock as a query
-        // result rather than an exec result.
+        // Postgres 下 insert 走 RETURNING，桩须为 query 结果（不能用 exec 结果）。
         let id = fixed_uuid(1);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![sample_workspace_model(id, "ws1")]])
@@ -624,8 +609,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_workspace_create_propagates_db_error_as_database_error() {
-        // Force a query error by not appending any query results — the
-        // mock will return an error when the insert is executed.
+        // 不追加任何 query 结果，使 insert 执行时返回错误。
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_errors(vec![DbErr::Custom("connection refused".to_string())])
             .into_connection();
@@ -722,8 +706,7 @@ mod mock_tests {
     #[tokio::test]
     async fn test_workspace_update_returns_updated_workspace_when_found() {
         let id = fixed_uuid(6);
-        // First query: find_by_id (returns existing model).
-        // Second query: update with RETURNING (returns updated model).
+        // 第 1 次查询 find_by_id（旧行）；第 2 次 UPDATE RETURNING（新行）。
         let updated_model = workspace_entity::Model {
             name: "new_name".to_string(),
             ..sample_workspace_model(id, "old_name")
@@ -837,9 +820,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_workspace_list_with_limit_offset_applies_filters() {
-        // We can't easily assert that limit/offset are encoded into SQL
-        // via the mock (it just returns whatever we feed it), but we can
-        // confirm the request flows through without error.
+        // Mock 不校验 limit/offset 是否进 SQL，仅确认请求无错流过。
         let id = fixed_uuid(12);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![sample_workspace_model(id, "ws_limited")]])
@@ -868,9 +849,9 @@ mod mock_tests {
         let g1_id = fixed_uuid(15);
         let g2_id = fixed_uuid(16);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            // First query: WorkspaceEntity::find_by_id.
+            // 第 1 次查询：WorkspaceEntity::find_by_id。
             .append_query_results(vec![vec![sample_workspace_model(ws_id, "ws_groups")]])
-            // Second query: GroupEntity::find().filter(workspace_id).
+            // 第 2 次查询：GroupEntity::find().filter(workspace_id)。
             .append_query_results(vec![vec![
                 sample_group_model(g1_id, ws_id, "g1"),
                 sample_group_model(g2_id, ws_id, "g2"),
@@ -905,9 +886,7 @@ mod mock_tests {
         assert!(result.is_none());
     }
 
-    // ==================================================================
-    // GroupRepository tests
-    // ==================================================================
+    // ============== GroupRepository tests ==============
 
     #[tokio::test]
     async fn test_group_create_returns_not_found_when_workspace_missing() {
@@ -938,8 +917,7 @@ mod mock_tests {
     async fn test_group_create_returns_group_with_default_max_biz_tags_when_found() {
         let ws_id = fixed_uuid(21);
         let g_id = fixed_uuid(22);
-        // First query: WorkspaceEntity::find_by_id (returns Some).
-        // Second query: ActiveModel::insert with RETURNING.
+        // 第 1 次查询：find_by_id（命中 workspace）；第 2 次：insert RETURNING。
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![sample_workspace_model(ws_id, "ws")]])
             .append_query_results(vec![vec![sample_group_model(g_id, ws_id, "g1")]])
@@ -1144,7 +1122,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_workspace_update_propagates_find_db_error() {
-        // First query (find_by_id) fails → DatabaseError propagated.
+        // find_by_id 失败 → DatabaseError 透传。
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "find failed".to_string(),
@@ -1176,7 +1154,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_workspace_update_propagates_update_db_error() {
-        // find_by_id succeeds, update fails → DatabaseError.
+        // find_by_id 成功、update 失败 → DatabaseError。
         let id = fixed_uuid(13);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![sample_workspace_model(id, "ws13")]])
@@ -1229,7 +1207,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_workspace_get_with_groups_propagates_groups_find_error() {
-        // workspace find succeeds, groups find fails.
+        // workspace 查询成功、groups 查询失败。
         let id = fixed_uuid(15);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![sample_workspace_model(id, "ws15")]])
@@ -1304,7 +1282,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_workspace_get_with_groups_and_biz_tags_propagates_biz_tags_error() {
-        // workspace+groups query succeeds, biz_tags query fails.
+        // workspace+groups 查询成功、biz_tags 查询失败。
         let id = fixed_uuid(19);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![(
@@ -1329,7 +1307,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_workspace_get_with_groups_and_biz_tags_returns_workspace_without_groups() {
-        // workspace exists, no groups, no biz_tags → Some((ws, [])).
+        // workspace 存在、无 group 无 biz_tag → Some((ws, []))。
         let id = fixed_uuid(20);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![(
@@ -1379,7 +1357,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_group_create_propagates_insert_error() {
-        // workspace exists, insert fails.
+        // workspace 存在、insert 失败。
         let ws_id = fixed_uuid(23);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![sample_workspace_model(ws_id, "ws23")]])
@@ -1469,21 +1447,21 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_delete_group_with_biz_tags_succeeds_with_no_biz_tags() {
-        // Transaction begin OK, find returns empty, delete_by_id(group) OK, commit OK.
+        // begin OK、find 空（无 biz_tag）、删 group OK、commit OK。
         let group_id = fixed_uuid(30);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![
-                Vec::<biz_tag_entity::Model>::new(), // find biz_tags
+                Vec::<biz_tag_entity::Model>::new(), // find biz_tags 结果
             ])
             .append_exec_results(vec![
                 MockExecResult {
                     last_insert_id: 0,
                     rows_affected: 1,
-                }, // delete group
+                }, // 删 group 结果
                 MockExecResult {
                     last_insert_id: 0,
                     rows_affected: 0,
-                }, // commit
+                }, // commit 结果
             ])
             .into_connection();
         let repo = make_repo(db);
@@ -1493,7 +1471,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_delete_group_with_biz_tags_succeeds_with_biz_tags() {
-        // Transaction begin OK, find returns 2 biz_tags, delete each, delete group, commit.
+        // begin OK、find 返回 2 个 biz_tag，逐个删除 → 删 group → commit。
         let group_id = fixed_uuid(31);
         let ws_id = fixed_uuid(98);
         let tag1 = sample_biz_tag_model(fixed_uuid(40), ws_id, group_id, "t40");
@@ -1504,19 +1482,19 @@ mod mock_tests {
                 MockExecResult {
                     last_insert_id: 0,
                     rows_affected: 1,
-                }, // delete tag1
+                }, // 删 tag1 结果
                 MockExecResult {
                     last_insert_id: 0,
                     rows_affected: 1,
-                }, // delete tag2
+                }, // 删 tag2 结果
                 MockExecResult {
                     last_insert_id: 0,
                     rows_affected: 1,
-                }, // delete group
+                }, // 删 group 结果
                 MockExecResult {
                     last_insert_id: 0,
                     rows_affected: 0,
-                }, // commit
+                }, // commit 结果
             ])
             .into_connection();
         let repo = make_repo(db);
@@ -1546,7 +1524,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_delete_group_with_biz_tags_propagates_biz_tag_delete_error() {
-        // find returns 1 biz_tag, delete of that tag fails.
+        // find 返回 1 个 biz_tag，删除该 tag 失败。
         let group_id = fixed_uuid(34);
         let ws_id = fixed_uuid(97);
         let tag = sample_biz_tag_model(fixed_uuid(42), ws_id, group_id, "t42");
@@ -1570,7 +1548,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_delete_group_with_biz_tags_propagates_group_delete_error() {
-        // find returns empty (no biz_tags), delete group fails.
+        // find 空（无 biz_tag），删 group 失败。
         let group_id = fixed_uuid(35);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![Vec::<biz_tag_entity::Model>::new()])
@@ -1651,10 +1629,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_workspace_update_applies_status_when_provided() {
-        // Cover the `.map(|s| s.into())` closure on the status field
-        // (only invoked when status is Some(...)). The existing
-        // update_workspace tests all set status = None, leaving the
-        // closure body uncovered.
+        // 覆盖 status 的 `.map(|s| s.into())` 闭包（仅 status = Some 时触发）。
         let id = fixed_uuid(111);
         let updated_model = workspace_entity::Model {
             status: "active".to_string(),
@@ -1784,7 +1759,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_group_with_biz_tags_propagates_biz_tags_find_error() {
-        // group find succeeds, biz_tags find fails.
+        // group 查询成功、biz_tags 查询失败。
         let g_id = fixed_uuid(125);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![sample_group_model(g_id, fixed_uuid(126), "g")]])

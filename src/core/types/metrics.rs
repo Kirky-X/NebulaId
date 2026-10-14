@@ -9,9 +9,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// 延迟分位数环形缓冲容量：快照语义为"最近 1024 次请求的延迟分布"。
-///
-/// 设计权衡见 design.md D8：HDR histogram 能力过剩，固定样本环对运维
-/// 分位数足够且零依赖；写侧无锁环写，读侧（低频 metrics 端点）拷贝排序。
+/// 固定样本环零依赖且对运维分位数够用（见 design.md D8）：写侧无锁，读侧拷贝排序。
 const LATENCY_RING_SIZE: usize = 1024;
 
 #[derive(Debug, Serialize)]
@@ -23,8 +21,7 @@ pub struct AlgorithmMetrics {
     pub cache_hit_rate: AtomicU64,
     /// 累计记录的延迟样本数（单调递增，不随环形缓冲回绕）。
     latency_samples: AtomicU64,
-    /// 累计观测到的时钟回拨次数（由 `AlgorithmRouter::observe` 在
-    /// 算法返回 `ClockMovedBackward` 时递增，告警规则据此判定）。
+    /// 累计时钟回拨次数（`AlgorithmRouter::observe` 递增；告警规则据此判定）。
     clock_backwards: AtomicU64,
     /// 最近 [`LATENCY_RING_SIZE`] 个延迟样本（纳秒），`record_latency` 环写。
     #[serde(skip)]
@@ -127,8 +124,7 @@ impl AlgorithmMetrics {
         self.latency_samples.load(Ordering::Relaxed)
     }
 
-    /// 记录一次观测到的时钟回拨（路由层在算法返回
-    /// `CoreError::ClockMovedBackward` 时调用）。
+    /// 记录一次时钟回拨（路由层在 `CoreError::ClockMovedBackward` 时调用）。
     pub fn record_clock_backward(&self) {
         self.clock_backwards.fetch_add(1, Ordering::Relaxed);
     }
@@ -138,9 +134,7 @@ impl AlgorithmMetrics {
     }
 
     /// 快照最近 `min(样本数, LATENCY_RING_SIZE)` 个延迟并升序排序。
-    ///
-    /// 读侧拷贝排序可接受：仅低频 metrics 端点与告警评估调用；写侧保持无锁。
-    /// 并发快照期间个别槽位可能读到旧值，对统计量无实质影响。
+    /// 读侧拷贝仅在低频 metrics/告警路径；并发期个别槽位偏旧，对统计量无实质影响。
     fn sorted_latency_samples(&self) -> Option<Vec<u64>> {
         let total = self.latency_samples.load(Ordering::Relaxed) as usize;
         if total == 0 {
@@ -157,8 +151,7 @@ impl AlgorithmMetrics {
         Some(samples)
     }
 
-    /// nearest-rank：`rank = ceil(permille/1000 * n)`，钳制在 `[1, n]`
-    /// （`permille`：500=p50 / 990=p99 / 999=p99.9）。
+    /// nearest-rank：`rank = ceil(permille/1000 * n)`，钳制在 `[1, n]`（500=p50/990=p99/999=p99.9）。
     fn rank_ns(sorted: &[u64], permille: u64) -> u64 {
         let n = sorted.len() as u64;
         let rank = ((permille * n).div_ceil(1000)).clamp(1, n) as usize;
@@ -171,9 +164,7 @@ impl AlgorithmMetrics {
             .unwrap_or(0)
     }
 
-    /// 一次排序同时取 p50 / p99 / p999（纳秒）。
-    ///
-    /// 三档共用同一快照：逐档调用 `percentile_ns` 会各排序一次。
+    /// 一次排序同时取 p50 / p99 / p999（纳秒）；逐档调用会各排序一次。
     pub fn latency_percentiles_ns(&self) -> (u64, u64, u64) {
         match self.sorted_latency_samples() {
             Some(samples) => (
@@ -207,11 +198,11 @@ impl AlgorithmMetrics {
 pub struct QpsWindow {
     /// 滑动窗口大小（秒）
     window_secs: u64,
-    /// 当前秒的请求计数（原子操作）
+    /// 当前秒请求计数
     current_second_count: Arc<std::sync::atomic::AtomicU64>,
-    /// 上一秒的请求计数（用于平滑过渡）
+    /// 上一秒请求计数（用于平滑过渡）
     last_second_count: Arc<std::sync::atomic::AtomicU64>,
-    /// 当前秒的时间戳（原子操作）
+    /// 当前秒时间戳（Unix 秒）
     current_second: Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -243,7 +234,7 @@ impl QpsWindow {
             .current_second
             .load(std::sync::atomic::Ordering::Relaxed);
 
-        // 如果进入了新的秒，尝试更新秒计数（允许少量竞争失败）
+        // 进入新秒：CAS 更新（允许少量竞争失败）
         if now_secs != stored_sec {
             self.current_second
                 .compare_exchange_weak(
@@ -312,15 +303,12 @@ impl QpsWindow {
             .last_second_count
             .load(std::sync::atomic::Ordering::Relaxed);
 
-        // 使用最近两秒的加权平均作为 QPS 估计
-        // 当前秒权重 70%，上一秒权重 30%
+        // QPS 估计：最近两秒指数加权，当前秒 70%、上一秒 30%
         (current * 7 + last * 3) / 10
     }
 
-    /// 清理过期数据（无需显式清理，自动通过秒切换完成）
-    pub fn cleanup(&self) {
-        // 无锁设计不需要显式清理
-    }
+    /// 清理过期数据（秒切换自动完成，无需显式清理）。
+    pub fn cleanup(&self) {}
 
     /// 获取窗口大小
     pub fn window_size(&self) -> u64 {
@@ -393,9 +381,7 @@ impl GlobalMetrics {
     }
 
     pub fn get_or_create_metrics(&self, algorithm: AlgorithmType) -> Arc<AlgorithmMetrics> {
-        // 快路径：算法集合在 initialize() 后即固定，而路由层每请求都要取一次
-        // 观测对象（AlgorithmRouter::observe）。原先无条件写锁会把并发的原子
-        // 写入串行化成一队，与 「记录路径无锁」的意图相反。
+        // 快路径先读锁：算法集合 initialize() 后即固定；写锁会串行化每请求的观测路径。
         if let Some(metrics) = self.algorithms.read().get(&algorithm) {
             return metrics.clone();
         }
@@ -524,8 +510,7 @@ mod tests {
 
     #[test]
     fn test_record_latency_percentiles_follow_distribution_not_max() {
-        // p50 是中位而非历史最大值。[2ms, 10ms] 排序后
-        // p50 = nearest-rank ceil(0.5*2)=1 → 2ms；p99/p999 = 第 2 个 → 10ms。
+        // p50 是中位；[2ms,10ms] 排序后 p50=nearest-rank 1 → 2ms，p99/p999=第 2 个 → 10ms。
         let m = AlgorithmMetrics::new(AlgorithmType::Segment);
         m.record_latency(2_000_000);
         m.record_latency(10_000_000);
@@ -537,8 +522,7 @@ mod tests {
 
     #[test]
     fn test_record_latency_p50_drops_when_distribution_improves() {
-        // 旧实现 p50/p99 只增不降（存历史最大值）；真实分位数必须随分布回落：
-        // [5ms, 1ms] 排序 [1, 5]：p50=1ms，p99/p999=5ms。
+        // 分位数随分布回落：[5ms, 1ms] 排序 → p50=1ms，p99/p999=5ms。
         let m = AlgorithmMetrics::new(AlgorithmType::Segment);
         m.record_latency(5_000_000);
         m.record_latency(1_000_000);
@@ -588,8 +572,7 @@ mod tests {
 
     #[test]
     fn test_get_p999_latency_ms_uses_p999_field_not_p99() {
-        // 三档分位数共享同一环形缓冲但取不同 rank；单样本下三者一致，
-        // 区分度由下方分布测试覆盖。此处确保 getter 正确换算纳秒→毫秒。
+        // getter 正确换算纳秒→毫秒；区分度由下方分布测试覆盖。
         let m = AlgorithmMetrics::new(AlgorithmType::Segment);
         m.record_latency(7_500_000);
         assert_eq!(m.get_p999_latency_ms(), 7.5);
@@ -599,11 +582,8 @@ mod tests {
 
     #[test]
     fn test_percentiles_reflect_distribution_with_long_tail() {
-        // 验收：100 次 1ms + 1 次 1000ms。
-        // 排序后索引 0..=99 为 1ms，索引 100 为 1000ms：
-        //   p50  = nearest-rank ceil(0.5*101)=51 → 1ms（而非旧实现的历史最大值）
-        //   p99  = ceil(0.99*101)=100 → 1ms（99% 请求确实 ≤1ms）
-        //   p999 = ceil(0.999*101)=101 → 1000ms（长尾由更高档分位数暴露）
+        // 100×1ms + 1×1000ms：排序后 p50=ceil(0.5*101)=51 → 1ms，
+        // p99=ceil(0.99*101)=100 → 1ms，p999=101 → 1000ms（长尾由高档分位暴露）。
         let m = AlgorithmMetrics::new(AlgorithmType::Segment);
         for _ in 0..100 {
             m.record_latency(1_000_000);
@@ -618,8 +598,7 @@ mod tests {
 
     #[test]
     fn test_ring_evicts_old_samples_beyond_capacity() {
-        // 环形缓冲语义："最近 1024 次请求分布"。先写入 1 个 1000ms 长尾，
-        // 再用 1024 个 1ms 覆盖整个环 —— 长尾必须被逐出，全部分位数回落。
+        // 先写 1×1000ms 长尾，再用 1024×1ms 覆盖整环：长尾逐出，分位数回落。
         let m = AlgorithmMetrics::new(AlgorithmType::Segment);
         m.record_latency(1_000_000_000);
         for _ in 0..1024 {
@@ -685,7 +664,7 @@ mod tests {
             m.record_latency(i * 1_000_000); // 1..=100 ms
         }
         let (p50, p99, p999) = m.latency_percentiles_ns();
-        // 单次排序结果必须与逐档实现完全一致（两者共用同一 nearest-rank 口径）
+        // 单次排序结果须与逐档实现一致（共用同一 nearest-rank 口径）
         assert_eq!(p50, m.get_p50_latency_ms() as u64 * 1_000_000);
         assert_eq!(p99, m.get_p99_latency_ms() as u64 * 1_000_000);
         assert_eq!(p999, m.get_p999_latency_ms() as u64 * 1_000_000);
@@ -728,8 +707,7 @@ mod tests {
     #[test]
     fn test_qps_window_record_increments_current_second_count() {
         let w = QpsWindow::new(10);
-        // Single record in the same second: current=1, last=0 → qps = (1*7 + 0*3)/10 = 0
-        // (integer division rounds down). Verify the increment side effect.
+        // 同秒内 current=1,last=0 → qps=(1*7)/10=0（整数除法向下取整）。
         w.record();
         w.record();
         w.record();
@@ -747,9 +725,7 @@ mod tests {
 
     #[test]
     fn test_qps_window_record_swaps_counters_when_second_advances() {
-        // Force the stored second into the past so that record() enters the
-        // `now_secs != stored_sec` branch and (now_secs > stored_sec) is true,
-        // swapping current_second_count into last_second_count.
+        // 把存储秒改成过去，使 record() 进入秒切换分支并交换两个计数器。
         let w = QpsWindow::new(10);
         w.record();
         w.record();
@@ -757,7 +733,7 @@ mod tests {
         // current = 1 + 1 + 7 = 9
         assert_eq!(w.get_qps(), (9 * 7) / 10);
 
-        // Pretend the stored second is now in the past.
+        // 置存储秒为过去（触发秒切换分支）。
         let stale_sec = w
             .current_second
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -766,9 +742,7 @@ mod tests {
             .store(stale_sec, std::sync::atomic::Ordering::Relaxed);
 
         w.record();
-        // After swap: last = 10 (previous current + 1 from this call's fetch_add
-        // happens after the swap), current = 1.
-        // QPS = (1*7 + 10*3) / 10 = 37/10 = 3
+        // 交换后 last=10（含本次 swap 后 fetch_add）、current=1 → qps=37/10=3。
         let qps = w.get_qps();
         assert_eq!(qps, 3);
     }
@@ -798,8 +772,7 @@ mod tests {
         let w = QpsWindow::new(10);
         w.record();
         w.cleanup(); // no-op by design
-                     // Counters must remain intact after cleanup.
-        assert_eq!(w.get_qps(), 0); // (1*7 + 0*3)/10 = 0
+        assert_eq!(w.get_qps(), 0); // qps=(1*7)/10=0
     }
 
     #[test]
@@ -886,7 +859,6 @@ mod tests {
 
     #[test]
     fn test_metrics_snapshot_serde_roundtrip_uuid_variant() {
-        // uuid 工作线合并后 AlgorithmType 只有 UuidV8 一个 uuid 变体
         let alg = AlgorithmType::UuidV8;
         let original = MetricsSnapshot {
             algorithm: alg,
@@ -942,8 +914,7 @@ mod tests {
 
     #[test]
     fn test_get_or_create_metrics_hit_path_does_not_block_on_write_lock() {
-        // 回归钉桩：观测路径每请求都会调用本方法。旧实现无条件取写锁，只要有人
-        // 持读锁（如 metrics 端点正在排序快照），并发请求就被串行化成一队。
+        // 回归钉桩：命中路径不得取写锁，否则有人持读锁时并发观测被串行化。
         let g = Arc::new(GlobalMetrics::new());
         let registered = g.get_or_create_metrics(AlgorithmType::Snowflake);
         assert_eq!(registered.algorithm, AlgorithmType::Snowflake);
@@ -1013,8 +984,7 @@ mod tests {
     fn test_get_uptime_seconds_returns_non_decreasing_value() {
         let g = GlobalMetrics::new();
         let t1 = g.get_uptime_seconds();
-        // Uptime is non-negative and small at test start.
-        // Sleep slightly to ensure elapsed time advances if it lands on a second boundary.
+        // Sleep slightly so elapsed time can advance across a second boundary.
         std::thread::sleep(std::time::Duration::from_millis(10));
         let t2 = g.get_uptime_seconds();
         assert!(t2 >= t1);

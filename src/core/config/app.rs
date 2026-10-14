@@ -62,25 +62,22 @@ pub struct NebulaIdConfig {
     /// Datacenter ID (0-7)
     ///
     /// 多实例约束：未配置 etcd（无 worker_id 运行时分配）时，本值与
-    /// [`NebulaIdConfig::worker_id`] 共同构成 Snowflake 的机器标识；多实例部署
-    /// 必须显式配置（环境变量 `DC_ID` 或配置文件），默认值 0 会使多实例
-    /// 生成重复 ID（启动时进程会输出 warn 提醒，见 main.rs）。
+    /// [`NebulaIdConfig::worker_id`] 共同构成 Snowflake 机器标识，多实例必须显式配置
+    /// （`DC_ID` 或配置文件），否则默认值 0 会使多实例生成重复 ID。
     pub dc_id: u8,
     /// Worker ID (0-255)
     ///
-    /// 多实例约束：配置了 etcd endpoints 时本值会被运行时分配的 worker_id
-    /// 覆盖；未配置 etcd 时即为 Snowflake 的最终机器标识，多实例
-    /// 部署必须显式配置（环境变量 `WORKER_ID` 或配置文件），默认值 0 会使
-    /// 多实例生成重复 ID（启动时进程会输出 warn 提醒，见 main.rs）。
+    /// 多实例约束：配置 etcd 时本值被运行时分配的 worker_id 覆盖；未配置 etcd 时为
+    /// Snowflake 最终机器标识，多实例必须显式配置（`WORKER_ID` 或配置文件），否则
+    /// 默认值 0 会使多实例生成重复 ID。
     pub worker_id: u8,
     /// Graceful shutdown timeout (seconds)
     #[serde(default = "default_shutdown_timeout_seconds")]
     pub shutdown_timeout_seconds: u64,
-    /// Process default locale。空串(auto,serde 默认)= 未显式
-    /// 表达语言偏好,跟随系统语言检测链(NEBULA_LOCALE → 本字段 → LC_ALL/
-    /// LC_MESSAGES/LANG → sys-locale → en,见 main.rs `resolve_locale`);
-    /// 显式写入规范值 "en"/"zh-CN" 则钉死进程语言,**用户配置优先于系统
-    /// 语言**。非法值在启动时告警并继续走链(链尾落 en)。
+    /// Process default locale。空串(auto,serde 默认) = 未显式表达语言偏好，跟随系统
+    /// 语言检测链(NEBULA_LOCALE → 本字段 → LC_ALL/LC_MESSAGES/LANG → sys-locale → en)；
+    /// 显式写入 "en"/"zh-CN" 则钉死进程语言，**用户配置优先于系统语言**。
+    /// 非法值在启动时告警并继续走链(链尾落 en)。
     #[serde(default = "default_locale")]
     pub locale: String,
 }
@@ -90,9 +87,8 @@ fn default_shutdown_timeout_seconds() -> u64 {
 }
 
 fn default_locale() -> String {
-    // (unify-rust-i18n):默认空串 = auto(跟随系统语言检测链,链尾 en)。
-    // 若默认 "en",config.app.locale 会在检测链中恒短路,统一基线要求的
-    // 系统语言自动检测在默认部署下不可达(设计决策,实施记录)。
+    // 默认空串 = auto：若默认 "en"，config.app.locale 会在检测链中恒短路，
+    // 系统语言自动检测在默认部署下不可达。
     String::new()
 }
 
@@ -165,8 +161,8 @@ pub struct DatabaseConfig {
     /// Idle connection timeout (seconds)
     pub idle_timeout_seconds: u64,
     /// 单语句执行超时（秒）。仓储热查询（validate_api_key /
-    /// allocate_segment 等）经 `tokio::time::timeout` 包裹，防止 DB 挂起
-    /// 拖死生成与认证热路径。默认 5 秒。
+    /// allocate_segment 等）经 `tokio::time::timeout` 包裹，防止 DB 挂起拖死
+    /// 生成与认证热路径。默认 5 秒。
     #[serde(default = "default_statement_timeout_secs")]
     pub statement_timeout_secs: u64,
 }
@@ -177,10 +173,9 @@ fn default_statement_timeout_secs() -> u64 {
 }
 
 /// 手写 `Debug`：`password` 是明文口令，`url` 可能以
-/// `postgresql://user:pass@host/db` 的形式内嵌口令，两者都不得进 `{:?}` 输出
-/// （CWE-532）。`url` 经本模块 [`redact_db_url`] 脱敏（`core::database`
-/// 连接层复用同一实现，不另写第二份逻辑）；
-/// 空串保持原样输出，避免丢掉"没有配置整串 URL"这一可读状态。
+/// `postgresql://user:pass@host/db` 形式内嵌口令，两者都不得进 `{:?}`（CWE-532）；
+/// `url` 经本模块 [`redact_db_url`] 脱敏（`core::database` 复用同一实现），
+/// 空串原样输出以保留"未配置整串 URL"的状态。
 impl std::fmt::Debug for DatabaseConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DatabaseConfig")
@@ -201,9 +196,8 @@ impl std::fmt::Debug for DatabaseConfig {
 }
 
 /// 空串不参与脱敏（表示"未使用整串 URL"），其余经本地 `redact_db_url`。
-/// `redact_db_url` 定义在本模块（纯 `url` 解析，零 DB 依赖），以便
-/// `--no-default-features` 剪裁组合（`core::database` 被 cfg 排除）下
-/// 配置层仍可编译；`core::database` 侧复用本实现，不维持第二份逻辑。
+/// `redact_db_url` 定义在本模块（纯 url 解析，零 DB 依赖），保证
+/// `--no-default-features` 下配置层仍可编译；`core::database` 复用本实现。
 pub(crate) fn redact_db_url(url: &str) -> String {
     match url::Url::parse(url) {
         Ok(mut parsed) => {
@@ -225,11 +219,8 @@ pub(crate) fn redact_optional_url(url: &str) -> String {
 
 impl Default for DatabaseConfig {
     fn default() -> Self {
-        // If DATABASE_URL is set, password is embedded in URL, not required separately.
-        // 用 `if let Ok(url) = ...` 模式只读取一次 env var，避免原写法中
-        // `.is_ok()` 检查后 `.unwrap()` 读取之间的 TOCTOU race（与
-        // `load_from_env_database_url` 等设置 DATABASE_URL 的测试并行时
-        // 会 panic）。
+        // DATABASE_URL 存在时口令内嵌于 URL，无需单独 password；用 `if let Ok(url)`
+        // 只读取一次 env，避免原 `.is_ok()`+`.unwrap()` 之间的 TOCTOU race。
         if let Ok(url) = std::env::var("DATABASE_URL") {
             return Self {
                 engine: DatabaseEngine::Postgresql,
@@ -247,8 +238,7 @@ impl Default for DatabaseConfig {
             };
         }
 
-        // For tests, allow fallback to in-memory database
-        // SECURITY: This fallback is ONLY for testing, not production
+        // SECURITY: 该兜底仅用于测试（cfg!(test) 或 NEBULA_TEST_MODE），生产不适用。
         if cfg!(test) || std::env::var("NEBULA_TEST_MODE").is_ok() {
             return Self {
                 engine: DatabaseEngine::Sqlite,
@@ -266,10 +256,9 @@ impl Default for DatabaseConfig {
             };
         }
 
-        // SECURITY: 密码来自环境变量；缺失时置空而非 panic —— `Default` 不应因
-        // 环境变量缺失而 panic（嵌入式 SDK 使用 `Config::default()` 且不连数据库）。
-        // 服务端安全性不受弱化：`create_connection` 在建连时对空密码显性返回
-        // `ConfigurationError`，忘设密码仍在启动时报错（时机从构造默认配置后移到建连）。
+        // SECURITY: 密码来自环境变量，缺失时置空而非 panic（`Default` 不应因环境
+        // 缺失而 panic）；空密码在 `create_connection` 建连时显性返回
+        // `ConfigurationError`，忘设密码仍在启动时报错。
         let password = std::env::var("NEBULA_DATABASE_PASSWORD").unwrap_or_default();
 
         if password == "idgen123" || password.is_empty() {
@@ -281,10 +270,9 @@ impl Default for DatabaseConfig {
 
         Self {
             engine: DatabaseEngine::Postgresql,
-            // url 必须留空：merge() 把"非默认字段"当作环境覆盖回写，预填的
-            // localhost:5432 URL 会静默覆盖配置文件里 host/port 分离写法的
-            // 端口。留空时 create_connection 按 host/port/username/password
-            // 拼接 URL（显式 DATABASE_URL 仍走上方分支并被 merge 采纳）。
+            // url 必须留空：merge() 把非默认字段当环境覆盖回写，预填 localhost:5432 URL
+            // 会静默覆盖配置文件的 host/port 分离写法的端口；留空时 create_connection
+            // 按 host/port/username/password 拼 URL（显式 DATABASE_URL 走上分支）。
             url: String::new(),
             host: "localhost".to_string(),
             port: 5432,
@@ -310,7 +298,7 @@ pub struct EtcdConfig {
     pub connect_timeout_ms: u64,
     /// Watch timeout (milliseconds)
     pub watch_timeout_ms: u64,
-    /// 单次 etcd 操作超时（秒）。`EtcdClientWrapper` 的各操作经
+    /// 单次 etcd 操作超时（秒）。`EtcdClientWrapper` 各操作经
     /// `tokio::time::timeout` 包裹，防止 etcd 挂起阻塞协调路径。默认 3 秒。
     #[serde(default = "default_operation_timeout_secs")]
     pub operation_timeout_secs: u64,
@@ -345,7 +333,6 @@ mod tests {
 
     #[test]
     fn test_database_engine_display_postgres_alias() {
-        // Postgres 是 PostgreSQL 的别名，Display 输出应与 Postgresql 一致
         assert_eq!(DatabaseEngine::Postgres.to_string(), "postgresql");
     }
 
@@ -387,14 +374,12 @@ mod tests {
 
     #[test]
     fn test_database_engine_from_str_unknown_falls_back_to_postgresql() {
-        // 未知字符串应回退到 PostgreSQL（默认值，不报错）
         let e: DatabaseEngine = "redis".into();
         assert_eq!(e, DatabaseEngine::Postgresql);
     }
 
     #[test]
     fn test_database_engine_from_str_case_insensitive() {
-        // 大小写不敏感：MySQL/MYSQL/POSTGRESQL 都应被识别
         let e: DatabaseEngine = "MySQL".into();
         assert_eq!(e, DatabaseEngine::Mysql);
 
@@ -456,7 +441,6 @@ mod tests {
 
     #[test]
     fn test_app_config_http_addr_invalid_host_returns_error() {
-        // 不合法的 host（带空格）→ 解析失败
         let cfg = NebulaIdConfig {
             host: "not a valid host".to_string(),
             ..Default::default()
@@ -491,7 +475,6 @@ mod tests {
 
     #[test]
     fn test_app_config_http_addr_custom_port() {
-        // 自定义端口应正确解析
         let cfg = NebulaIdConfig {
             host: "127.0.0.1".to_string(),
             http_port: 12345,
@@ -573,7 +556,6 @@ locale = "zh-CN"
 
     #[test]
     fn test_database_config_default_in_test_mode_uses_sqlite() {
-        // cfg!(test) 为 true 时，应进入 in-memory sqlite 分支
         let cfg = DatabaseConfig::default();
         assert_eq!(cfg.engine, DatabaseEngine::Sqlite);
         assert_eq!(cfg.url, "sqlite::memory:");
@@ -581,7 +563,6 @@ locale = "zh-CN"
         assert_eq!(cfg.min_connections, 1);
         assert_eq!(cfg.acquire_timeout_seconds, 30);
         assert_eq!(cfg.idle_timeout_seconds, 300);
-        // 测试模式下 host/port/username/password/database 均为空
         assert!(cfg.host.is_empty());
         assert_eq!(cfg.port, 0);
         assert!(cfg.username.is_empty());

@@ -22,9 +22,7 @@ pub struct RedisConfig {
     pub ttl_seconds: u64,
 }
 
-/// 手写 `Debug`：`url` 可以写成 `redis://:password@host`，口令不得进 `{:?}` 输出
-/// （CWE-532）。脱敏复用 [`crate::core::config::app::redact_optional_url`]，与
-/// `DatabaseConfig` 同一份实现。
+/// 手写 `Debug`：`url` 可能含口令（CWE-532），不得进 `{:?}`；脱敏复用 [`super::app::redact_optional_url`]
 impl std::fmt::Debug for RedisConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RedisConfig")

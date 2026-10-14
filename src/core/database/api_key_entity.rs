@@ -15,16 +15,16 @@ pub struct Model {
     #[sea_orm(unique)]
     pub key_id: String,
     pub key_secret_hash: String,
-    /// 上一代凭证的哈希（与 `key_secret_hash` 同 Argon2 PHC 格式、同 salt）。
-    /// 仅在"开启宽限期的轮换"后写入；`grace = 0`（默认）或从未轮换时为 `None`。
+    /// 上一代凭证哈希（与 `key_secret_hash` 同 Argon2 PHC 格式、同 salt）。
+    /// 仅宽限期轮换后写入；`grace = 0`（默认）或从未轮换时为 `None`。
     pub prev_secret_hash: Option<String>,
-    /// 宽限期的绝对到期时刻（UTC）。`None` 表示当前没有生效中的宽限期；
-    /// 到期后 `prev_secret_hash` 不再被采信（惰性时间判定，见 `validate_api_key`）。
+    /// 宽限期绝对到期时刻（UTC）；`None` = 无生效宽限期。
+    /// 到期后 `prev_secret_hash` 不再被采信（惰性判定，见 `validate_api_key`）。
     pub rotate_expires_at: Option<DateTime>,
     pub key_prefix: String,
     #[sea_orm(column_name = "role")]
     pub role: String,
-    pub workspace_id: Option<Uuid>, // UUID for proper foreign key
+    pub workspace_id: Option<Uuid>,
     pub name: String,
     pub description: Option<String>,
     pub rate_limit: i32,
@@ -47,9 +47,8 @@ pub enum Relation {
 
 impl ActiveModelBehavior for ActiveModel {}
 
-/// 手写 `Debug`：`key_secret_hash` 与 `prev_secret_hash` 是凭证哈希材料，
-/// 不得出现在 `{:?}` 输出里（CWE-532）。`derive(Debug)` 下任何日志、panic
-/// 消息或断言失败输出都会把它原样落盘，且编译期没有任何告警。
+/// 手写 `Debug`：凭证哈希不得出现在 `{:?}` 输出（CWE-532），
+/// 否则日志/panic 消息会原样落盘；两个哈希字段固定输出 `[REDACTED]`。
 impl std::fmt::Debug for Model {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Model")
@@ -97,10 +96,8 @@ pub struct ApiKey {
 
 pub type ApiKeyInfo = ApiKey;
 
-/// `validate_api_key` 的判定结果。
-///
-/// 取代原来的 `(workspace_id, role)` 元组：宽限期生效后，"认证通过"不再是一个
-/// 二元结论 —— 命中的是当代凭证还是上一代凭证，决定调用方能否缓存该决策。
+/// `validate_api_key` 的判定结果：认证通过不再只是二元结论。
+/// `used_previous_credential` 区分当代/上一代凭证，决定调用方能否缓存该决策。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AuthenticatedKey {
     pub workspace_id: Option<Uuid>,
@@ -114,11 +111,9 @@ pub struct AuthenticatedKey {
 pub enum ApiKeyRole {
     Admin,
     User,
-    /// （CWE-1188）：禁用认证时使用的匿名角色。
-    /// 该角色仅存在于内存中（请求 extensions），不会被持久化到数据库
-    /// （`repository.rs` 的 `create_api_key` 会拒绝 Anonymous）。
-    /// 权限低于 User：只能访问公开端点（health/ready/metrics），
-    /// 其他端点由 `router.rs::verify_user_role` 拒绝。
+    /// （CWE-1188）禁用认证时使用的匿名角色，仅存在于内存（请求 extensions）。
+    /// 权限低于 User：只能访问公开端点（health/ready/metrics），其余由
+    /// `router.rs::verify_user_role` 拒绝；不会被持久化（`create_api_key` 拒绝）。
     Anonymous,
 }
 
@@ -143,12 +138,8 @@ impl From<&str> for ApiKeyRole {
         match s {
             "admin" => ApiKeyRole::Admin,
             "user" => ApiKeyRole::User,
-            // `"anonymous"` 不应从数据库反序列化。
-            // Anonymous 是仅运行时存在的角色（禁用认证时注入 extensions），
-            // 不应被持久化。若数据库出现 'anonymous'（运维误操作/迁移脚本
-            // 错误/SQL 注入），归一化为 User 默认值并 log warn，让运维
-            // 在日志中看到问题。原实现接受 'anonymous' 反序列化会让 Anonymous
-            // 通过 ApiKey 传播到 middleware/router，破坏 契约。
+            // "anonymous" 不应从数据库反序列化：Anonymous 仅运行时存在，
+            // 数据库出现该值（误操作/迁移错误/注入）时归一化为 User 并 warn。
             "anonymous" => {
                 tracing::warn!(
                     role_value = s,
@@ -170,14 +161,14 @@ impl From<ApiKeyRole> for String {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CreateApiKeyRequest {
-    pub workspace_id: Option<Uuid>, // Optional: NULL for global admin keys
+    pub workspace_id: Option<Uuid>, // 全局 admin key 时为 NULL
     pub name: String,
     pub description: Option<String>,
     pub role: ApiKeyRole,
     pub rate_limit: Option<i32>,
     pub expires_at: Option<DateTime>,
-    pub key_secret: Option<String>, // Optional: use provided secret instead of generating
-    pub key_id: Option<String>,     // Optional: use provided key_id instead of generating
+    pub key_secret: Option<String>, // Some 时使用给定 secret，不再生成
+    pub key_id: Option<String>,     // Some 时使用给定 key_id，不再生成
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -199,7 +190,6 @@ pub struct ApiKeyWithSecret {
     pub key: ApiKeyResponse,
     pub key_secret: String,
     /// 本次轮换后的宽限期截止时刻（UTC）；`None` = 未开启宽限期（默认）或新建 key。
-    ///
     /// 调用方据此知道上一代凭证何时彻底失效。
     pub grace_expires_at: Option<DateTime>,
 }
@@ -223,8 +213,7 @@ impl From<Model> for ApiKey {
     }
 }
 
-/// `ApiKey`（= `ApiKeyInfo`）比 `ApiKeyResponse` 多 `workspace_id` 与 `last_used_at`
-/// 两列，列表接口下发的是后者形状；有了这条转换，wire 层就不必为列表另写一份字段表。
+/// `ApiKey` 比 `ApiKeyResponse` 多 `workspace_id`/`last_used_at` 两列，故需此转换。
 impl From<ApiKey> for ApiKeyResponse {
     fn from(key: ApiKey) -> Self {
         ApiKeyResponse {

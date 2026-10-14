@@ -1,9 +1,7 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! 仓储层共享测试夹具（仅测试构建参与编译）：MockDatabase 连接构造、
-//! 各实体样例 Model、固定 UUID/时间戳 helper 与分布式锁测试替身。
-//! 声明于 `database/mod.rs` 时以 `#[cfg(test)]` 门控。
+//! 仓储层共享测试夹具（仅 `#[cfg(test)]` 编译）：Mock 连接、样例 Model、固定 UUID/时间 helper 与锁替身。
 
 use async_trait::async_trait;
 use chrono::NaiveDateTime;
@@ -18,23 +16,19 @@ use crate::core::database::repository::SeaOrmRepository;
 use crate::core::database::segment_entity::Model as SegmentModel;
 use crate::core::database::workspace_entity::Model as WorkspaceModel;
 
-// ------------------------------------------------------------------
-// Helpers
-// ------------------------------------------------------------------
+// ----- Helpers -----
 
-/// Build a `SeaOrmRepository` backed by a `MockDatabase`.
+/// 构造基于 `MockDatabase` 的 `SeaOrmRepository`。
 pub(crate) fn make_repo(db: dbnexus::sea_orm::DatabaseConnection) -> SeaOrmRepository {
     SeaOrmRepository::new(db, "test_salt".to_string())
 }
 
-/// Build an empty `MockDatabase` connection (Postgres backend) for tests
-/// that don't need to mock any query/exec results.
+/// 构造空的 `MockDatabase` 连接（Postgres backend），供无需 mock 查询结果的用例使用。
 pub(crate) fn empty_pg_connection() -> dbnexus::sea_orm::DatabaseConnection {
     MockDatabase::new(DatabaseBackend::Postgres).into_connection()
 }
 
-/// A trivial distributed lock that always succeeds (used by tests that
-/// need to inject a lock without affecting behavior).
+/// 恒成功的琐碎分布式锁，供仅需注入锁的测试使用。
 pub(crate) struct DummyDistributedLock;
 
 #[async_trait]
@@ -56,7 +50,7 @@ pub(crate) fn fixed_uuid(n: u8) -> Uuid {
     Uuid::from_bytes([n; 16])
 }
 
-#[allow(deprecated)] // 原 mock_tests 模块级 allow 随域迁移落到此 helper 上
+#[allow(deprecated)] // 该 helper 需继续使用 deprecated API
 pub(crate) fn fixed_datetime(secs: i64) -> NaiveDateTime {
     NaiveDateTime::from_timestamp_opt(secs, 0).unwrap()
 }
@@ -148,11 +142,8 @@ pub(crate) fn sample_segment_model(id: i64, workspace_id: &str, biz_tag: &str) -
     }
 }
 
-/// No-op lock guard for testing only (fix).
-///
-/// 仅在 `#[cfg(test)]` 下使用：测试环境用 SQLite 单连接，数据库事务本身
-/// 提供原子性保证，无需分布式锁。生产环境未配置锁时 `allocate_segment`
-/// 会返回 `ConfigurationError`，禁止静默降级。
+/// 仅测试用的 no-op 锁守卫：测试用 SQLite 单连接，事务本身提供原子性。
+/// 生产未配置锁时 `allocate_segment` 返回 `ConfigurationError`，禁止静默降级。
 #[cfg(test)]
 pub(crate) struct NoopLockGuard;
 
@@ -164,8 +155,7 @@ impl LockGuard for NoopLockGuard {
     }
 }
 
-/// A distributed lock whose `acquire` always fails. Used to exercise the
-/// `InternalError` branch in `allocate_segment` / `allocate_segment_with_dc`.
+/// `acquire` 恒失败的分布式锁，用于覆盖 `allocate_segment` 的 `InternalError` 分支。
 pub(crate) struct FailingDistributedLock;
 
 #[async_trait]

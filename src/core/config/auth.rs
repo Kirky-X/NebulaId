@@ -23,9 +23,7 @@ pub struct ApiKeyEntry {
     pub name: String,
 }
 
-/// 手写 `Debug`：`key_secret` 是明文凭证，绝不能出现在 `{:?}` 输出里（CWE-532）——
-/// `derive(Debug)` 下任何日志、panic 消息或断言失败输出都会把它原样落盘，且编译期
-/// 没有任何告警。替代 `#[derive(Debug)]`，其余字段按声明顺序照常输出。
+/// 手写 `Debug`：`key_secret` 是明文凭证，不得进 `{:?}` 输出（CWE-532）；其余字段照常输出。
 impl std::fmt::Debug for ApiKeyEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ApiKeyEntry")
@@ -53,17 +51,14 @@ pub struct AuthConfig {
     /// Salt for API key hashing
     #[serde(default = "default_api_key_salt")]
     pub api_key_salt: String,
-    /// 修复：密钥轮换宽限期（秒）。`> 0` 时旧密钥在宽限期内仍然有效，
-    /// 避免轮换瞬间造成请求失败；`0`（默认，）表示不设宽限期，轮换后上一代
-    /// 凭证立即失效。上限 30 天，超限值由 `ApiHandlers::with_key_rotation_grace_period`
-    /// clamp。
+    /// 密钥轮换宽限期（秒）：`> 0` 时旧密钥仍有效，避免轮换瞬间请求失败；
+    /// 默认 `0` 不设宽限期，上限 30 天（超限由 `ApiHandlers::with_key_rotation_grace_period` clamp）。
     #[serde(default = "default_key_rotation_grace_period_seconds")]
     pub key_rotation_grace_period_seconds: u64,
 }
 
-/// 手写 `Debug`：`api_key_salt` 是密钥哈希的 pepper，与 `ApiKeyEntry::key_secret`
-/// 同属不得进日志/panic 输出的凭证材料（CWE-532）。`api_keys` 由 [`ApiKeyEntry`] 自己的
-/// `Debug` 完成脱敏。
+/// 手写 `Debug`：`api_key_salt` 是密钥哈希的 pepper，同属不得进日志/panic 输出的
+/// 凭证材料（CWE-532）。
 impl std::fmt::Debug for AuthConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AuthConfig")
@@ -80,29 +75,13 @@ impl std::fmt::Debug for AuthConfig {
 }
 
 fn default_api_key_salt() -> String {
-    // Phase 9 — never fall back to a
-    // hard-coded salt. The garrison-based auth path
-    // already panics in production when `NEBULA_API_KEY_SALT` is unset;
-    // this function returns an empty string so the empty-ness check in
-
-    // dev/test the manager generates a random per-process salt, so an
-    // empty string here is safe for non-production builds.
+    // 不回退到硬编码 salt：生产缺 `NEBULA_API_KEY_SALT` 时 garrison 鉴权路径直接 panic；
+    // 返回空串，非生产构建由 manager 生成随机 per-process salt。
     std::env::var("NEBULA_API_KEY_SALT").unwrap_or_default()
 }
 
-/// 默认宽限期 = `0`（关闭）。历史上该值是 7 天，与 之前的
-/// 硬编码 `const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60` 一致。
-///
-/// 把该常量提取为 `pub const`，所有调用方统一引用，
-/// 避免未来调整默认值时霰弹手术。原三处重复：
-/// - `auth.rs::default_key_rotation_grace_period_seconds()` (本文件)
-/// - `handlers/mod.rs::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`
-/// - `config_adapter.rs::unwrap_or(7 * 24 * 60 * 60)`
-///
-/// （code-hygiene-cleanup）：常量本体已迁入
-/// [`crate::core::config::defaults`] 统一注册表，旧路径别名按"直接废弃"
-/// 原则移除（无任何消费方后不再保留）。本函数只是注册表常量的 serde 适配器，
-/// 改默认值只需动注册表那一行。
+/// 默认宽限期 = `0`（关闭）。常量本体在 [`crate::core::config::defaults`] 注册表，
+/// 调整默认值只需改注册表那一行。
 fn default_key_rotation_grace_period_seconds() -> u64 {
     crate::core::config::defaults::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS
 }
@@ -123,8 +102,7 @@ impl Default for AuthConfig {
 mod tests {
     use super::*;
 
-    /// 宽限期默认关闭。旧默认 7 天让"轮换"在整整一周内同时接受两代
-    /// 凭证，等于把泄露过的 secret 保持有效一周。
+    /// 默认必须为 0：轮换后上一代凭证立即失效，开启需显式配置。
     #[test]
     fn test_auth_config_default_grace_period_is_zero() {
         assert_eq!(
@@ -134,8 +112,7 @@ mod tests {
         );
     }
 
-    /// `#[serde(default = ...)]` 与 `Default` 必须同源：真实启动走的是 TOML 反序列化，
-    /// 配置文件不写该键时也得拿到同一个"关闭"值。
+    /// serde 默认与 `Default` 必须同源：启动走 TOML 反序列化，缺键也须得到同一值。
     #[test]
     fn test_auth_config_missing_grace_period_field_defaults_to_zero() {
         let config: AuthConfig =

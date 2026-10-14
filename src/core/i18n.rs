@@ -1,46 +1,15 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! Internationalization (i18n — unify-rust-i18n 基线, sdforge i18n 承载).
-//!
-//! 2026-10 selfdev-lib-adoption-r1: Fluent 引擎(fluent-bundle + unic-langid
-//! 两个直依赖已删)收编为 sdforge i18n。FTL 资源 `locales/{en,zh}/messages.ftl`
-//! 经 `include_str!` 编译期内嵌(内嵌与磁盘是同一份文件,结构上不可能漂移,见
-//! 守卫测试 `test_embedded_ftl_matches_locales_dir`);扁平键集在首次查询或
-//! `init_i18n` 时一次性注册进 sdforge `register_translation`,并同步构建
-//! 本模块的只读快照 `SNAPSHOT`。
-//!
-//! 查询路径**不触碰 sdforge 的进程级注册表**(其 `REGISTRY` 是全局
-//! `Mutex`,每次查询过锁且每次查找新建 `(locale, key)` 元组):键集在
-//! 运行期不变,故经 OnceLock 快照本地查找 + 本地渲染(渲染规则与
-//! sdforge `format_template` 一致,见 `render_template` 与
-//! `test_local_render_matches_sdforge` 对拍)。
-//!
-//! 运行时进程级 locale 切换经 [`init_i18n`](`t!` 宏的全局 locale 来源);
-//! 每请求 locale 翻译经 [`translate_with_locale`] 系列——被 HTTP handlers
-//! 用于按 `Accept-Language` 协商出的 `Locale` 翻译错误消息,不触碰全局
-//! locale 状态(并发安全)。
-//!
-//! # 键名约定(与 rust-i18n 时代的点分键兼容)
-//!
-//! FTL 消息标识不允许 `.`;源键 `a.b.c_d` 与 FTL id `a-b-c_d` 一一对应
-//! (查找时把 `.` 替换为 `-`;两份 yml 中没有任何含 `-` 的键,映射双射,
-//! 见守卫测试)。对外 API(`i18n_key()`、`t!` 调用点、FTL 键齐性测试的
-//! 语义)全部沿用点分键,零调用点改动。
-//!
-//! # 回退语义(与 Fluent 时代行为一致)
-//!
-//! 请求 locale → `en` 束 → 键本身(永不 panic、永不返回空串);未知 locale
-//! ("fr"/"ja"/"xx-XX"/"") 一律落到 `en` 束。
+//! Internationalization (i18n)：FTL 资源 `locales/{en,zh}/messages.ftl` 经
+//! `include_str!` 编译期内嵌，`init_i18n` 或首次查询注册进 sdforge 并构建本地只读快照（查询零锁）。
+//! 回退链：请求 locale → `en` 束 → 键本身（永不 panic/空串）；点分键映射 FTL id 时 `.` → `-`。
 
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::OnceLock;
 
-/// 全局 locale 存储:`0 = en`(默认),`1 = zh`。
-///
-/// 结果域只有 en/zh 两个值(unify-rust-i18n 合规标准:禁止第三语言),
-/// 因此用原子量即可,无需 RwLock<String>。
+/// 全局 locale 存储：`0 = en`（默认），`1 = zh`。结果域仅 en/zh，用原子量即可。
 static GLOBAL_LANG: AtomicU8 = AtomicU8::new(0);
 
 const LANG_EN: u8 = 0;
@@ -48,9 +17,8 @@ const LANG_ZH: u8 = 1;
 
 /// Initialize the i18n system with the given locale.
 ///
-/// Must be called once at startup, before any `t!()` lookup that depends
-/// on a non-default locale. 接受 "en" / "zh-CN"(大小写不敏感,"zh*" 归一
-/// 为 zh);未知取值按原 rust-i18n 语义回退 "en"。
+/// 启动期调用一次，须先于依赖非默认 locale 的 `t!()` 查询；接受 "en"/"zh-CN"
+/// （大小写不敏感，"zh*" 归一 zh），未知取值回退 "en"。
 ///
 /// # Example
 /// ```ignore
@@ -68,16 +36,12 @@ pub fn init_i18n(locale: &str) {
         LANG_EN
     };
     GLOBAL_LANG.store(lang, Ordering::Release);
-    // 键集注册提前到启动期（R-i18n 的「静态键集注册在启动期完成」约束）：
-    // FTL 解析与注册是一次性成本，放在 init_i18n 里就不落在首个认证/
-    // 错误响应请求的热路径上。ensure_registered 幂等，重复调用无副作用。
+    // 键集注册提前到启动期：一次性成本，避免落在首个错误响应热路径；幂等，无副作用。
     ensure_registered();
 }
 
 /// Current process default locale as its canonical string ("en" / "zh-CN").
-///
-/// 供测试守卫保存/恢复全局 locale,以及需要读取(而非改写)全局 locale
-/// 的调用方使用。
+/// 供只读全局 locale 的调用方与测试守卫使用。
 pub fn current_locale() -> String {
     if GLOBAL_LANG.load(Ordering::Acquire) == LANG_ZH {
         "zh-CN".to_string()
@@ -94,11 +58,7 @@ fn current_lang() -> &'static str {
     }
 }
 
-/// 请求 locale 字符串 → 束语言("en" / "zh")。
-///
-/// "zh-CN" / "zh" / "zh-Hans"(大小写不敏感)→ zh;其余(含 en 变体、
-/// 未知、空串)→ en。HTTP 中间件的 `Locale::as_str()` 输出("en"/"zh-CN")
-/// 与 `resolve_locale` 的输出都按此归一。
+/// 请求 locale 字符串 → 束语言("en" / "zh")："zh*"（大小写不敏感）→ zh，其余 → en。
 fn lang_of(locale: &str) -> &'static str {
     if locale
         .trim()
@@ -119,25 +79,15 @@ fn ftl_id(dotted_key: &str) -> String {
 
 /// Translate a key under the given locale, without pattern arguments.
 ///
-/// Looks up the key in the locale's FTL bundle. If the key is missing for
-/// the requested locale, falls back to the crate default locale (`en`)
-/// bundle. If still missing, returns the key itself.
-///
-/// Unlike `t!` (which consults the process-wide locale set by
-/// [`init_i18n`]), this function does **not** mutate or read global state
-/// and is safe for concurrent use across requests with different
-/// `Accept-Language` headers.
+/// 未命中回退 `en` 束，再回退键本身。与 `t!` 不同：不读写全局 locale 状态，
+/// 可跨请求并发使用（多 `Accept-Language` 安全）。
 pub fn translate_with_locale(locale: &str, key: &str) -> String {
     translate_with_locale_cow(locale, key).into_owned()
 }
 
 /// Zero-copy-flavored translation lookup returning `Cow<'static, str>`.
 ///
-/// 历史注记:rust-i18n 时代命中编译期内嵌静态串时可返回
-/// `Cow::Borrowed`;Fluent 引擎总是按 pattern 格式化求值,输出恒为
-/// 新分配的 `String`(`Cow::Owned`)。签名与"返回可读翻译"的语义
-/// 原样保留,调用方无需改动;按值读取的调用方可以继续 `as_ref()`,
-/// 需要 `String` 的调用方 `into_owned()`。
+/// 输出恒为 `Cow::Owned`（每次渲染新分配）；调用方可用 `as_ref()` 或 `into_owned()`。
 pub fn translate_with_locale_cow(locale: &str, key: &str) -> Cow<'static, str> {
     let pairs: Vec<(&str, String)> = Vec::new();
     Cow::Owned(lookup(lang_of(locale), key, &pairs))
@@ -145,30 +95,21 @@ pub fn translate_with_locale_cow(locale: &str, key: &str) -> Cow<'static, str> {
 
 /// Translate a key under the given locale, substituting named variables.
 ///
-/// `args` is a slice of `(variable_name, value)` pairs; each `{ $name }`
-/// variable in the FTL pattern is resolved with the corresponding value.
-/// Empty `args` skips the argument-passing pass for efficiency.
-///
-/// Like [`translate_with_locale`], this function does not touch global
-/// locale state and is safe for concurrent per-request use.
+/// `args` 为 `(变量名, 值)` 对，`{ $name }` 占位符逐个替换；空 `args` 跳过替换。
+/// 不触碰全局 locale，可并发按请求使用。
 pub fn translate_with_locale_args(locale: &str, key: &str, args: &[(&str, String)]) -> String {
     lookup(lang_of(locale), key, args)
 }
 
-/// Borrow-friendly variant of [`translate_with_locale_args`] accepting
-/// `Cow<str>` values.
+/// [`translate_with_locale_args`] 的 `Cow<str>` 变体，被 `CoreError::to_localized_string` 使用。
 ///
-/// 被 `CoreError::to_localized_string` 使用:`i18n_args()` 对 String 载荷
-/// 变体返回 `Cow::Borrowed`(零克隆),数值载荷变体返回 `Cow::Owned`
-/// (恰一次数字文本分配)。
+/// String 载荷零克隆（`Cow::Borrowed`），数值载荷恰一次分配。
 pub fn translate_with_locale_args_cow(
     locale: &str,
     key: &str,
     args: &[(&str, Cow<'_, str>)],
 ) -> String {
-    // Cow 载荷先物化为 String 切片：查询签名收 &[(&str, String)]。
-    // 代价：每参数一次分配。本路径仅错误响应使用（非每请求热路径），
-    // 按现状接受；若将来进入每请求路径，应让查询签名直收 Cow。
+    // 参数物化 String：每参数一次分配，仅错误响应用（非热路径）；进热路径时应直收 Cow。
     let pairs: Vec<(&str, String)> = args.iter().map(|(k, v)| (*k, v.to_string())).collect();
     lookup(lang_of(locale), key, &pairs)
 }
@@ -180,46 +121,34 @@ pub fn global_translate(key: &str, args: &[(&str, String)]) -> String {
 
 /// OpenAPI 文档运行时本地化用的「命中才译」查询(openapi.rs 专用)。
 ///
-/// 与 [`lookup`]「未命中回退键本身」的语义不同,这里显式区分命中与未命中:
-/// `ftl_id`(FTL 消息标识,如 `post-generate-200`,不做点分转换)在请求语言束
-/// (未命中再查 en 束)中存在时返回其渲染结果,不存在返回 `None`——调用方
-/// 据此保留 utoipa 静态注册的英文规范串,OpenAPI 契约结构不变。
+/// 与 [`lookup`] 不同：未命中返回 `None` 而非键本身，调用方据此保留 utoipa 静态英文串。
+/// `ftl_id` 为连字符形态，不做点分转换；查找为请求语言束 → en 束。
 pub fn translate_if_present(locale: &str, ftl_id: &str) -> Option<String> {
     let lang = lang_of(locale);
     if !is_registered_id(ftl_id) {
         return None;
     }
     ensure_registered();
-    // 命中判定用本地快照后，渲染也走本地快照（forge_translate），不再过
-    // sdforge 的进程级 REGISTRY 锁——OpenAPI 路径是"每次请求重建整份文档"
-    // 的数百次调用累积，且零锁快照语义已由 test_local_render_matches_sdforge
-    // 全键集对拍钉死。
+    // 渲染走本地快照（零锁）；OpenAPI 每请求重建整份文档，数百次调用不触 REGISTRY 锁。
     let empty: &[(&str, String)] = &[];
     Some(forge_translate(lang, ftl_id, empty))
 }
 
 // ============================================================================
-// 键集注册（sdforge i18n 承载：FTL 键集迁入 register_translation）
+// 键集注册（注册进 sdforge register_translation）
 // ============================================================================
 
-/// 已注册的 FTL 消息标识集合。`translate_if_present` 需要区分「命中」与
-/// 「未命中」，而 sdforge 的 `translate_for` 在未命中时回退键本身，两者
-/// 不可区分；用本集合判定存在性（双语键集一致，等价于「任一束存在」）。
+/// 已注册 FTL 消息标识集合：sdforge `translate_for` 未命中会回退键本身，
+/// 用本集合区分「命中/未命中」；双语键集一致，等价于「任一束存在」。
 static REGISTERED_IDS: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
 
 /// 注册期构建的本地只读快照：locale → (FTL id → 消息模板)。
-///
-/// sdforge 的注册表是进程级全局 `Mutex`（`i18n::REGISTRY`），每次查询
-/// 过锁且每次查找新建 `(locale, key)` 元组；NebulaId 的键集在注册时即
-/// 确定、运行期不变，故并持一份本地快照供查询路径零锁读取（`t!` 覆盖
-/// 每条日志与错误响应，经注册表即全热路径全局串行化）。
+/// sdforge 注册表是进程级 `Mutex`，查询过锁；键集运行期不变，本地快照供零锁读取。
 static SNAPSHOT: OnceLock<
     std::collections::HashMap<String, std::collections::HashMap<String, std::sync::Arc<str>>>,
 > = OnceLock::new();
 
-/// 注册完成的幂等 latch：首次查询时经 [`ensure_registered`] 置位，之后
-/// 所有注册尝试直接命中。不单独读取其值，仅用 `OnceLock` 的 get-or-init
-/// 原子性保证「注册恰好发生一次」。
+/// 注册完成的幂等 latch：用 `OnceLock` get-or-init 保证「注册恰好发生一次」。
 static REGISTERED: OnceLock<()> = OnceLock::new();
 
 /// English (en) FTL 资源 — 编译期内嵌 locales/en/messages.ftl。
@@ -229,13 +158,8 @@ const ZH_FTL: &str = include_str!("../../locales/zh/messages.ftl");
 
 /// 展开 Fluent 字符串字面量占位符 `{ "..." }` 为字面字符。
 ///
-/// Fluent 的 pattern 里换行等控制字符必须写成 `{ "\u000A" }` 这样的
-/// **字符串字面量占位符**（直接写裸换行会被解释为消息结束）。注册与快照
-/// 存的是展开后的消息值，渲染侧只认 `{ $name }` 变量占位符
-/// （与 sdforge `format_template` 同一规则），字符串字面量对它
-/// 是未知文本、原样输出——故须在注册前展开，否则消息里会留下
-/// `{ "\u000A" }` 字面痕迹（`test_multiline_fatal_message_preserves_newlines`
-/// 钉住这一点）。
+/// 换行等控制字符必须写成 `{ "\u000A" }`（裸换行会解释为消息结束）；渲染侧只认
+/// `{ $name }`，故须在注册前展开，否则消息残留字面痕迹。
 fn expand_string_literals(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
@@ -288,11 +212,7 @@ fn unescape_ftl_literal(inner: &str) -> String {
 }
 
 /// 解析扁平 FTL：取 `key = value` 单行，跳过空行与 `#` 注释。
-///
-/// NebulaId 的消息集是扁平的（无多行续行、无属性、无 select 表达式——
-/// `test_both_catalogs_share_identical_keyset` 与 parity 测试共同钉住这一
-/// 形态），故按行切分即可。值经 [`expand_string_literals`] 展开字符串
-/// 字面量后注册/入快照，`{ $name }` 占位符保持原样交由渲染。
+/// 消息集无多行续行/属性/select，按行切分即可；值经展开字符串字面量后入快照。
 fn parse_ftl_entries(src: &str) -> Vec<(String, String)> {
     src.lines()
         .filter_map(|line| {
@@ -310,12 +230,10 @@ fn parse_ftl_entries(src: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// 把双语 FTL 键集注册进 sdforge i18n（幂等，首次**查询**触发；
-/// `init_i18n` 只写全局 locale 原子量，不触发注册）。
+/// 把双语 FTL 键集注册进 sdforge i18n（幂等，`init_i18n` 与首次查询都会触发）。
 ///
-/// 注册的是**消息值**而非 FTL 原文：sdforge 的登记表是扁平的
-/// `(locale, key) -> value`，不做 Fluent 解析；其 `format_template` 负责
-/// `{ $name }` 轻量替换，语义与本项目此前经 FluentBundle 的渲染一致。
+/// 注册的是消息值而非 FTL 原文：sdforge 登记表是扁平 `(locale, key) -> value`，
+/// 由其 `format_template` 做 `{ $name }` 轻量替换。
 fn ensure_registered() {
     REGISTERED.get_or_init(|| {
         let mut ids = std::collections::HashSet::new();
@@ -349,9 +267,7 @@ fn is_registered_id(ftl_id: &str) -> bool {
 }
 
 /// sdforge 查询的本地快照等价实现：零锁查找 + 本地渲染。
-///
-/// 查找链与 sdforge `translate_for` 一致（请求语言束 → en 束 → 键本身），
-/// 渲染规则见 [`render_template`]（与 sdforge `format_template` 对拍钉死）。
+/// 查找链：请求语言束 → en 束 → 键本身；渲染规则见 [`render_template`]。
 fn forge_translate(lang: &str, ftl_id: &str, args: &[(&str, String)]) -> String {
     ensure_registered();
     let Some(snapshot) = SNAPSHOT.get() else {
@@ -367,12 +283,8 @@ fn forge_translate(lang: &str, ftl_id: &str, args: &[(&str, String)]) -> String 
     }
 }
 
-/// 本地渲染：与 sdforge `format_template` 同一套轻量替换规则。
-///
-/// sdforge 未公开该函数，而每次经其注册表查询要过进程级 `Mutex`（键集
-/// 运行期不变，锁是纯开销），故按同一规则本地实现，并由
-/// `test_local_render_matches_sdforge` 对拍钉死：未提供参数的占位符
-/// 保留 `{ $name }` 原文，替换值不再二次扫描，非占位符花括号原样输出。
+/// 本地渲染：与 sdforge `format_template` 同一套轻量替换规则（对拍钉死）。
+/// 未提供参数的占位符保留 `{ $name }` 原文；替换值不二次扫描；非占位符花括号原样输出。
 fn render_template(template: &str, args: &[(&str, String)]) -> String {
     if args.is_empty() || !template.contains('{') {
         return template.to_string();
@@ -405,14 +317,11 @@ fn render_template(template: &str, args: &[(&str, String)]) -> String {
     out
 }
 
-/// 查找链:请求语言束 → "en" 束 → 键本身(不得 panic)。
-///
-/// 由 sdforge `translate_for` 承载同一链(locale → en → key)，此处保留
-/// 本函数以固定 `ftl_id` 的点分→连字符转换这一 NebulaId 侧契约。
+/// 查找链：请求语言束 → "en" 束 → 键本身（不得 panic）。
+/// 本函数负责点分键 → FTL id 转换这一 NebulaId 侧契约。
 fn lookup(lang: &str, dotted_key: &str, args: &[(&str, String)]) -> String {
     let id = ftl_id(dotted_key);
-    // 未注册键：保持既有契约，回退的是**源点分键**本身（sdforge 的
-    // translate_for 在未命中时回退它收到的 key，即 FTL id，符号不同）
+    // 未注册键回退**源点分键**本身（sdforge 未命中回退的是 FTL id，符号不同）。
     if !is_registered_id(&id) {
         return dotted_key.to_string();
     }
@@ -420,12 +329,7 @@ fn lookup(lang: &str, dotted_key: &str, args: &[(&str, String)]) -> String {
 }
 
 /// 测试串行化锁：`init_i18n` 改写进程全局 locale，并行测试会互相污染。
-///
-/// 供本模块测试与 `core::types::error` / `server::handlers::helpers` 的
-/// i18n 相关测试共用（它们全部经 `crate::core::i18n::test_support::lock()`
-/// 引用同一把锁），避免跨模块的并行 locale 竞态。
-///
-/// `#[cfg(test)]`：消费方全部是 crate 内 lib 单测，发布库里不放行该面。
+/// 本模块与 error/handlers 的 i18n 测试共用同一把锁，避免跨模块竞态。
 #[cfg(test)]
 pub mod test_support {
     use std::sync::{Mutex, OnceLock};
@@ -465,9 +369,8 @@ mod tests {
         }
     }
 
-    /// 测试侧独立解析 FTL：只认 `key = value` 单行与 `#` 注释。
-    /// 刻意不复用实现侧解析器 —— 否则 parity 断言会变成「解析器对自己」。
-    /// 返回 (FTL id, message 值)。
+    /// 测试侧独立解析 FTL：只认 `key = value` 单行与 `#` 注释；不复用实现侧解析器，
+    /// 否则 parity 断言会变成「解析器对自己」。返回 (FTL id, message 值)。
     fn parse_ftl_fixture(src: &str) -> Vec<(String, String)> {
         src.lines()
             .filter_map(|line| {
@@ -481,11 +384,8 @@ mod tests {
             .collect()
     }
 
-    /// 把 FTL 值的 `{ $name }` 占位符替换为 sentinel，用于与替换后的
-    /// 查询结果逐字节比对。
-    ///
-    /// Fluent 的字符串字面量占位符 `{ "..." }` 先展开为字面字符——那是
-    /// Fluent 引擎的既定语义（`{ "\u000A" }` 即换行），不是实现细节。
+    /// 把 FTL 值替换为 sentinel 形式，用于与查询结果逐字节比对。
+    /// 字符串字面量占位符先展开为字面字符（Fluent 既定语义）。
     fn expect_with_sentinels(template: &str) -> String {
         let expanded = expand_string_literals(template);
         let mut out = String::new();
@@ -530,8 +430,7 @@ mod tests {
     const EN_FTL_SRC: &str = include_str!("../../locales/en/messages.ftl");
     const ZH_FTL_SRC: &str = include_str!("../../locales/zh/messages.ftl");
 
-    /// R-i18n-001：en 束全键集逐条 parity —— 每个 FTL 键在 en locale 下
-    /// 的输出必须等于 FTL 值（占位符替换为 sentinel 后逐字节相等）。
+    /// en 束全键集 parity：输出等于 FTL 值（占位符替换为 sentinel 后逐字节相等）。
     #[test]
     fn test_en_catalog_full_keyset_parity() {
         let _g = LocaleGuard::new();
@@ -558,7 +457,7 @@ mod tests {
         }
     }
 
-    /// R-i18n-001：zh 束全键集逐条 parity。
+    /// zh 束全键集 parity。
     #[test]
     fn test_zh_catalog_full_keyset_parity() {
         let _g = LocaleGuard::new();
@@ -585,7 +484,7 @@ mod tests {
         }
     }
 
-    /// R-i18n-001：双语键集必须一致 —— 任何一侧独有的键都算迁移丢失。
+    /// 双语键集必须一致 —— 任何一侧独有的键都算迁移丢失。
     #[test]
     fn test_both_catalogs_share_identical_keyset() {
         let en: std::collections::BTreeSet<_> = parse_ftl_fixture(EN_FTL_SRC)
@@ -604,10 +503,8 @@ mod tests {
         );
     }
 
-    /// M3 修复对拍锚点：本地快照渲染路径（`forge_translate`）与 sdforge
-    /// 注册表路径（`translate_for`）对全键集在全参 / 无参 / 多参三种
-    /// 组合下逐字节一致——钉死 `render_template` 对 sdforge
-    /// `format_template` 替换规则的复刻（未知占位符保留原文等）。
+    /// 本地快照渲染（`forge_translate`）与 sdforge 注册表（`translate_for`）在全参/
+    /// 无参/多参下逐字节一致，钉死 `render_template` 对 `format_template` 的复刻。
     #[test]
     fn test_local_render_matches_sdforge() {
         let _g = LocaleGuard::new();
@@ -672,16 +569,14 @@ mod tests {
         );
     }
 
-    /// translate_if_present：命中返回渲染值，未命中返回 None。注意本函数收 FTL id
-    ///（连字符形态，不做点分转换），与 translate_with_locale 的点分键不同。
+    /// translate_if_present：命中返回渲染值，未命中 None；收 FTL id（连字符），不做点分转换。
     #[test]
     fn test_translate_if_present_hit_and_miss() {
         let _g = LocaleGuard::new();
         let hit = translate_if_present("en", "error-unknown");
         assert_eq!(hit.as_deref(), Some("Unknown error"));
         assert!(translate_if_present("en", "error-absent-key").is_none());
-        // zh locale 下命中 zh 束（双语键集一致，见 keyset 测试，故 en 回退
-        // 分支在当前键集下不被触发）
+        // zh locale 命中 zh 束（双语键集一致，en 回退分支不被触发）
         assert_eq!(
             translate_if_present("zh", "error-unknown").as_deref(),
             Some("未知错误")
@@ -791,16 +686,14 @@ mod tests {
     fn test_translate_with_locale_does_not_mutate_global_locale() {
         let _g = LocaleGuard::new();
         init_i18n("en");
-        // Translate in zh-CN
+        // 在 zh-CN 下翻译：全局 locale 必须保持 "en"（无竞态风险）
         let _ = translate_with_locale("zh-CN", "error.unknown");
-        // Global locale should remain "en" — no race condition risk
         assert_eq!(current_locale(), "en");
     }
 
     #[test]
     fn test_translate_with_locale_concurrent_safety() {
-        // Simulate concurrent calls with different locales — each call should
-        // return its own locale's translation, regardless of call ordering.
+        // 不同 locale 并发调用：各自返回本 locale 的翻译，与调用顺序无关。
         let en = translate_with_locale("en", "error.unknown");
         let zh = translate_with_locale("zh-CN", "error.unknown");
         let en2 = translate_with_locale("en", "error.unknown");
@@ -812,16 +705,14 @@ mod tests {
         assert_eq!(zh2, "未知错误");
     }
 
-    /// `translate_with_locale_cow` returns the translation as a `Cow`
-    /// (Fluent 引擎输出恒为 `Cow::Owned`,见函数文档)且值正确。
+    /// `translate_with_locale_cow` 值正确（输出恒为 `Cow::Owned`）。
     #[test]
     fn test_translate_with_locale_cow_borrowed_for_static_strings() {
         let cow = translate_with_locale_cow("en", "error.unknown");
         assert_eq!(cow.as_ref(), "Unknown error");
     }
 
-    /// 原 YAML 值中的 `\n` 转义(真实换行)在 FTL 中以 StringLiteral
-    /// `{ "\n" }` 承载,必须渲染回真实换行(含续行前导空格)。
+    /// FTL 的 `{ "\n" }` 字面量必须渲染回真实换行（含续行前导空格）。
     #[test]
     fn test_multiline_fatal_message_preserves_newlines() {
         let en = translate_with_locale("en", "log.main.fatal_api_key_auth_requires_database");
@@ -838,8 +729,7 @@ mod tests {
         );
     }
 
-    /// `translate_with_locale_args_cow` accepts `Cow<str>` values (borrowed
-    /// or owned) and produces the same output as the `String`-based variant.
+    /// `translate_with_locale_args_cow` 接受 Cow 值，输出与 String 变体一致。
     #[test]
     fn test_translate_with_locale_args_cow_equivalent_to_owned() {
         let owned = translate_with_locale_args(
@@ -865,7 +755,7 @@ mod tests {
         );
     }
 
-    /// 未知语言("ar")取 en 束(unify-rust-i18n 守卫 §5.3)。
+    /// 未知语言("ar")取 en 束。
     #[test]
     fn test_unknown_language_falls_back_to_en_bundle() {
         assert_eq!(
@@ -901,10 +791,8 @@ mod tests {
         assert_eq!(global_translate("error.unknown", &[]), "Unknown error");
     }
 
-    /// 守卫一(en/zh FTL 键齐性)+ 守卫二(内嵌 == 磁盘同步):
-    /// include_str! 内嵌常量与 locales/{en,zh}/messages.ftl 是同一份文件,
-    /// 这里仍显式断言防未来误改为内嵌字面量;键集合经 `-`→`.` 映射后必须
-    /// 完全一致(单侧缺键只会在该语言静默回退,本仓库实际发生过)。
+    /// 守卫：include_str! 内嵌与 locales/{en,zh}/messages.ftl 磁盘文件一致，
+    /// 且双语键集经 `-`→`.` 映射后完全相同（单侧缺键只会静默回退）。
     #[test]
     fn test_embedded_ftl_matches_locales_dir_and_key_sets_are_identical() {
         fn message_keys(ftl: &str) -> Vec<String> {
@@ -947,16 +835,11 @@ mod tests {
         );
     }
 
-    /// 新增 FTL 键(en/zh 双侧)必须在两束中都能取到,防止守卫解析逻辑
-    /// 自身失效导致键齐性测试空转。
+    /// 新增 FTL 键（en/zh 双侧）必须在两束中都能取到，防止守卫逻辑空转。
     #[test]
     fn test_t013_dynamic_error_detail_keys_present_both_bundles() {
         let _g = LocaleGuard::new();
-        // 动态 error-detail 键必须在双语束齐备，否则 to_localized_string
-        // 自身失效导致键齐性测试空转。
-        // 本测试的目的是「动态 error-detail 键在双语束齐备」，故断言命中
-        // （Some）而非具体文案：带占位符的键由全键集 parity 测试覆盖其
-        // 逐字节一致性（那里按变量灌 sentinel）。
+        // 只断言命中（Some）而非具体文案；占位符键的逐字节 parity 由全键集测试覆盖。
         for locale in ["en", "zh"] {
             for id in [
                 "error-detail-workspace_not_found",
@@ -968,7 +851,6 @@ mod tests {
                 );
             }
         }
-        // 占位符键的逐字节 parity 经 translate_with_locale_args 灌参验证
         assert_eq!(
             translate_with_locale_args(
                 "zh",

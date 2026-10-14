@@ -102,7 +102,6 @@ pub struct UpdateBizTagRequest {
 
 impl From<Model> for BizTag {
     fn from(model: Model) -> Self {
-        // Parse datacenter_ids from JSON
         let datacenter_ids: Vec<i32> =
             serde_json::from_value(model.datacenter_ids.clone()).unwrap_or_default();
 

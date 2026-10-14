@@ -1,8 +1,8 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! 业务标签（BizTag）仓储:`BizTagRepository` trait 及其 SeaORM 实现
-//! （创建时校验 workspace/group 存在性、算法与格式落库、计数与健康检查）。
+//! 业务标签（BizTag）仓储：`BizTagRepository` trait 与 SeaORM 实现。
+//! 创建时校验 workspace/group 存在性，负责算法/格式落库、计数与健康检查。
 
 use async_trait::async_trait;
 use dbnexus::sea_orm::{
@@ -52,7 +52,6 @@ pub trait BizTagRepository: Send + Sync {
 #[async_trait]
 impl BizTagRepository for SeaOrmRepository {
     async fn create_biz_tag(&self, biz_tag: &CreateBizTagRequest) -> Result<BizTag> {
-        // 检查工作空间和组是否存在
         let workspace_exists = WorkspaceEntity::find_by_id(biz_tag.workspace_id)
             .one(&self.db)
             .await
@@ -172,7 +171,6 @@ impl BizTagRepository for SeaOrmRepository {
                 )
             })?;
 
-        // 使用ok_or_else替代is_none+unwrap模式
         let existing = existing.ok_or_else(|| {
             crate::core::CoreError::NotFound(t!("error.detail.biz_tag_not_found", id = id))
         })?;
@@ -316,8 +314,7 @@ impl BizTagRepository for SeaOrmRepository {
     }
 
     async fn health_check(&self) -> Result<()> {
-        // Database connection is already established
-        // Return Ok if we can reach this point
+        // 连接已建立即视为健康（无独立探活）。
         Ok(())
     }
 }
@@ -335,9 +332,7 @@ mod mock_tests {
     use crate::core::database::group_entity::Model as GroupModel;
     use crate::core::database::segment_entity::Model as SegmentModel;
     use crate::core::database::workspace_entity::Model as WorkspaceModel;
-    // Fix path resolution: tests below use `workspace_entity::Model` etc. as
-    // path expressions, which requires the modules themselves to be in scope
-    // (the `use` imports above only bring the `Model` aliases into scope).
+    // 测试用 `workspace_entity::Model` 等路径表达式，需要模块本身在作用域内。
     use crate::core::database::testing::*;
     use crate::core::database::{
         api_key_entity, biz_tag_entity, group_entity, segment_entity, workspace_entity,
@@ -351,9 +346,7 @@ mod mock_tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    // ==================================================================
-    // BizTagRepository tests
-    // ==================================================================
+    // ============== BizTagRepository tests ==============
 
     #[tokio::test]
     async fn test_biz_tag_create_returns_not_found_when_workspace_missing() {
@@ -391,7 +384,7 @@ mod mock_tests {
     async fn test_biz_tag_create_returns_not_found_when_group_missing() {
         let ws_id = fixed_uuid(42);
         let g_id = fixed_uuid(43);
-        // Workspace exists, group does not.
+        // workspace 存在、group 不存在。
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![sample_workspace_model(ws_id, "ws")]])
             .append_query_results(vec![Vec::<group_entity::Model>::new()])
@@ -629,7 +622,7 @@ mod mock_tests {
     #[tokio::test]
     async fn test_biz_tag_health_check_always_returns_ok() {
         let repo = make_repo(empty_pg_connection());
-        // health_check is a no-op; it must always return Ok.
+        // health_check 为 no-op，恒返回 Ok。
         repo.health_check().await.unwrap();
     }
 
@@ -815,7 +808,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_biz_tag_count_by_group_propagates_db_error() {
-        // count() in sea-orm executes a query with a single num_items column.
+        // sea-orm count() 查询返回单列 num_items。
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "count boom".to_string(),
@@ -915,10 +908,8 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_biz_tag_update_applies_datacenter_ids_when_provided() {
-        // Cover the `.map(|f| f.into())` closure on the format field and
-        // the serde_json::to_value map_err closure for datacenter_ids in
-        // update_biz_tag (only invoked when datacenter_ids is Some(...)).
-        // The existing update_biz_tag tests all set datacenter_ids = None.
+        // 覆盖 format 的 `.map(|f| f.into())` 与 datacenter_ids 序列化闭包
+        // （仅 datacenter_ids = Some 时触发；其余 update 用例均为 None）。
         let id = fixed_uuid(134);
         let updated_model = sample_biz_tag_model(id, fixed_uuid(135), fixed_uuid(136), "t_updated");
         let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -952,14 +943,7 @@ mod mock_tests {
         assert_eq!(updated.id, id);
     }
 
-    // ----- create_biz_tag: cover the serde_json::to_value map_err closure
-    // for the datacenter_ids serialization failure path -----
-    //
-    // NOTE: serde_json::to_value on a Vec<i32> cannot fail in practice
-    // (Vec<i32> always serializes successfully). The map_err closure body
-    // at L732 is therefore unreachable with valid input. We document this
-    // as a coverage gap rather than weakening the production code with
-    // #[allow(dead_code)] or LCOV_EXCL markers. The closure exists for
-    // defensive programming (rule: failure must be explicit, never
-    // swallowed).
+    // ----- create_biz_tag: datacenter_ids 序列化 map_err 分支 -----
+    // Vec<i32> 的 serde_json::to_value 实际不可失败，该闭包为不可达的防御性
+    // 错误处理；作为已知覆盖缺口记录，不加 dead_code/LCOV_EXCL 标记。
 }

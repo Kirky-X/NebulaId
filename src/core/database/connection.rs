@@ -7,29 +7,23 @@ use tracing::{info, warn};
 use crate::core::config::DatabaseConfig;
 use crate::core::types::CoreError;
 
-/// Schema name for Nebula ID tables
+/// Nebula ID 表的 schema 名。
 pub const NEBULA_SCHEMA: &str = "nebula_id";
 
-/// 脱敏逻辑唯一定义在 `crate::core::config::app::redact_db_url`（纯 url 解析，
-/// 零 DB 依赖）；本模块复用该实现，避免第二份逻辑（config 层在剪裁组合下
-/// 仍需可用，不能反向依赖 database）。
+/// 脱敏逻辑唯一定义在 `crate::core::config::app::redact_db_url`，本模块复用，
+/// 避免第二份实现（config 层不能反向依赖 database）。
 pub(crate) use crate::core::config::app::redact_db_url;
 
 impl From<DbErr> for CoreError {
     fn from(e: DbErr) -> Self {
-        // 第一层文案与改前逐字节一致(e.to_string()),底层 DbErr
-        // 经 ErrorSource 保链(source() 非空;错误链仅进服务端日志)。
+        // 第一层文案保持原样，底层 DbErr 经 ErrorSource 保链（错误链仅进服务端日志）。
         CoreError::DatabaseError(e.to_string(), Some(crate::core::types::ErrorSource::new(e)))
     }
 }
 
-/// 为 PostgreSQL 连接 URL 注入 `search_path = nebula_id, public`。
-///
-/// 实体枚举（`AlgorithmTypeDb` / `IdFormatDb`，`db_type = "Enum"`）由 sea-orm
-/// 生成**不带 schema 限定**的 `CAST(... AS algorithm_type)`，默认
-/// search_path（public）解析不到 nebula_id 下的类型，导致 create_biz_tag
-/// 等写入在真实 PostgreSQL 上必然失败（MockDatabase 不做类型检查，测试
-/// 发现不了）。已在 URL 显式配置 `options` 的不覆盖，尊重运维自定值。
+/// 为 PostgreSQL URL 注入 `search_path = nebula_id, public`：
+/// sea-orm 为枚举列生成的 `CAST(... AS algorithm_type)` 不带 schema 限定，
+/// 默认 search_path 解析不到该类型；URL 已显式配置 `options` 时不覆盖。
 pub(crate) fn ensure_pg_search_path(url: &str) -> String {
     let parsed = match url::Url::parse(url) {
         Ok(parsed) => parsed,
@@ -50,13 +44,13 @@ pub(crate) fn ensure_pg_search_path(url: &str) -> String {
 }
 
 pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnection, CoreError> {
-    // Check if we are using a complete connection string URL
+    // 完整连接串 URL 判定
     let use_full_url = config.url.starts_with("postgresql://")
         || config.url.starts_with("mysql://")
         || config.url.starts_with("sqlite://")
         || config.url.starts_with("postgres://");
 
-    // Validate database password only if not using full URL and not Sqlite
+    // 非完整 URL 且非 Sqlite 时校验账号密码
     if !use_full_url && config.engine != crate::core::config::DatabaseEngine::Sqlite {
         if config.password.is_empty() || config.password.contains("${") {
             return Err(CoreError::ConfigurationError(
@@ -70,7 +64,7 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
         }
     }
 
-    // Use URL if it's a complete connection string, otherwise construct from parts
+    // 优先使用完整 URL，否则按字段拼接
     let final_url = if use_full_url {
         config.url.clone()
     } else {
@@ -94,14 +88,12 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
 
     let final_url = ensure_pg_search_path(&final_url);
 
-    // 2026-09-19 自研库切换：连接建立走 dbnexus DbPool（统一连接池 +
-    // 重试/故障转移/池健康检查能力），返回其底层 sea-orm DatabaseConnection，
-    // `create_connection` 签名与全部调用方不受影响。
-    // PoolConfig 单位：idle_timeout 秒、acquire_timeout 毫秒。
+    // 连接经 dbnexus DbPool 建立（统一连接池 + 重试/故障转移/健康检查），返回底层
+    // sea-orm 连接；PoolConfig 单位：idle_timeout 秒、acquire_timeout 毫秒。
     let defaults = dbnexus::PoolConfig::default();
     let (max_conn, min_conn, acquire_ms) =
         if config.engine == crate::core::config::DatabaseEngine::Sqlite {
-            // Sqlite 与改前一致：不显式设置池参数，沿用 sea-orm 默认
+            // Sqlite：不显式设置池参数，沿用 sea-orm 默认
             (
                 defaults.max_connections,
                 defaults.min_connections,
@@ -137,8 +129,7 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
     let pool = dbnexus::DbPool::with_config(db_config)
         .await
         .map_err(|e| CoreError::DatabaseError(e.to_string(), None))?;
-    // 经 admin 会话取底层 sea-orm 连接；DatabaseConnection 是 sqlx 池句柄，
-    // clone 后即使会话归还仍共享同一连接池，调用方签名与用法不变
+    // DatabaseConnection 是 sqlx 池句柄，clone 后与会话共享同一连接池
     let session = dbnexus::ConnectionPool::get_session(&pool, "admin")
         .await
         .map_err(|e| CoreError::DatabaseError(e.to_string(), None))?;
@@ -156,13 +147,9 @@ pub async fn create_connection(config: &DatabaseConfig) -> Result<DatabaseConnec
     Ok(db)
 }
 
-/// 幂等地给 `nebula_id.api_keys` 补齐宽限期两列（存量库升级路径）。
-///
-/// 新库由 `run_migrations` 里的 `CREATE TABLE` 直接带列，本语句对它们是 no-op
-/// （`ADD COLUMN IF NOT EXISTS`）。两列都可空，因此不需要回填存量行。
-///
-/// 抽成独立函数是测试接缝：sea-orm 2.0 的 `MockDatabase` 不记录
-/// `execute_unprepared` 的 SQL，只有把语句构造分离出来，才能对列名与幂等子句断言。
+/// 幂等地给 `nebula_id.api_keys` 补齐宽限期两列（存量库升级路径）：
+/// 新库 CREATE TABLE 已带列，本语句为 no-op；两列可空，无需回填存量行。
+/// 抽成独立函数是测试接缝：MockDatabase 不记录 `execute_unprepared` 的 SQL。
 pub(crate) fn api_keys_grace_period_alter_sql() -> String {
     format!(
         r#"ALTER TABLE {}.api_keys ADD COLUMN IF NOT EXISTS prev_secret_hash VARCHAR(128), ADD COLUMN IF NOT EXISTS rotate_expires_at TIMESTAMP"#,
@@ -171,18 +158,8 @@ pub(crate) fn api_keys_grace_period_alter_sql() -> String {
 }
 
 /// 幂等地给 `nebula_id.nebula_segments` 补齐号段唯一约束（存量库升级路径）。
-///
-/// `allocate_segment` 的首查无行路径是 `INSERT ... ON CONFLICT
-/// (workspace_id, biz_tag, dc_id) DO NOTHING`，该子句要求同名唯一约束真实
-/// 存在（见 init.sql 与本文件建表 DDL 的注释）；缺约束时该 INSERT 直接报
-/// "there is no unique or exclusion constraint"，号段首分配在存量库上必失败。
-/// PostgreSQL 无 `ADD CONSTRAINT IF NOT EXISTS`，按本文件枚举类型的既有
-/// 模式用 EXCEPTION 吞掉已存在；需同时接 `duplicate_object`（42710）与
-/// `duplicate_table`（42P07）：全新库路径下建表 DDL 的内联同名约束已先行
-/// 创建同名索引，此处再 ADD CONSTRAINT 报的是 "relation already exists"
-/// （42P07），只接 42710 会让全新库迁移必失败。
-///
-/// 抽成独立函数是测试接缝（同 [`api_keys_grace_period_alter_sql`]）。
+/// `INSERT ... ON CONFLICT (workspace_id, biz_tag, dc_id)` 依赖该约束；PG 无
+/// `ADD CONSTRAINT IF NOT EXISTS`，用 EXCEPTION 同时吞 42710 与 42P07。
 pub(crate) fn nebula_segments_unique_constraint_sql() -> String {
     format!(
         r#"DO $$ BEGIN
@@ -195,13 +172,13 @@ pub(crate) fn nebula_segments_unique_constraint_sql() -> String {
     )
 }
 
-/// Auto-create schema and tables for Nebula ID
+/// 自动创建 Nebula ID 的 schema 与数据表。
 pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
     info!("{}", t!("log.core.database.connection.running_migrations"));
 
-    // Create schema if not exists (only for PostgreSQL)
+    // 创建 schema（仅 PostgreSQL）
     let create_schema_sql = format!(r#"CREATE SCHEMA IF NOT EXISTS {}"#, NEBULA_SCHEMA);
-    // sea-orm 2.0: execute() 要求 StatementBuilder trait，原始 SQL 用 execute_unprepared
+    // sea-orm 2.0：原始 SQL 须用 execute_unprepared（execute() 要求 StatementBuilder）
     match db.execute_unprepared(&create_schema_sql).await {
         Ok(_) => info!(
             "{}",
@@ -221,9 +198,7 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
         }
     }
 
-    // Entity 枚举类型（biz_tag_entity 的 AlgorithmTypeDb / IdFormatDb 以
-    // `db_type = "Enum"` 映射，sea-orm 生成 CAST 列必须真实存在；此前迁移
-    // 只建 VARCHAR 列，真实 PostgreSQL 上 create_biz_tag 必失败）。
+    // 实体枚举类型（sea-orm 对 `db_type = "Enum"` 生成不带 schema 限定的 CAST）必须真实存在。
     let enum_types = vec![
         (
             NEBULA_SCHEMA,
@@ -234,10 +209,8 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
             WHEN duplicate_object THEN null;
         END $$"#,
         ),
-        // add-uuid-v4-v7：存量库的 algorithm_type 枚举扩容。每个 ADD VALUE
-        // 独立 DO 块——PL/pgSQL 的异常处理按块回卷，与 CREATE 同块会让
-        // CREATE 成功后随 ADD 失败一并回滚；独立块使「已存在则跳过」各自
-        // 成立（PG 12+ 允许事务内 ADD VALUE，目标环境 PG 16）。
+        // algorithm_type 枚举扩容：每个 ADD VALUE 独立 DO 块，
+        // 避免异常处理整块回卷导致 CREATE 成功后随 ADD 失败一并回滚。
         (
             NEBULA_SCHEMA,
             r#"
@@ -277,10 +250,8 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
         }
     }
 
-    // Define all tables with their CREATE statements
-    // All tables are created in the nebula_id schema
+    // 各表 CREATE 语句（全部建于 nebula_id schema）
     let tables = vec![
-        // API Keys table
         format!(
             r#"
         CREATE TABLE IF NOT EXISTS {}.api_keys (
@@ -308,7 +279,6 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
         "#,
             NEBULA_SCHEMA
         ),
-        // Workspaces table
         format!(
             r#"
         CREATE TABLE IF NOT EXISTS {}.workspaces (
@@ -324,7 +294,6 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
         "#,
             NEBULA_SCHEMA
         ),
-        // Groups table
         format!(
             r#"
         CREATE TABLE IF NOT EXISTS {}.groups (
@@ -340,7 +309,6 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
         "#,
             NEBULA_SCHEMA, NEBULA_SCHEMA
         ),
-        // BizTags table
         format!(
             r#"
         CREATE TABLE IF NOT EXISTS {}.biz_tags (
@@ -362,7 +330,6 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
         "#,
             NEBULA_SCHEMA, NEBULA_SCHEMA, NEBULA_SCHEMA, NEBULA_SCHEMA, NEBULA_SCHEMA
         ),
-        // Nebula segments table
         format!(
             r#"
         CREATE TABLE IF NOT EXISTS {}.nebula_segments (
@@ -392,7 +359,7 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
     ];
 
     for sql in tables {
-        // sea-orm 2.0: execute() 要求 StatementBuilder trait，原始 SQL 用 execute_unprepared
+        // sea-orm 2.0：原始 SQL 须用 execute_unprepared（execute() 要求 StatementBuilder）
         match db.execute_unprepared(&sql).await {
             Ok(_) => {
                 let table_name = sql.split_whitespace().nth(4).unwrap_or("").replace('(', "");
@@ -412,10 +379,8 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
                         t!("log.core.database.connection.table_already_exists")
                     );
                 } else {
-                    // （CWE-209）：不将 SeaORM 原始错误消息嵌入
-                    // CoreError::DatabaseError（可能含 schema/表名/字段名/SQL 片段）。
-                    // 完整错误通过 tracing::error! 记录到服务端日志，
-                    // 返回给上层的是通用消息（helpers.rs 仍会进一步净化）。
+                    // （CWE-209）不把 SeaORM 原始错误嵌入返回消息（可能含
+                    // schema/表名/SQL 片段）；完整错误只记入服务端日志。
                     tracing::error!(
                         event = "db_create_table_failed",
                         error = %error_msg,
@@ -430,10 +395,8 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
         }
     }
 
-    // 号段唯一约束的存量库迁移：`CREATE TABLE IF NOT EXISTS` 对已存在的表
-    // 不生效，由本语句补齐（约束已存在时被 DO 块吞掉，是 no-op）。
-    // 失败必须终止启动 —— 缺约束会让首查无行路径的 INSERT ... ON CONFLICT
-    // 直接报错，号段首分配在多实例场景下不可用。
+    // 号段唯一约束的存量库迁移：CREATE TABLE IF NOT EXISTS 对已存在表不生效，
+    // 由本语句补齐；失败必须终止启动（缺约束则首分配 INSERT 直接报错）。
     match db
         .execute_unprepared(&nebula_segments_unique_constraint_sql())
         .await
@@ -457,12 +420,8 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
         }
     }
 
-    // 存量库幂等升级（与 scripts/migrations/001 对齐）——必须位于 CREATE TABLE
-    // 之后：ALTER TABLE IF NOT EXISTS 列级豁免不覆盖"表不存在"，全新空库上
-    // 先执行会报 relation does not exist 并硬失败启动。
-    // - id_format 枚举补 'obfuscated'（9.3+ 支持 ADD VALUE IF NOT EXISTS；
-    //   PG<12 需在事务块外执行——本函数逐条 execute_unprepared，无显式事务）
-    // - nebula_segments 补 ceiling 列（分配热路径 UPDATE 引用，缺列即坏）
+    // 存量库幂等升级（与 scripts/migrations/001 对齐），必须在 CREATE TABLE 之后：
+    // ALTER 的列级 IF NOT EXISTS 不豁免"表不存在"；含 id_format 'obfuscated' 与 ceiling 列补齐。
     let upgrade_sqls = [
         format!("ALTER TYPE {NEBULA_SCHEMA}.id_format ADD VALUE IF NOT EXISTS 'obfuscated'"),
         format!(
@@ -484,8 +443,7 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
         }
     }
 
-    // 宽限期两列的存量库迁移：新库的 CREATE TABLE 已带这两列，本语句对它们是 no-op。
-    // 失败必须终止启动 —— 缺列会让 validate_api_key 读不到宽限期而静默放行旧凭证。
+    // 宽限期两列迁移：新库已带列，本语句为 no-op；失败必须终止启动（缺列会静默放行旧凭证）。
     match db
         .execute_unprepared(&api_keys_grace_period_alter_sql())
         .await
@@ -557,9 +515,7 @@ mod tests {
 
     #[test]
     fn test_redact_db_url_handles_url_without_password() {
-        // set_password(Some("***")) is called even when no password was set,
-        // so the result becomes user:***@host. Verify host is preserved and
-        // no panic occurs.
+        // 未设密码时 set_password(Some("***")) 仍会改写为 user:***@host；验证 host 保留且不 panic。
         let url = "postgresql://user@localhost:5432/db";
         let redacted = redact_db_url(url);
         assert!(
@@ -665,11 +621,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_connection_skips_validation_when_full_url_provided() {
-        // Full URL bypasses empty-password/username checks. With
-        // min_connections=0, sqlx-postgres creates a lazy pool without
-        // actually establishing a connection, so Database::connect returns
-        // Ok immediately. Either Ok or DatabaseError is acceptable; the
-        // meaningful property is that ConfigurationError is NOT returned.
+        // 完整 URL 跳过账号密码校验；min_connections=0 时 sqlx-postgres 建懒池，
+        // 立即返回 Ok。允许 Ok 或 DatabaseError，关键是不得返回 ConfigurationError。
         let config = DatabaseConfig {
             engine: DatabaseEngine::Postgresql,
             url: "postgresql://user:pass@127.0.0.1:1/db".to_string(),
@@ -715,8 +668,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_migrations_succeeds_when_all_executes_succeed() {
         // 1 schema + 4 enum types（2 CREATE + 2 ADD VALUE）+ 2 upgrade ALTERs
-        //   + 5 tables + 1 constraint backfill + 1 grace-column ALTER
-        //   = 14 successful executes.
+        //   + 5 tables + 1 constraint backfill + 1 grace-column ALTER = 14 次成功 execute。
         let db = mock_db_with_n_ok(14);
         let result = run_migrations(&db).await;
         assert!(
@@ -727,8 +679,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_logs_warn_but_continues_when_schema_create_fails() {
-        // Schema create fails (logged as warn), enum types + upgrade ALTERs +
-        // tables + constraint backfill + grace-column ALTER still succeed.
+        // schema 建失败仅 warn；其余 enum/ALTER/建表/回填/宽限期 ALTER 仍继续并成功。
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "schema creation permission denied".to_string(),
@@ -744,8 +695,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_returns_database_error_when_table_create_fails() {
-        // Schema + 4 enum types + 2 upgrade ALTERs succeed, first table fails
-        // with non-"already exists".
+        // schema + 4 enum + 2 upgrade ALTER 成功，第一个建表以非 "already exists" 失败。
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_exec_results(ok_exec_results(7))
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
@@ -770,9 +720,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_treats_already_exists_as_info_not_error() {
-        // Schema + 4 enum types + 2 upgrade ALTERs + first table succeed,
-        // second table fails with "already exists", remaining tables +
-        // constraint backfill + the grace-column ALTER succeed.
+        // 第一表成功，第二表 "already exists"；其余表/回填/宽限期 ALTER 继续成功。
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_exec_results(ok_exec_results(8))
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
@@ -789,9 +737,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations_treats_duplicate_as_info_not_error() {
-        // Schema + 4 enum types + 2 upgrade ALTERs + 2 tables succeed, third
-        // table fails with "duplicate", remaining 2 tables + constraint
-        // backfill + the grace-column ALTER succeed.
+        // 前两表成功，第三表 "duplicate"；其余 2 表/回填/宽限期 ALTER 继续成功。
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_exec_results(ok_exec_results(9))
             .append_exec_errors(vec![DbErr::Query(RuntimeErr::Internal(
@@ -806,8 +752,7 @@ mod tests {
         );
     }
 
-    /// 宽限期两列的存量库迁移必须是幂等的 `ADD COLUMN IF NOT EXISTS`，
-    /// 且两列可空（存量行无需回填）。
+    /// 宽限期两列迁移必须是幂等 `ADD COLUMN IF NOT EXISTS`，且两列可空（存量行无需回填）。
     #[test]
     fn test_run_migrations_emits_alter_table_for_grace_columns() {
         let sql = api_keys_grace_period_alter_sql();
@@ -830,10 +775,8 @@ mod tests {
         );
     }
 
-    /// 号段唯一约束的存量库回填必须是幂等 DO 块：约束已存在时
-    /// `duplicate_object` / `duplicate_table` 被吞掉（no-op），目标表与约束名
-    /// 必须正确 —— `INSERT ... ON CONFLICT (workspace_id, biz_tag, dc_id)`
-    /// 依赖它。
+    /// 号段唯一约束回填必须是幂等 DO 块（吞 `duplicate_object`/`duplicate_table`），
+    /// 目标表与约束名必须正确 —— `INSERT ... ON CONFLICT` 依赖它。
     #[test]
     fn test_run_migrations_emits_unique_constraint_for_segments() {
         let sql = nebula_segments_unique_constraint_sql();
@@ -855,8 +798,7 @@ mod tests {
         );
     }
 
-    /// ALTER 硬失败必须终止迁移 —— 缺列会让 `validate_api_key` 读不到宽限期，
-    /// 从而静默按"无旧凭证"处理，属于必须响而不能兜底的故障。
+    /// ALTER 硬失败必须终止迁移：缺列会让 `validate_api_key` 静默放行旧凭证。
     #[tokio::test]
     async fn test_run_migrations_returns_error_when_grace_column_alter_fails() {
         let db = MockDatabase::new(DatabaseBackend::Postgres)

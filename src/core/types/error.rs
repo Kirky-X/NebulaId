@@ -1,20 +1,13 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-// Phase 8 ICU i18n — Display strings live in `locales/{en,zh}/messages.ftl`
-// (Fluent/FTL catalog, unify-rust-i18n 基线) under `error.<variant_snake>`
-// keys. thiserror's `#[error("{}", t!(...))]`
-// attribute generates `impl Display` that calls `t!()` for translation lookup
-// at runtime. Default locale is "en" (set in main.rs via `init_i18n("en")`).
+// Display 文案存于 `locales/{en,zh}/messages.ftl` 的 `error.<variant_snake>` 键
+// (Fluent/FTL),thiserror 属性经 `t!()` 运行时查表;默认 locale 为 en
+// (main.rs `init_i18n("en")`)。
 //
-// 错误链保留 —— `DatabaseError` / `EtcdError` / `IoError` 三个变体
-// 在第一层人类可读文案(`.0`,供 Display/i18n 与 HTTP 出口消毒,内容与
-// 改前逐字节一致)之外,以 `#[source] Option<ErrorSource>` 保留底层错误
-// 源:`error.source()` 非空,完整错误链只进服务端日志
-// (`core_error_to_response` 的 `error = ?e` Debug 自动带上 source),
-// 不改变任何对外文案。`Serialize`/`Deserialize` derive 随载荷类型化移除
-// (全仓无 CoreError 序列化使用点;HTTP/gRPC 出口走 `ErrorResponse` 固定
-// 结构,不受影响)。
+// DatabaseError / EtcdError / IoError 另以 `#[source] Option<ErrorSource>`
+// 保链:`.0` 为第一层消毒文案,`source()` 非空,完整错误链只进服务端日志,
+// 不改变任何对外文案。
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -22,11 +15,9 @@ use thiserror::Error;
 
 /// 底层错误源的类型擦除保链容器。
 ///
-/// `CoreError` 需要保持 `Clone`(id_handlers 指标路径 `e.clone()`),
-/// `std::io::Error` 等底层错误不实现 `Clone`,故以
-/// `Arc<dyn std::error::Error + Send + Sync>` 携带真实错误对象;
-/// `etcd-client` 仅在 etcd feature 下编译,`core::types` 不能依赖它,
-/// etcd 侧构造点用 [`ErrorSource::text`] 以 Display 文本保链。
+/// `CoreError` 需保持 `Clone`(id_handlers 指标路径 `e.clone()`),而
+/// `std::io::Error` 等不实现 `Clone`,故以 `Arc<dyn Error + Send + Sync>`
+/// 携带真实错误;etcd 侧以 [`ErrorSource::text`] 做 Display 文本保链。
 #[derive(Debug, Clone)]
 pub struct ErrorSource {
     inner: Arc<dyn std::error::Error + Send + Sync>,
@@ -40,8 +31,7 @@ impl ErrorSource {
         }
     }
 
-    /// 仅能拿到文本的退路:以文本构造保链源(链路文字可见,但无内层
-    /// `source()`)。
+    /// 文本退路:以 Display 文本构造保链源(链路文字可见,但无内层 `source()`)。
     pub fn text(message: impl Into<String>) -> Self {
         Self {
             inner: Arc::new(TextError(message.into())),
@@ -96,8 +86,7 @@ pub enum CoreError {
     #[error("{}", t!("error.segment_exhausted", max_id = max_id))]
     SegmentExhausted { max_id: u64 },
 
-    /// `.0` 为第一层人类可读文案(Display/i18n 面与改前一致),
-    /// `.1` 保留底层错误源(仅进服务端日志,见 [`ErrorSource`])。
+    /// `.0` 为第一层人类可读文案,`.1` 保留底层错误源(仅进服务端日志)。
     #[error("{}", t!("error.database_error", value = _0))]
     DatabaseError(String, #[source] Option<ErrorSource>),
 
@@ -131,16 +120,14 @@ pub enum CoreError {
     #[error("{}", t!("error.invalid_api_key_signature"))]
     InvalidApiKeySignature,
 
-    /// `.0` 为第一层人类可读文案;`.1` 保链(etcd-client 仅 etcd
-    /// feature 可用,core types 以 [`ErrorSource::text`] 文本保链)。
+    /// `.0` 为第一层人类可读文案;`.1` 以文本保链(见 [`ErrorSource::text`])。
     #[error("{}", t!("error.etcd_error", value = _0))]
     EtcdError(String, #[source] Option<ErrorSource>),
 
     #[error("{}", t!("error.parse_error", value = _0))]
     ParseError(String),
 
-    /// `.0` 为第一层人类可读文案;`.1` 保留底层
-    /// `std::io::Error`(经 `From<std::io::Error>` 自动携带)。
+    /// `.0` 为第一层人类可读文案;`.1` 为底层 `std::io::Error`(`From` 自动携带)。
     #[error("{}", t!("error.io_error", value = _0))]
     IoError(String, #[source] Option<ErrorSource>),
 
@@ -166,7 +153,6 @@ impl From<std::num::ParseIntError> for CoreError {
 
 impl From<std::io::Error> for CoreError {
     fn from(e: std::io::Error) -> Self {
-        // 第一层文案与改前一致(e.to_string()),底层错误对象保链。
         CoreError::IoError(e.to_string(), Some(ErrorSource::new(e)))
     }
 }
@@ -229,13 +215,8 @@ pub const ERROR_CODE_SERVICE_UNAVAILABLE: i32 = 503;
 impl CoreError {
     /// Return the i18n key for this error variant.
     ///
-    /// Phase 8 (fix) — single source of truth
-    /// for the i18n key. The `Display` impl (thiserror `#[error(...)]`)
-    /// still embeds the key as a string literal because thiserror
-    /// requires `&str` literals in the attribute; new variants must
-    /// update both `i18n_key()` and the `#[error(...)]` attribute, but
-    /// the args are now produced by a single `i18n_args_ref()` impl
-    /// so the value-side can only drift in one place.
+    /// thiserror `#[error(...)]` 属性只接受 `&str` 字面量,故新增变体须
+    /// 同时更新本方法与 `#[error(...)]` 属性(键的单一来源)。
     pub fn i18n_key(&self) -> &'static str {
         match self {
             CoreError::InvalidIdFormat(_) => "error.invalid_id_format",
@@ -268,12 +249,8 @@ impl CoreError {
     /// Return the i18n args for this error variant, borrowing from
     /// `self` instead of cloning the inner `String`.
     ///
-    /// Phase 8 — returns
-    /// `SmallVec<[(&'static str, Cow<'_, str>); 4]>` so the typical
-    /// 1-arg case lives entirely on the stack. Variants whose payload
-    /// is a `String` return `Cow::Borrowed` (zero-clone); variants
-    /// whose payload is a numeric type return `Cow::Owned` (one
-    /// `String` allocation for the numeric text, same as before).
+    /// 返回 `SmallVec<[(&str, Cow<str>); 4]>`:典型单参场景全在栈上;
+    /// String 载荷 `Cow::Borrowed`(零克隆),数值载荷 `Cow::Owned`。
     pub fn i18n_args(&self) -> smallvec::SmallVec<[(&'static str, std::borrow::Cow<'_, str>); 4]> {
         use smallvec::smallvec;
         use std::borrow::Cow;
@@ -317,18 +294,11 @@ impl CoreError {
         }
     }
 
-    /// 第一层人类可读文案(不含 source 链)。
+    /// 第一层人类可读文案(不含 source 链),即 `i18n_args` 插值所用的同源文本。
     ///
-    /// 即 `i18n_args` 插值所用的那份文本(`i18n_args` 对含文案载荷的变体
-    /// 以 `Cow::Borrowed` 借用同一字段,两者结构性同源、不会漂移):
-    /// - String 载荷变体 → 载荷文本;
-    /// - `DatabaseError` / `EtcdError` / `IoError` → `.0`(与底层错误源
-    ///   `.1` 分离,源链仅经 [`std::error::Error::source`] / 服务端日志暴露);
-    /// - 数值载荷变体 → 数值文本;
-    /// - 无载荷变体 → 空串(无可插值参数)。
-    ///
-    /// HTTP/gRPC 出口消毒不变:5xx 变体对外仍只出固定文案
-    /// (`api.error.*`),本方法不进入任何对外响应体。
+    /// String 载荷变体与 DatabaseError/EtcdError/IoError 取 `.0`(与 `.1` 源链
+    /// 分离,源链仅经 source() 与服务端日志暴露),数值载荷取数值文本,无载荷
+    /// 变体为空串。本方法不进入任何对外响应体(5xx 对外仅出固定文案)。
     pub fn top_level_message(&self) -> String {
         match self {
             CoreError::InvalidIdFormat(s)
@@ -360,19 +330,8 @@ impl CoreError {
 
     /// Return the localized Display string for this error under the given locale.
     ///
-    /// Unlike `to_string()` (which uses the global locale set via `set_locale`),
-    /// this method performs per-call translation and is safe for concurrent
-    /// use across requests with different `Accept-Language` headers.
-    ///
-    /// Phase 8 — used by HTTP handlers to translate error responses
-    /// based on the negotiated `Locale` from `locale_middleware`.
-    ///
-    /// Phase 8 (perf fix) — delegates to
-    /// `i18n_key()` + `i18n_args()` so the key/args mapping has a
-    /// single source of truth, and routes through
-    /// `translate_with_locale_args_cow` (SmallVec + `Cow<str>`) to
-    /// avoid the per-call `Vec` + `String::clone` allocations the
-    /// previous `Vec<(&str, String)>` impl performed unconditionally.
+    /// 与 `to_string()`(依赖全局 locale)不同,本方法按参数逐次翻译,可安全用于
+    /// 并发请求;HTTP handler 依据 locale_middleware 协商的 Locale 调用。
     pub fn to_localized_string(&self, locale: &str) -> String {
         let key = self.i18n_key();
         let args = self.i18n_args();
@@ -385,20 +344,15 @@ mod tests {
     use super::*;
     use crate::core::i18n::{current_locale, init_i18n};
 
-    /// 串行化所有改写进程默认 locale 的测试(i18n.rs / helpers.rs 共用
-    /// core::i18n::test_support 锁),避免并行竞态导致 `to_string()`
-    /// (依赖全局 locale)读到被其他测试改写的值。
+    /// 串行化改写进程默认 locale 的测试,避免并行竞态污染 `to_string()`。
     fn locale_lock() -> std::sync::MutexGuard<'static, ()> {
         crate::core::i18n::test_support::lock()
     }
 
     /// Verify CoreError Display impl delegates to `t!()` lookups.
-    /// Covers all 24 variants under "en" (default) locale, plus a
-    /// representative subset under "zh-CN" locale.
+    /// Covers all 24 variants under "en" (default), plus a subset under "zh-CN".
     ///
-    /// Both locales are exercised in a single test function to avoid
-    /// parallel `set_locale` races with other tests that may rely on
-    /// the default locale.
+    /// 两个 locale 在同一测试内执行,避免并行 `set_locale` 竞态。
     #[test]
     fn test_core_error_display_i18n() {
         let _locale_lock = locale_lock();
@@ -527,7 +481,7 @@ mod tests {
     }
 
     /// Verify `to_localized_string` returns per-locale translations
-    /// without mutating global locale state (Phase 8 ).
+    /// without mutating global locale state.
     #[test]
     fn test_to_localized_string_per_locale() {
         let _locale_lock = locale_lock();
@@ -548,8 +502,7 @@ mod tests {
         assert_eq!(current_locale(), "en");
     }
 
-    /// Verify `to_localized_string` covers all variants (no panic, no
-    /// empty string). Exercises named-arg and no-arg variants too.
+    /// Verify `to_localized_string` covers all variants (no panic, no empty string).
     #[test]
     fn test_to_localized_string_all_variants_en() {
         let _locale_lock = locale_lock();
@@ -649,11 +602,8 @@ mod tests {
         );
     }
 
-    /// LOW — `to_localized_string` for an unsupported locale must
-    /// not panic and must fall back to the crate's fallback locale
-    /// (`en`, configured via `i18n!("locales", fallback = "en")` in
-    /// `lib.rs`). Verifies the fallback is consistent across multiple
-    /// unsupported locales (fr, ja, de, xx-XX).
+    /// LOW — unsupported locale must not panic and falls back to "en"
+    /// (i18n!("locales", fallback = "en"));covers fr, ja, de, xx-XX, 空串。
     #[test]
     fn test_to_localized_string_unsupported_locale_falls_back_to_default() {
         let _locale_lock = locale_lock();
@@ -663,9 +613,7 @@ mod tests {
         let err = CoreError::InvalidIdFormat("test".to_string());
         let en_msg = err.to_localized_string("en");
 
-        // French is not shipped (only en + zh-CN exist). rust-i18n's
-        // fallback chain resolves unknown locales to the fallback
-        // locale ("en").
+        // 仅提供 en + zh-CN;未知 locale 经 rust-i18n 回退链落到 fallback ("en")。
         let fr_msg = err.to_localized_string("fr");
         assert!(
             !fr_msg.is_empty(),
@@ -689,21 +637,17 @@ mod tests {
         let de_msg = err.to_localized_string("de-DE");
         assert_eq!(de_msg, en_msg, "de-DE must fall back to en");
 
-        // Completely bogus locale string — still must not panic and
-        // must fall back to en.
+        // 完全非法的 locale 字符串也不得 panic,必须回退 en。
         let bogus_msg = err.to_localized_string("xx-XX");
         assert_eq!(bogus_msg, en_msg, "xx-XX must fall back to en");
 
-        // Empty locale — must not panic; rust-i18n treats empty as
-        // unknown and falls back to en.
+        // 空 locale 视为未知:不得 panic,回退 en。
         let empty_msg = err.to_localized_string("");
         assert_eq!(empty_msg, en_msg, "empty locale must fall back to en");
     }
 
-    /// LOW — fallback consistency for a variant with no args
-    /// (`RateLimitExceeded`) and a variant with named args
-    /// (`ClockMovedBackward`). Ensures the fallback path handles
-    /// both arg shapes.
+    /// LOW — 回退路径对无参(RateLimitExceeded)与命名参(ClockMovedBackward)变体
+    /// 均落到 en。
     #[test]
     fn test_to_localized_string_ja_falls_back_to_en() {
         let _locale_lock = locale_lock();
@@ -726,8 +670,7 @@ mod tests {
         assert_eq!(ja_msg, en_msg);
     }
 
-    /// Test-only helper to save/restore the global locale around tests
-    /// that call `init_i18n`.
+    /// 测试辅助:在调用 init_i18n 的测试前后保存/恢复全局 locale。
     struct LocaleGuard {
         saved: String,
     }
@@ -797,8 +740,7 @@ mod tests {
 
     // ==================== 错误链保留 ====================
 
-    /// `From<std::io::Error>` 保留底层错误对象:`source()` 非空,
-    /// 第一层文案与 Display/i18n 面和改前逐字节一致。
+    /// `From<std::io::Error>` 保留底层错误:`source()` 非空,第一层文案即 Display 面。
     #[test]
     fn test_io_error_preserves_source_chain() {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "config file missing");
@@ -810,9 +752,9 @@ mod tests {
         assert_eq!(err.to_string(), "I/O error: config file missing");
     }
 
-    /// DatabaseError 构造点保留底层错误源:source() 非空且第一层
-    /// 文案不含源链(HTTP 出口消毒面不变)。`From<DbErr>` 路径由
-    /// connection.rs 的 test_from_dberr 钉住。
+    /// DatabaseError 构造点保链:`source()` 非空且第一层文案不含源链
+    /// (HTTP 出口消毒面);`From<DbErr>` 路径由 connection.rs
+    /// test_from_dberr 钉住。
     #[cfg(feature = "database")]
     #[test]
     fn test_database_error_preserves_source_chain() {
@@ -833,9 +775,8 @@ mod tests {
         );
     }
 
-    /// EtcdError 以 [`ErrorSource::text`] 保链(etcd-client 仅 etcd
-    /// feature 可用,core::types 不能依赖它,构造点以 Display 文本保链):
-    /// source() 非空、文案可读。
+    /// EtcdError 以 [`ErrorSource::text`] 文本保链(core::types 不依赖
+    /// etcd-client):`source()` 非空、文案可读。
     #[test]
     fn test_etcd_error_preserves_source_chain_via_text() {
         let err = CoreError::EtcdError(

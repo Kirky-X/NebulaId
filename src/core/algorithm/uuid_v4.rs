@@ -2,14 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! RFC 9562 §5.4 随机 UUID v4 发号算法。
-//!
-//! 零状态发号器：无时钟、无计数器、无协调——与 v7/v8 构成 minting 家族
-//! （实现 `IdAlgorithm`、进 `AlgorithmRouter`），与 v5 的确定性派生
-//! （不入算法族）语义相反。
-//!
-//! 独占能力：122 位不可猜测随机 + 完全零元数据（ID 不泄漏创建时间、
-//! dc/worker 等任何部署信息）——request id、能力令牌类「不可从 ID 反推
-//! 任何信息」场景。时间有序场景用 v7，租户上下文嵌入用 v8。
+//! 零状态：无时钟、无计数器、无协调；122 位不可猜测随机 + 完全零元数据
+//! （ID 不泄漏创建时间/dc/worker），互异性由生日界保证。
 
 use crate::core::types::{AlgorithmType, Id, Result};
 use uuid::Uuid;
@@ -33,9 +27,7 @@ pub fn mint_uuid_v4() -> Uuid {
 }
 
 /// RFC 9562 §5.4 随机 UUID v4 发号器。
-/// 零状态：无时钟、无计数器、无协调、无 DB——互异性由 122 位随机的
-/// 生日界保证（任意现实速率下可忽略）。每次调用产出不可预测、无任何
-/// 可解析元数据（不嵌入创建时间/dc/worker）的新 ID。
+/// 零状态：无时钟、无计数器、无协调、无 DB；互异性由 122 位随机生日界保证。
 pub struct UuidV4Impl;
 
 impl UuidV4Impl {
@@ -194,8 +186,7 @@ mod tests {
         assert_eq!(batch.algorithm, AlgorithmType::UuidV4);
     }
 
-    /// 元数据纯净性：ID 不嵌入时间戳——连续两个 ID 的 u128 无单调关系
-    /// （v4 与 v7/v8 的区分性特征：随机布局不可排序）。
+    /// 元数据纯净性：连续两个 ID 的 u128 无单调关系（随机布局不可排序）。
     #[tokio::test]
     async fn test_uuid_v4_not_time_ordered() {
         let algo = UuidV4Impl;

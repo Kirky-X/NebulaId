@@ -1,20 +1,10 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! Time-ordered RFC 9562 v8 structured UUID algorithm.
-//!
-//! Layout (RFC 9562 §5.8, 128 bits):
-//! - `custom_a` (bits 0..48): 48-bit Unix millisecond timestamp (sortable).
-//! - `custom_b` (bits 52..64): `dc(3) << 9 | worker(8) << 1 | counter_hi(1)`.
-//! - `custom_c` (bits 66..128): `shard(16) << 46 | counter_lo(20) << 26 | rand(26)`.
-//!
-//! Composed manually into a `u128`, with version = `0b1000` (v8) at bits 48..52
-//! and variant = `0b10` at bits 64..66, then wrapped via `Uuid::from_u128`.
-//!
-//! This design follows the UUIDP "Cluster" scheme (random per-instance start +
-//! strictly monotonic counter, O(nd/m) collision probability) and embeds
-//! tenant/zone context (shard, dc, worker) directly into the ID for
-//! observability and partition tolerance �?matching the GenoID v8 composition.
+//! Time-ordered RFC 9562 v8 structured UUID composition (128 bits):
+//! `custom_a` = 48-bit Unix ms timestamp; `custom_b` = dc(3)|worker(8)|counter_hi(1);
+//! `custom_c` = shard(16)|counter_lo(20)|rand(26); version=0b1000, variant=0b10.
+//! Collision safety follows the UUIDP "Cluster" scheme (random start + monotonic counter).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -97,9 +87,7 @@ impl UuidV8Impl {
     pub fn new(dc_id: u64, worker_id: u64, clock_drift_threshold_ms: u64) -> Self {
         let dc = dc_id & NODE_DC_MAX;
         let worker = worker_id & NODE_WORKER_MAX;
-        // UUIDP Cluster 随机起点：计数器初值取 21 位随机。此前实现为
-        // `rand << 31 再 & 21 位掩码`，恒为 0——随机起点机制失效，跨重启
-        // 同毫秒的碰撞防线退化到仅剩 26 位 rand。
+        // UUIDP Cluster 随机起点：计数器初值取 21 位随机，防跨重启同毫秒撞车。
         let seed = fast_rand_26() & COUNTER_TOTAL_MASK;
         Self {
             last_timestamp: AtomicU64::new(0),
@@ -147,10 +135,9 @@ impl UuidV8Impl {
                 Ordering::Acquire,
             ) {
                 Ok(_) => {
-                    // UUIDP Cluster：跨毫秒时计数器重置为新的随机起点，仅由 CAS
-                    // 胜者执行。已知限制：毫秒切换瞬间的并发生成中，同毫秒内
-                    // counter 顺序性不作保证；全局唯一性由随机起点 + 21 位计数器
-                    // + 26 位随机熵共同保证。
+                    // UUIDP Cluster：跨毫秒时计数器重置为随机起点，仅由 CAS 胜者执行；
+                    // 毫秒切换瞬间的并发生成不保证同毫秒 counter 顺序性，全局唯一性
+                    // 由随机起点 + 21 位计数器 + 26 位随机熵共同保证。
                     if effective_ts > last {
                         self.counter
                             .store(fast_rand_26() & COUNTER_TOTAL_MASK, Ordering::Release);
@@ -175,11 +162,8 @@ impl UuidV8Impl {
             | ((counter & COUNTER_LO_MASK) << RAND_BITS)
             | rand;
 
-        // RFC 9562 v8 位布局（u128 大端）：
-        //  bits 80..128 (48) = custom_a (unix_ts_ms)
-        //  bits 64..80  (16) = time_hi_and_version = (version=8)<<12 | custom_b(12)
-        //  bits 56..64  (8)  = clock_seq_hi_and_reserved = (variant=10)<<6 | custom_c[56..62]
-        //  bits  0..56  (56) = node = custom_c[0..56]
+        // RFC 9562 v8 位布局（u128 大端）：bits 80..128 = custom_a(unix_ts_ms)；
+        // 64..80 = (version=8)<<12 | custom_b；56..64 = (variant=0b10)<<6 | custom_c[56..62]；0..56 = custom_c 低位。
         let version_field: u128 = (8u128 << 12) | (custom_b as u128 & 0xFFF);
         let variant_field: u128 = ((0b10u128 << 6) | ((custom_c as u128 >> 56) & 0x3F)) << 56;
         let node_field: u128 = (custom_c as u128) & 0x00FF_FFFF_FFFF_FFFF;
@@ -193,9 +177,8 @@ impl UuidV8Impl {
     }
 
     fn batch_inner(&self, ctx: &GenerateContext, n: usize) -> Result<Vec<Id>> {
-        // 单毫秒计数器空间 21 位：批量的最坏情况是全部落在同一毫秒，超出
-        // 计数器空间会回绕产生重复——静态拒绝而非静默出重。跨毫秒 rollover
-        // 会重置计数器，但守卫以最坏情况为准，简单且安全。
+        // 单毫秒计数器空间 21 位：批量最坏全部落同毫秒，超空间即回绕出重，
+        // 静态拒绝而非静默出重（跨毫秒 rollover 重置计数器，守卫以最坏情况为准）。
         if n as u64 > COUNTER_TOTAL_MASK {
             return Err(CoreError::SequenceOverflow {
                 timestamp: now_unix_ms(),
@@ -368,10 +351,8 @@ mod tests {
 
     #[test]
     fn test_uuid_v8_counter_resets_on_millisecond_rollover() {
-        // 同毫秒内：counter 连续递增（Cluster 单调语义）。
-        // custom_a(bits 80..128) 就是本次生成使用的 effective_ts，只有相邻两侧 ts 相同的
-        // 样本对才能断言 +1 —— 跨毫秒的那一对 counter 按设计重置为新的随机起点（见下方
-        // assert_ne 与 CAS 分支），对它断言 +1 会让结果取决于时钟是否恰好跳毫秒。
+        // 同毫秒内 counter 连续递增；只有相邻两侧 ts 相同的样本对能断言 +1，
+        // 跨毫秒的 counter 按设计重置为随机起点（见下方 assert_ne）。
         let algo = UuidV8Impl::new(1, 1, 1000);
         let mut samples: Vec<(u128, u64)> = Vec::new();
         for _ in 0..4 {
@@ -432,8 +413,7 @@ mod tests {
 
     #[test]
     fn test_uuid_v8_counter_seed_is_random() {
-        // UUIDP Cluster 随机起点必须生效：new() 的计数器初值应为 21 位随机
-        // 非零（全零概率 2^-21，连续 8 次 new 全零 ≈ 2^-147，视为不可能）
+        // 随机起点必须生效：new() 的计数器初值应为 21 位随机非零（8 次全零概率可忽略）。
         for _ in 0..8 {
             let algo = UuidV8Impl::new(0, 0, 1000);
             if algo.counter.load(Ordering::Relaxed) != 0 {

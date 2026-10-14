@@ -1,28 +1,9 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! 降级管理器模块（Degradation Manager）
-//!
-//! # 当前状态：完整接入告警管道前的预留 API
-//!
-//! 本模块包含若干暂时未被生产路径直接调用的 API：
-//! - `AlgorithmHealthState::{record_request, can_make_request, get_metrics}`
-//! - `AlgorithmMetrics` 结构体
-//! - `default_degradation_config` 函数
-//!
-//! 保留原因：
-//!
-//! 1. **告警管道集成预留** 启用告警管道后，`record_request` 和 `get_metrics`
-//!    将作为 Prometheus 指标采集入口；`AlgorithmMetrics` 是指标导出的数据结构。
-//! 2. **熔断器与降级联动**：本模块的熔断态是**纯观测态**——请求路径只读
-//!    `is_degraded` 做降级决策，`circuit_breaker_state` 仅供 `get_metrics`
-//!    与 Prometheus gauge 观测（`is_circuit_open` 仅被后台巡检自身调用）。
-//!    不存在 `can_make_request` 之类的请求级门禁入口。
-//! 3. **测试覆盖**：`default_degradation_config` 被多个单元测试用于快速构造默认配置，
-//!    删除会丢失测试便利性。
-//! 4. **API 完整性**：降级管理器对外应暴露完整的健康状态、指标查询、配置构造能力。
-//!
-//! 详见 `specmark/changes/v0.3.0-release/` 中的告警管道设计文档。
+//! 降级管理器：健康状态、熔断器、降级链与后台巡检。
+//! 熔断态是纯观测态：请求路径只读 `is_degraded`，`circuit_breaker_state` 仅供指标观测。
+//! `record_request`/`get_metrics` 等为告警管道预留，暂无请求级门禁入口。
 
 use crate::core::algorithm::{audit_trait::DynAuditLogger, HealthStatus, IdAlgorithm};
 use crate::core::AlgorithmType;
@@ -36,12 +17,12 @@ use std::time::{Duration, Instant};
 use tokio::time;
 use tracing::{debug, info, warn};
 
-// Circuit breaker constants tuned for production stability
+// 熔断与降级默认参数（按生产稳定性调优）
 const DEFAULT_DEGRADATION_CHECK_INTERVAL_MS: u64 = 5000;
 const DEFAULT_RECOVERY_CHECK_INTERVAL_MS: u64 = 30000;
-// Higher failure threshold to avoid false positives during temporary network glitches
+// 失败阈值调高，避免临时网络抖动误判
 const DEFAULT_FAILURE_THRESHOLD: u8 = 5;
-// Higher recovery threshold to ensure stability before closing circuit
+// 恢复阈值调高，确保闭合熔断前足够稳定
 const DEFAULT_RECOVERY_THRESHOLD: u8 = 10;
 const DEFAULT_CIRCUIT_BREAKER_TIMEOUT_MS: u64 = 60000;
 const DEFAULT_HALF_OPEN_SUCCESS_THRESHOLD: u8 = 2;
@@ -117,11 +98,6 @@ const CIRCUIT_BREAKER_CLOSED: u8 = 0;
 const CIRCUIT_BREAKER_OPEN: u8 = 1;
 const CIRCUIT_BREAKER_HALF_OPEN: u8 = 2;
 
-// 修复：删除手动 `impl Clone for AlgorithmHealthState`。
-// 该 Clone 实现逐个 load/store 原子字段，冗长且易错；且全代码库无任何调用方
-// （所有共享都通过 `Arc<AlgorithmHealthState>`，Arc clone 不需要 T: Clone）。
-// 如果未来需要 Clone，应改用 `Arc<AtomicXxx>` 字段 + `#[derive(Clone)]`（共享语义）。
-
 impl AlgorithmHealthState {
     pub fn new(alg_type: AlgorithmType) -> Self {
         Self {
@@ -151,14 +127,8 @@ impl AlgorithmHealthState {
         }
     }
 
-    /// 饱和累加并发一条记录失败。
-    ///
-    /// 这两个计数器是 `AtomicU8`，而调用方（`record_generation_result`）在
-    /// **已降级后仍持续上报失败**——长时 outage 下同一个坏算法会被上报数百次。
-    /// 裸 `fetch_add` 在 256 次时：debug/test 构建直接 panic（本 crate 是
-    /// panic=abort，进程即死），release 不检查则静默回绕成 0、把指标与降级
-    /// 判定一起污染。饱和到 `u8::MAX` 的语义是「至少 255 次连续」，对所有
-    /// 阈值判定（阈值上限即 u8::MAX）无影响。
+    /// 饱和累加：计数器是 `AtomicU8`，调用方在降级后仍持续上报失败。
+    /// 裸 `fetch_add` 到 256 次会 panic（panic=abort）或回绕污染指标，故饱和到 `u8::MAX`。
     fn saturating_incr(counter: &AtomicU8) {
         let _ = counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v: u8| {
             Some(v.saturating_add(1))
@@ -299,9 +269,7 @@ pub struct DegradationManager {
     running: AtomicBool,
     last_check: RwLock<Instant>,
     audit_logger: Option<DynAuditLogger>,
-    /// F-02 修复：watch channel 用于优雅关闭后台 task。
-    /// `start_background_check` 创建 sender，task 用 `select!` 监听 receiver；
-    /// `stop_background_check` 发送 `true` 通知 task 退出。
+    /// watch channel：`stop_background_check` 用它通知后台 task 退出。
     shutdown_tx: parking_lot::Mutex<Option<tokio::sync::watch::Sender<bool>>>,
     /// 后台 task 的 JoinHandle，`stop_background_check` 可 await 它确认 task 已退出。
     background_task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -360,10 +328,7 @@ impl DegradationManager {
         );
     }
 
-    /// 聚合所有已注册算法的降级健康指标。
-    ///
-    /// 数据由 `record_generation_result` 经 `AlgorithmHealthState::record_request`
-    /// 实时更新，供可观测性端点（如 `ApiHandlers::metrics`）消费。
+    /// 聚合所有已注册算法的降级健康指标，供可观测性端点消费。
     pub fn get_algorithm_metrics(&self) -> std::collections::HashMap<String, AlgorithmMetrics> {
         self.health_states
             .load()
@@ -524,7 +489,7 @@ impl DegradationManager {
         *self.last_check.write() = Instant::now();
     }
 
-    /// 探测单个算法健康状态；注册表缺失视为 Unhealthy（与历史内联行为一致）。
+    /// 探测单个算法健康状态；算法未注册时视为 Unhealthy。
     fn probe_algorithm(
         algorithms: &HashMap<AlgorithmType, Arc<dyn IdAlgorithm>>,
         alg_type: &AlgorithmType,
@@ -536,8 +501,8 @@ impl DegradationManager {
         }
     }
 
-    /// HalfOpen 探测：连续成功达阈值则闭合熔断（有降级标记时一并恢复），
-    /// 探测失败则重新打开。返回是否发生状态变迁（需重算 effective algorithm）。
+    /// HalfOpen 探测：连续成功达阈值则闭合熔断（有降级标记时一并恢复），探测失败则重新打开。
+    /// 返回是否发生状态变迁（需重算 effective algorithm）。
     fn probe_half_open_circuit(
         &self,
         algorithms: &HashMap<AlgorithmType, Arc<dyn IdAlgorithm>>,
@@ -589,8 +554,7 @@ impl DegradationManager {
         }
     }
 
-    /// 非降级算法的常规健康检查：Unhealthy 记失败并在达到阈值时降级
-    /// （是否同时开启熔断随 `enable_circuit_breaker`）。返回是否状态变迁。
+    /// 非降级算法的常规健康检查：Unhealthy 记失败，达阈值降级；返回是否状态变迁。
     async fn check_algorithm_health(
         &self,
         algorithms: &HashMap<AlgorithmType, Arc<dyn IdAlgorithm>>,
@@ -780,7 +744,7 @@ impl DegradationManager {
             }
         });
 
-        // 保存 sender 和 handle 以便 stop 时使用（parking_lot::Mutex 安全访问）
+        // 保存 sender 与 handle，供 stop 时使用
         *self.shutdown_tx.lock() = Some(shutdown_tx);
         *self.background_task.lock() = Some(handle);
 
@@ -790,10 +754,7 @@ impl DegradationManager {
         );
     }
 
-    /// 停止后台健康检查 task。
-    ///
-    /// 发送 shutdown 信号并等待 task 退出（F-02 修复）。
-    /// 与 `system_handlers.rs::start_key_rotation_task` 的模式一致（watch channel）。
+    /// 停止后台健康检查 task：发送 shutdown 信号并等待 task 退出。
     pub async fn stop_background_check(&self) {
         // 取出 sender 发送 shutdown 信号
         let sender_opt = self.shutdown_tx.lock().take();
@@ -829,12 +790,8 @@ pub struct AlgorithmHealthStateInfo {
     pub is_healthy: bool,
 }
 
-/// 并发一条记录失败 300 次（远超 AtomicU8 的 255）不得 panic、不得回绕。
-///
-/// 回归背景：`record_failure` 原用裸 `fetch_add`，而调用方在已降级后
-/// 仍持续上报失败（长时 outage 下同一坏算法被上报数百次）。256 次时
-/// debug/test 构建 panic（本 crate panic=abort → 进程即死），release
-/// 静默回绕成 0 污染指标与降级判定。现为饱和累加。
+/// 并发记录失败 300 次（远超 `AtomicU8` 上限 255）不得 panic、不得回绕。
+/// 回归：调用方在降级后仍持续上报失败，裸 `fetch_add` 会 panic 或回绕污染指标。
 #[test]
 fn test_consecutive_counters_saturate_instead_of_wrapping() {
     let state = AlgorithmHealthState::new(AlgorithmType::Segment);
@@ -1093,9 +1050,7 @@ mod tests {
         let state = AlgorithmHealthState::new(AlgorithmType::Segment);
         state.open_circuit_breaker();
 
-        // timeout 为 0 ms，立刻认为已超过 timeout
-        // 注意：opened_at.elapsed() >= Duration::from_millis(0) 永远成立
-        // 但代码用 < 比较，所以 0 ms 一定会返回 false（已超过 timeout）
+        // timeout=0：elapsed() >= 0 恒真，代码用 `<` 比较必然返回 false
         assert!(!state.is_circuit_open(0));
     }
 
@@ -1267,10 +1222,7 @@ mod tests {
     }
 
     /// 取回 `register_algorithm` 建立的 `AlgorithmHealthState`。
-    ///
-    /// 前置操作与断言都必须建立在「健康状态条目确实存在」之上：条目缺失时
-    /// 立即 panic 并说明期望，取代原先的 `if let Some(state) = ... { assert!.. }`
-    /// 写法 —— 后者在条目缺失时会跳过整个断言块，测试静默通过（假绿）。
+    /// 条目缺失时立即 panic，避免断言块被静默跳过（假绿）。
     fn health_state_of(
         manager: &DegradationManager,
         alg_type: AlgorithmType,
@@ -1386,13 +1338,11 @@ mod tests {
 
         manager.update_config(new_config);
 
-        // 通过私有字段无法直接读取，用 record_generation_result 验证：
-        // 注册算法后失败 5 次（原 threshold），不应触发降级（新 threshold=99）
+        // 私有 config 不可读，改以行为验证：失败 5 次不应触发降级（新 threshold=99）
         manager.register_algorithm(
             AlgorithmType::Segment,
             Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
         );
-        // 此处用 block_on 同步执行
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             for _ in 0..5 {
@@ -1430,7 +1380,6 @@ mod tests {
         // 未注册 Snowflake → manual_recover 是 no-op，不 panic
         manager.manual_recover(AlgorithmType::Snowflake);
 
-        // 验证 states 仍为空
         assert!(manager.get_all_states().is_empty());
     }
 
@@ -1551,7 +1500,6 @@ mod tests {
             .record_generation_result(AlgorithmType::Segment, true)
             .await;
 
-        // primary 已恢复，状态回到 Normal
         assert_eq!(manager.get_current_state(), DegradationState::Normal);
     }
 
@@ -1726,7 +1674,7 @@ mod tests {
             manager.get_current_state(),
             DegradationState::Degraded(AlgorithmType::Snowflake)
         );
-        // circuit breaker 应被打开（条目缺失时 panic，不再静默跳过断言）
+        // 熔断器应被打开
         let state = health_state_of(&manager, AlgorithmType::Segment);
         assert_eq!(
             state.get_circuit_breaker_state(),
@@ -1825,7 +1773,7 @@ mod tests {
             Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
         );
 
-        // 打开 circuit breaker（条目缺失时立即失败，不允许静默跳过前置）
+        // 打开 circuit breaker
         health_state_of(&manager, AlgorithmType::Segment).open_circuit_breaker();
 
         manager.check_all_health().await;
@@ -1853,7 +1801,7 @@ mod tests {
             Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
         );
 
-        // 打开 circuit breaker（条目缺失时立即失败，不允许静默跳过前置）
+        // 打开 circuit breaker
         health_state_of(&manager, AlgorithmType::Segment).open_circuit_breaker();
 
         manager.check_all_health().await;
@@ -1881,7 +1829,7 @@ mod tests {
             Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
         );
 
-        // 切到 HalfOpen（条目缺失时立即失败，不允许静默跳过前置）
+        // 切到 HalfOpen
         health_state_of(&manager, AlgorithmType::Segment).half_open_circuit_breaker();
 
         manager.check_all_health().await;
@@ -1914,7 +1862,7 @@ mod tests {
             Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment)) as Arc<dyn IdAlgorithm>,
         );
 
-        // 切到 HalfOpen 并预先累积 successes 到阈值（条目缺失时立即失败）
+        // 切到 HalfOpen 并预先累积 successes 到阈值
         let state = health_state_of(&manager, AlgorithmType::Segment);
         state.half_open_circuit_breaker();
         state.record_success();
@@ -1949,7 +1897,7 @@ mod tests {
             )) as Arc<dyn IdAlgorithm>,
         );
 
-        // 切到 HalfOpen（条目缺失时立即失败，不允许静默跳过前置）
+        // 切到 HalfOpen
         health_state_of(&manager, AlgorithmType::Segment).half_open_circuit_breaker();
 
         manager.check_all_health().await;
@@ -1980,7 +1928,7 @@ mod tests {
             )) as Arc<dyn IdAlgorithm>,
         );
 
-        // 切到 HalfOpen（条目缺失时立即失败，不允许静默跳过前置）
+        // 切到 HalfOpen
         health_state_of(&manager, AlgorithmType::Segment).half_open_circuit_breaker();
 
         manager.check_all_health().await;
@@ -2047,9 +1995,7 @@ mod tests {
 
     // ===== 测试辅助类型 =====
 
-    /// 简单的 IdAlgorithm 实现：返回固定 ID 和健康状态。
-    /// 用手写 mock 而不是 mockall，避免 mockall 在 `&Arc<DegradationManager>`
-    /// 等返回 ref 方法上的限制。
+    /// 返回固定 ID 与健康状态的简单 mock（手写以避免 mockall 对返回 ref 方法的限制）。
     struct MockIdAlgorithm {
         alg_type: AlgorithmType,
     }

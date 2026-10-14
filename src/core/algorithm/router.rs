@@ -124,8 +124,7 @@ impl IdGenerator for AlgorithmRouter {
     }
 }
 
-/// fallback 链遍历要执行的操作（合并单条/批量两套同构降级循环）。
-/// 以类型级分发统一两套循环体，`Out` 关联类型承载 Id / IdBatch 差异。
+/// fallback 链遍历的操作抽象：类型级分发统一单条/批量两套同构降级循环。
 trait FallbackRunner {
     type Out;
     async fn run(&self, alg: &Arc<dyn IdAlgorithm>, ctx: &GenerateContext) -> Result<Self::Out>;
@@ -157,37 +156,20 @@ pub struct AlgorithmRouter {
     fallback_chain: SmallVec<[AlgorithmType; 8]>,
     current_algorithm: Arc<ArcSwap<HashMap<String, AlgorithmType>>>,
     degradation_manager: Arc<DegradationManager>,
-    /// 路由层观测面：逐算法延迟环形样本、请求/错误计数与时钟回拨计数。
-    /// 单一观测点覆盖 HTTP / gRPC / SDK 三条入口。
+    /// 路由层观测面：逐算法延迟样本、请求/错误与时钟回拨计数，覆盖 HTTP/gRPC/SDK。
     global_metrics: Arc<GlobalMetrics>,
     #[cfg(feature = "segment")]
     cpu_monitor: Option<Arc<crate::core::algorithm::segment::CpuMonitor>>,
     #[cfg(feature = "etcd")]
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
-    /// Segment 号段生产装配的仓储句柄（可选）。
-    ///
-    /// `Some` 时 `initialize` 以其构建 `DbSegmentLoader` 经工厂注入
-    /// `SegmentAlgorithm`；`None` 时生产构建（非 cfg(test)）在 Segment
-    /// 为默认算法的前提下按 `config.database` 自举仓储（进程级共享），
-    /// 测试构建维持 `SegmentAlgorithm::new` 的内存造段器默认值。
+    /// Segment 号段仓储句柄（可选）：`Some` 时经 `DbSegmentLoader` 注入工厂；
+    /// `None` 时生产构建按 `config.database` 自举，测试构建走内存造段器默认值。
     #[cfg(feature = "segment")]
     segment_repository: Option<Arc<dyn SegmentRepository>>,
-    // 修复：非 etcd 版本不再持有 `etcd_health_monitor: Option<()>`
-    // 占位字段（类型误导）。`with_etcd_health_monitor` builder 方法也仅在
-    // etcd feature 下存在；非 etcd 版本调用方（main.rs）根本不会调用它。
 }
 
-// 修复：删除手动 `unsafe impl Send/Sync`。所有字段（Config /
-// Arc<ArcSwap<T>> / SmallVec / Arc<DegradationManager> /
-// Option<Arc<CpuMonitor>> / Option<Arc<EtcdClusterHealthMonitor>>）
-// 均为 Send + Sync，编译器会自动推导。原 `unsafe impl` 是历史遗留，
-// 掩盖了潜在的非线程安全字段，应删除让编译器做严格检查。
-
-/// `Arc<dyn SegmentRepository>` 的 Sized 委托适配器。
-///
-/// `DbSegmentLoader<R: SegmentRepository>`（segment.rs，本 lane 不可改）
-/// 隐式要求 `R: Sized`，无法直接以 trait 对象实例化；本 newtype 以 7 个
-/// 透传方法桥接，使 router 的对象安全仓储句柄可进入工厂装配路径。
+/// `Arc<dyn SegmentRepository>` 的 Sized 委托适配器：
+/// `DbSegmentLoader<R>` 要求 `R: Sized`，故以 newtype 透传方法桥接 trait 对象。
 #[cfg(feature = "segment")]
 struct DynSegmentRepository(Arc<dyn SegmentRepository>);
 
@@ -258,16 +240,14 @@ impl SegmentRepository for DynSegmentRepository {
 
 impl AlgorithmRouter {
     pub fn new(config: Config, audit_logger: Option<DynAuditLogger>) -> Self {
-        // 各 fallback push 均按算法特性门控：某组合下臂内全部门控关闭时
-        // 链不被变更（如仅 segment），mut 在该组合下未被使用。
+        // 各臂 push 均按特性门控，部分组合下链不变（mut 未被使用）。
         #[allow(unused_mut)]
         let mut fallback_chain: SmallVec<[AlgorithmType; 8]> = SmallVec::new();
 
         match config.algorithm.get_default_algorithm() {
             #[cfg(feature = "segment")]
             AlgorithmType::Segment => {
-                // 链只收已启用算法：未注册项虽会被 try_fallback_chain 跳过，
-                // 但死项会进入降级观测面（健康端点报告永不参与的候选算法）。
+                // 链只收已启用算法，避免死项进入降级观测面。
                 #[cfg(feature = "snowflake")]
                 fallback_chain.push(AlgorithmType::Snowflake);
                 #[cfg(feature = "uuid-v8")]
@@ -303,10 +283,7 @@ impl AlgorithmRouter {
     }
 
     /// 注入 Segment 号段仓储（生产装配入口）。
-    ///
-    /// 调用方持有现成 `SeaOrmRepository` 时传入可复用同一连接池；未传入时
-    /// 生产构建在 Segment 为默认算法的前提下按 `config.database` 自举
-    /// （见 [`Self::initialize`]）。
+    /// 未注入时生产构建按 `config.database` 自举（见 [`Self::initialize`]）。
     #[cfg(feature = "segment")]
     pub fn with_segment_repository(mut self, repository: Arc<dyn SegmentRepository>) -> Self {
         self.segment_repository = Some(repository);
@@ -327,9 +304,6 @@ impl AlgorithmRouter {
         self.etcd_health_monitor = Some(monitor);
         self
     }
-    // 修复：删除非 etcd 版本的 `with_etcd_health_monitor(Arc<()>)`。
-    // 原签名接受 `Arc<()>` 但完全忽略参数，类型误导且调用方可能误以为
-    // monitor 被实际使用。非 etcd 版本根本不需要这个 builder 方法。
 
     pub async fn initialize(&self) -> Result<()> {
         let mut errors = Vec::new();
@@ -341,8 +315,7 @@ impl AlgorithmRouter {
             AlgorithmType::UuidV4,
             AlgorithmType::UuidV7,
         ] {
-            // 未启用算法不进构建循环：配置声明禁用算法是意图而非故障，
-            // 不应对其发 algorithm_build_failed 告警。
+            // 未启用算法不进构建循环：配置禁用是意图而非故障，不应告警。
             #[cfg(not(feature = "segment"))]
             if alg_type == AlgorithmType::Segment {
                 continue;
@@ -355,9 +328,7 @@ impl AlgorithmRouter {
             if alg_type == AlgorithmType::UuidV8 {
                 continue;
             }
-            // add-uuid-v4-v7：两个零状态发号器同样只在特性开启时进
-            // 构建循环——未开启时路由表无该算法，generate_with_algorithm
-            // 经下方 cfg 守卫显性报错（见 generate_with_algorithm_internal）。
+            // UuidV4/V7 零状态发号器同样仅在特性开启时进循环，否则由 cfg 守卫显性报错。
             #[cfg(not(feature = "uuid-v4"))]
             if alg_type == AlgorithmType::UuidV4 {
                 continue;
@@ -376,9 +347,7 @@ impl AlgorithmRouter {
             if let Some(ref cpu_monitor) = self.cpu_monitor {
                 builder = builder.with_cpu_monitor(cpu_monitor.clone());
             }
-            // Segment 生产装配——把 DbSegmentLoader 经工厂构造参数
-            // 透传给 SegmentFactory（测试构建无仓储可解析时为 None，工厂
-            // 委托原始路径，SegmentAlgorithm::new 维持测试默认内存造段器）。
+            // Segment 生产装配：把 DbSegmentLoader 经工厂构造参数透传给 SegmentFactory。
             #[cfg(feature = "segment")]
             if alg_type == AlgorithmType::Segment {
                 if let Some(loader) = self.resolve_segment_loader().await {
@@ -388,11 +357,6 @@ impl AlgorithmRouter {
 
             match builder.build(&self.config).await {
                 Ok(algo) => {
-                    // 修复：删除 `algo.initialize(&self.config).await` 重复调用。
-                    // `AlgorithmBuilder::build` 内部已经调用各算法的 inherent
-                    // `initialize(&mut self, ...)` 完成初始化，返回的
-                    // `Box<dyn IdAlgorithm>` 已就绪。原代码重复初始化且在
-                    // trait object 上调用 `&mut self` 方法（设计气味）。
                     let alg_arc: Arc<dyn IdAlgorithm> = Arc::from(algo);
                     self.algorithms.rcu(|old| {
                         let mut new: HashMap<_, _> = (**old).clone();
@@ -431,13 +395,7 @@ impl AlgorithmRouter {
     }
 
     /// 解析 Segment 号段装载器（`initialize` 构建 Segment 时调用）。
-    ///
-    /// 优先级：
-    /// 1. [`Self::with_segment_repository`] 显式注入的仓储 → `DbSegmentLoader`；
-    /// 2. 生产构建（非 cfg(test)）且 Segment 为默认算法 → 按 `config.database`
-    ///    自举仓储（进程级只建一次，多个 router/嵌入场景共享同一连接池）；
-    /// 3. 其余（测试构建 / 零 DB 嵌入 / 自举失败）→ `None`，工厂委托原始
-    ///    路径，生成期由 `UnconfiguredSegmentLoader` 显性报错。
+    /// 优先级：显式注入仓储 → 生产按 `config.database` 自举（进程级一次）→ `None`（显性报错）。
     #[cfg(feature = "segment")]
     async fn resolve_segment_loader(
         &self,
@@ -450,8 +408,7 @@ impl AlgorithmRouter {
         }
 
         if self.config.algorithm.get_default_algorithm() != AlgorithmType::Segment {
-            // Segment 不在服务路径（默认算法非 Segment，且 fallback 链从不
-            // 含 Segment）时不建库连接，避免 Snowflake/UUID 部署多开连接池。
+            // Segment 不在服务路径时不建库连接，避免 Snowflake/UUID 部署多开连接池。
             return None;
         }
 
@@ -466,11 +423,7 @@ impl AlgorithmRouter {
     }
 
     /// 生产构建自举：按 `config.database` 建仓储并包装为 `DbSegmentLoader`。
-    ///
-    /// 进程级 `OnceCell` 缓存：main 与嵌入 SDK 同进程多次 `initialize` 复用
-    /// 同一结果（成功复用连接池；失败也只尝试一次，避免每次生成路径重试建连）。
-    /// 失败仅 `warn` 不阻断启动——与「零 DB 也能构建 router 模块」的嵌入语义
-    /// 兼容，Segment 生成期显性报错兜底。
+    /// 进程级 `OnceCell` 缓存，多次 `initialize` 复用同一结果；失败仅 `warn` 不阻断启动。
     #[cfg(all(not(test), feature = "segment"))]
     async fn self_provisioned_segment_loader(
         config: &Config,
@@ -493,10 +446,8 @@ impl AlgorithmRouter {
                                     config.database.statement_timeout_secs,
                                 )),
                         );
-                        // 动态步长装配：复用与 main.rs 采样任务（5s 读
-                        // /proc/stat）同一实例的 CpuMonitor——此前此处 new
-                        // 了一个无人采样新实例，读数恒为默认 0.1，「动态」
-                        // 实为常量。无采样器时才退回新建（等效固定步长）。
+                        // 动态步长：复用 main.rs 采样任务同一 CpuMonitor 实例，
+                        // 无采样器时才退回新建（等效固定步长）。
                         let monitor = cpu_monitor
                             .clone()
                             .unwrap_or_else(|| Arc::new(crate::core::algorithm::CpuMonitor::new()));
@@ -598,13 +549,8 @@ impl AlgorithmRouter {
             .await
     }
 
-    /// 遍历 fallback 链：对链上每个已注册算法执行指定操作，记录成功/失败到
-    /// DegradationManager，返回首个成功结果；链遍历完仍无成功则返回 None。
-    ///
-    /// `announce_hits` 控制 fallback 命中时是否输出 info 日志：两条路径的
-    /// "主算法失败后回退"（true）都广播命中；"主算法未注册直接回退"（false）
-    /// 两处均静默。（fix-audit-defects-r1 前批量失败回退恒为 false，已翻转
-    /// 对齐单条路径。）
+    /// 遍历 fallback 链：逐个执行已注册算法并记入 DegradationManager，返回首个成功结果；
+    /// 链遍历完仍无成功则返回 None。`announce_hits` 控制命中时是否输出 info 日志。
     async fn try_fallback_chain<R: FallbackRunner>(
         &self,
         algorithms: &HashMap<AlgorithmType, Arc<dyn IdAlgorithm>>,
@@ -643,11 +589,8 @@ impl AlgorithmRouter {
         None
     }
 
-    /// 路由层唯一观测点：记录一次算法执行的延迟、成败与时钟回拨信号。
-    ///
-    /// 放在路由层而非 HTTP handler，使 HTTP / gRPC / SDK 三条入口共用同一份
-    /// 数据；`algorithm` 传入的是**实际服务**该请求的算法（fallback 命中时
-    /// 为回退算法），保证分位数按算法正确归因。
+    /// 路由层唯一观测点：记录一次算法执行的延迟、成败与时钟回拨。
+    /// HTTP/gRPC/SDK 三入口共用；`algorithm` 为实际服务算法，保证分位数正确归因。
     fn observe<T>(&self, algorithm: AlgorithmType, start: Instant, outcome: &Result<T>) {
         let metrics = self.global_metrics.get_or_create_metrics(algorithm);
         metrics.record_latency(start.elapsed().as_nanos() as u64);
@@ -669,8 +612,7 @@ impl AlgorithmRouter {
         self.global_metrics.clone()
     }
 
-    /// 路由层单条生成漏斗：HTTP / gRPC / SDK 三条入口的单条生成最终都经此。
-    /// 热路径观测：span 字段仅 workspace/group/biz_tag/algorithm。
+    /// 路由层单条生成漏斗（HTTP/gRPC/SDK 共用）；热路径 span 仅含 workspace/group/biz_tag/algorithm。
     #[tracing::instrument(
         name = "router.generate",
         skip_all,
@@ -858,9 +800,7 @@ impl AlgorithmRouter {
                         .record_generation_result(effective_algorithm, false)
                         .await;
                     if let Some(res) = self
-                        // 批量与单条路径日志对称：主算法失败回退命中必须
-                        // 广播（此前批量恒静默，调用方只能从响应的 algorithm
-                        // 字段事后发现 ID 形态变了）。
+                        // 批量与单条日志对称：主算法失败后的回退命中也要广播。
                         .try_fallback_chain(&algorithms, ctx, true, BatchGenerateRun(size))
                         .await
                     {
@@ -931,8 +871,7 @@ impl AlgorithmRouter {
     }
 }
 
-// 测试模块整体要求三算法特性：内部用例全部依赖 Segment/Snowflake/UuidV8
-// 至少其二，剪裁组合下整模块跳过以避免半门控的 unused 残留。
+// 测试模块要求 segment/snowflake/uuid-v8 三特性，剪裁组合下整模块跳过。
 #[cfg(all(test, feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
 mod tests {
     use super::*;
@@ -1188,11 +1127,7 @@ mod tests {
     }
 
     /// 可在运行时切换 `health_check` 返回值的 Mock。
-    ///
-    /// 全流程用例需要「失败达阈值 → Open → 探测窗口 → HalfOpen →
-    /// 连续成功 → Closed」在同一趟里走完，而既有 mock 的健康状态在构造期固定；
-    /// 中途改健康只能重新 `register_algorithm`，但那会重建 `AlgorithmHealthState`
-    /// 并清空熔断状态。故用原子开关做内部可变。
+    /// 全流程用例需在同一趟内走完熔断状态迁移，重新注册会清空熔断状态，故用原子开关。
     #[derive(Debug)]
     struct MockFlippableHealthAlgorithm {
         alg_type: AlgorithmType,
@@ -1281,7 +1216,7 @@ mod tests {
             router.generate(&make_ctx("bt")).await.unwrap();
         }
 
-        // 观测面确实收到样本（此前 record_latency 在生产无任何调用点）
+        // 观测面确实收到样本
         let observed = router.global_metrics().get_all_snapshots();
         let seg = observed
             .iter()
@@ -2048,23 +1983,13 @@ mod tests {
         router.check_health_and_update_degradation().await;
     }
 
-    /// 第一条：熔断全流程回归（单一用例走完 Closed→Open→HalfOpen→Closed）。
-    ///
-    /// 全部状态迁移仅经路由层既有公开入口 `AlgorithmRouter::check_health_and_update_degradation`
-    /// 驱动（生产里由后台健康检查 task 调用同一入口），阈值经既有
-    /// `DegradationManager::update_config` 注入——不为测试新增 pub API。
-    ///
-    /// 期望语义：
-    /// 1. 连续失败达 `failure_threshold` → 熔断 Open，并降级到 fallback 链下一算法；
-    /// 2. 主算法恢复且探测窗口（此处 timeout=0）到期 → HalfOpen；
-    /// 3. HalfOpen 探测成功数未达 `half_open_success_threshold` → 保持 HalfOpen 并累计；
-    /// 4. 达到阈值 → Closed + 清除降级标记，整体状态回到 Normal。
+    /// 熔断全流程回归（Closed→Open→HalfOpen→Closed），仅经公开入口驱动。
+    /// 期望：失败达阈值 → Open 并降级；探测窗口到期 → HalfOpen；探测成功达阈值 → Closed 恢复 Normal。
     #[tokio::test]
     #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
     async fn test_check_health_and_update_degradation_full_circuit_breaker_lifecycle() {
         let mut router = AlgorithmRouter::new(Config::default(), None);
-        // 生产默认 circuit_breaker_timeout_ms=60_000 无法在用例内跨越探测窗口，
-        // 故注入显式阈值：失败 2 次打开 / 探测窗口 0ms / 半开需 2 次探测成功。
+        // 生产默认 timeout=60s 无法在用例内跨越，故注入显式阈值：失败 2 次打开 / 窗口 0ms / 半开 2 次成功。
         Arc::get_mut(&mut router.degradation_manager)
             .expect("新建 router 应独占 DegradationManager 的 Arc")
             .update_config(DegradationConfig {
@@ -2075,8 +2000,7 @@ mod tests {
                 ..Default::default()
             });
 
-        // `check_all_health` 读取的是 DegradationManager 自己的算法注册表
-        // （生产路径由 `initialize()` 同时写入 router.algorithms 与 manager）。
+        // `check_all_health` 读 manager 自己的注册表（生产由 `initialize()` 同时写入）。
         let dm = router.get_degradation_manager();
         let primary = Arc::new(MockFlippableHealthAlgorithm::new(AlgorithmType::Segment));
         primary.force_unhealthy();
@@ -2244,8 +2168,7 @@ mod tests {
 
     // ============== 装配契约测试 ==============
 
-    /// 最小 SegmentRepository mock：`allocate_segment` 顺序发号并记录步长，
-    /// 其余方法按「不参与本用例」语义返回空/缺省。
+    /// 最小 SegmentRepository mock：`allocate_segment` 顺序发号并记录步长，其余方法返回空/缺省。
     #[cfg(feature = "segment")]
     struct MockSegmentRepo {
         counter: std::sync::atomic::AtomicI64,
@@ -2349,9 +2272,7 @@ mod tests {
         }
     }
 
-    /// 工厂装配契约：`AlgorithmBuilder` 携带 `DbSegmentLoader` 构建的
-    /// Segment 算法，generate 必须消费 `allocate_segment` 返回的区间，
-    /// 且注入步长透传到位。
+    /// 工厂装配契约：`DbSegmentLoader` 构建的 Segment 算法须消费 `allocate_segment` 区间并透传步长。
     #[cfg(feature = "segment")]
     #[tokio::test]
     async fn test_segment_factory_injects_db_loader_and_consumes_allocation() {
@@ -2374,9 +2295,7 @@ mod tests {
         );
     }
 
-    /// router 装配契约：`with_segment_repository` 注入仓储后，`initialize`
-    /// 经工厂路径为 Segment 装上 `DbSegmentLoader`，generate 真消费 mock
-    /// 仓储的分配区间。
+    /// router 装配契约：注入仓储后 `initialize` 经工厂路径装 `DbSegmentLoader`，generate 真消费分配区间。
     #[cfg(feature = "segment")]
     #[tokio::test]
     async fn test_router_with_segment_repository_serves_db_backed_ids() {

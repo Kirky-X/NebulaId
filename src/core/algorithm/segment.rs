@@ -1,13 +1,9 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! Segment 算法模块
-//!
-//! 提供基于号段（Segment）的 ID 生成实现，包括双缓冲、动态切换与多数据中心
-//! 健康探测。生产路径通过 [`DbSegmentLoader`] 从仓储分配号段；`SegmentAlgorithm::new`
-//! 的默认装配是 [`UnconfiguredSegmentLoader`]（显性报错），需在装配处注入
-//! `DbSegmentLoader`；`cfg(test)` 构建下默认注入 [`TestSegmentLoader`] 以维持
-//! 既有 crate 内测试行为。
+//! Segment 算法模块：基于号段的 ID 生成，含双缓冲、动态切换与多数据中心健康探测。
+//! 生产路径经 [`DbSegmentLoader`] 从仓储分配号段；`SegmentAlgorithm::new` 默认装配
+//! [`UnconfiguredSegmentLoader`]（显性报错），需在装配处注入；`cfg(test)` 下默认注入内存造段器。
 use crate::core::algorithm::{
     AlgorithmMetricsSnapshot, GenerateContext, HealthStatus, IdAlgorithm,
 };
@@ -258,9 +254,8 @@ impl AtomicSegment {
     /// 至多消费 `count` 个：`left = max - current`，`left == 0` 返回 `None`，
     /// 否则消费 `min(count, left)` 返回区间 `[start, start + taken)`。
     ///
-    /// 「至多消费」语义是批量补满的前提：旧实现的「不足即整单失败」会让
-    /// `batch_generate` 在段尾无法部分收割剩余号段，只能整批放弃（静默短批
-    /// 的根源）；改为部分收割后，调用方循环续段即可精确补满请求量。
+    /// 「至多消费」语义是批量补满的前提：旧实现「不足即整单失败」会让
+    /// `batch_generate` 无法部分收割段尾剩余，只能整批放弃（静默短批根源）。
     pub fn try_consume(&self, count: u64) -> Option<(u64, u64)> {
         let segment = self.inner.lock();
         let current = segment.current_id.load(Ordering::Relaxed);
@@ -280,7 +275,7 @@ pub struct DoubleBuffer {
     current: Arc<ArcSwap<AtomicSegment>>,
     next: Arc<ArcSwapOption<AtomicSegment>>,
     switch_threshold: f64,
-    // 修复：loading 标记防止多线程并发触发 load_segment
+    // loading 标记防止多线程并发触发 load_segment
     loading: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -298,20 +293,19 @@ impl DoubleBuffer {
         }
     }
 
-    /// 修复：CAS 标记 loading=true，返回是否抢占成功。
-    /// 成功的线程负责 load_segment；失败的线程应 spin-wait 直到 loading=false。
+    /// CAS 抢占 loading 标记：成功者负责 load_segment，失败者 spin-wait 至 loading=false。
     pub fn try_start_loading(&self) -> bool {
         self.loading
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
     }
 
-    /// 修复：load_segment 完成（无论成功失败）后必须调用，重置 loading。
+    /// load_segment 完成（无论成败）后调用，重置 loading。
     pub fn finish_loading(&self) {
         self.loading.store(false, Ordering::Release);
     }
 
-    /// 修复：检查是否正在加载。
+    /// 是否正在加载。
     pub fn is_loading(&self) -> bool {
         self.loading.load(Ordering::Acquire)
     }
@@ -368,10 +362,9 @@ impl Drop for LoadingGuard {
     }
 }
 
-/// 最近一次号段加载结果快照（loader 调用点写入，`health_check` 反映）。
+/// 最近一次号段加载结果（loader 调用点写入，health_check 反映）。
 ///
-/// 「最近一次」语义：新结果覆盖旧结果——失败后再次成功即视为恢复，
-/// health_check 恢复 Healthy；持续失败则保持非 Healthy。
+/// 「最近一次」语义：新结果覆盖旧结果——失败后再次成功即恢复 Healthy。
 #[derive(Debug, Clone)]
 enum LastLoadResult {
     /// 尚未发生过号段加载
@@ -390,9 +383,6 @@ pub struct SegmentAlgorithm {
     dc_failure_detector: Arc<DcFailureDetector>,
     /// 最近一次号段加载结果（loader 调用点写入，health_check 反映）。
     last_load_result: Mutex<LastLoadResult>,
-    // 对齐修复：非 etcd 版本不再持有 `etcd_cluster_health_monitor: Option<()>`
-    // 占位字段（与 AlgorithmBuilder / AlgorithmRouter 一致）。`with_etcd_cluster_health_monitor`
-    // builder 方法仅在 etcd feature 下存在；非 etcd 版本根本不会调用它。
     #[cfg(feature = "etcd")]
     etcd_cluster_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
     /// CPU monitor for dynamic step calculation
@@ -447,15 +437,9 @@ impl SegmentAlgorithm {
 
         let (shutdown_tx, _) = tokio::sync::watch::channel(false);
 
-        // 默认号段装载器：
-        // - 生产构建（非 test）：UnconfiguredSegmentLoader —— load_segment 显性
-        //   返回 ConfigurationError，杜绝历史「timestamp*10000 内存伪造号段」被
-        //   无感知地带入生产（多实例必然重复 ID）。真正接通需在装配处注入
-        //   DbSegmentLoader（由后续装配任务完成，本任务不改 main.rs）。
-        // - cfg(test) 构建：TestSegmentLoader —— 既有 crate 内测试（如
-        //   src/core/tests/integration_tests.rs）依赖 `SegmentAlgorithm::new`
-        //   开箱可用；为不越出本 lane 的文件所有权边界，测试构建保留内存
-        //   造段器默认值。segment.rs 自身的新增单测一律显式注入。
+        // 默认号段装载器：生产构建为 UnconfiguredSegmentLoader（显性报错，
+        // 杜绝内存伪造号段被无感知带入生产），cfg(test) 下为 TestSegmentLoader
+        // 以维持既有 crate 内测试行为。
         let segment_loader: Arc<dyn SegmentLoader + Send + Sync> = {
             #[cfg(test)]
             {
@@ -485,11 +469,8 @@ impl SegmentAlgorithm {
 
     /// 注入自定义号段装载器（pub 化：装配处注入入口）。
     ///
-    /// 生产装配方（main.rs / 嵌入式 SDK）经 mod.rs re-export 拿到
-    /// `SegmentAlgorithm` 与 `DbSegmentLoader` 后，用本方法把
-    /// `DbSegmentLoader`（真连 DB 号段）替换掉 `new()` 的默认
-    /// `UnconfiguredSegmentLoader`；测试同理可注入内存造段器
-    /// （依赖造段器行为的单测必须显式注入）。
+    /// 生产装配方经 mod.rs re-export 拿到 `SegmentAlgorithm` 与
+    /// `DbSegmentLoader` 后，用本方法替换 `new()` 的默认装载器。
     pub fn with_segment_loader(mut self, loader: Arc<dyn SegmentLoader + Send + Sync>) -> Self {
         self.segment_loader = loader;
         self
@@ -500,11 +481,8 @@ impl SegmentAlgorithm {
         self
     }
 
-    // 修复：`initialize` 从 `impl IdAlgorithm for SegmentAlgorithm`
-    // 移到 inherent impl。原 trait method `initialize(&mut self, ...)` 让
-    // trait 不那么对象安全（`Arc<dyn IdAlgorithm>` 共享后无法调用 `&mut self`）。
-    // 现仅在 `AlgorithmBuilder::build` 中通过具体类型调用，初始化完成后
-    // 转为 `Box<dyn IdAlgorithm>` 共享。
+    // initialize 为 inherent 方法：trait 上的 &mut self 破坏对象安全性，
+    // 仅在 AlgorithmBuilder::build 中通过具体类型调用。
     pub async fn initialize(&mut self, config: &Config) -> Result<()> {
         self.config = config.algorithm.segment.clone();
 
@@ -539,12 +517,6 @@ impl SegmentAlgorithm {
         self.etcd_cluster_health_monitor = Some(monitor);
         self
     }
-    // 对齐修复：删除非 etcd 版本的 `with_etcd_cluster_health_monitor(Arc<()>)`。
-    // 原签名接受 `Arc<()>` 但完全忽略参数，类型误导且调用方可能误以为
-    // monitor 被实际使用。非 etcd 版本根本不需要这个 builder 方法。
-
-    // 对齐修复：删除非 etcd 版本的 `get_etcd_cluster_health_monitor() -> Option<&()>`。
-    // 非 etcd 版本字段不存在，getter 也无意义。
 
     fn get_or_create_buffer(&self, key: &str) -> Arc<DoubleBuffer> {
         // 快路径：读锁查找已有 buffer（读多写少场景优化，避免每次获取写锁）
@@ -566,8 +538,7 @@ impl SegmentAlgorithm {
     }
 
     /// 记录最近一次号段加载结果（loader 调用点写入）：成功记单调时刻，
-    /// 失败记错误摘要。`health_check` 据此在「最近一次 load 失败且尚无
-    /// 成功恢复」时返回非 Healthy。
+    /// 失败记错误摘要。`health_check` 据此判定是否非 Healthy。
     fn record_load_result(&self, result: &Result<SegmentData>) {
         let mut last = self.last_load_result.lock();
         match result {
@@ -576,13 +547,10 @@ impl SegmentAlgorithm {
         }
     }
 
-    /// 取段公共流程（单条/批量路径统一入口）：确保 next 号段就绪并 swap
-    /// 到 current。CAS `try_start_loading` 抢占加载权——成功方负责
-    /// `load_segment` 并无论成败 `finish_loading`；失败方异步轮询等待
-    /// 释放后重读 next（sleep 让出执行权，见单条路径的死锁注释）。
-    /// 批量路径此前不走 CAS：并发批量会各自打 DB 取段并 `set_next`
-    /// 相互覆盖，被覆盖的号段整段作废（跳号放大）。返回 `Ok` 表示已
-    /// 尽力推进（调用方继续循环重试消费），`Err` 仅透传 loader 错误。
+    /// 取段公共流程（单条/批量统一入口）：确保 next 号段就绪并 swap 到 current。
+    /// CAS `try_start_loading` 抢占加载权——成功方负责 `load_segment` 并无论
+    /// 成败 `finish_loading`；失败方异步轮询等待释放后重读 next。返回 `Ok`
+    /// 表示已尽力推进（调用方继续循环重试消费），`Err` 仅透传 loader 错误。
     async fn ensure_next_segment(
         &self,
         buffer: &Arc<DoubleBuffer>,
@@ -596,10 +564,8 @@ impl SegmentAlgorithm {
         if buffer.try_start_loading() {
             self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
             // RAII 释放 loading：成功、错误（`?` 回收 guard）乃至 panic 路径
-            // 都保证复位，杜绝「加载者挂掉后 loading 恒 true、等待方无限
-            // 轮询」的悬挂。guard 在 set_next 之后 drop——loading 释放时
-            // next 已就绪，等待方醒来即可取到，同时收窄了 finish→set_next
-            // 之间唤醒他人重复取段的窗口。
+            // 都保证复位，杜绝悬挂。guard 在 set_next 之后 drop——loading
+            // 释放时 next 已就绪，等待方醒来即可取到。
             let _guard = LoadingGuard {
                 buffer: Arc::clone(buffer),
             };
@@ -635,7 +601,6 @@ impl IdAlgorithm for SegmentAlgorithm {
 
             if let Some((start, _end)) = current.try_consume(1) {
                 self.metrics.total_generated.fetch_add(1, Ordering::Relaxed);
-                // 修复：cache_hits 递增，cache_hit_rate 才能正确反映命中率
                 self.metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
                 return Ok(Id::from_u128(start.into()));
             }
@@ -667,14 +632,14 @@ impl IdAlgorithm for SegmentAlgorithm {
         let buffer = self.get_or_create_buffer(&key);
 
         // 连续无进展轮次：try_consume 仅在段耗尽（left==0）时失败，正常
-        // 取段-消费循环每轮都有进展；只有 loader 恒定返回空段这类异常
-        // 才会连续无进展，连续 MAX_BATCH_STALE_ROUNDS 轮即显性报错，
-        // 不静默返回短批。跨段补满属于有进展轮次，不受此上限约束。
+        // 取段-消费循环每轮都有进展；只有 loader 恒定返回空段这类异常才会
+        // 连续无进展，超过上限即显性报错，不静默返回短批。跨段补满属于
+        // 有进展轮次，不受此上限约束。
         const MAX_BATCH_STALE_ROUNDS: u32 = 8;
         let mut stale_rounds: u32 = 0;
 
-        // 批量硬不变量：返回 Ok 时 ids.len() == size。旧实现「非空即 Ok」
-        // 的短批出口已删除——调用方不检查 ids.len() 会误以为拿满。
+        // 批量硬不变量：返回 Ok 时 ids.len() == size，不静默返回短批
+        // （调用方不检查 ids.len() 会误以为拿满）。
         while ids.len() < size {
             let current = buffer.get_current();
             let remaining_needed = (size - ids.len()) as u64;
@@ -710,11 +675,8 @@ impl IdAlgorithm for SegmentAlgorithm {
         ))
     }
 
-    /// 健康状况同时反映两路信号
-    /// 1. buffer 空虚（尚无任何活动号段缓冲）→ Degraded；
+    /// 健康状况反映两路信号：1. buffer 空虚（无活动号段缓冲）→ Degraded；
     /// 2. 最近一次号段加载失败且尚无成功恢复 → Degraded（附错误摘要）。
-    ///    「最近一次」为新结果覆盖旧结果：失败后再次成功加载即恢复 Healthy。
-    ///    [`UnconfiguredSegmentLoader`] 的 ConfigurationError 同样计入加载失败。
     fn health_check(&self) -> HealthStatus {
         if self.buffers.read().is_empty() {
             return HealthStatus::Degraded("No active buffers".to_string());
@@ -724,8 +686,7 @@ impl IdAlgorithm for SegmentAlgorithm {
                 HealthStatus::Degraded(format!("Last segment load failed: {err}"))
             }
             LastLoadResult::Ok(at) => {
-                // 成功时刻用于观测：debug 级别输出距上次成功加载的毫秒数，
-                // 供排障时确认号段装载新鲜度。
+                // 成功时刻用于观测：debug 级别输出距上次成功加载的毫秒数。
                 tracing::debug!(
                     event = "segment_health_check_ok",
                     ms_since_last_load = at.elapsed().as_millis() as u64
@@ -749,7 +710,7 @@ impl IdAlgorithm for SegmentAlgorithm {
         AlgorithmMetricsSnapshot {
             total_generated: self.metrics.total_generated.load(Ordering::Relaxed),
             total_failed: self.metrics.total_failed.load(Ordering::Relaxed),
-            // 修复：Segment 算法有段缓存，返回真实命中率。
+            // Segment 算法有段缓存，返回真实命中率。
             cache_hit_rate: Some(hit_rate),
             // 延迟分位数与时钟回拨计数由路由层观测后在
             // AlgorithmRouter::metrics() 合并填充。
@@ -760,8 +721,6 @@ impl IdAlgorithm for SegmentAlgorithm {
     fn algorithm_type(&self) -> AlgorithmType {
         AlgorithmType::Segment
     }
-
-    // 修复：`initialize` 已移到 inherent impl（`impl SegmentAlgorithm`）。
 
     async fn shutdown(&self) -> Result<()> {
         // Signal shutdown and wait for health check task to complete
@@ -775,11 +734,9 @@ impl IdAlgorithm for SegmentAlgorithm {
 
 /// 未装配数据源的默认号段装载器（生产构建的 `SegmentAlgorithm::new` 默认值）。
 ///
-/// `load_segment` 恒返回 [`CoreError::ConfigurationError`]：历史
-/// `DefaultSegmentLoader` 用 `timestamp * 10000` 在内存伪造号段，多实例部署
-/// 必然重复 ID，属静默数据正确性事故；改为显性失败后，必须在装配处注入
-/// [`DbSegmentLoader`]（经 [`SegmentRepository::allocate_segment`] 落库分配），
-/// Segment 算法才可用。
+/// `load_segment` 恒返回 [`CoreError::ConfigurationError`]：内存伪造号段在多实例
+/// 部署下必然重复 ID；须在装配处注入 [`DbSegmentLoader`]（经
+/// [`SegmentRepository::allocate_segment`] 落库分配）后才可用。
 struct UnconfiguredSegmentLoader;
 
 #[async_trait]
@@ -794,21 +751,13 @@ impl SegmentLoader for UnconfiguredSegmentLoader {
 /// 数据库号段装载器：调 [`SegmentRepository::allocate_segment`] 原子分配号段，
 /// 并把 [`SegmentInfo`] 映射为 [`SegmentData`]。
 ///
-/// 字段对齐（以 `allocate_segment` 现有语义为准）：
-/// - `SegmentInfo.current_id` = 本次分配区间的**起始值**（含）；
-/// - `SegmentInfo.max_id` = 本次分配区间的**上界**（AtomicSegment 按
-///   `current + count <= max` 消费，实际发号至 `max - 1`）。
-///
+/// `SegmentInfo.current_id` = 分配区间起始值（含）；`max_id` = 区间上界
+/// （AtomicSegment 按 `current + count <= max` 消费，实际发号至 `max - 1`）。
 /// `worker_id` 参数不参与分配键（仓储按 workspace_id + biz_tag 定位号段行），
 /// 仅为兼容 [`SegmentLoader`] trait 签名而保留。
 ///
-/// `dead_code` 豁免：本类型由**后续装配 lane** 在组装处注入（本 lane 不改
-/// main.rs / mod.rs），在此之前生产构建尚无构造点。
-/// 动态步长：`clamp(base × (1 + 2×cpu), min, max)`。
-///
-/// CPU 越忙步长越大——单次取段的 DB 往返成本被更多号段摊薄，降低
-/// 高压下的取段频次；`min/max` 来自 Segment 配置的既有字段（此前闲置）。
-/// 纯函数，确定性可测。结果收敛到 i32 值域（DB step 列类型）。
+/// 动态步长：`clamp(base × (1 + 2×cpu), min, max)`。CPU 越忙步长越大——单次
+/// 取段的 DB 往返成本被更多号段摊薄；结果收敛到 i32 值域（DB step 列类型）。
 pub fn dynamic_step(base_step: u64, min_step: u64, max_step: u64, cpu_usage: f64) -> i32 {
     let scaled = base_step as f64 * (1.0 + 2.0 * cpu_usage.clamp(0.0, 1.0));
     let clamped = scaled.clamp(min_step as f64, max_step as f64) as u64;
@@ -853,9 +802,7 @@ impl<R: SegmentRepository> DbSegmentLoader<R> {
         }
     }
 
-    /// 动态步长装载器：每次取段按 CPU 使用率在 [min_step, max_step] 内
-    /// 计算步长（此前 README 宣称「动态步长」但 CpuMonitor 采样无人消费，
-    /// 本构造器把宣称变成真实接线）。
+    /// 动态步长装载器：每次取段按 CPU 使用率在 [min_step, max_step] 内计算步长。
     pub fn with_dynamic_step(
         repository: Arc<R>,
         segment_config: SegmentAlgorithmConfig,
@@ -891,8 +838,8 @@ impl<R: SegmentRepository + 'static> SegmentLoader for DbSegmentLoader<R> {
             .allocate_segment(&ctx.workspace_id, &ctx.biz_tag, step)
             .await?;
 
-        // i64 → u64 防御性转换：正常路径两者恒为正（allocate_segment 从 1 起
-        // 步进），异常脏数据（负数）收敛为 0 而非按位回绕成超大号段。
+        // i64 → u64 防御性转换：正常路径两者恒为正，异常脏数据（负数）
+        // 收敛为 0 而非按位回绕成超大号段。
         let start_id = u64::try_from(info.current_id).unwrap_or(0);
         let max_id = u64::try_from(info.max_id).unwrap_or(0);
 
@@ -928,9 +875,7 @@ impl SegmentLoader for TestSegmentLoader {
 }
 
 // ============================================================================
-// SegmentFactory impl 拆分到本文件。
-// 原 impl 位于 traits.rs（违反规则 25），现移到具体类型所属文件。
-// 通过 AlgorithmBuilder 的 pub(crate) 访问器获取依赖。
+// SegmentFactory impl 位于本文件（具体类型所属文件）。
 // ============================================================================
 #[async_trait]
 impl crate::core::algorithm::AlgorithmFactory for crate::core::algorithm::SegmentFactory {
@@ -990,8 +935,7 @@ mod tests {
         assert!(segment.try_consume(1).is_none());
     }
 
-    /// count=0 在剩余充足时返回空区间（不发号也不报错，调用方循环的
-    /// 惰性推进场景依赖此行为）。
+    /// count=0 在剩余充足时返回空区间（不发号也不报错）。
     #[test]
     fn test_atomic_segment_try_consume_zero_count_returns_empty_range() {
         let segment = AtomicSegment::new(1, 1000);
@@ -999,8 +943,8 @@ mod tests {
         assert_eq!((start, end), (1, 1));
     }
 
-    /// 并发消费总量恰等于段容量：16 任务并发循环 try_consume(每次至多 37 个)
-    /// 直到段耗尽，收割总数 == 段容量（部分收割不丢号、不重号）。
+    /// 并发消费总量恰等于段容量：16 任务并发 try_consume(37) 至段耗尽，
+    /// 收割总数 == 段容量（部分收割不丢号、不重号）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_atomic_segment_concurrent_consume_no_overlap() {
         let segment = Arc::new(AtomicSegment::new(0, 1000));
@@ -1245,10 +1189,9 @@ mod tests {
         );
     }
 
-    /// 并发批量取段合并：8 任务并发对同一 key 各批量 200（总需求 1600、
-    /// 步长 1000 → 至少 2 段才够），CAS 合并下 loader 实际调用数必须
-    /// 严格小于任务数（旧批量路径无 CAS 时 8 任务会各自打 DB、set_next
-    /// 相互覆盖浪费整段），且每个批量都精确补满。
+    /// 并发批量取段合并：8 任务对同一 key 各批量 200（总需求 1600、步长
+    /// 1000 → 至少 2 段），CAS 合并下 loader 调用数必须严格小于任务数
+    /// （旧路径无 CAS 时会各自打 DB、set_next 相互覆盖浪费整段）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_concurrent_batch_generate_merges_segment_loads() {
         let loader = Arc::new(CountingSegmentLoader::new());
@@ -1446,8 +1389,8 @@ mod tests {
         assert!(matches!(algo.health_check(), HealthStatus::Degraded(_)));
     }
 
-    /// 语义不破坏：UnconfiguredSegmentLoader 的 ConfigurationError
-    /// 同样计入「最近一次加载失败」，health_check 非 Healthy。
+    /// 语义不破坏：UnconfiguredSegmentLoader 的 ConfigurationError 同样计入
+    /// 「最近一次加载失败」，health_check 非 Healthy。
     #[tokio::test]
     async fn test_unconfigured_loader_error_counts_as_load_failure_for_health() {
         let algo =

@@ -1,25 +1,9 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! RFC 9562 §5.5 name-based UUID v5 确定性派生。
-//!
-//! 与 [`super::uuid_v8`] 的发号语义并列而分岔：v8 每次生成必然不同
-//! （时间戳 + 计数器 + 随机熵），v5 同输入恒同输出（SHA-1(namespace ||
-//! name) 取高 128 位，version 置 0b0101、variant 置 0b10）——服务于
-//! 「按业务身份派生 ID」的调用方（如 etyma 词典实体按 (lemma, language)
-//! 派生；其 340,566 个存量 ID 的数值即标准 v5 输出，跨仓兼容锚点见
-//! 测试 [`test_etyma_ecdict_anchor_abandon`]）。
-//!
-//! 纯函数：无状态、无时钟、无 IO、无锁。feature `uuid-v5` 门控。
-//!
-//! # 与算法族的关系
-//!
-//! 本模块刻意**不**实现 [`crate::core::algorithm::traits::IdAlgorithm`]、
-//! 不进 `AlgorithmRouter`：派生失败没有「换一个发号算法」的可动作语义
-//! （router fallback 链会产出数值错误的非 v5 ID），且 `AlgorithmType` 是
-//! 发号算法枚举（绑定 fallback / degradation / set_algorithm 白名单）。
-//! UUID v4/v7 在本仓同样不是算法族成员（仅 `FromStr` 输入别名，见
-//! `core/types/id.rs`）。
+//! RFC 9562 §5.5 name-based UUID v5 确定性派生：SHA-1(namespace || name)
+//! 取高 128 位，version 置 0b0101、variant 置 0b10；同输入恒同输出。
+//! 纯函数，feature `uuid-v5` 门控；刻意不进 AlgorithmRouter（派生失败无可动作语义）。
 
 use uuid::Uuid;
 
@@ -27,15 +11,10 @@ use crate::core::types::id::Id;
 use crate::core::types::Result;
 
 /// RFC 9562 §5.5 确定性派生：v5 = SHA-1(namespace 网络序 16 字节 || name)
-/// 取高 128 位，version 置 0b0101、variant 置 0b10。
+/// 取高 128 位，version 置 0b0101、variant 置 0b10；同输入恒同输出。
 ///
-/// 同 (namespace, name) 恒同输出。name 以 UTF-8 字节参与——RFC 9562 的
-/// 「canonical sequence of octets」对文本名即 UTF-8 编码，与 etyma 等
-/// `Uuid::new_v5` 消费方同口径（同 crate 同版本，数值逐位兼容）。
-///
-/// 错误面：当前无失败路径（`Uuid::new_v5` 不返回 Result）。保留 `Result`
-/// 返回类型以稳定签名（未来入参校验——如空 name 拒绝——不必惊动调用方），
-/// 不为假想的失败提前造错误变体（规则 6）。
+/// name 以 UTF-8 字节参与（RFC 9562 canonical octets，与 `Uuid::new_v5` 同口径）。
+/// 当前无失败路径，保留 `Result` 仅为稳定签名，不为假想失败造错误变体。
 pub fn derive_uuid_v5(namespace: Uuid, name: &str) -> Result<Id> {
     Ok(Id::from_uuid_v8(Uuid::new_v5(&namespace, name.as_bytes())))
 }
@@ -43,8 +22,7 @@ pub fn derive_uuid_v5(namespace: Uuid, name: &str) -> Result<Id> {
 /// 批量确定性派生：多组 (namespace, name) 各派生一次，按序返回，长度与
 /// 输入一致。
 ///
-/// 与发号 batch 的「size 个互异新 ID」是不同语义，刻意以不同函数名区分，
-/// 防止误用；调用方按导入批次切分输入即可。
+/// 与发号 batch 的「size 个互异新 ID」语义不同，刻意以不同函数名区分。
 pub fn derive_uuid_v5_batch(pairs: &[(Uuid, &str)]) -> Result<Vec<Id>> {
     pairs
         .iter()
@@ -81,8 +59,7 @@ mod tests {
             .expect("uuid format render must succeed")
     }
 
-    /// 锚点 1（etyma 仓内钉死值，340,566 存量 ID 依赖）：name 格式
-    /// `ecdict|{lemma}|en` 是 etyma 的领域规则，本模块只提供标准算法。
+    /// 锚点 1（etyma 仓内钉死值，340,566 存量 ID 依赖）。
     #[test]
     fn test_etyma_ecdict_anchor_abandon() {
         let id = derive_uuid_v5(ecdict_namespace(), "ecdict|abandon|en").unwrap();
@@ -130,8 +107,7 @@ mod tests {
         }
     }
 
-    /// 边界：非 ASCII name 与 nil namespace 均正常产出（Python hashlib
-    /// 独立基准），不 panic、值确定。
+    /// 边界：非 ASCII name 与 nil namespace 均正常产出，不 panic、值确定。
     #[test]
     fn test_non_ascii_name_and_nil_namespace() {
         let id = derive_uuid_v5(ecdict_namespace(), "ecdict|café|en").unwrap();

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuditEventType {
-    // 核心算法事件（统一 AuditEventType 定义，消除 server/core 重复）
+    // 核心算法事件
     IdGeneration,
     BatchGeneration,
     Authentication,

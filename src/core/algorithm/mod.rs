@@ -19,8 +19,7 @@ pub(crate) mod uuid_v5;
 pub(crate) mod uuid_v7;
 #[cfg(feature = "uuid-v8")]
 pub(crate) mod uuid_v8;
-// RFC 9562 v5 确定性派生的稳定公开路径：直调消费者（嵌入方不需要 Kit 装配）
-// 与 SDK 薄包装（IdGenerator::derive_uuid_v5）共用同一实现。
+// RFC 9562 v5 确定性派生的公开路径：直调与 SDK 薄包装共用同一实现。
 #[cfg(feature = "uuid-v5")]
 pub use uuid_v5::{derive_uuid_v5, derive_uuid_v5_batch, derive_uuid_v5_bytes};
 // RFC 9562 §5.4 v4 同步发号叶子入口：发电电路径（UuidV4Impl）与同步调用点共用同一实现。
@@ -33,18 +32,13 @@ pub use router::AlgorithmRouter;
 
 pub use audit_trait::{AuditEvent, AuditEventType, AuditLogger, AuditResult, DynAuditLogger};
 
-// CircuitBreakerState 由 degradation_manager 唯一定义（删除生产零引用的
-// 独立 circuit_breaker.rs 后，熔断器唯一实现为 DegradationManager 内建状态机）。
+// CircuitBreakerState 唯一定义于 degradation_manager。
 pub use degradation_manager::{CircuitBreakerState, DegradationManager};
 
-// Re-export CpuMonitor for CPU monitoring
 #[cfg(feature = "segment")]
 pub use segment::CpuMonitor;
 
-// Segment 号段装配面：`DbSegmentLoader`（真连 DB 号段）与
-// `SegmentLoader`/`SegmentAlgorithm` 经此 re-export 后，装配方（main.rs /
-// 嵌入式 SDK）可执行 `SegmentAlgorithm::new(dc).with_segment_loader(
-// Arc::new(DbSegmentLoader::new(repo)))` 完成生产注入。
+// Segment 号段装配面：DbSegmentLoader 供生产注入。
 #[cfg(feature = "segment")]
 pub use segment::{DbSegmentLoader, SegmentAlgorithm, SegmentLoader};
 

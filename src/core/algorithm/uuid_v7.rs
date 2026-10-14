@@ -1,31 +1,9 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! RFC 9562 §5.7 时间有序 UUID v7 发号算法。
-//!
-//! 零自持状态：时间戳与单调计数器由 uuid crate 的进程级共享上下文
-//! （`Uuid::now_v7` → `shared_context_v7`）提供——同毫秒内计数器递增、
-//! 时间跳变时保序，本 crate 不复制该实现（v8 自持计数器是因为其布局
-//! 私有、crate 不提供，v7 是标准布局）。
-//!
-//! 独占能力（v4/v8 均不覆盖）：
-//! 1. **标准时间有序布局**——48 位 unix ms 时间戳按 RFC 9562 §5.7 放置，
-//!    任何 RFC 9562 工具（如 `Uuid::get_timestamp()`）可直取创建时间；
-//!    v8 的位布局是 NebulaId 私有的，外部只能靠本仓 `/parse`。
-//! 2. **零配置**——无 dc/worker/shard，不把部署拓扑烙进 ID；适合
-//!    嵌入式/单机/隐私敏感场景。布局熵 = 42 位单调计数器 + 32 位随机
-//!    填充（rand_a+rand_b 共 74 位可用位宽）；计数器溢出时 uuid crate
-//!    自动进位 +1ms 并 reseed，单调性由时间戳进位保证，无 v8 的
-//!    2^21/ms/节点天花板。
-//!
-//! 保序边界（文档承诺）：进程内严格保序（crate 计数器保证）；跨进程仅
-//! 毫秒粒度保序，跨进程严格保序是 v8（dc/worker + 墙钟）的地盘。
-//!
-//! ⚠️ 吞吐边界（diting 性能审查实测）：`now_v7` 的进程级共享计数器是
-//! 进程唯一 `std::sync::Mutex`——多线程下负扩展（12 线程聚合 4.6M ops/s
-//! < 单线程 6.1M ops/s）。>100k ops/s 目标余量仍 >45x；若未来出现
-//! 高频多线程场景，替代方案是自持 `ContextV7`（违背本模块「零自持
-//! 状态」设计札记，届时须重新权衡）。
+//! RFC 9562 §5.7 时间有序 UUID v7 发号算法；零自持状态，进程内严格保序：
+//! 48 位 unix ms 时间戳与单调计数器由 uuid crate 的 now_v7 共享上下文提供。
+//! ⚠️ now_v7 的进程级 Mutex 计数器多线程吞吐负扩展，高频多线程场景须权衡。
 
 use crate::core::types::{AlgorithmType, Id, Result};
 use uuid::Uuid;
@@ -37,10 +15,7 @@ use crate::core::algorithm::{
 use crate::core::config::Config;
 use crate::core::HealthStatus;
 
-/// RFC 9562 §5.7 时间有序 UUID v7 发号器。
-///
-/// 零自持状态（见模块文档）：uuid crate 的 `now_v7` 进程级单调上下文即得
-/// 进程内保序，本结构体不带字段。
+/// RFC 9562 §5.7 时间有序 UUID v7 发号器；零自持状态，结构体不带字段。
 pub struct UuidV7Impl;
 
 impl UuidV7Impl {
@@ -62,8 +37,7 @@ impl Default for UuidV7Impl {
 #[async_trait::async_trait]
 impl IdAlgorithm for UuidV7Impl {
     async fn generate(&self, _ctx: &GenerateContext) -> Result<Id> {
-        // v7 无租户上下文语义：不接受也不嵌入 workspace/group/biz_tag
-        // （租户上下文嵌入是 v8 的独占能力）
+        // v7 无租户上下文语义：不接受也不嵌入 workspace/group/biz_tag。
         self.generate_inner().await
     }
 
@@ -79,8 +53,7 @@ impl IdAlgorithm for UuidV7Impl {
                 String::new(),
             ));
         }
-        // 同毫秒保序由 crate 计数器保证；批量无计数器空间守卫（74 位随机+
-        // 计数器空间，最坏情况也不会在现实批量内回绕）
+        // 同毫秒保序由 crate 计数器保证；批量无计数器空间守卫（74 位随机+计数器空间）
         let mut out = Vec::with_capacity(size);
         for _ in 0..size {
             out.push(self.generate_inner().await?);
@@ -145,8 +118,7 @@ mod tests {
         assert_eq!((v >> 62) & 0x3, 0b10, "variant must be 0b10");
     }
 
-    /// 独占能力 1：标准布局时间戳可被 `get_timestamp()` 直取，且与墙钟
-    /// 一致（≤2s 容差）——v8 的私有布局无此能力。
+    /// 独占能力 1：标准布局时间戳可被 `get_timestamp()` 直取，且与墙钟一致。
     #[tokio::test]
     async fn test_uuid_v7_standard_timestamp_extractable() {
         let algo = UuidV7Impl;
@@ -171,8 +143,7 @@ mod tests {
         );
     }
 
-    /// 独占能力 2 + 与 v8 的区分：零配置零自持状态——`UuidV7Impl::new()`
-    /// 不消费任何配置（对比 v8 工厂从 Config.app 取 dc/worker）。
+    /// 独占能力 2：零配置零自持状态——`new()` 不消费任何配置（对比 v8 从 Config.app 取 dc/worker）。
     #[test]
     fn test_uuid_v7_zero_config_zero_state() {
         let algo = UuidV7Impl::new();
@@ -180,8 +151,7 @@ mod tests {
         assert_eq!(algo.health_check(), crate::core::HealthStatus::Healthy);
     }
 
-    /// 进程内保序：连续 1000 次生成的 u128 非递减（crate 共享计数器
-    /// 上下文保序；同毫秒内计数器递增体现在低位）。
+    /// 进程内保序：连续 1000 次生成的 u128 非递减（crate 共享计数器保序）。
     #[tokio::test]
     async fn test_uuid_v7_monotonic_1000() {
         let algo = UuidV7Impl;

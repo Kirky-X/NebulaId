@@ -1,12 +1,8 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! Snowflake ID generation algorithm.
-//!
-//! Hosts the production [`SnowflakeAlgorithm`] and its [`IdAlgorithm`]
-//! implementation. UUID-style generation lives in the dedicated
-//! `uuid_v8.rs` module; the previously test-only UUID generators and
-//! DI builder that lived here were removed as dead code.
+//! Snowflake ID generation algorithm：生产 [`SnowflakeAlgorithm`] 及其
+//! [`IdAlgorithm`] 实现（含重启时钟守卫与位布局解析权威类型）。
 use crate::core::algorithm::snowflake_state::{self, SnowflakeStateFile};
 use crate::core::algorithm::{
     AlgorithmMetricsSnapshot, GenerateContext, HealthStatus, IdAlgorithm,
@@ -28,13 +24,11 @@ const STATE_DIR: &str = "./data";
 /// 状态文件持久化周期（秒）。
 const STATE_PERSIST_INTERVAL_SECS: u64 = 30;
 
-/// clock drift 衰减阈值：距最近一次回拨事件持续无新事件达到该毫秒数后，
-/// `clock_drift_ms` 衰减清零、health_check 恢复 Healthy。
+/// clock drift 衰减阈值：持续无新回拨事件达该毫秒数后清零 drift、恢复 Healthy。
 const DEFAULT_DRIFT_DECAY_AFTER_MS: u64 = 60_000;
 
-/// 进程级单调锚点：`monotonic_millis()` 返回自首次调用起的毫秒数（恒 >= 1，
-/// 0 保留为 last_drift_at_ms 的「尚无事件」哨兵）。用于给 drift 事件打时间戳，
-/// 不受系统时钟回拨影响（回拨场景下 `SystemTime` 不可靠）。
+/// 进程级单调锚点：`monotonic_millis()` 返回自首次调用起的毫秒数（0 保留为
+/// 「尚无事件」哨兵），给 drift 事件打时间戳，不受系统时钟回拨影响。
 fn monotonic_millis() -> u64 {
     static ANCHOR: OnceLock<SystemTime> = OnceLock::new();
     let anchor = ANCHOR.get_or_init(SystemTime::now);
@@ -53,9 +47,7 @@ fn epoch_start() -> SystemTime {
 
 /// Snowflake 位布局元数据（解析知识的唯一权威来源）。
 ///
-/// 此前 server 层 `id_handlers::extract_snowflake_metadata` 手工硬编码
-/// 10/8/3 位宽做解码，与配置驱动的生成侧（[`SnowflakeAlgorithmConfig`]）
-/// 存在漂移风险；现收敛为本类型，handler 仅调用 [`Self::parse`]。
+/// 生成侧由配置驱动；解析统一经 [`Self::parse`]，消除手工硬编码位宽的解码漂移。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SnowflakeLayoutInfo {
     pub timestamp_bits: u8,
@@ -85,9 +77,7 @@ impl SnowflakeLayoutInfo {
         }
     }
 
-    /// 默认位布局（datacenter=3 / worker=8 / sequence=10），供无法获取
-    /// 运行时配置的调用方（如 mock generator）回退使用——与历史硬编码
-    /// 行为完全一致。
+    /// 默认位布局（datacenter=3 / worker=8 / sequence=10），供无运行时配置的调用方回退。
     pub fn standard() -> Self {
         Self {
             timestamp_bits: 64 - 3 - 8 - 10,
@@ -97,9 +87,8 @@ impl SnowflakeLayoutInfo {
         }
     }
 
-    /// 按本布局解析原始值。字段语义与 [`SnowflakeAlgorithm::construct_id`]
-    /// 的组装顺序严格互逆：
-    /// `timestamp << (dc+worker+seq) | dc << (worker+seq) | worker << seq | seq`
+    /// 按本布局解析原始值，与 `construct_id` 组装顺序严格互逆：
+    /// `timestamp << (dc+worker+seq) | dc << (worker+seq) | worker << seq | seq`。
     pub fn parse(&self, value: u128) -> ParsedSnowflakeId {
         let seq_mask: u128 = (1u128 << self.sequence_bits) - 1;
         let worker_mask: u128 = (1u128 << self.worker_id_bits) - 1;
@@ -122,26 +111,16 @@ pub struct SnowflakeAlgorithm {
     config: SnowflakeAlgorithmConfig,
     datacenter_id: u8,
     worker_id: u8,
-    /// 生成状态单原子：`(last_timestamp_ms << sequence_bits) | sequence`。
-    ///
-    /// 全部生成路径（单条 / 批量）都通过对该字的 CAS 迁移推进，取代历史
-    /// `gen_lock: tokio::sync::Mutex` 的全局串行——旧锁把所有生成串行化，
-    /// 且临界区跨越 `wait_for_next_ms` 的 `.await`；CAS 方案下「新毫秒复位」
-    /// 与「同毫秒递增」的互斥由状态字本身的原子性保证，生成不再互相阻塞。
-    /// worker_id / datacenter_id 实例内恒定，不参与 CAS 状态。
-    ///
-    /// 序列号域为 `[0, sequence_mask]`，`sequence_mask` 本身保留为耗尽哨兵
-    /// 不发号：`seq + take` 必须落在 `[0, mask]` 内，否则原子加会溢出污染
-    /// 高位时间戳。故单毫秒可发号容量为 `sequence_mask`（10 位 → 1023 个）。
-    ///
-    /// Arc 包装：重启时钟守卫的 30s 持久化任务需要跨任务持有同一状态字
-    /// （`initialize` 时算法本体尚未进入 `Arc<dyn IdAlgorithm>`）。
+    /// 生成状态单原子：`(last_timestamp_ms << sequence_bits) | sequence`，全部
+    /// 生成路径经 CAS 推进（取代历史全局 mutex 串行）。序列号域 `[0, mask]`，
+    /// `mask` 本身保留为耗尽哨兵不发号，故单毫秒容量为 `mask`（10 位 → 1023 个）。
+    /// Arc 包装供重启守卫 30s 持久化任务跨任务持有。
     state: Arc<AtomicU64>,
     rotation_count: AtomicU8,
     metrics: Arc<SnowflakeMetrics>,
     clock_drift_ms: AtomicU64,
-    /// 最近一次时钟回拨事件的单调时刻（`monotonic_millis()` 毫秒；0 = 尚无事件）。
-    /// 用于 drift 衰减判定：持续 `drift_decay_after_ms` 无新事件则清零漂移。
+    /// 最近一次时钟回拨事件的单调时刻（`monotonic_millis()` 毫秒；0 = 尚无事件），
+    /// 供 drift 衰减判定。
     last_drift_at_ms: AtomicU64,
     /// drift 衰减阈值（毫秒）。默认 60_000；测试可改小以模拟时间推进。
     drift_decay_after_ms: u64,
@@ -155,8 +134,7 @@ pub struct SnowflakeAlgorithm {
     persist_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
-/// 落盘一次守卫状态。`last_issued_ts == 0`（本进程尚未发号）时跳过——
-/// 用 0 覆盖会抹掉上一次进程留下的有效守卫基准，反而打开重复窗口。
+/// 落盘一次守卫状态；`last_issued_ts == 0` 时跳过，防止 0 覆盖抹掉上次进程的有效基准。
 fn persist_state(path: &std::path::Path, dc_id: u8, worker_id: u8, last_issued_ts: u64) {
     if last_issued_ts == 0 {
         return;
@@ -213,12 +191,9 @@ impl SnowflakeAlgorithm {
         }
     }
 
-    /// drift 衰减：距最近一次回拨事件超过 `drift_decay_after_ms` 且期间无新
-    /// 事件时，清零 `clock_drift_ms`，使 health_check 恢复 Healthy。
-    ///
-    /// 在每次进入生成路径时检查（成功与回拨失败共用入口）：若本次调用又发生
-    /// 回拨，回拨分支会刷新 `last_drift_at_ms` 并重新记录漂移，衰减不会吞掉
-    /// 持续回拨的健康告警。
+    /// drift 衰减：持续 `drift_decay_after_ms` 无新回拨事件时清零 `clock_drift_ms`，
+    /// health_check 恢复 Healthy。每次进入生成路径时检查；本次调用若又发生回拨会
+    /// 刷新基准，衰减不会吞掉持续回拨的告警。
     fn maybe_decay_drift(&self) {
         let drift = self.clock_drift_ms.load(Ordering::Relaxed);
         if drift == 0 {
@@ -236,22 +211,16 @@ impl SnowflakeAlgorithm {
         }
     }
 
-    // 修复：`initialize` 从 `impl IdAlgorithm for SnowflakeAlgorithm`
-    // 移到 inherent impl。原 trait method `initialize(&mut self, ...)` 让
-    // trait 不那么对象安全（`Arc<dyn IdAlgorithm>` 共享后无法调用 `&mut self`）。
-    // 现仅在 `AlgorithmBuilder::build` 中通过具体类型调用，初始化完成后
-    // 转为 `Box<dyn IdAlgorithm>` 共享。
+    // initialize 为 inherent 方法：trait 上的 &mut self 破坏对象安全性，
+    // 仅在 AlgorithmBuilder::build 中通过具体类型调用。
     pub async fn initialize(&mut self, config: &Config) -> Result<()> {
         self.config = config.algorithm.snowflake.clone();
         self.datacenter_id = config.app.dc_id;
         self.worker_id = config.app.worker_id;
 
-        // 位宽二次校验：SDK 直接构造 Config 可能绕过 Config::validate。
-        // 超界 dc_id/worker_id 会在 construct_id 的 OR 组装中污染高位时间戳位，
-        // 造成跨 DC/worker 组合碰撞（重复 ID），必须 fail-closed。
-        // 移位守卫：u8 域下位宽 ≥ 8 时全域合法，位宽 < 8 时移位量 ≤ 7 安全。
-        // 位宽合计校验同样兜底：sum ≥ 64 时 timestamp_bits() 会下溢、
-        // construct_id 的高位移位会回绕。
+        // 位宽二次校验：SDK 直构 Config 可能绕过 Config::validate；超界 dc/worker
+        // 会在 construct_id 的 OR 组装中污染高位时间戳位造成碰撞，必须 fail-closed。
+        // 位宽合计 ≥ 64 时 timestamp_bits() 下溢、construct_id 高位移位回绕。
         let total_bits = u32::from(self.config.datacenter_id_bits)
             + u32::from(self.config.worker_id_bits)
             + u32::from(self.config.sequence_bits);
@@ -280,9 +249,8 @@ impl SnowflakeAlgorithm {
             )));
         }
 
-        // 重启时钟守卫：读回上次进程的最后发号时间戳，若晚于当前墙钟说明
-        // 停机期间时钟被回拨——此刻发号会与回拨前的历史 ID 撞车，必须
-        // fail-closed 拒绝启动（与 worker_id 分配失败同语义）。
+        // 重启时钟守卫：读回上次进程的最后发号时间戳，晚于当前墙钟说明停机
+        // 期间时钟被回拨，此刻发号会撞历史 ID，必须 fail-closed 拒绝启动。
         if self.config.state_guard {
             // 目录优先级：显式配置 > 测试注入(with_state_dir) > 默认 ./data
             let dir = self
@@ -305,9 +273,8 @@ impl SnowflakeAlgorithm {
             }
             self.state_file = Some(path.clone());
 
-            // 30s 周期持久化任务：快照状态字高位时间戳落盘，给下次重启的
-            // 守卫检查提供基准（与 etcd worker lease 的 30s TTL 同量级，
-            // 双层防护收窄重复窗口）。
+            // 30s 周期持久化：快照状态字高位时间戳落盘，作为下次重启守卫检查
+            // 的基准（与 etcd worker lease 的 30s TTL 同量级，双层防护）。
             let state = Arc::clone(&self.state);
             let seq_bits = self.config.sequence_bits;
             let (dc_id, worker_id) = (self.datacenter_id, self.worker_id);
@@ -357,12 +324,9 @@ impl SnowflakeAlgorithm {
 
     /// Wait for the next millisecond timestamp.
     ///
-    /// 混合等待：先自旋（`spin_loop`）至多约 2ms——毫秒轮转的典型等待就是
-    /// 亚毫秒级（同毫秒序列耗尽到下一毫秒边界），1ms 周期的 tokio sleep 有
-    /// 定时器粒度过冲（实测把持续吞吐压到理论上限的一半左右，见基准
-    /// `snowflake/batch_generate_10000`），自旋可把轮转等待收紧到真实边界；
-    /// 预算耗尽仍未越过 `last_ts`（时钟回拨等待场景，可达阈值级毫秒数）才
-    /// 退回 1ms 周期 sleep，避免长等待空转烧核。
+    /// 混合等待：先自旋至多约 2ms（毫秒轮转典型等待为亚毫秒级，1ms tokio
+    /// sleep 有定时器粒度过冲）；预算耗尽（时钟回拨等待可达阈值级毫秒数）
+    /// 才退回 1ms sleep，避免长等待空转烧核。
     async fn wait_for_next_ms(&self, last_ts: u64) -> u64 {
         const SPIN_BUDGET: Duration = Duration::from_millis(2);
         let spin_deadline = Instant::now() + SPIN_BUDGET;
@@ -412,22 +376,11 @@ impl SnowflakeAlgorithm {
     }
 
     /// 无锁生成核心：在 [`Self::state`] 上以 CAS 预留 `count` 个连续序列号，
-    /// 返回 `(timestamp_ms, start_seq, count)`；调用方据此构造
-    /// `[start_seq, start_seq + count)` 的 ID 区间。单条生成即 `count = 1`。
+    /// 返回 `(timestamp_ms, start_seq, count)`；单条生成即 `count = 1`。
     ///
-    /// 状态迁移（全部为互斥的 CAS 成功路径，保证不重不漏）：
-    /// - 新毫秒（`timestamp > last_ts`）：CAS 复位 `seq → take`，从 0 起预留
-    ///   `min(count, sequence_mask)` 个；
-    /// - 同毫秒：CAS `state → state + take`（`fetch_add(n)` 区间预留的 CAS
-    ///   形式——先按已读状态校验剩余容量再做原子加，防止 seq 越界污染高位
-    ///   时间戳）；
-    /// - 同毫秒剩余不足（`take == 0`）：等待真实时钟越过当前毫秒后 CAS 轮转
-    ///   `(ts, seq) → (next_ts, 0)` 并重试；
-    /// - 时钟回拨：记录 drift（衰减语义不变）；超阈值返回
-    ///   [`CoreError::ClockMovedBackward`]；阈值内等待时钟追平后 CAS 把
-    ///   `last_ts` 推进到 `wait_ts`（seq 归零）并重试。
-    ///
-    /// CAS 失败仅说明他线程已推进状态，循环重读即可，无锁且无饥饿。
+    /// 状态迁移（互斥的 CAS 成功路径，保证不重不漏）：新毫秒复位 `seq → take`；
+    /// 同毫秒 `state → state + take`；剩余不足（`take == 0`）等待下一毫秒轮转
+    /// 重试；时钟回拨超阈值报错、阈值内等待追平后推进 last_ts 重试。
     async fn reserve(&self, count: u64) -> Result<(u64, u64, u64)> {
         let seq_mask = self.config.sequence_mask();
 
@@ -487,9 +440,8 @@ impl SnowflakeAlgorithm {
         }
     }
 
-    /// 时钟回拨分支：超过阈值的回拨直接报错；阈值内的回拨等待时钟追平后
-    /// CAS 把 last_ts 推进到 wait_ts（seq 归零）。CAS 失败说明他线程已推进
-    /// 状态，由调用方循环重读重试。
+    /// 时钟回拨分支：超阈值直接报错；阈值内等待时钟追平后 CAS 推进 last_ts
+    /// （seq 归零）。CAS 失败说明他线程已推进状态，由调用方循环重读重试。
     async fn handle_clock_backward(&self, state: u64, timestamp: u64, last_ts: u64) -> Result<()> {
         let drift = last_ts - timestamp;
         self.record_clock_backward(timestamp, last_ts, drift);
@@ -579,9 +531,8 @@ impl IdAlgorithm for SnowflakeAlgorithm {
         let mut retries = 0;
         const MAX_RETRIES: usize = 100;
 
-        // 区间预留：每次向 reserve 申请「还差的个数」，一次 CAS 预留一整段
-        // 连续序列号。同毫秒剩余不足时 reserve 内部推进到下一毫秒重试；
-        // 时钟回拨超阈值返回 Err（回拨路径的 drift 记录与 衰减不受影响）。
+        // 区间预留：每次申请「还差的个数」，一次 CAS 预留一整段连续序列号；
+        // 同毫秒剩余不足时 reserve 内部轮转重试；回拨超阈值返回 Err。
         while ids.len() < size && retries < MAX_RETRIES {
             match self.reserve((size - ids.len()) as u64).await {
                 Ok((timestamp, start_seq, count)) => {
@@ -604,9 +555,8 @@ impl IdAlgorithm for SnowflakeAlgorithm {
             }
         }
 
-        // 重试耗尽仍未凑满请求量（含一例未成的情况）：
-        // 显式报错并附上已生成/请求数量，不再静默返回短批次——
-        // 静默短批会让调用方误以为拿到了全部请求的 ID。
+        // 重试耗尽仍未凑满（含一例未成）：显式报错并附已生成/请求数量，
+        // 不静默返回短批次（静默短批会让调用方误以为拿到了全部请求的 ID）。
         if ids.len() < size {
             return Err(CoreError::InternalError(format!(
                 "Failed to generate IDs after max retries (generated {}/requested {})",
@@ -634,7 +584,7 @@ impl IdAlgorithm for SnowflakeAlgorithm {
         AlgorithmMetricsSnapshot {
             total_generated: self.metrics.total_generated.load(Ordering::Relaxed),
             total_failed: self.metrics.total_failed.load(Ordering::Relaxed),
-            // 修复：Snowflake/UUID 算法无缓存概念，返回 None。
+            // Snowflake/UUID 算法无缓存概念，返回 None。
             cache_hit_rate: None,
             // 延迟分位数与时钟回拨计数由路由层观测后在
             // AlgorithmRouter::metrics() 合并填充。
@@ -646,11 +596,8 @@ impl IdAlgorithm for SnowflakeAlgorithm {
         AlgorithmType::Snowflake
     }
 
-    // 修复：`initialize` 已移到 inherent impl（`impl SnowflakeAlgorithm`）。
-
     async fn shutdown(&self) -> Result<()> {
-        // 停掉守卫持久化任务并最终落盘一次：shutdown 时进程持有权威的
-        // 最后发号时间戳，这是下次重启守卫检查的基准。
+        // 停掉守卫持久化任务并最终落盘一次：shutdown 时进程持有权威的最后发号时间戳。
         if let Some(tx) = &self.persist_shutdown_tx {
             let _ = tx.send(true);
         }
@@ -666,8 +613,7 @@ impl IdAlgorithm for SnowflakeAlgorithm {
 }
 
 // ============================================================================
-// SnowflakeFactory impl 拆分到本文件。
-// 原 impl 位于 traits.rs（违反规则 25），现移到具体类型所属文件。
+// SnowflakeFactory impl 位于本文件（具体类型所属文件）。
 // ============================================================================
 #[async_trait]
 impl crate::core::algorithm::AlgorithmFactory for crate::core::algorithm::SnowflakeFactory {
@@ -743,8 +689,7 @@ mod tests {
         assert_eq!(algo.state_sequence(state), seq);
     }
 
-    /// CAS 化后首颗 ID 必须以 seq=0 起步且成功
-    ///（钉住历史上「seq=0 被误判为 SequenceOverflow」的回归）。
+    /// CAS 化后首颗 ID 以 seq=0 起步且成功（钉住「seq=0 被误判为 SequenceOverflow」回归）。
     #[tokio::test]
     async fn test_generate_first_id_starts_at_sequence_zero() {
         let algo = SnowflakeAlgorithm::new(0, 0);
@@ -792,9 +737,8 @@ mod tests {
         }
     }
 
-    /// 16 任务并发生成：总集合不得出现重复 ID（无锁 CAS 正确性钉子）。
-    /// 8000 个 ID 跨越多个毫秒边界，覆盖同毫秒递增、序列耗尽轮转与新毫秒
-    /// 复位的并发交织。
+    /// 16 任务并发生成无重复 ID（无锁 CAS 正确性钉子）；8000 个 ID 跨多个
+    /// 毫秒边界，覆盖同毫秒递增、序列耗尽轮转与新毫秒复位的并发交织。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_snowflake_concurrent_generation_no_duplicates() {
         let algo = Arc::new(SnowflakeAlgorithm::new(1, 1));
@@ -828,7 +772,7 @@ mod tests {
         assert_eq!(total, TASKS * PER_TASK);
     }
 
-    /// 同一毫秒内连续两次 generate_id 调用都应成功（验证 line 140 bug 修复）。
+    /// 同一毫秒内连续两次 generate_id 都应成功。
     #[tokio::test]
     async fn test_generate_id_same_ms_twice_succeeds() {
         let algo = SnowflakeAlgorithm::new(0, 0);
@@ -897,8 +841,8 @@ mod tests {
         );
     }
 
-    /// 同毫秒内序列号耗尽（seq & mask == 0 且 seq > 0）时，
-    /// 应触发 rotation_count 自增并等待下一毫秒后生成新 ID。
+    /// 同毫秒序列耗尽（seq 到达 mask 哨兵）时触发 rotation_count 自增，
+    /// 并等待下一毫秒后生成新 ID。
     #[tokio::test]
     async fn test_generate_id_sequence_wraparound_triggers_rotation() {
         let algo = SnowflakeAlgorithm::new(0, 0);
@@ -910,9 +854,8 @@ mod tests {
         let mut triggered = false;
         for _ in 0..50 {
             let ts = SnowflakeAlgorithm::get_timestamp();
-            // CAS 布局下单毫秒 seq 合法域为 [0, mask]：置 seq=mask 即
-            // 「本毫秒序列耗尽（哨兵位）」，下一次生成必须走轮转分支
-            // （rotation_count 自增）并推进到下一毫秒发号。
+            // CAS 布局下单毫秒 seq 合法域为 [0, mask]：置 seq=mask 即「本毫秒
+            // 序列耗尽（哨兵位）」，下一次生成必须走轮转分支并推进到下一毫秒发号。
             algo.state
                 .store(algo.pack_state(ts, mask), Ordering::SeqCst);
 
@@ -976,8 +919,7 @@ mod tests {
         }
     }
 
-    /// batch_generate 在所有 generate_id 调用都失败时，应重试 MAX_RETRIES 次
-    /// 后返回 InternalError，且消息显式包含「已生成 0/请求 5」两个数量。
+    /// batch_generate 在全部失败时应重试 MAX_RETRIES 次后返回 InternalError，消息含「已生成 0/请求 5」。
     #[tokio::test]
     async fn test_batch_generate_retries_exhausted_returns_internal_error() {
         let algo = SnowflakeAlgorithm::new(0, 0);
@@ -1167,7 +1109,7 @@ mod tests {
         assert_eq!(snap.current_qps, 0);
         assert_eq!(snap.p50_latency_us, 0);
         assert_eq!(snap.p99_latency_us, 0);
-        // 修复：Snowflake 无缓存，cache_hit_rate 为 None。
+        // Snowflake 无缓存，cache_hit_rate 为 None。
         assert_eq!(snap.cache_hit_rate, None);
     }
 
@@ -1281,9 +1223,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 位宽二次校验：dc_id 超出 datacenter_id_bits 位宽时 initialize 必须
-    /// 返回 ConfigurationError（覆盖 SDK 直接构造 Config 绕过 Config::validate
-    /// 的路径），且字段不得被部分应用为可用状态。
+    /// 位宽二次校验：dc_id 超出位宽时 initialize 必须返回 ConfigurationError
+    /// （覆盖 SDK 直构 Config 绕过 Config::validate 的路径）。
     #[tokio::test]
     async fn test_initialize_rejects_dc_id_overflowing_bits() {
         let mut algo = SnowflakeAlgorithm::new(0, 0);
@@ -1301,8 +1242,7 @@ mod tests {
         }
     }
 
-    /// 位宽二次校验：位宽合计 ≥ 64 时拒绝（SDK 直构绕过 Config::validate
-    /// 的兜底——timestamp_bits() 会下溢、construct_id 高位移位会回绕）。
+    /// 位宽合计 ≥ 64 时拒绝（timestamp_bits() 下溢、construct_id 高位移位回绕的兜底）。
     #[tokio::test]
     async fn test_initialize_rejects_total_bits_overflow() {
         let mut algo = SnowflakeAlgorithm::new(0, 0);

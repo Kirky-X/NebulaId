@@ -2,15 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! 雪花算法重启时钟守卫的本地状态文件。
-//!
-//! 进程运行期间周期性持久化「最后发号毫秒时间戳」；启动时若发现
-//! `last_issued_ts` 晚于当前墙钟（跨重启时钟回拨），守卫方必须拒绝启动，
-//! 否则重启后新发 ID 与回拨前的历史 ID 撞车。文件按 `dc + worker` 命名，
-//! 文件名不含 pid——重启后同 worker 要能读回上一次的进度（对比 etcd
-//! cache 的 `{dc}_{pid}` 命名，那份缓存恰恰不能跨重启复用）。
-//!
-//! 写入为 tmp + rename 原子写，进程崩溃不产生半写文件；解析失败按
-//! 「无状态」处理（返回 `None` 并告警），首次启动/文件损坏不阻断启动。
+//! 跨重启时钟回拨（last_issued_ts 晚于墙钟）时守卫拒绝启动，防新 ID 撞历史 ID。
+//! 写入为 tmp + rename 原子写；解析失败按无状态处理并告警，不阻断启动。
 
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -19,8 +12,7 @@ use std::path::{Path, PathBuf};
 /// 本地守卫状态文件的持久化内容。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnowflakeStateFile {
-    /// 最后一次发号的毫秒时间戳（自 epoch 起的 Unix 毫秒，与
-    /// `SnowflakeAlgorithm::get_timestamp` 同口径）。
+    /// 最后一次发号的毫秒时间戳（Unix 毫秒，与 SnowflakeAlgorithm::get_timestamp 同口径）。
     pub last_issued_ts: u64,
     pub dc_id: u8,
     pub worker_id: u8,
@@ -33,8 +25,7 @@ pub fn state_file_path(dir: &Path, dc_id: u8, worker_id: u8) -> PathBuf {
     dir.join(format!("snowflake_state_{}_{}.json", dc_id, worker_id))
 }
 
-/// 读取状态文件。文件不存在或内容损坏（解析失败）一律返回 `None`——
-/// 调用方把 `None` 视为「无历史」，不阻断启动；损坏场景在此处告警。
+/// 读取状态文件；文件不存在或损坏一律返回 `None` 并告警，调用方视为「无历史」。
 pub fn load(path: &Path) -> Option<SnowflakeStateFile> {
     let raw = match std::fs::read(path) {
         Ok(raw) => raw,

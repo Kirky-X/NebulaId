@@ -7,13 +7,9 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-// Forward declaration - actual import is in parent module
 pub use crate::core::algorithm::DegradationManager;
 
-// 修复后，CpuMonitor / EtcdClusterHealthMonitor 由 AlgorithmBuilder
-// 持有并通过 `pub(crate)` 访问器暴露给工厂 impl。工厂 impl 拆分到
-// 各算法文件（snowflake.rs / uuid_v7.rs / segment.rs），按规则 25
-// 「mod.rs/traits.rs 只放接口定义」要求。
+// 工厂 impl 拆分到各算法文件，本文件只放接口定义。
 #[cfg(feature = "segment")]
 use crate::core::algorithm::segment::CpuMonitor;
 #[cfg(feature = "segment")]
@@ -34,17 +30,7 @@ pub trait IdAlgorithm: Send + Sync {
     fn algorithm_type(&self) -> AlgorithmType;
 
     async fn shutdown(&self) -> Result<()>;
-    // 修复：从 trait 中移除 `async fn initialize(&mut self, config: &Config)`。
-    // 原因：
-    // 1. `&mut self` 在 `dyn IdAlgorithm` trait object 上调用受限——
-    //    `Arc<dyn IdAlgorithm>` 共享后无法调用 `&mut self` 方法，必须
-    //    在 `Arc::from(algo)` 之前调用。这是设计气味，让 trait "不那么
-    //    对象安全"。
-    // 2. `AlgorithmBuilder::build` 内部已经调用各算法的 inherent
-    //    `initialize(&mut self, ...)` 方法完成初始化，返回的
-    //    `Box<dyn IdAlgorithm>` 已经初始化好。router.rs 不应再次调用。
-    // 3. 各算法实现的 `initialize` 改为 inherent method（impl SnowflakeAlgorithm
-    //    / SegmentAlgorithm / ...），仅在 `build` 时通过具体类型调用。
+    // initialize 为 inherent method：`&mut self` 在 `dyn IdAlgorithm` 上调用受限。
 }
 
 #[async_trait]
@@ -92,7 +78,7 @@ pub trait IdGenerator: Send + Sync {
     /// 当前生效的 Snowflake 位布局（解析知识唯一来源）。
     ///
     /// 返回 `None` 表示实现不基于 Snowflake 或无法获知布局；调用方应回退
-    /// [`crate::core::algorithm::SnowflakeLayoutInfo::standard`]。
+    /// 到 [`crate::core::algorithm::SnowflakeLayoutInfo::standard`]。
     #[cfg(feature = "snowflake")]
     fn snowflake_layout(&self) -> Option<crate::core::algorithm::SnowflakeLayoutInfo> {
         None
@@ -139,22 +125,15 @@ pub struct AlgorithmMetricsSnapshot {
     pub total_generated: u64,
     pub total_failed: u64,
     pub current_qps: u64,
-    /// 最近请求延迟 p50（微秒）。由 `AlgorithmRouter::metrics()` 从路由层
-    /// 观测环形缓冲合并填充；算法自身实现返回 0（表示尚未经路由层观测），
-    /// 而不是"延迟为 0 微秒"。
+    /// 最近请求延迟 p50（微秒）；0 表示尚未经路由层观测，非延迟为 0。
     pub p50_latency_us: u64,
     /// p99（微秒），填充语义同 [`Self::p50_latency_us`]。
     pub p99_latency_us: u64,
     /// p99.9（微秒），填充语义同 [`Self::p50_latency_us`]。
     pub p999_latency_us: u64,
-    /// 累计观测到的时钟回拨次数。由路由层观测（算法返回
-    /// `CoreError::ClockMovedBackward`）合并填充，供 `/metrics` 与告警使用。
+    /// 累计观测到的时钟回拨次数，由路由层合并填充，供 `/metrics` 与告警使用。
     pub clock_backwards: u64,
-    /// 修复：`None` 表示该算法无缓存概念（如 Snowflake/UUID），
-    /// `Some(rate)` 表示真实缓存命中率（如 Segment）。
-    /// 原为 `f64`，UUID/Snowflake 返回 `0.0` 会被
-    /// `ConfigManager::get_cache_metrics` 纳入平均值计算，导致整体
-    /// 缓存命中率被低估（误把"无缓存"当成"命中率 0%"）。
+    /// 缓存命中率；`None` 表示该算法无缓存概念（如 Snowflake/UUID）。
     pub cache_hit_rate: Option<f64>,
 }
 
@@ -172,14 +151,10 @@ pub struct AlgorithmBuilder {
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
     /// Segment 号段装载器注入口（工厂构造参数透传）。
     ///
-    /// `Some(loader)` 时 Segment 工厂以该装载器构建 `SegmentAlgorithm`
-    /// （生产装配 `DbSegmentLoader` 走此缝）；`None` 时委托原始
-    /// `SegmentFactory`，构建行为与历史完全一致。
+    /// `Some` 时以该装载器构建 `SegmentAlgorithm`；`None` 时委托原始
+    /// `SegmentFactory`，构建行为不变。
     #[cfg(feature = "segment")]
     segment_loader: Option<Arc<dyn SegmentLoader + Send + Sync>>,
-    // 修复：非 etcd 版本不再持有 `etcd_health_monitor: Option<()>` 占位字段。
-    // 原 `Option<()>` 既无意义也误导调用方。`with_etcd_health_monitor` builder
-    // 方法仅在 etcd feature 下存在；非 etcd 版本调用方不会触碰该字段。
 }
 
 impl AlgorithmBuilder {
@@ -197,9 +172,7 @@ impl AlgorithmBuilder {
 
     /// 注入 Segment 号段装载器（仅对 `AlgorithmType::Segment` 生效）。
     ///
-    /// 生产装配方经 [`crate::core::algorithm::AlgorithmRouter::with_segment_repository`]
-    /// 传入仓储后，router 在 `initialize` 阶段以此方法把
-    /// `DbSegmentLoader` 透传给工厂；测试可注入内存造段器。
+    /// 生产经 router 传入仓储后由工厂透传；测试可注入内存造段器。
     #[cfg(feature = "segment")]
     pub fn with_segment_loader(mut self, loader: Arc<dyn SegmentLoader + Send + Sync>) -> Self {
         self.segment_loader = Some(loader);
@@ -223,13 +196,8 @@ impl AlgorithmBuilder {
         self.etcd_health_monitor = Some(monitor);
         self
     }
-    // 修复：删除非 etcd 版本的 `with_etcd_health_monitor(Arc<()>)`。
-    // 原签名接受 `Arc<()>` 但完全忽略参数，类型误导且调用方可能误以为
-    // monitor 被实际使用。非 etcd 版本根本不需要这个 builder 方法。
 
     /// 暴露 `cpu_monitor` 给工厂 impl（pub(crate)）。
-    /// 工厂 impl 拆分到各算法文件后，无法直接访问 AlgorithmBuilder
-    /// 私有字段，必须通过访问器。
     #[cfg(feature = "segment")]
     pub(crate) fn cpu_monitor(&self) -> &Option<Arc<CpuMonitor>> {
         &self.cpu_monitor
@@ -242,9 +210,7 @@ impl AlgorithmBuilder {
     }
 
     pub async fn build(&self, config: &Config) -> Result<Box<dyn IdAlgorithm>> {
-        // 修复：通过工厂注册表分发，不再按算法类型 match。
-        // 新增算法只需实现 `AlgorithmFactory` 并在 `algorithm_factories()`
-        // 中注册，无需修改 `build` 方法（开闭原则）。
+        // 经工厂注册表分发：新增算法只需在 algorithm_factories() 注册，无需修改 build。
         let factories = algorithm_factories();
         let factory = factories.get(&self.algorithm_type).ok_or_else(|| {
             CoreError::InternalError(format!(
@@ -257,30 +223,12 @@ impl AlgorithmBuilder {
 }
 
 // ============================================================================
-// 修复：AlgorithmFactory + 注册表
+// AlgorithmFactory + 工厂注册表：build 查表分发，新增算法只需注册新工厂。
 // ============================================================================
-//
-// 原实现：`AlgorithmBuilder::build` 用 `match self.algorithm_type { ... }`
-// 按算法类型分支构建。新增算法必须修改 `build` 方法，违反开闭原则。
-//
-// 现实现：每种算法对应一个 `AlgorithmFactory` 实现，注册在静态
-// `algorithm_factories()` 表中。`build` 方法查表分发，新增算法只需
-// 添加新工厂 + 注册，不修改 `build`。
-//
-// 工厂 impl 已拆到各算法文件（snowflake.rs /
-// uuid_v7.rs / uuid_v4.rs / segment.rs）。本文件只保留 trait 定义、
-// 工厂 struct 声明、注册表函数，符合规则 25「traits.rs 只放接口」。
-//
-// trait 和工厂 struct 改 `pub`，外部 crate / 测试
-// 可注入 mock 工厂替换真实算法，实现完全的开闭原则。
 
 /// 算法工厂 trait：每种算法类型对应一个实现。
 ///
-/// 新增算法时：
-/// 1. 在算法文件中实现 `AlgorithmFactory`
-/// 2. 在 `algorithm_factories()` 注册表中插入 `(AlgorithmType::NewAlgo, Arc::new(NewAlgoFactory))`
-///
-/// 无需修改 `AlgorithmBuilder::build` 方法。
+/// 新增算法：实现本 trait 并在 `algorithm_factories()` 注册，无需修改 build。
 #[async_trait]
 pub trait AlgorithmFactory: Send + Sync {
     async fn build(
@@ -302,15 +250,10 @@ pub struct UuidV7Factory;
 #[cfg(feature = "segment")]
 pub struct SegmentFactory;
 
-/// Segment 工厂的 DbSegmentLoader 装配包装（E lane 移交残余）。
+/// Segment 工厂的 DbSegmentLoader 装配包装。
 ///
-/// 注册表中 Segment 项指向本工厂而非裸 [`SegmentFactory`]：
-/// - `AlgorithmBuilder` 携带 `with_segment_loader` 注入的装载器时，按
-///   `SegmentFactory` 的同构逻辑构建 `SegmentAlgorithm` 并替换其号段
-///   装载器（生产装配：`DbSegmentLoader` 真连数据库号段）；
-/// - 未注入时整段委托 [`SegmentFactory::build`]，默认（生产 =
-///   `UnconfiguredSegmentLoader` 显性报错 / 测试 = 内存造段器）行为
-///   与历史逐字节一致。
+/// 携带 `with_segment_loader` 注入的装载器时按其构建 `SegmentAlgorithm`；
+/// 未注入时委托 [`SegmentFactory::build`]，默认行为不变。
 #[cfg(feature = "segment")]
 struct DbAwareSegmentFactory;
 
@@ -324,8 +267,7 @@ impl AlgorithmFactory for DbAwareSegmentFactory {
     ) -> Result<Box<dyn IdAlgorithm>> {
         match builder.segment_loader() {
             Some(loader) => {
-                // 与 segment.rs 的 `SegmentFactory` 构建逻辑同构（monitor 接线
-                // + initialize），仅多了 `with_segment_loader` 注入一步。
+                // 与 segment.rs 的 SegmentFactory 构建逻辑同构，仅多 segment_loader 注入。
                 let mut algo = crate::core::algorithm::SegmentAlgorithm::new(config.app.dc_id);
                 #[cfg(feature = "etcd")]
                 if let Some(ref monitor) = builder.etcd_health_monitor() {
@@ -343,9 +285,7 @@ impl AlgorithmFactory for DbAwareSegmentFactory {
     }
 }
 
-/// 算法工厂注册表（懒加载，进程级单例）。
-///
-/// 函数 `pub`，外部测试可读取注册表验证完整性。
+/// 算法工厂注册表（懒加载，进程级单例）；`pub` 供外部测试验证完整性。
 pub fn algorithm_factories() -> &'static HashMap<AlgorithmType, Arc<dyn AlgorithmFactory>> {
     static FACTORIES: OnceLock<HashMap<AlgorithmType, Arc<dyn AlgorithmFactory>>> = OnceLock::new();
     FACTORIES.get_or_init(|| {

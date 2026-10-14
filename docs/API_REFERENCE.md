@@ -1328,24 +1328,36 @@ locale 中间件仅作用于 `/api/v1/*` 路由。根路径下的
 
 **`GET /metrics`：**
 
-```json
-{
-  "total_requests": 1024,
-  "successful_generations": 1000,
-  "failed_generations": 24,
-  "total_ids_generated": 50000,
-  "avg_latency_ms": 3,
-  "uptime_seconds": 86400,
-  "database": { "status": "healthy", "connection_pool": { "active_connections": 2, "idle_connections": 8, "max_connections": 10 }, "last_error": null },
-  "cache": { "status": "healthy", "hit_rate": 0.92, "has_cache": true, "memory_usage_mb": 64, "key_count": 1200 },
-  "algorithms": [
-    { "algorithm": "segment", "status": "healthy", "total_generated": 50000, "total_failed": 24, "p50_latency_ms": 1.0, "p99_latency_ms": 5.0, "p999_latency_ms": 9.0, "clock_backwards": 0, "cache_hit_rate": 0.92 }
-  ],
-  "degradation_metrics": [
-    { "algorithm": "segment", "total_requests": 1024, "total_successes": 1000, "total_failures": 24, "success_rate": 0.976, "consecutive_failures": 0, "consecutive_successes": 500, "circuit_breaker_state": "closed", "is_degraded": false }
-  ]
-}
+输出 **Prometheus 文本**（`text/plain; version=0.0.4`），不是 JSON——
+内部 `MetricsResponse` 快照在抓取时灌入 exporter 私有 registry 后渲染。
+主要序列（按需 grep/awk 解析；带标签的序列按指标名聚合）：
+
 ```
+nebula_id_requests_total 5
+nebula_id_successful_generations_total 5
+nebula_id_failed_generations_total 0
+nebula_id_uptime_seconds 16
+nebula_id_ids_generated_total{algorithm="snowflake"} 5
+nebula_id_generate_failures_total{algorithm="segment"} 1
+nebula_id_generate_latency_p50_seconds{algorithm="snowflake"} 0.000015
+nebula_id_generate_latency_p99_seconds{algorithm="snowflake"} 0.000032
+nebula_id_generate_latency_p999_seconds{algorithm="snowflake"} 0.000032
+nebula_id_generate_latency_seconds_bucket{algorithm="snowflake",le="0.00005"} 3
+nebula_id_cache_hit_rate{algorithm="segment"} 1
+nebula_id_algorithm_degraded{algorithm="segment"} 0
+nebula_id_circuit_breaker_open{algorithm="segment"} 0
+nebula_id_circuit_breaker_half_open{algorithm="segment"} 0
+```
+
+- `*_total` 与分位数同源（路由层观测）：`ids_generated_total` 按实际产出 ID
+  数累计（批量 10 个计 10），失败按请求计。
+- 延迟分位数三档为 gauge（秒，`0` = 尚无样本）；histogram bucket 由三档
+  分位数作为增量观测近似填充。
+- 无缓存概念的算法（Snowflake/UUID）不产出 `nebula_id_cache_hit_rate` 序列。
+
+> OpenAPI 中 `/metrics` 的响应模型仍登记为 `MetricsResponse`（内部快照的
+> JSON 结构，`get_database_metrics`/`get_cache_metrics` 等消费同一份数据）；
+> HTTP 线上格式以上面的 Prometheus 文本为准。
 
 ### ID 生成与解析（`ids`）
 

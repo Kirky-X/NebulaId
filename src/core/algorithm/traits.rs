@@ -53,6 +53,28 @@ pub trait IdGenerator: Send + Sync {
         biz_tag: &str,
     ) -> Result<Id>;
 
+    /// 生成单个 ID 并报告实际服务算法（`None` = 未指定，按路由配置解析）。
+    ///
+    /// 响应装配（HTTP/gRPC）必须用实际算法：请求算法失败后由降级链兜底时，
+    /// 回显请求值会让调用方误以为 ID 来自所请求的算法。
+    async fn generate_reporting_algorithm(
+        &self,
+        algorithm: Option<AlgorithmType>,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+    ) -> Result<(Id, AlgorithmType)>;
+
+    /// 批量生成并返回携带实际算法标记的批次（`IdBatch.algorithm` 为真实服务算法）。
+    async fn batch_generate_reporting_algorithm(
+        &self,
+        algorithm: Option<AlgorithmType>,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+        size: usize,
+    ) -> Result<IdBatch>;
+
     async fn batch_generate_with_algorithm(
         &self,
         algorithm: AlgorithmType,

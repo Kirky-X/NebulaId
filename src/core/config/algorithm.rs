@@ -172,3 +172,63 @@ impl AlgorithmConfig {
         self.default.parse().unwrap_or(AlgorithmType::Segment)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_obfuscator_none_when_key_hex_not_set() {
+        let config = ObfuscationConfig::default();
+        assert!(config.obfuscator().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_obfuscator_some_when_valid_hex() {
+        let config = ObfuscationConfig {
+            key_hex: Some("deadbeef".to_string()),
+        };
+        assert!(config.obfuscator().unwrap().is_some());
+    }
+
+    #[test]
+    fn test_obfuscator_err_when_invalid_hex() {
+        let config = ObfuscationConfig {
+            key_hex: Some("not-hex!".to_string()),
+        };
+        assert!(config.obfuscator().is_err());
+    }
+
+    #[test]
+    fn test_get_default_algorithm_segment_on_invalid() {
+        let config = AlgorithmConfig {
+            default: "invalid".to_string(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            config.get_default_algorithm(),
+            AlgorithmType::Segment
+        ));
+    }
+
+    #[test]
+    fn test_get_default_algorithm_snowflake() {
+        let config = AlgorithmConfig {
+            default: "snowflake".to_string(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            config.get_default_algorithm(),
+            AlgorithmType::Snowflake
+        ));
+    }
+
+    #[test]
+    fn test_snowflake_masks() {
+        let config = SnowflakeAlgorithmConfig::default();
+        assert_eq!(config.datacenter_id_mask(), 0b111);
+        assert_eq!(config.worker_id_mask(), 0xFF);
+        assert_eq!(config.sequence_mask(), 0x3FF);
+        assert_eq!(config.timestamp_bits(), 43);
+    }
+}

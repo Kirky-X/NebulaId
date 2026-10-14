@@ -858,7 +858,7 @@ key_hex = "0011223344556677"
 | `redis` | 段 | — | ➖ | 整段可省略 |
 | `redis.url` | String | `$REDIS_URL` 或 `redis://localhost:6379` | ✅（写了 `[redis]` 就必填） | Redis 连接 URL |
 | `redis.pool_size` / `key_prefix` / `ttl_seconds` | u32 / String / u64 | `16` / `"nebula:id:"` / `600` | ➖ | 缓存调优 |
-| `etcd.endpoints` | Vec&lt;String&gt; | `["etcd:2379"]` | ✅ | `[]` 时退回 `LocalDistributedLock`；`config.toml` 默认 `["http://localhost:2379"]` |
+| `etcd.endpoints` | Vec&lt;String&gt; | `[]` | ✅ | 空列表或仅空白项（`ETCD_ENDPOINTS=""`/尾逗号）时退回 `LocalDistributedLock`（单进程，warn）；`config.toml` 默认 `["http://localhost:2379"]`，compose 注入 `etcd:2379` |
 | `etcd.connect_timeout_ms` / `watch_timeout_ms` | u64 | `5000` / `5000` | ✅ | etcd 超时 |
 | `auth.enabled` | bool | `true` | ✅ | API Key 中间件总开关 |
 | `auth.cache_ttl_seconds` | u64 | `300` | ✅ | 认证缓存 TTL |
@@ -905,6 +905,12 @@ export WORKER_ID="0"
 export DATABASE_URL="postgresql://idgen:pass@localhost:5432/idgen"
 export ETCD_ENDPOINTS="http://localhost:2379,http://localhost:22379"
 export RUST_LOG="info"
+# TLS：布尔接受 true/false/1/0；env 只能开启（false 不反向关闭文件里的 TLS）
+export TLS_ENABLED="true"
+export TLS_HTTP_ENABLED="true"
+export TLS_GRPC_ENABLED="false"
+export TLS_CERT_PATH="/app/certs/server.crt"
+export TLS_KEY_PATH="/app/certs/server.key"
 
 # 2. 在文件里以 ${VAR} 引用，解析前先展开
 #    （`Config::expand_env_vars`）：

@@ -122,11 +122,54 @@ impl IdGenerator for AlgorithmRouter {
         .await?;
         Ok(batch.ids)
     }
+
+    async fn generate_reporting_algorithm(
+        &self,
+        algorithm: Option<AlgorithmType>,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+    ) -> Result<(Id, AlgorithmType)> {
+        AlgorithmRouter::generate_reporting_algorithm(self, algorithm, workspace, group, biz_tag)
+            .await
+    }
+
+    async fn batch_generate_reporting_algorithm(
+        &self,
+        algorithm: Option<AlgorithmType>,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+        size: usize,
+    ) -> Result<IdBatch> {
+        AlgorithmRouter::batch_generate_reporting_algorithm(
+            self, algorithm, workspace, group, biz_tag, size,
+        )
+        .await
+    }
+}
+
+/// 路由层观测面计数抽象：单条成功计 1 个 ID，批量按实际产出的 ID 数累计
+/// （`nebula_id_ids_generated_total` 的字面语义是 ID 数而非调用数）。
+trait ObservedIds {
+    fn observed_ids(&self) -> u64;
+}
+
+impl ObservedIds for Id {
+    fn observed_ids(&self) -> u64 {
+        1
+    }
+}
+
+impl ObservedIds for IdBatch {
+    fn observed_ids(&self) -> u64 {
+        self.ids.len() as u64
+    }
 }
 
 /// fallback 链遍历的操作抽象：类型级分发统一单条/批量两套同构降级循环。
 trait FallbackRunner {
-    type Out;
+    type Out: ObservedIds;
     async fn run(&self, alg: &Arc<dyn IdAlgorithm>, ctx: &GenerateContext) -> Result<Self::Out>;
 }
 
@@ -402,13 +445,25 @@ impl AlgorithmRouter {
     ) -> Option<Arc<dyn crate::core::algorithm::SegmentLoader + Send + Sync>> {
         if let Some(ref repo) = self.segment_repository {
             // DbSegmentLoader<R> 要求 R: Sized，trait 对象经 newtype 委托适配。
-            return Some(Arc::new(crate::core::algorithm::DbSegmentLoader::new(
-                Arc::new(DynSegmentRepository(repo.clone())),
-            )));
+            // 复用调用方（server/嵌入式宿主）既有连接池；动态步长与自举路径同构，
+            // 避免注入与自举两条装配路径产生不同的取段步长行为。
+            let monitor = self
+                .cpu_monitor
+                .clone()
+                .unwrap_or_else(|| Arc::new(crate::core::algorithm::segment::CpuMonitor::new()));
+            return Some(Arc::new(
+                crate::core::algorithm::DbSegmentLoader::with_dynamic_step(
+                    Arc::new(DynSegmentRepository(repo.clone())),
+                    self.config.algorithm.segment.clone(),
+                    monitor,
+                ),
+            ));
         }
 
         if self.config.algorithm.get_default_algorithm() != AlgorithmType::Segment {
-            // Segment 不在服务路径时不建库连接，避免 Snowflake/UUID 部署多开连接池。
+            // 无注入仓储且 Segment 不在默认服务路径：不建库连接，避免
+            // Snowflake/UUID 部署多开连接池。显式路由到 Segment 由服务端经
+            // `with_segment_repository` 注入仓储后可用（见 main.rs）。
             return None;
         }
 
@@ -479,12 +534,63 @@ impl AlgorithmRouter {
 
     pub async fn generate(&self, ctx: &GenerateContext) -> Result<Id> {
         let algorithm = self.get_algorithm(ctx).await;
-        self.generate_with_algorithm_internal(algorithm, ctx).await
+        self.generate_detailed_internal(algorithm, ctx)
+            .await
+            .map(|(id, _)| id)
     }
 
     pub async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result<IdBatch> {
         let algorithm = self.get_algorithm(ctx).await;
         self.batch_generate_with_algorithm_internal(algorithm, ctx, size)
+            .await
+    }
+
+    /// 生成单个 ID 并报告实际服务算法：请求算法失败后由降级链兜底时，
+    /// 「实际算法」是兜底算法而非请求值（响应装配不得回显请求值）。
+    /// `algorithm = None` 时按路由配置（biz_tag 覆盖或默认算法）解析。
+    pub async fn generate_reporting_algorithm(
+        &self,
+        algorithm: Option<AlgorithmType>,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+    ) -> Result<(Id, AlgorithmType)> {
+        let ctx = GenerateContext {
+            workspace_id: workspace.to_string(),
+            group_id: group.to_string(),
+            biz_tag: biz_tag.to_string(),
+            format: crate::core::types::IdFormat::Numeric,
+            prefix: None,
+        };
+        let algorithm = match algorithm {
+            Some(algorithm) => algorithm,
+            None => self.get_algorithm(&ctx).await,
+        };
+        self.generate_detailed_internal(algorithm, &ctx).await
+    }
+
+    /// 批量生成并报告实际服务算法：`IdBatch.algorithm` 由实际执行的算法填写，
+    /// 降级兜底后即为兜底算法（不依赖请求值）。
+    pub async fn batch_generate_reporting_algorithm(
+        &self,
+        algorithm: Option<AlgorithmType>,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+        size: usize,
+    ) -> Result<IdBatch> {
+        let ctx = GenerateContext {
+            workspace_id: workspace.to_string(),
+            group_id: group.to_string(),
+            biz_tag: biz_tag.to_string(),
+            format: crate::core::types::IdFormat::Numeric,
+            prefix: None,
+        };
+        let algorithm = match algorithm {
+            Some(algorithm) => algorithm,
+            None => self.get_algorithm(&ctx).await,
+        };
+        self.batch_generate_with_algorithm_internal(algorithm, &ctx, size)
             .await
     }
 
@@ -527,7 +633,9 @@ impl AlgorithmRouter {
             format: crate::core::types::IdFormat::Numeric,
             prefix: None,
         };
-        self.generate_with_algorithm_internal(algorithm, &ctx).await
+        self.generate_detailed_internal(algorithm, &ctx)
+            .await
+            .map(|(id, _)| id)
     }
 
     pub async fn batch_generate_with_algorithm(
@@ -549,15 +657,16 @@ impl AlgorithmRouter {
             .await
     }
 
-    /// 遍历 fallback 链：逐个执行已注册算法并记入 DegradationManager，返回首个成功结果；
-    /// 链遍历完仍无成功则返回 None。`announce_hits` 控制命中时是否输出 info 日志。
+    /// 遍历 fallback 链：逐个执行已注册算法并记入 DegradationManager，返回首个成功
+    /// 结果与实际命中的算法；链遍历完仍无成功则返回 None。`announce_hits` 控制命中时
+    /// 是否输出 info 日志。
     async fn try_fallback_chain<R: FallbackRunner>(
         &self,
         algorithms: &HashMap<AlgorithmType, Arc<dyn IdAlgorithm>>,
         ctx: &GenerateContext,
         announce_hits: bool,
         runner: R,
-    ) -> Option<Result<R::Out>> {
+    ) -> Option<Result<(R::Out, AlgorithmType)>> {
         for fallback in &self.fallback_chain {
             if let Some(fallback_alg) = algorithms.get(fallback).cloned() {
                 let start = Instant::now();
@@ -575,7 +684,7 @@ impl AlgorithmRouter {
                                 t!("log.core.algorithm.router.fell_back_to_algorithm")
                             );
                         }
-                        return Some(Ok(value));
+                        return Some(Ok((value, *fallback)));
                     }
                     Err(_) => {
                         self.degradation_manager
@@ -591,12 +700,18 @@ impl AlgorithmRouter {
 
     /// 路由层唯一观测点：记录一次算法执行的延迟、成败与时钟回拨。
     /// HTTP/gRPC/SDK 三入口共用；`algorithm` 为实际服务算法，保证分位数正确归因。
-    fn observe<T>(&self, algorithm: AlgorithmType, start: Instant, outcome: &Result<T>) {
+    /// 成功计数按实际产出 ID 数累计（批量请求不是 1 个 ID）。
+    fn observe<T: ObservedIds>(
+        &self,
+        algorithm: AlgorithmType,
+        start: Instant,
+        outcome: &Result<T>,
+    ) {
         let metrics = self.global_metrics.get_or_create_metrics(algorithm);
         metrics.record_latency(start.elapsed().as_nanos() as u64);
         self.global_metrics.increment_requests();
         match outcome {
-            Ok(_) => metrics.increment_generated(1),
+            Ok(value) => metrics.increment_generated(value.observed_ids()),
             Err(e) => {
                 metrics.increment_failed();
                 self.global_metrics.increment_errors();
@@ -623,11 +738,11 @@ impl AlgorithmRouter {
             algorithm = ?algorithm
         )
     )]
-    async fn generate_with_algorithm_internal(
+    async fn generate_detailed_internal(
         &self,
         algorithm: AlgorithmType,
         ctx: &GenerateContext,
-    ) -> Result<Id> {
+    ) -> Result<(Id, AlgorithmType)> {
         // 未启用算法显式报错（确定性逻辑）：不 panic、不回退到其他算法。
         #[cfg(not(feature = "segment"))]
         if algorithm == AlgorithmType::Segment {
@@ -683,7 +798,7 @@ impl AlgorithmRouter {
                         "{}",
                         t!("log.core.algorithm.router.id_generated")
                     );
-                    return Ok(id);
+                    return Ok((id, effective_algorithm));
                 }
                 Err(e) => {
                     debug!(
@@ -732,7 +847,7 @@ impl AlgorithmRouter {
         }
     }
 
-    /// 路由层批量生成漏斗（观测口径同 [`Self::generate_with_algorithm_internal`]）。
+    /// 路由层批量生成漏斗（观测口径同 [`Self::generate_detailed_internal`]）。
     #[tracing::instrument(
         name = "router.batch_generate",
         skip_all,
@@ -804,7 +919,7 @@ impl AlgorithmRouter {
                         .try_fallback_chain(&algorithms, ctx, true, BatchGenerateRun(size))
                         .await
                     {
-                        return res;
+                        return res.map(|(batch, _)| batch);
                     }
                     return Err(e);
                 }
@@ -815,7 +930,7 @@ impl AlgorithmRouter {
             .try_fallback_chain(&algorithms, ctx, false, BatchGenerateRun(size))
             .await
         {
-            Some(res) => res,
+            Some(res) => res.map(|(batch, _)| batch),
             None => Err(CoreError::InternalError(
                 "All algorithms failed".to_string(),
             )),
@@ -833,8 +948,13 @@ impl AlgorithmRouter {
         algs.iter()
             .map(|(kind, alg)| {
                 let mut snapshot = alg.metrics();
-                // 延迟分位数与时钟回拨来自路由层观测（算法自身不测端到端耗时）
+                // 计数与延迟分位数同源：全部取路由层观测（HTTP/gRPC/SDK 唯一漏斗）。
+                // 算法自身的计数器不含路由层调用（Snowflake/UUID 等算法内部不自增），
+                // 沿用会让 `nebula_id_ids_generated_total` 恒为 0 —— 计数与分位数
+                // 来源不一致，监控面互相矛盾。
                 if let Some(metrics) = observed.get(kind) {
+                    snapshot.total_generated = metrics.get_generated();
+                    snapshot.total_failed = metrics.get_failed();
                     let (p50_ns, p99_ns, p999_ns) = metrics.latency_percentiles_ns();
                     snapshot.p50_latency_us = p50_ns / 1_000;
                     snapshot.p99_latency_us = p99_ns / 1_000;
@@ -1238,6 +1358,38 @@ mod tests {
         );
         assert!(snapshot.p99_latency_us >= snapshot.p50_latency_us);
         assert!(snapshot.p999_latency_us >= snapshot.p99_latency_us);
+        // 计数与分位数同源：批量 5 个 ID 必须计 5（不是 1 个调用），
+        // 否则 `nebula_id_ids_generated_total` 与真实发号量脱节。
+        assert_eq!(
+            snapshot.total_generated, 3,
+            "快照计数必须来自路由层观测（3 次单条生成）"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
+    async fn test_router_metrics_counts_batch_ids_not_calls() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Segment,
+            }),
+        );
+
+        let batch = router.batch_generate(&make_ctx("bt"), 5).await.unwrap();
+        assert_eq!(batch.ids.len(), 5);
+
+        let snapshots = router.metrics().await;
+        let (_, snapshot) = snapshots
+            .iter()
+            .find(|(k, _)| *k == AlgorithmType::Segment)
+            .expect("segment snapshot");
+        assert_eq!(
+            snapshot.total_generated, 5,
+            "批量成功必须按产出 ID 数计数，保证 /metrics 计数与分位数同源"
+        );
     }
 
     #[tokio::test]
@@ -1693,6 +1845,67 @@ mod tests {
         let ctx = make_ctx("bt");
         let id = router.generate(&ctx).await.unwrap();
         assert_eq!(id.as_u128(), 42);
+    }
+
+    /// 降级兜底后必须报告兜底算法：请求 Segment 失败、UuidV8 成功时，
+    /// `generate_reporting_algorithm` 返回 UuidV8 而非请求值 Segment。
+    #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
+    async fn test_generate_reporting_algorithm_reports_fallback_algorithm() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(
+                MockConfigurableAlgorithm::new(AlgorithmType::Segment).with_generate_failure(),
+            ),
+        );
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(
+                MockConfigurableAlgorithm::new(AlgorithmType::Snowflake).with_generate_failure(),
+            ),
+        );
+        insert_mock(
+            &router,
+            AlgorithmType::UuidV8,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::UuidV8,
+            }),
+        );
+
+        let (id, algorithm) = router
+            .generate_reporting_algorithm(Some(AlgorithmType::Segment), "ws", "g", "bt")
+            .await
+            .unwrap();
+        assert_eq!(id.as_u128(), 42);
+        assert_eq!(
+            algorithm,
+            AlgorithmType::UuidV8,
+            "实际服务算法必须是兜底算法，不得回显请求的 Segment"
+        );
+    }
+
+    /// 无降级发生时报告请求算法本身。
+    #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
+    async fn test_generate_reporting_algorithm_reports_requested_algorithm_on_success() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+
+        let (id, algorithm) = router
+            .generate_reporting_algorithm(Some(AlgorithmType::Snowflake), "ws", "g", "bt")
+            .await
+            .unwrap();
+        assert_eq!(id.as_u128(), 42);
+        assert_eq!(algorithm, AlgorithmType::Snowflake);
     }
 
     #[tokio::test]

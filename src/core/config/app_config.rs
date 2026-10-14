@@ -138,6 +138,16 @@ pub fn resolve_startup_config(
     }
 }
 
+/// 环境变量布尔解析：`true`/`false`/`1`/`0`（大小写不敏感，忽略首尾空白）。
+/// 非法值返回 `InvalidValue`（消息即变量名，与 `APP_HTTP_PORT` 等非法值口径一致）。
+fn parse_env_bool(name: &str, raw: &str) -> ConfigResult<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" => Ok(true),
+        "false" | "0" => Ok(false),
+        _ => Err(ConfigError::InvalidValue(name.to_string())),
+    }
+}
+
 impl Config {
     /// Load configuration from file with environment variable expansion.
     ///
@@ -515,6 +525,27 @@ impl Config {
             config.logging.level = LogLevel::from(level);
         }
 
+        // TLS 覆盖：容器/编排部署经环境变量启用 HTTPS，无需替换镜像内配置文件
+        // （cert/key 由挂载卷提供）。布尔非法值显性报错，消息含变量名。
+        if let Ok(raw) = std::env::var("TLS_ENABLED") {
+            config.tls.enabled = parse_env_bool("TLS_ENABLED", &raw)?;
+        }
+        if let Ok(raw) = std::env::var("TLS_HTTP_ENABLED") {
+            config.tls.http_enabled = parse_env_bool("TLS_HTTP_ENABLED", &raw)?;
+        }
+        if let Ok(raw) = std::env::var("TLS_GRPC_ENABLED") {
+            config.tls.grpc_enabled = parse_env_bool("TLS_GRPC_ENABLED", &raw)?;
+        }
+        if let Ok(path) = std::env::var("TLS_CERT_PATH") {
+            config.tls.cert_path = path;
+        }
+        if let Ok(path) = std::env::var("TLS_KEY_PATH") {
+            config.tls.key_path = path;
+        }
+        if let Ok(path) = std::env::var("TLS_CA_PATH") {
+            config.tls.ca_path = Some(path);
+        }
+
         Ok(config)
     }
 
@@ -548,7 +579,11 @@ impl Config {
             self.database.max_connections = other.database.max_connections;
         }
 
-        if !other.etcd.endpoints.is_empty() {
+        // 以「是否等于内置默认值」判定显式覆盖：`other` 来自 `Config::load_from_env()`
+        // 时未设 `ETCD_ENDPOINTS` 的字段等于默认值（空列表），不得反向覆盖文件里已写的
+        // endpoints。显式单进程形态经 `ETCD_ENDPOINTS=""` 解析为空白项（≠ 默认值）→
+        // 覆盖成立，由 `EtcdConfig::has_configured_endpoints` 判定为未配置。
+        if other.etcd.endpoints != EtcdConfig::default().endpoints {
             self.etcd.endpoints = other.etcd.endpoints;
         }
 
@@ -575,6 +610,28 @@ impl Config {
         }
         if !other.monitoring.otlp_endpoint.is_empty() {
             self.monitoring.otlp_endpoint = other.monitoring.otlp_endpoint;
+        }
+
+        // TLS：与 `tracing_enabled`/`auto_watch_enabled` 同款口径 —— 布尔以
+        // 非默认值（true）为覆盖信号，路径仅非空覆盖；`false` 不反向关闭
+        // 文件里已启用的 TLS（关闭须改文件，避免 env 意外降级明文）。
+        if other.tls.enabled {
+            self.tls.enabled = true;
+        }
+        if other.tls.http_enabled {
+            self.tls.http_enabled = true;
+        }
+        if other.tls.grpc_enabled {
+            self.tls.grpc_enabled = true;
+        }
+        if !other.tls.cert_path.is_empty() {
+            self.tls.cert_path = other.tls.cert_path;
+        }
+        if !other.tls.key_path.is_empty() {
+            self.tls.key_path = other.tls.key_path;
+        }
+        if other.tls.ca_path.is_some() {
+            self.tls.ca_path = other.tls.ca_path;
         }
 
         if other.logging.level != LogLevel::Info {
@@ -1817,6 +1874,64 @@ mod tests {
         );
     }
 
+    /// TLS_* 环境变量（容器/编排启用 HTTPS 的入口）应被加载到 tls 段。
+    #[test]
+    fn load_from_env_tls_overrides() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _a = VarGuard::set("TLS_ENABLED", "true");
+        let _b = VarGuard::set("TLS_HTTP_ENABLED", "1");
+        let _c = VarGuard::set("TLS_GRPC_ENABLED", "false");
+        let _d = VarGuard::set("TLS_CERT_PATH", "/app/certs/server.crt");
+        let _e = VarGuard::set("TLS_KEY_PATH", "/app/certs/server.key");
+        let _f = VarGuard::set("TLS_CA_PATH", "/app/certs/ca.crt");
+
+        let config = Config::load_from_env().unwrap();
+        assert!(config.tls.enabled);
+        assert!(config.tls.http_enabled);
+        assert!(!config.tls.grpc_enabled);
+        assert_eq!(config.tls.cert_path, "/app/certs/server.crt");
+        assert_eq!(config.tls.key_path, "/app/certs/server.key");
+        assert_eq!(config.tls.ca_path.as_deref(), Some("/app/certs/ca.crt"));
+    }
+
+    /// TLS_* 布尔非法值应返回 InvalidValue 且消息指明变量名。
+    #[test]
+    fn load_from_env_tls_enabled_invalid_fails() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _g = VarGuard::set("TLS_ENABLED", "maybe");
+        let result = Config::load_from_env();
+        assert_eq!(
+            result.unwrap_err(),
+            ConfigError::InvalidValue("TLS_ENABLED".to_string())
+        );
+    }
+
+    /// merge 应把 env 的 TLS 覆盖应用到文件配置上；未设置的字段保持不变
+    /// （`false` 不反向关闭文件里已启用的 TLS）。
+    #[test]
+    fn merge_applies_env_tls_overrides() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let mut base = Config::default();
+        base.tls.enabled = true;
+        base.tls.http_enabled = true;
+        base.tls.grpc_enabled = true;
+        base.tls.cert_path = "/file/server.crt".to_string();
+        base.tls.key_path = "/file/server.key".to_string();
+
+        let mut other = Config::default();
+        other.tls.cert_path = "/env/server.crt".to_string();
+        base.merge(other);
+
+        assert!(
+            base.tls.enabled,
+            "env 未设 TLS_ENABLED 不得关闭文件中的 TLS"
+        );
+        assert!(base.tls.http_enabled);
+        assert!(base.tls.grpc_enabled);
+        assert_eq!(base.tls.cert_path, "/env/server.crt");
+        assert_eq!(base.tls.key_path, "/file/server.key");
+    }
+
     /// DATABASE_URL 环境变量应被加载到 database.url
     #[test]
     fn load_from_env_database_url() {
@@ -1932,9 +2047,8 @@ mod tests {
         base.logging.level = LogLevel::Warn;
 
         let mut other = Config::default();
-        // 显式设置触发 false 分支的字段
+        // 显式设置触发 false 分支的字段（100 = merge 条件中的哨兵值）
         other.database.max_connections = 100;
-        other.etcd.endpoints = vec![];
 
         base.merge(other);
 
@@ -1951,18 +2065,39 @@ mod tests {
         assert_eq!(base.logging.level, LogLevel::Warn);
     }
 
-    /// merge 空的 etcd.endpoints 不应覆盖 base 的非空 endpoints。
+    /// 显式「无 etcd」必须覆盖 base：`ETCD_ENDPOINTS=""` 经 `load_from_env` 解析为
+    /// `[""]`（≠ 内置默认空列表）→ 覆盖成立，装配层按空白项＝未配置退回单进程本地锁。
+    /// 配置文件形态 `endpoints = []` 直接作为 base 值，不经过本分支。
     ///
     /// 加 ENV_LOCK：`Config::default()` 读 `DATABASE_URL`，与并行 env 测试有时序竞争。
     #[test]
-    fn merge_preserves_etcd_endpoints_when_other_empty() {
+    fn merge_applies_explicit_empty_etcd_endpoints() {
         let _guard = ENV_LOCK.lock().unwrap();
         let mut base = Config::default();
         base.etcd.endpoints = vec!["custom:2379".to_string()];
         let mut other = Config::default();
-        other.etcd.endpoints = vec![];
+        other.etcd.endpoints = vec![String::new()];
         base.merge(other);
-        assert_eq!(base.etcd.endpoints, vec!["custom:2379".to_string()]);
+        assert_eq!(base.etcd.endpoints, vec![String::new()]);
+        assert!(!base.etcd.has_configured_endpoints());
+    }
+
+    /// 默认值（未显式设置）的 etcd.endpoints 不得覆盖 base：`load_from_env()`
+    /// 未设 `ETCD_ENDPOINTS` 时 endpoints 等于内置默认值，此时文件配置是唯一来源。
+    ///
+    /// 加 ENV_LOCK：`Config::default()` 读 `DATABASE_URL`，与并行 env 测试有时序竞争。
+    #[test]
+    fn merge_preserves_file_etcd_endpoints_when_other_default() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let mut base = Config::default();
+        base.etcd.endpoints = vec!["file-configured:2379".to_string()];
+        let other = Config::default();
+        assert_eq!(other.etcd.endpoints, EtcdConfig::default().endpoints);
+        base.merge(other);
+        assert_eq!(
+            base.etcd.endpoints,
+            vec!["file-configured:2379".to_string()]
+        );
     }
 
     /// merge 相同的 database.url 不应覆盖（条件中 url != self.database.url 为 false）。

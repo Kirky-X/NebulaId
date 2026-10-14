@@ -697,3 +697,5 @@ log-bench-auth_cache_adoption_designated_header = { "\u000A" }---- 设计点名�
 log-bench-auth_cache_adoption_verdict_header = { "\u000A" }---- 门禁判定以纯命中路径为准 ----
 log-bench-auth_cache_adoption_report_write_failed = (warn) 基准结果写盘失败 { $path }: { $error }
 log-bench-auth_cache_adoption_report_written = (T009) 机器可读结果已写入 { $path }
+log-bench-auth_cache_adoption_verdict_adopt = (T009) 判定 = 收编
+log-bench-auth_cache_adoption_verdict_reject = (T009) 判定 = 否决

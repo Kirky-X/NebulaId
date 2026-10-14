@@ -363,13 +363,13 @@ async fn e2e_router_initialize_registers_all_enabled_algorithms() {
     );
 
     for (alg_type, status) in &health_statuses {
-        // Segment 无数据库时 health_check 返回 Degraded("No active buffers")，属设计行为；
+        // Segment 空闲时 Healthy；仅未装配装载器或最近一次取段失败才 Degraded。
         // 其他算法不依赖外部状态，应为 Healthy。
         match alg_type {
             AlgorithmType::Segment => {
                 assert!(
                     matches!(status, HealthStatus::Degraded(_) | HealthStatus::Healthy),
-                    "E2E: Segment should be Degraded (no DB) or Healthy, got {:?}",
+                    "E2E: Segment should be Degraded or Healthy, got {:?}",
                     status
                 );
             }

@@ -69,8 +69,10 @@ unexpected_cfgs = { level = "allow", check-cfg = [
 [dependencies]
 # 自研生态（Kirky-X）：统一走 crates.io registry，不再使用兄弟仓库路径依赖，本仓库可独立构建、CI 无需 checkout 兄弟目录。
 # confers: 0.6.0-rc.6 起提供 watcher::HotReloader 与 hot-reload-kit（热加载最低依赖版本）。
-confers = { version = "0.6.0-rc.10", features = ["interpolation", "hot-reload-kit"] }
-oxcache = { version = "0.5.0-rc.8", optional = true }
+# toml 为 `parse_content(Format::Toml)` 的解析后端，缺省组合下仅靠传递依赖偶然启用，
+# 剪裁组合（sdk+uuid-v5 等）会退化为 “Failed to parse TOML: Add toml feature”。
+confers = { version = "0.6.0-rc.10", default-features = false, features = ["interpolation", "hot-reload-kit", "json", "toml"] }
+oxcache = { version = "0.5.0-rc.8", optional = true, default-features = false }
 # dbnexus: 不启用 migration（sqlparser 重依赖且零使用）；DDL 走 sea-orm execute_unprepared。
 dbnexus = { version = "0.6.0-rc.9", optional = true, default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "with-uuid"] }
 sdforge = { version = "0.5.0-rc.8", default-features = false }
@@ -82,15 +84,15 @@ garrison = { version = "0.9.0-rc.3", optional = true, default-features = false, 
 trait-kit = { version = "0.5.0-rc.9", optional = true, default-features = false, features = ["async", "lifecycle", "health"] }
 
 # 工具
-async-trait = "0.1"
-thiserror = "2.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+async-trait = { version = "0.1", default-features = false }
+thiserror = { version = "2.0", default-features = false, features = ["std"] }
+serde = { version = "1.0", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
 
 # 异步运行时
-tokio = { version = "1.53", features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-stream = { version = "0.1", optional = true }
-futures-util = "0.3"
+tokio = { version = "1.53", default-features = false, features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-stream = { version = "0.1", optional = true, default-features = false }
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 
 # axum: 直接依赖（sdforge::axum 门面收窄）；版本须与 sdforge 内部同 minor（0.8），保证 Router 跨边界类型一致。
 axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "form", "matched-path", "original-uri", "query", "tokio"] }
@@ -106,13 +108,13 @@ tonic-prost = { version = "0.14", optional = true, default-features = false }
 tonic = { version = "0.14", optional = true, default-features = false, features = ["transport", "tls-ring"] }
 
 # 分布式协调
-etcd-client = { version = "0.20", optional = true }
+etcd-client = { version = "0.21", optional = true, default-features = false, features = ["tls"] }
 
 # 缓存与存储
-parking_lot = "0.12"
+parking_lot = { version = "0.12", default-features = false }
 
 # 日志追踪（tracing-subscriber 由 inklog 间接引入，日志初始化通过 inklog 接管）
-tracing = "0.1"
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 # metrics: /metrics 经 exporter 自有 registry 渲染既有原子快照（generate 热路径零改动）；不自起监听器。
 metrics = { version = "0.24", default-features = false }
@@ -120,47 +122,47 @@ metrics-exporter-prometheus = { version = "0.18", optional = true, default-featu
 
 # 工具库
 # uuid: v5 无条件开在依赖面（使用侧经 uuid-v5 门控）；与消费方 Uuid::new_v5 同 crate 同版本，保证派生数值逐位兼容。
-uuid = { version = "1.26", features = ["v4", "v7", "v8", "v5", "serde"] }
+uuid = { version = "1.26", default-features = false, features = ["std", "v4", "v7", "v8", "v5", "serde"] }
 # chrono: AuditEvent 的 serde 派生含 DateTime<Utc> 字段；sea-orm 转 optional 后须显式声明。
-chrono = { version = "0.4", features = ["std", "serde"] }
-hex = "0.4"
-base64 = "0.23"
-sha2 = "0.11"
-rand = "0.10"
-subtle = { version = "2.6", optional = true }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+hex = { version = "0.4", default-features = false, features = ["std"] }
+base64 = { version = "0.23", default-features = false, features = ["std"] }
+sha2 = { version = "0.11", default-features = false, features = ["alloc", "oid"] }
+rand = { version = "0.10", default-features = false, features = ["std", "std_rng"] }
+subtle = { version = "2.6", optional = true, default-features = false, features = ["std"] }
 # argon2: API key 密钥哈希（CWE-916 修复）；0.6 起 std 废弃，OsRng 由 getrandom feature 提供。
 argon2 = { version = "0.6", optional = true, default-features = false, features = ["alloc", "password-hash", "getrandom"] }
 reqwest = { version = "0.13", optional = true, default-features = false, features = ["json", "rustls"] }
 # validator 经 sdforge::validator re-export 消费（http 门控且本 crate 恒开），不列直接依赖。
-serde_with = "3.23"
+serde_with = { version = "3.23", default-features = false, features = ["std", "macros"] }
 
 # 错误处理
 
 # 加密
-rustls = "0.23"
-tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["std", "logging", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12"] }
 
 # 基础组件
-arc-swap = "1.9"
-smallvec = "1.16"
-url = "2.5"
+arc-swap = { version = "1.9", default-features = false }
+smallvec = { version = "1.16", default-features = false, features = ["const_generics"] }
+url = { version = "2.5", default-features = false, features = ["std"] }
 
 # 速率限制和流量控制
 # limiteron: 只消费 core 原语，postgres/quota-control/ban-manager 等 feature 全仓零使用不启用。
 limiteron = { version = "0.3.0-rc.7", optional = true, default-features = false }
 
 # sys-locale: 系统语言自动探测（检测链见 main.rs）；FTL 资源编译期内嵌，icu 按需不引入（消息纯文本插值）。
-sys-locale = "0.3"
+sys-locale = { version = "0.3", default-features = false }
 
 [dev-dependencies]
-mockall = "0.15"
+mockall = { version = "0.15", default-features = false }
 sea-orm = { version = "2.0", default-features = false, features = ["mock"] }
-tempfile = "3.27"
+tempfile = { version = "3.27", default-features = false, features = ["getrandom"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 criterion = { version = "0.8", default-features = false }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
 # toml 仅用于测试中序列化 Config 为 TOML 字符串（confers 不提供序列化功能）
-toml = { version = "1.1", default-features = false, features = ["std", "serde"] }
+toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
 
 [[bench]]
 name = "i18n"

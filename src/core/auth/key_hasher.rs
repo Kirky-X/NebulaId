@@ -69,3 +69,34 @@ impl KeyHasher for Argon2KeyHasher {
             .is_ok()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hash_and_verify_roundtrip() {
+        let hasher = Argon2KeyHasher::new("test-salt".to_string());
+        let hash = hasher.hash("key1", "secret1").unwrap();
+        assert!(hasher.verify("key1", "secret1", &hash));
+    }
+
+    #[test]
+    fn test_verify_wrong_secret_fails() {
+        let hasher = Argon2KeyHasher::new("test-salt".to_string());
+        let hash = hasher.hash("key1", "secret1").unwrap();
+        assert!(!hasher.verify("key1", "wrong", &hash));
+    }
+
+    #[test]
+    fn test_verify_malformed_hash_returns_false() {
+        let hasher = Argon2KeyHasher::new("test-salt".to_string());
+        assert!(!hasher.verify("key1", "secret1", "not-a-valid-phc-hash"));
+    }
+
+    #[test]
+    fn test_password_material_format() {
+        let hasher = Argon2KeyHasher::new("pepper".to_string());
+        assert_eq!(hasher.password_material("kid", "sec"), "pepper|kid:sec");
+    }
+}

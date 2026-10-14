@@ -160,9 +160,15 @@ services:
     image: nebula-id:latest
     container_name: nebula-app
     ports:
-      - "${APP_HTTP_PORT:-8080}:8080"
+      # 宿主/容器端口同源（容器内经 APP_HTTP_PORT 环境变量覆盖配置文件 http_port）
+      - "${APP_HTTP_PORT:-8080}:${APP_HTTP_PORT:-8080}"
       - "${APP_GRPC_PORT:-9091}:9091"
       - "${APP_METRICS_PORT:-9092}:9092"
+      # HTTPS：TLS 终止在 HTTP 端口（见 docs/DEPLOYMENT.md「TLS/HTTPS」）。
+      # 启用步骤：TLS_ENABLED=true、TLS_HTTP_ENABLED=true、APP_HTTP_PORT=8443、
+      # HEALTHCHECK_PROTO=https，并把 server.crt/server.key 放入 docker/certs/。
+      # 未启用 TLS 时该映射无监听者，无副作用。
+      - "${APP_HTTPS_PORT:-8043}:8443"
     environment:
       # fail-closed: 未显式设置时按生产校验(TLS/盐值/CORS),开发需显式 NEBULA_ENV=development
       - NEBULA_ENV=${NEBULA_ENV:-production}
@@ -170,12 +176,25 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - ETCD_ENDPOINTS=etcd:2379
       - DC_ID=${DC_ID:-0}
+      - APP_HTTP_PORT=${APP_HTTP_PORT:-8080}
       - RUST_LOG=${RUST_LOG:-info}
       - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
       - TZ=Asia/Shanghai
       # SECURITY: API Key salt should be set via environment for production
       # For development, this will use a generated value (see entrypoint script)
       - NEBULA_API_KEY_SALT=${NEBULA_API_KEY_SALT}
+      # TLS/HTTPS（默认关闭）：开启后 HTTP 端口按 HTTPS 终止；证书目录见下方 volumes。
+      - TLS_ENABLED=${TLS_ENABLED:-false}
+      - TLS_HTTP_ENABLED=${TLS_HTTP_ENABLED:-false}
+      - TLS_GRPC_ENABLED=${TLS_GRPC_ENABLED:-false}
+      - TLS_CERT_PATH=${TLS_CERT_PATH:-/app/certs/server.crt}
+      - TLS_KEY_PATH=${TLS_KEY_PATH:-/app/certs/server.key}
+      - TLS_CA_PATH=${TLS_CA_PATH:-}
+      # 健康检查协议（TLS 启用后取 https）
+      - HEALTHCHECK_PROTO=${HEALTHCHECK_PROTO:-http}
+    volumes:
+      # 证书目录（server.crt/server.key，可选 ca.crt）；TLS 关闭时为空挂载无副作用。
+      - ../docker/certs:/app/certs:ro
     deploy:
       resources:
         limits:
@@ -197,7 +216,12 @@ services:
       etcd:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      # 端口/协议感知：TLS 模式（HEALTHCHECK_PROTO=https）下 -k 接受自签证书。
+      test:
+        - CMD-SHELL
+        - >-
+          curl -sfk "$${HEALTHCHECK_PROTO:-http}://localhost:$${APP_HTTP_PORT:-8080}/health"
+          || exit 1
       interval: 30s
       timeout: 10s
       retries: 3

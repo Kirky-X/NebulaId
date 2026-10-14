@@ -416,6 +416,12 @@ impl Default for AlgorithmMetricsInner {
 #[async_trait]
 pub trait SegmentLoader: Send + Sync {
     async fn load_segment(&self, ctx: &GenerateContext, worker_id: u8) -> Result<SegmentData>;
+
+    /// 是否已装配可用的号段数据源（供健康面区分「空闲」与「不可用」）。
+    /// 默认 `true`：实现了 `load_segment` 的装载器即视为已配置。
+    fn is_configured(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -675,11 +681,20 @@ impl IdAlgorithm for SegmentAlgorithm {
         ))
     }
 
-    /// 健康状况反映两路信号：1. buffer 空虚（无活动号段缓冲）→ Degraded；
-    /// 2. 最近一次号段加载失败且尚无成功恢复 → Degraded（附错误摘要）。
+    /// 健康状况反映两路真实故障信号：1. 未装配号段数据源（装载器未配置，每次
+    /// 取段必失败）→ Degraded；2. 最近一次号段加载失败且尚无成功恢复 → Degraded。
+    ///
+    /// 空闲（尚无活动缓冲）不是故障：号段在首个请求时按需分配，冷启动即报
+    /// Degraded 会让 `segment` 特性默认开启的部署（主算法 Snowflake/UUID）
+    /// 的 `/health` 永远为 Degraded，误导探针与监控。
     fn health_check(&self) -> HealthStatus {
-        if self.buffers.read().is_empty() {
-            return HealthStatus::Degraded("No active buffers".to_string());
+        if !self.segment_loader.is_configured() {
+            // 结构性原因先于偶发失败：未装配数据源时每次取段必失败，
+            // 消息直接指向注入点（with_segment_loader / with_segment_repository）。
+            return HealthStatus::Degraded(
+                "Segment loader not configured (inject DbSegmentLoader via with_segment_loader)"
+                    .to_string(),
+            );
         }
         match &*self.last_load_result.lock() {
             LastLoadResult::Err(err) => {
@@ -745,6 +760,11 @@ impl SegmentLoader for UnconfiguredSegmentLoader {
         Err(CoreError::ConfigurationError(t!(
             "error-detail.segment_loader_not_configured"
         )))
+    }
+
+    /// 未装配数据源：健康面显性报 Degraded，避免「空闲即健康」掩盖取段必失败。
+    fn is_configured(&self) -> bool {
+        false
     }
 }
 
@@ -1231,12 +1251,23 @@ mod tests {
         }
     }
 
+    /// 空闲（无活动缓冲）不是故障：未使用过的算法在冷启动时也应报 Healthy，
+    /// 否则默认开启 segment 特性的部署 `/health` 恒 Degraded。
     #[test]
-    fn test_segment_algorithm_health_check_returns_degraded_when_no_buffers() {
+    fn test_segment_algorithm_health_check_is_healthy_when_idle() {
         let algo = SegmentAlgorithm::new(0);
-        let status = algo.health_check();
-        match status {
-            HealthStatus::Degraded(msg) => assert_eq!(msg, "No active buffers"),
+        assert_eq!(algo.health_check(), HealthStatus::Healthy);
+    }
+
+    /// 生产默认装载器（未装配数据源）必须报 Degraded：取段必失败不能被空闲掩盖。
+    #[test]
+    fn test_segment_algorithm_health_check_degraded_when_loader_unconfigured() {
+        let algo =
+            SegmentAlgorithm::new(0).with_segment_loader(Arc::new(UnconfiguredSegmentLoader));
+        match algo.health_check() {
+            HealthStatus::Degraded(msg) => {
+                assert!(msg.contains("Segment loader not configured"), "got: {msg}")
+            }
             other => panic!("expected Degraded, got {:?}", other),
         }
     }
@@ -1389,8 +1420,7 @@ mod tests {
         assert!(matches!(algo.health_check(), HealthStatus::Degraded(_)));
     }
 
-    /// 语义不破坏：UnconfiguredSegmentLoader 的 ConfigurationError 同样计入
-    /// 「最近一次加载失败」，health_check 非 Healthy。
+    /// 未装配数据源：health_check 在取段前即报 Degraded，消息指向注入点。
     #[tokio::test]
     async fn test_unconfigured_loader_error_counts_as_load_failure_for_health() {
         let algo =

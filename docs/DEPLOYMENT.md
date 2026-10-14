@@ -21,7 +21,7 @@
 ```mermaid
 graph TB
     subgraph Docker Compose
-        App[Nebula ID App<br/>nebula-app<br/>:8080 HTTP 含 /metrics<br/>:9091 gRPC]
+        App[Nebula ID App<br/>nebula-app<br/>:8080 HTTP<br/>:8443 HTTPS（可选）<br/>/health /ready /metrics<br/>:9091 gRPC]
         PG[(PostgreSQL 16<br/>nebula-postgres<br/>:5432)]
         Redis[(Redis 7.2<br/>nebula-redis<br/>:6379)]
         Etcd[(Etcd 3.5<br/>nebula-etcd<br/>:2379)]
@@ -29,16 +29,22 @@ graph TB
 
     Client[客户端] --> App
     App --> PG
-    App --> Redis
     App --> Etcd
+    App -.->|预留：当前无消费点<br/>缓存为进程内 oxcache| Redis
 
-    Prom[Prometheus] -->|抓取| App
+    Prom[Prometheus] -->|抓取 /metrics（Prometheus 文本）| App
 
     style App fill:#bbdefb
     style PG fill:#a5d6a7
     style Redis fill:#ce93d8
     style Etcd fill:#ffcc80
 ```
+
+> Redis 说明：`[redis]` 段与 `REDIS_URL` 是**预留配置面**，当前版本无生产
+> 消费点——号段双缓冲（`segment` 的 DoubleBuffer）与认证决策缓存都在进程内
+> （oxcache memory / garrison memory）。因此 Redis 故障不影响发号与认证，
+> `docker compose` 仍启动该服务以保持部署形态与后续接线一致（口径见
+> `docs/TEST_PLAN.md` FAULT-08）。
 
 ## 2. Docker 部署
 
@@ -159,6 +165,9 @@ docker run -d \
 | `RUST_LOG` | info | 日志级别 (trace/debug/info/warn/error) |
 | `RUST_BACKTRACE` | 0 | 错误堆栈 (0/1/full) |
 | `DATABASE_URL` | - | 完整数据库 URL（覆盖其他配置） |
+| `ETCD_ENDPOINTS` | 未设置为空列表（单进程） | etcd 端点（逗号分隔）。**设为空串或配置文件写 `endpoints = []` 表示单进程部署**：应用回退 `LocalDistributedLock` 并输出告警（多实例部署会重复 ID，仅单进程合法）。尾逗号等空白项按未配置处理；未设置且配置文件未写 `[etcd]` 时内置默认同样为空列表 |
+| `TLS_ENABLED` / `TLS_HTTP_ENABLED` / `TLS_GRPC_ENABLED` | false | TLS 开关（env 只能开启：`false` 不反向关闭文件里已启用的 TLS）。`TLS_HTTP_ENABLED=true` 时 HTTP 端口按 HTTPS 终止 |
+| `TLS_CERT_PATH` / `TLS_KEY_PATH` / `TLS_CA_PATH` | - | 证书链 / 私钥 / 可选自定义 CA 路径 |
 | `NEBULA_LOCALE` | 取 `app.locale`（默认 `en`） | 进程默认 locale（原 `LOCALE` 为文档虚构变量）。可选值：`en`、`zh-CN`，非法值回退 `en`。仅用于设置 `fluent-bundle` 全局 locale 影响启动日志与未走 `Accept-Language` 中间件的路径；`/api/v1/*` 路由的运行时响应语言由请求 `Accept-Language` 头协商，不受此变量影响。 |
 
 ### 4.3 NEBULA_LOCALE 与 locale 配置详解
@@ -265,6 +274,22 @@ EOF
 
 ## 7. 生产部署建议
 
+### 7.0 TLS/HTTPS（docker compose）
+
+TLS 终止在 HTTP 端口（同一个监听 socket 按 `tls.http_enabled` 选择 rustls acceptor，
+不额外开端口）。compose 默认把宿主 `8043` 映射到容器 `8443`，启用步骤：
+
+1. 证书放入 `docker/certs/`（`server.crt`/`server.key`，可选 `ca.crt`；
+   自签生成见该目录 README）。compose 已挂载为容器内 `/app/certs:ro`。
+2. `.env` 设置：`TLS_ENABLED=true`、`TLS_HTTP_ENABLED=true`、`APP_HTTP_PORT=8443`、
+   `HEALTHCHECK_PROTO=https`（证书路径如非默认再加 `TLS_CERT_PATH`/`TLS_KEY_PATH`）。
+3. `docker compose -f docker/docker-compose.yml up -d app`，
+   验证：`curl -k https://localhost:8043/health`。
+
+gRPC 侧同理：`TLS_GRPC_ENABLED=true` 后 gRPC 端口按 TLS 握手（证书同一份）。
+生产环境（`NEBULA_ENV=production`）未启用 TLS 会 fail-fast 拒绝启动，
+显式放行需 `NEBULA_ALLOW_INSECURE_TLS=1`（仅限内网/过渡期）。
+
 ### 7.1 安全
 
 - **必须**设置 `NEBULA_API_KEY_SALT`、`POSTGRES_PASSWORD`、`NEBULA_DATABASE_PASSWORD`
@@ -281,7 +306,7 @@ EOF
 ### 7.2 性能
 
 - PostgreSQL: `shared_buffers` 设为内存的 25%，`effective_cache_size` 设为内存的 75%
-- Redis: `maxmemory` 根据缓存需求调整，`maxmemory-policy allkeys-lru`
+- Redis（预留面，当前无消费点）: `maxmemory` 256MB、`maxmemory-policy allkeys-lru` 即可；后续接入缓存层时再按缓存需求调整
 - 应用: `--release` 构建，`lto = "thin"` 已在 Cargo.toml 中配置
 
 ### 7.3 高可用

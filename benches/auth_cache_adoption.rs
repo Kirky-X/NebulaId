@@ -361,6 +361,10 @@ fn main() {
             "{}",
             t!("log.bench.auth_cache_adoption_report_written", path = path)
         );
-        println!("(T009) verdict = {}", if pass { "adopt" } else { "reject" });
+        if pass {
+            println!("{}", t!("log.bench.auth_cache_adoption_verdict_adopt"));
+        } else {
+            println!("{}", t!("log.bench.auth_cache_adoption_verdict_reject"));
+        }
     }
 }

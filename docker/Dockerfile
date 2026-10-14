@@ -81,7 +81,9 @@ RUN chown -R appuser:appgroup /app && \
 USER appuser
 
 # Expose ports
-EXPOSE 8080 9091 9092
+# 8443 = TLS/HTTPS 监听端口（TLS 终止在 HTTP 端口，经 TLS_ENABLED/TLS_HTTP_ENABLED
+# 与 APP_HTTP_PORT=8443 启用；compose 以 8043→8443 映射对外暴露）。
+EXPOSE 8080 8443 9091 9092
 
 # Environment variables
 ENV RUST_LOG=info \
@@ -91,6 +93,12 @@ ENV RUST_LOG=info \
     METRICS_ENABLED=true \
     METRICS_HOST=0.0.0.0 \
     METRICS_PORT=9092
+# TLS（默认关闭）：证书需挂载到镜像内（compose 默认 -v docker/certs:/app/certs:ro）；
+# 开启示例：-e TLS_ENABLED=true -e TLS_HTTP_ENABLED=true -e APP_HTTP_PORT=8443
+#          -e TLS_CERT_PATH=/app/certs/server.crt -e TLS_KEY_PATH=/app/certs/server.key
+ENV TLS_ENABLED=false \
+    TLS_HTTP_ENABLED=false \
+    TLS_GRPC_ENABLED=false
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \

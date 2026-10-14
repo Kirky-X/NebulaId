@@ -313,19 +313,19 @@ impl IdGenerator {
 
 /// 分布式锁创建（fail-closed）：etcd 且 endpoints 已配置 → `EtcdDistributedLock`（ping 探活）；
 /// 任一步失败返回 `Err`，**不再静默回退**进程内锁（多实例部署静默回退必然重复 ID）。
-/// 未配置 endpoints → `LocalDistributedLock`（单机合法）并 warn。
+/// 未配置 endpoints（含仅空白项）→ `LocalDistributedLock`（单机合法）并 warn。
 #[cfg(feature = "etcd")]
 async fn create_distributed_lock(
     config: &Config,
 ) -> Result<Arc<dyn DistributedLock + Send + Sync>> {
-    if config.etcd.endpoints.is_empty() {
+    if !config.etcd.has_configured_endpoints() {
         tracing::warn!(
             "sdk: etcd endpoints not configured, using LocalDistributedLock (single-process only)"
         );
         return Ok(Arc::new(LocalDistributedLock::new()));
     }
 
-    let wrapper = EtcdClientWrapper::new(config.etcd.endpoints.clone()).await.map_err(|e| {
+    let wrapper = EtcdClientWrapper::new(config.etcd.configured_endpoints()).await.map_err(|e| {
         CoreError::ConfigurationError(format!(
             "sdk: etcd endpoints are configured but the client is unavailable (endpoints: {:?}): {e}; refusing to fall back to LocalDistributedLock",
             config.etcd.endpoints
@@ -656,8 +656,9 @@ mod tests {
         );
     }
 
-    /// 测试共享：单机配置（清空 etcd endpoints → 走 LocalDistributedLock，零外部依赖）。
-    /// 注意 `Config::default()` 的 endpoints 非空，未配置可达 etcd 时 build 会显性失败。
+    /// 测试共享：单机配置（etcd endpoints 置空白 → 走 LocalDistributedLock，零外部依赖）。
+    /// 注意 `Config::default()` 的 endpoints 为空列表，但显式写入编排内网地址时
+    /// 未配置可达 etcd 会显性失败（fail-closed）。
     fn local_config() -> Config {
         let mut config = Config::default();
         config.etcd.endpoints = Vec::new();

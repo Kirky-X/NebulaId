@@ -31,18 +31,20 @@ impl super::ApiHandlers {
                 None
             };
 
-        let result = if let Some(algorithm) = parsed_algorithm {
-            self.id_generator
-                .generate_with_algorithm(algorithm, &req.workspace, &req.group, &req.biz_tag)
-                .await
-        } else {
-            self.id_generator
-                .generate(&req.workspace, &req.group, &req.biz_tag)
-                .await
-        };
+        // 路由返回实际服务算法（主算法失败由降级链兜底时为兜底算法）：
+        // 响应 `algorithm` 不得回显请求值，否则调用方无法察觉 ID 不是请求算法的结果。
+        let result = self
+            .id_generator
+            .generate_reporting_algorithm(
+                parsed_algorithm,
+                &req.workspace,
+                &req.group,
+                &req.biz_tag,
+            )
+            .await;
 
-        let id = match result {
-            Ok(id) => id,
+        let (id, actual_algorithm) = match result {
+            Ok(pair) => pair,
             Err(ref e) => {
                 self.metrics
                     .failed_generations
@@ -71,19 +73,9 @@ impl super::ApiHandlers {
         let new_avg = total_latency.checked_div(total_reqs).unwrap_or(latency_ms);
         self.metrics.avg_latency_ms.store(new_avg, Ordering::SeqCst);
 
-        // 复用上方 parse 结果；algorithm_name 优先请求指定算法，否则查路由表。
-        let algorithm_name = if let Some(parsed) = parsed_algorithm {
-            parsed.to_string()
-        } else {
-            self.id_generator
-                .get_algorithm_name(&req.workspace, &req.group, &req.biz_tag)
-                .await
-                .unwrap_or_else(|_| "segment".to_string())
-        };
-
         Ok(GenerateResponse {
             id: id.to_string(),
-            algorithm: algorithm_name,
+            algorithm: actual_algorithm.to_string(),
             timestamp: chrono::Utc::now().to_rfc3339(),
         })
     }
@@ -110,25 +102,26 @@ impl super::ApiHandlers {
             ));
         }
 
-        let result = if let Some(ref alg_str) = req.algorithm {
-            let algorithm: crate::core::types::AlgorithmType = alg_str.parse()?;
-            self.id_generator
-                .batch_generate_with_algorithm(
-                    algorithm,
-                    &req.workspace,
-                    &req.group,
-                    &req.biz_tag,
-                    size,
-                )
-                .await
-        } else {
-            self.id_generator
-                .batch_generate(&req.workspace, &req.group, &req.biz_tag, size)
-                .await
-        };
+        // 同单条路径：`IdBatch.algorithm` 由实际执行的算法填写，响应不得回显请求值。
+        let parsed_algorithm: Option<crate::core::types::AlgorithmType> =
+            match req.algorithm.as_deref() {
+                Some(alg_str) => Some(alg_str.parse()?),
+                None => None,
+            };
 
-        let ids = match result {
-            Ok(ids) => ids,
+        let result = self
+            .id_generator
+            .batch_generate_reporting_algorithm(
+                parsed_algorithm,
+                &req.workspace,
+                &req.group,
+                &req.biz_tag,
+                size,
+            )
+            .await;
+
+        let batch = match result {
+            Ok(batch) => batch,
             Err(ref e) => {
                 self.metrics
                     .failed_generations
@@ -136,6 +129,8 @@ impl super::ApiHandlers {
                 return Err(e.clone());
             }
         };
+        let ids = batch.ids;
+        let algorithm_name = batch.algorithm.to_string();
 
         let elapsed = start.elapsed();
         self.metrics.total_requests.fetch_add(1, Ordering::SeqCst);
@@ -159,11 +154,7 @@ impl super::ApiHandlers {
         Ok(BatchGenerateResponse {
             ids: ids.iter().map(|id| id.to_string()).collect(),
             size: ids.len(),
-            algorithm: self
-                .id_generator
-                .get_algorithm_name(&req.workspace, &req.group, &req.biz_tag)
-                .await
-                .unwrap_or_default(),
+            algorithm: algorithm_name,
             timestamp: chrono::Utc::now().to_rfc3339(),
         })
     }

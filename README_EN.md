@@ -512,7 +512,8 @@ For the full version history, see the [📋 Changelog](docs/CHANGELOG.md) (follo
 
 | Version | Date | Highlights |
 |------|------|------|
-| 0.3.0-rc.2 | 2026-10-11 | RFC 9562 v5 deterministic derivation (`uuid-v5` leaf feature, bit-exact compatible with etyma's 340,566 existing IDs), i18n folded into sdforge (snapshot lock-free rendering), garrison auth brute-force adoption (`BoundedDao` capacity valve + fail-closed), confers hot-reload wiring, pre-release three-way review remediation |
+| 0.3.0-rc.3 | 2026-10-14 | Self-developed dependencies upgraded to the latest RC wave (8 self-developed crates + utoipa 6.0 alignment) |
+| 0.3.0-rc.2 | 2026-10-11 | RFC 9562 v5 deterministic derivation (`uuid-v5` leaf feature, bit-exact compatible with etyma's 340,566 existing IDs), UUID v4/v7 true algorithms + breaking alias reversal, i18n folded into sdforge (snapshot lock-free rendering), garrison auth brute-force adoption (`BoundedDao` capacity valve + fail-closed), confers hot-reload wiring, pre-release three-way review remediation |
 | 0.3.0-rc.1 | 2026-09-22 | Ecosystem fully switched to the crates.io registry (RC-wave alignment), i18n migrated to the Fluent/ICU stack (fluent-bundle, aligned with the unify-rust-i18n baseline), SDK migrated to trait-kit assembly (`NebulaIdKit`), gRPC auth on all RPCs, rate limiting genuinely mounted, TLS fail-fast, config `deny_unknown_fields` + exit code 1, key rotation grace period |
 | 0.2.0 | 2026-07-23 | garrison DAO infrastructure, expanded e2e suite (95% module coverage), dbnexus / sdforge / confers architecture takeover, 3 strix security fixes |
 

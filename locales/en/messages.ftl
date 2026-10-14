@@ -707,3 +707,5 @@ log-bench-auth_cache_adoption_designated_header = { "\u000A" }---- Designated pa
 log-bench-auth_cache_adoption_verdict_header = { "\u000A" }---- Gate verdict uses the pure hit path ----
 log-bench-auth_cache_adoption_report_write_failed = (warn) failed to write the benchmark report { $path }: { $error }
 log-bench-auth_cache_adoption_report_written = (T009) machine-readable result written to { $path }
+log-bench-auth_cache_adoption_verdict_adopt = (T009) verdict = adopt
+log-bench-auth_cache_adoption_verdict_reject = (T009) verdict = reject

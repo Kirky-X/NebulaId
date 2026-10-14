@@ -342,7 +342,7 @@ mod tests {
         DegradationManager, HealthStatus as CoreHealthStatus, IdGenerator as CoreIdGenerator,
     };
     use crate::core::database::{ApiKeyInfo, ApiKeyRepository, ApiKeyRole};
-    use crate::core::types::{AlgorithmType, Id};
+    use crate::core::types::{AlgorithmType, Id, IdBatch};
     use crate::core::{CoreError, Result};
     use crate::server::config::management::{ConfigManagementService, ConfigManager};
     use crate::server::config::HotReloadConfig;
@@ -471,6 +471,33 @@ mod tests {
             _biz_tag: &str,
         ) -> Result<String> {
             Ok(self.primary_algorithm.clone())
+        }
+        /// 桩实现：报告请求算法（`None` 时按桩主算法）。
+        async fn generate_reporting_algorithm(
+            &self,
+            algorithm: Option<AlgorithmType>,
+            _workspace: &str,
+            _group: &str,
+            _biz_tag: &str,
+        ) -> Result<(Id, AlgorithmType)> {
+            Ok((
+                Id::from_u128(1),
+                algorithm.unwrap_or(AlgorithmType::Segment),
+            ))
+        }
+        async fn batch_generate_reporting_algorithm(
+            &self,
+            algorithm: Option<AlgorithmType>,
+            _workspace: &str,
+            _group: &str,
+            biz_tag: &str,
+            _size: usize,
+        ) -> Result<IdBatch> {
+            Ok(IdBatch::new(
+                Vec::new(),
+                algorithm.unwrap_or(AlgorithmType::Segment),
+                biz_tag.to_string(),
+            ))
         }
         async fn health_check(&self) -> CoreHealthStatus {
             self.health.clone()

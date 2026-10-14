@@ -410,6 +410,7 @@ cargo fmt --package nebulaid -- --check
 cargo clippy --package nebulaid --all-features -- -D warnings
 
 # 覆盖率门禁：行覆盖率 ≥ 95%（CI default leg 权威门禁，排除 server/proto/ 生成代码）
+# 注意：pre-commit 钩子使用 cargo-tarpaulin（可选检查），pre-push 钩子使用 cargo-llvm-cov（门禁）
 cargo llvm-cov --package nebulaid \
   --fail-under-lines 95 --ignore-filename-regex "server/proto/"
 
@@ -419,6 +420,7 @@ cargo check --package nebulaid --no-default-features --lib --bins
 # 基准测试
 cargo bench --bench i18n
 cargo bench --bench algorithms
+cargo bench --bench auth_cache_adoption --features garrison-auth
 
 # shell 端到端脚本
 ./scripts/run.sh api-test
@@ -426,13 +428,13 @@ cargo bench --bench algorithms
 
 ### 📊 测试规模
 
-截至 0.3.0-rc.2 工作区：约 1943 个 Rust 测试函数（`src/` 内联 + `src/core/tests/` E2E 模块 + `tests/i18n_e2e.rs`）、4 个 shell 端到端脚本、2 组 Criterion 基准（i18n 热路径 4 个基准函数 / 12 用例 + 发号 / 限流 / 认证缓存热路径 7 个基准函数 / 7 用例）。CI 覆盖率门禁为行覆盖率 ≥ 95%，pre-push 钩子另执行 ≥ 90% 的本地门禁；v0.2.0 发布时实际行覆盖率 89.91%。逐模块统计与统计口径见 [🧪 测试场景文档 · 统计汇总](docs/TEST_SCENARIOS.md#统计汇总)。
+截至 0.3.0-rc.3 工作区：约 1698 个 Rust 测试函数（`cargo test -- --list` 实测）、4 个 shell 端到端脚本、3 组基准（2 组 Criterion：i18n 热路径 4 个基准函数 / 12 用例 + 发号 / 限流 / 认证缓存热路径 7 个基准函数 / 7 用例；1 组性能门禁：auth_cache_adoption，对比基线 AuthCache 与候选 oxcache Cache 在认证命中路径的 P99 与吞吐）。CI 覆盖率门禁为行覆盖率 ≥ 95%，pre-push 钩子另执行 ≥ 90% 的本地门禁；v0.2.0 发布时实际行覆盖率 89.91%。逐模块统计与统计口径见 [🧪 测试场景文档 · 统计汇总](docs/TEST_SCENARIOS.md#统计汇总)。
 
 ---
 
 ## 📊 性能
 
-本仓库声明两项 Criterion 基准：i18n 热路径（`benches/i18n.rs`，覆盖翻译查表、带参翻译、错误本地化与 Accept-Language 解析）与发号 / 限流 / 认证缓存热路径（`benches/algorithms.rs`，覆盖 Snowflake 单条与批量、路由链路、令牌桶、认证缓存命中），复现命令分别为 `cargo bench --bench i18n` 与 `cargo bench --bench algorithms`，基线中位数见 [📈 性能指南 · 已记录基线](docs/PERFORMANCE.md#已记录基线)。设计层面的热路径要点——Segment 双缓冲与动态步长、Snowflake 无锁 CAS 状态字、p50/p99/p999 环形缓冲分位数、release profile（thin LTO + `panic = "abort"`）——同见该文档。
+本仓库声明三项基准（`Cargo.toml` `[[bench]]`）：两项 Criterion 基准——i18n 热路径（`benches/i18n.rs`，覆盖翻译查表、带参翻译、错误本地化与 Accept-Language 解析）与发号 / 限流 / 认证缓存热路径（`benches/algorithms.rs`，覆盖 Snowflake 单条与批量、路由链路、令牌桶、认证缓存命中），复现命令分别为 `cargo bench --bench i18n` 与 `cargo bench --bench algorithms`；一项性能门禁（`benches/auth_cache_adoption.rs`，`required-features = ["server", "garrison-auth"]`）——对比基线 `AuthCache` 与候选 oxcache `Cache` 在认证命中路径的 P99 与吞吐，阈值 P99 ≤ +10% 且吞吐 ≥ −5%，判定为 reject（P99 +597%、吞吐 −53.8%），设 `NEBULAID_AUTH_CACHE_GATE=1` 可在门禁否决时硬失败。基线中位数见 [📈 性能指南 · 已记录基线](docs/PERFORMANCE.md#已记录基线)。设计层面的热路径要点——Segment 双缓冲与动态步长、Snowflake 无锁 CAS 状态字、p50/p99/p999 环形缓冲分位数、release profile（thin LTO + `panic = "abort"`）——同见该文档。
 
 ---
 
@@ -514,7 +516,8 @@ CI 五阶段门禁（fmt + clippy → cargo-deny → cargo-audit `--deny warning
 
 | 版本 | 日期 | 要点 |
 |------|------|------|
-| 0.3.0-rc.2 | 2026-10-11 | RFC 9562 v5 确定性派生（`uuid-v5` 叶子特性，与 etyma 340,566 存量 ID 数值兼容）、i18n 收编 sdforge（快照零锁渲染）、garrison 接管认证防爆破（`BoundedDao` 容量阀 + fail-closed）、confers 热加载接线、发布前三审查整改 |
+| 0.3.0-rc.3 | 2026-10-14 | 自研依赖升级至最新 RC 波次（8 个自研 crate + utoipa 6.0 对齐） |
+| 0.3.0-rc.2 | 2026-10-11 | RFC 9562 v5 确定性派生（`uuid-v5` 叶子特性，与 etyma 340,566 存量 ID 数值兼容）、UUID v4/v7 真算法 + 破坏性别名反转、i18n 收编 sdforge（快照零锁渲染）、garrison 接管认证防爆破（`BoundedDao` 容量阀 + fail-closed）、confers 热加载接线、发布前三审查整改 |
 | 0.3.0-rc.1 | 2026-09-22 | 自研生态全面切 crates.io registry（RC 波次对齐）、i18n 迁移 Fluent/ICU 栈（fluent-bundle，对齐 unify-rust-i18n 基线）、SDK 迁移 trait-kit 装配（`NebulaIdKit`）、gRPC 全 RPC 认证、限流真实挂载、TLS fail-fast、配置 `deny_unknown_fields` + 退出码 1、密钥轮换宽限期 |
 | 0.2.0 | 2026-07-23 | garrison DAO 基础设施、e2e 套件扩充（95% 模块覆盖）、dbnexus / sdforge / confers 架构接管、3 项 strix 安全修复 |
 

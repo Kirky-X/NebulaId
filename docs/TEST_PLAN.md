@@ -531,6 +531,7 @@ init_observability → init_sdforge(防inventory剥离) → load_config(fail-fas
 | FAULT-06 | 审计文件系统满/只读 | 挂载只读目录 | 文件打不开→**回退内存环**，请求不受影响 | — | ✅ 内联 |
 | FAULT-07 | 限流器内部错误 | 注入 limiter 错误 | fail-open 放行（可用性优先） | — | ✅ 内联 |
 | FAULT-08 | Redis 故障 | docker stop nebula-redis | 现状 Redis 后端**无生产消费点**（缓存走进程内 oxcache/garrison memory）——验证服务完全不受影响 + 文档口径一致 | — | ⚠️ 口径确认即测试 |
+| FAULT-08 结题口径 | — | — | **「Redis 缓存层为实现预留面，无生产消费点，跨实例共享号段有重复 ID 风险，不纳入本次修复」**；`[redis]` 段 / `REDIS_URL` / compose 的 redis 服务仅保持部署形态，接入缓存层须单独立项评估 ID 唯一性 | — | ✅ 已裁决（2026-10-15） |
 | FAULT-09 | 磁盘满（号段持久化） | tmpfs 塞满 | allocate 报 DatabaseError（5xx 消毒）；不 panic | 恢复后正常 | ❌ |
 
 ---

@@ -487,7 +487,7 @@ impl EtcdClusterHealthMonitor {
         // 无法单测可靠覆盖；该分支逻辑由注入路径测试覆盖。
         use etcd_client::Client;
 
-        if self.config.endpoints.is_empty() {
+        if !self.config.has_configured_endpoints() {
             warn!(
                 "{}",
                 t!("log.core.coordinator.etcd.no_endpoints_configured")
@@ -495,7 +495,7 @@ impl EtcdClusterHealthMonitor {
             return;
         }
 
-        let endpoints = self.config.endpoints.clone();
+        let endpoints = self.config.configured_endpoints();
         let timeout = Duration::from_millis(self.config.connect_timeout_ms);
 
         let health_check = tokio::time::timeout(timeout, async {

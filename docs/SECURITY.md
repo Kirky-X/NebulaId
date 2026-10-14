@@ -23,7 +23,7 @@
 
 | 版本 | 支持状态 |
 |------|----------|
-| latest（0.3.0-rc.2 及 Unreleased） | ✅ 接收安全修复 |
+| latest（0.3.0-rc.3 及 Unreleased） | ✅ 接收安全修复 |
 | 更早版本 | ❌ 不再接收修复 |
 
 依赖安全由 `cargo-audit`（CI 与 release 前置均以 `--deny warnings` 执行）与 `cargo-deny`（许可证 + 安全 Advisories 检查，配置见 `deny.toml`）双重监控。

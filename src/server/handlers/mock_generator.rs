@@ -3,7 +3,7 @@
 
 use crate::core::algorithm::{DegradationManager, HealthStatus, IdGenerator as CoreIdGenerator};
 use crate::core::types::AlgorithmType;
-use crate::core::{CoreError, Id, Result};
+use crate::core::{CoreError, Id, IdBatch, Result};
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -107,6 +107,34 @@ impl CoreIdGenerator for MockIdGenerator {
         _biz_tag: &str,
     ) -> Result<String> {
         Ok("segment".to_string())
+    }
+
+    /// 桩实现：无降级链，报告请求算法（`None` 时按桩默认 segment）。
+    async fn generate_reporting_algorithm(
+        &self,
+        algorithm: Option<AlgorithmType>,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+    ) -> Result<(Id, AlgorithmType)> {
+        let id = self.generate(workspace, group, biz_tag).await?;
+        Ok((id, algorithm.unwrap_or(AlgorithmType::Segment)))
+    }
+
+    async fn batch_generate_reporting_algorithm(
+        &self,
+        algorithm: Option<AlgorithmType>,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+        size: usize,
+    ) -> Result<IdBatch> {
+        let ids = self.batch_generate(workspace, group, biz_tag, size).await?;
+        Ok(IdBatch::new(
+            ids,
+            algorithm.unwrap_or(AlgorithmType::Segment),
+            biz_tag.to_string(),
+        ))
     }
 
     async fn health_check(&self) -> HealthStatus {

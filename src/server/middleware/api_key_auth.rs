@@ -1273,7 +1273,7 @@ mod tests {
         assert!(auth.check_auth_failure_rate("10.9.0.1").await);
     }
 
-    /// H1 回归锚点：DAO 故障时 `check_auth_failure_rate` 必须失败关闭（返回 false），
+    /// 回归锚点：DAO 故障时 `check_auth_failure_rate` 必须失败关闭（返回 false），
     /// 与 i18n 文案「按失败关闭拒绝」一致；此前 Err 分支误返 true（放行）。
     #[tokio::test]
     #[cfg(feature = "garrison-auth")]

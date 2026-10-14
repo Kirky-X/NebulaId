@@ -28,12 +28,8 @@ async fn e2e_segment_generate_via_default_loader_returns_id() {
 }
 
 #[tokio::test]
-async fn e2e_segment_health_check_without_db_returns_degraded() {
-    // No active buffer -> health_check returns Degraded("No active buffers")
+async fn e2e_segment_health_check_idle_is_healthy() {
+    // 空闲（无活动缓冲）不是故障：号段在首个请求时按需分配。
     let algo = SegmentAlgorithm::new(0);
-    let status = algo.health_check();
-    match status {
-        HealthStatus::Degraded(msg) => assert_eq!(msg, "No active buffers"),
-        other => panic!("expected Degraded, got {:?}", other),
-    }
+    assert_eq!(algo.health_check(), HealthStatus::Healthy);
 }

@@ -309,10 +309,31 @@ fn default_operation_timeout_secs() -> u64 {
     3
 }
 
+impl EtcdConfig {
+    /// 是否存在可用 endpoint：`ETCD_ENDPOINTS=""` 与尾逗号写法会解析出空白项，
+    /// 空白项等同「未配置」，装配层据此退回 `LocalDistributedLock`（单进程），
+    /// 而不是拿空串去建连后 fail-closed 拒绝启动。
+    pub fn has_configured_endpoints(&self) -> bool {
+        self.endpoints.iter().any(|e| !e.trim().is_empty())
+    }
+
+    /// 建连用 endpoint 列表（去除空白项，保留其余取值原样）。
+    pub fn configured_endpoints(&self) -> Vec<String> {
+        self.endpoints
+            .iter()
+            .filter(|e| !e.trim().is_empty())
+            .cloned()
+            .collect()
+    }
+}
+
 impl Default for EtcdConfig {
     fn default() -> Self {
         Self {
-            endpoints: vec!["etcd:2379".to_string()],
+            // 内置默认必须能在裸机（无 etcd、无编排内网 DNS）启动：空列表 = 单进程
+            // 本地锁（装配层 warn）。容器/多实例部署由 compose 显式注入
+            // `ETCD_ENDPOINTS=etcd:2379`，仓库配置文件见 `config/config.toml`。
+            endpoints: Vec::new(),
             connect_timeout_ms: 5000,
             watch_timeout_ms: 5000,
             operation_timeout_secs: default_operation_timeout_secs(),
@@ -502,9 +523,39 @@ mod tests {
     #[test]
     fn test_etcd_config_default_values() {
         let cfg = EtcdConfig::default();
-        assert_eq!(cfg.endpoints, vec!["etcd:2379".to_string()]);
+        // 内置默认空列表 = 单进程本地锁：裸机（无 etcd/编排 DNS）必须能启动，
+        // compose 部署由 ETCD_ENDPOINTS=etcd:2379 显式注入。
+        assert!(cfg.endpoints.is_empty());
         assert_eq!(cfg.connect_timeout_ms, 5000);
         assert_eq!(cfg.watch_timeout_ms, 5000);
+    }
+
+    /// 空白项（`ETCD_ENDPOINTS=""`、尾逗号）不算已配置；建连列表同时剔除空白项。
+    #[test]
+    fn test_etcd_config_blank_endpoints_not_configured() {
+        let blank = EtcdConfig {
+            endpoints: vec![String::new()],
+            ..Default::default()
+        };
+        assert!(!blank.has_configured_endpoints());
+        assert!(blank.configured_endpoints().is_empty());
+
+        let whitespace = EtcdConfig {
+            endpoints: vec!["   ".to_string(), "\t".to_string()],
+            ..Default::default()
+        };
+        assert!(!whitespace.has_configured_endpoints());
+        assert!(whitespace.configured_endpoints().is_empty());
+
+        let mixed = EtcdConfig {
+            endpoints: vec!["http://127.0.0.1:2379".to_string(), String::new()],
+            ..Default::default()
+        };
+        assert!(mixed.has_configured_endpoints());
+        assert_eq!(
+            mixed.configured_endpoints(),
+            vec!["http://127.0.0.1:2379".to_string()]
+        );
     }
 
     // ----- NebulaIdConfig.locale -----

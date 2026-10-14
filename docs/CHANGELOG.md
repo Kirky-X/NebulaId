@@ -11,20 +11,23 @@
 
 ## 📋 目录
 
-- [Unreleased](#unreleased)
+- [0.3.0-rc.3 - 2026-10-14](#030-rc3---2026-10-14)
+- [0.3.0-rc.2 - 2026-10-11](#030-rc2---2026-10-11)
 - [0.3.0-rc.1 - 2026-09-22](#030-rc1---2026-09-22)
 - [0.2.0 - 2026-07-23](#020---2026-07-23)
 
 ---
 
-## [Unreleased]
+## [0.3.0-rc.3] - 2026-10-14
 
-### deps（2026-10-14 自研依赖升级至最新 RC 波次）
+### deps（自研依赖升级至最新 RC 波次）
 
 - **8 个自研 crate 全部升级**：confers `0.6.0-rc.6`→`0.6.0-rc.10`、oxcache `0.5.0-rc.4`→`0.5.0-rc.8`、dbnexus `0.6.0-rc.5`→`0.6.0-rc.9`、sdforge `0.5.0-rc.5`→`0.5.0-rc.8`、inklog `0.3.0-rc.5`→`0.3.0-rc.9`、garrison `0.9.0-rc.2`→`0.9.0-rc.3`、trait-kit `0.5.0-rc.6`→`0.5.0-rc.9`、limiteron `0.3.0-rc.5`→`0.3.0-rc.7`。
 - **utoipa `5.5`→`6.0` 对齐**：sdforge rc.8 内部升级 utoipa 6.0，本 crate 直接依赖同步升级消除双版本类型冲突。
 - **自动收益**：confers YAML 后端迁移 serde-saphyr（消除 RUSTSEC-2024-0449 根源）、strict_booleans 泛型值解析修复；inklog 脱敏引擎缺陷修复（IPv6 压缩形式脱敏、api_key 单标记幂等、目录模式错误明细展开）；sdforge 删除 StructuredLogger 栈收敛 inklog.LoggerManager 公共面（本仓零使用）。
 - **验证**：`cargo check --all-features` 零错误；`cargo test --lib` 1662 通过 / 0 失败。
+
+## [0.3.0-rc.2] - 2026-10-11
 
 ### feat（add-uuid-v5-derive：RFC 9562 v5 确定性派生）
 
@@ -50,16 +53,16 @@
 - **发布前三审查整改**（安全 / 架构 / 性能并行 subagent，规则 10）：防爆破观测故障 fail-open → fail-closed（ErrDao 桩测试钉死极性）；DAO 无界增长 → 容量阀（BoundedDao）；i18n 热路径绕开全局锁；`test_support` 恢复 `#[cfg(test)]`（不再随发布库进公开面）；garrison 特性裁剪至 `firewall-bruteforce`（web-axum / protocol-apikey / cache-memory 零使用）；bench `required-features` 补齐（剪裁组合由编译失败改为正确跳过）。
 - **已知取舍**：① core 层自此无条件依赖 sdforge（收编决策的声明后果：纯算法消费方也编译 sdforge 树）；sdforge i18n 注册表是进程级共享可变全局——NebulaId 查询路径已绕开（本地快照），但同二进制内其他 sdforge 使用方与 NebulaId 的键共表，未来键命名须防冲突。② i18n 缺参渲染与旧 Fluent 有形符差（`{$name}` vs `{ $name }`），仅在调用点漏参（本身即 bug）时显现。③ gRPC 对禁用 / 过期 / 不存在 key 的错误码区分构成 key 状态枚举侧信道（批次前既有，未在本批引入，另行跟进）。
 
-### fix（2026-09-24 uuid_v8 唯一性防线修复）
+### fix（uuid_v8 唯一性防线修复）
 
 - **计数器随机起点失效修复**：`UuidV8Impl::new` 的计数器种子为 `rand26 << 31 再 & 21 位掩码`，恒为 0——UUIDP「随机起点」机制实际未生效，跨重启同毫秒的碰撞防线退化到仅剩 26 位 rand。改为直接取 21 位随机初值，恢复设计保证（新增随机性测试钉住）。
 - **批量发号计数器回绕守卫**：`batch_inner` 在 size 超过单毫秒计数器空间（2^21）时以 `SequenceOverflow` 显性拒绝（最坏情况全批落同一毫秒时会回绕重复）——静态拒绝而非静默出重。
 
-### deps（2026-09-24 rustls-pemfile 退役）
+### deps（rustls-pemfile 退役）
 
 - **移除 `rustls-pemfile` 依赖**（RUSTSEC-2025-0134：上游归档停维护，官方指向 rustls-pki-types 的 `PemObject` API）：TLS 证书/密钥/CA 三处加载迁移到 `rustls::pki_types::pem::PemObject` 迭代器（经 rustls 再导出，零新增依赖）。语义逐一保留：取首个目标项、非目标项跳过、解析错误映射不变，空文件错误信息不变（`Empty certificate chain` / `Empty private key` / `Empty CA certificate`）。
 
-### fix-audit-defects-r1（2026-09-24 审计修复轮）
+### fix-audit-defects-r1（审计修复轮）
 
 对照「分布式 ID 面试题清单」审计发现 10 项缺陷（FMEA 排序 RPN 60–320），本轮全部修复：
 

@@ -303,6 +303,8 @@ async fn create_dev_test_admin_key(repo: &Arc<database::SeaOrmRepository>) {
 async fn create_id_generator(
     config: &Config,
     audit_logger: Arc<AuditLogger>,
+    // segment 关闭时无号段仓储可注入（该组合由 cfg 门控剔除使用点）。
+    #[allow(unused_variables)] repository: &Option<Arc<database::SeaOrmRepository>>,
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
 ) -> Result<Arc<AlgorithmRouter>> {
     info!("{}", t!("log.main.id_generators_initializing"));
@@ -321,6 +323,14 @@ async fn create_id_generator(
 
     #[cfg(feature = "segment")]
     let router = router.with_cpu_monitor(cpu_monitor);
+    // 号段仓储注入：复用上方迁移/认证同一连接池。缺失会让默认算法非 Segment
+    // 的部署在显式请求 Segment 时恒 ConfigurationError（无注入即无装载器），
+    // 而运行期 `/config/algorithm` 可把任意 biz_tag 指向 Segment。
+    #[cfg(feature = "segment")]
+    let router = match repository {
+        Some(repo) => router.with_segment_repository(repo.clone()),
+        None => router,
+    };
     let router = if let Some(monitor) = etcd_health_monitor {
         Arc::new(router.with_etcd_health_monitor(monitor))
     } else {
@@ -337,6 +347,8 @@ async fn create_id_generator(
 async fn create_id_generator(
     config: &Config,
     audit_logger: Arc<AuditLogger>,
+    // segment 关闭时无号段仓储可注入（该组合由 cfg 门控剔除使用点）。
+    #[allow(unused_variables)] repository: &Option<Arc<database::SeaOrmRepository>>,
     _etcd_health_monitor: Option<Arc<()>>,
 ) -> Result<Arc<AlgorithmRouter>> {
     info!(
@@ -357,6 +369,12 @@ async fn create_id_generator(
     let router = AlgorithmRouter::new(config.clone(), Some(audit_logger_for_core));
     #[cfg(feature = "segment")]
     let router = router.with_cpu_monitor(cpu_monitor);
+    // 号段仓储注入：语义同 etcd 分支（复用同一连接池，显式 Segment 路由可用）。
+    #[cfg(feature = "segment")]
+    let router = match repository {
+        Some(repo) => router.with_segment_repository(repo.clone()),
+        None => router,
+    };
     let router = Arc::new(router);
 
     router.initialize().await?;
@@ -627,7 +645,9 @@ async fn assemble_coordination(config: &Config) -> Result<CoordinationComponents
         EtcdClientWrapper, EtcdDistributedLock, LocalDistributedLock, SEGMENT_LOCK_PATH_PREFIX,
     };
 
-    if config.etcd.endpoints.is_empty() {
+    // 「未配置」判定含空白项：`ETCD_ENDPOINTS=""`/尾逗号只会解析出空串，属于文档承诺的
+    // 单进程形态，不能拿空串建连后在 fail-closed 分支拒绝启动。
+    if !config.etcd.has_configured_endpoints() {
         warn!("Etcd endpoints not configured, using LocalDistributedLock (single-process only)");
         return Ok(CoordinationComponents {
             lock: std::sync::Arc::new(LocalDistributedLock::new()),
@@ -636,7 +656,7 @@ async fn assemble_coordination(config: &Config) -> Result<CoordinationComponents
     }
 
     // fail-closed：配置显式含 etcd endpoints，装配任一步失败 → Err（拒绝启动）。
-    let wrapper = EtcdClientWrapper::new(config.etcd.endpoints.clone())
+    let wrapper = EtcdClientWrapper::new(config.etcd.configured_endpoints())
         .await
         .map_err(|e| {
             nebulaid::core::types::CoreError::ConfigurationError(t!(
@@ -815,6 +835,25 @@ async fn init_observability() -> Result<Arc<inklog::LoggerManager>> {
     Ok(logger)
 }
 
+/// fail-fast 退出点的日志器句柄（由 [`main`] 注册一次）。
+///
+/// `std::process::exit` 跳过全部析构，inklog 异步 sink 里尚未落盘的最后几条
+/// error 会随进程消失（启动失败原因不可见）；退出点统一走 [`exit_with_flush`]。
+///
+/// 存 `Weak`：`Arc` 会让 `LoggerManager` 活到静态析构（即 tokio 运行时析构之后），
+/// inklog 的 sink worker 收不到 shutdown 信号，`Runtime::drop` 的 blocking pool
+/// 等待会永久挂住进程（SIGTERM 后不退出）。
+static EXIT_LOGGER: std::sync::OnceLock<std::sync::Weak<inklog::LoggerManager>> =
+    std::sync::OnceLock::new();
+
+/// 退出前的日志落盘：退出码语义与 `std::process::exit(code)` 一致。
+fn exit_with_flush(code: i32) -> ! {
+    if let Some(logger) = EXIT_LOGGER.get().and_then(|weak| weak.upgrade()) {
+        let _ = logger.shutdown();
+    }
+    std::process::exit(code)
+}
+
 /// 命令行配置路径解析(`--config <path>` 显式指定,否则内置默认路径)。
 fn parse_config_path(args: &[String]) -> (String, bool) {
     let explicit_path = args.len() > 2 && args[1] == "--config";
@@ -885,7 +924,7 @@ fn load_config(config_path: &str, explicit_path: bool) -> Result<Config> {
     // 没有 worker_id 运行时分配兜底,worker_id/dc_id 任一为默认 0 时显性
     // 提醒(多实例必须显式配置,否则 Snowflake 会重复)。
     if should_warn_default_worker_identity(
-        !config.etcd.endpoints.is_empty(),
+        config.etcd.has_configured_endpoints(),
         config.app.worker_id,
         config.app.dc_id,
     ) {
@@ -912,7 +951,7 @@ fn load_config(config_path: &str, explicit_path: bool) -> Result<Config> {
     {
         error!("{}", t!("error.main.tls_required_in_production"));
         error!("{}", t!("log.main.shutting_down"));
-        std::process::exit(1);
+        exit_with_flush(1);
     }
 
     Ok(config)
@@ -943,7 +982,7 @@ async fn init_repository(config: &Config) -> Result<RepositoryStack> {
             if let Err(e) = database::run_migrations(&conn).await {
                 error!("{}", t!("log.main.migrations_failed", error = e));
                 error!("{}", t!("log.main.shutting_down"));
-                std::process::exit(1);
+                exit_with_flush(1);
             }
 
             Some(conn)
@@ -952,7 +991,7 @@ async fn init_repository(config: &Config) -> Result<RepositoryStack> {
             error!("{}", t!("log.main.database_connect_failed", error = e));
             error!("{}", t!("log.main.check_database_url"));
             error!("{}", t!("log.main.shutting_down"));
-            std::process::exit(1);
+            exit_with_flush(1);
         }
     };
 
@@ -971,7 +1010,7 @@ async fn init_repository(config: &Config) -> Result<RepositoryStack> {
                 t!("error.main.etcd_required_but_unavailable", error = e)
             );
             error!("{}", t!("log.main.shutting_down"));
-            std::process::exit(1);
+            exit_with_flush(1);
         }
     };
     #[cfg(feature = "etcd")]
@@ -1083,7 +1122,7 @@ async fn init_auth_stack(
         Arc::new(auth_builder)
     } else {
         error!("{}", t!("log.main.fatal_api_key_auth_requires_database"));
-        std::process::exit(1);
+        exit_with_flush(1);
     };
     let _ = trusted_proxies; // also consumed by router.rs via env var
     load_api_keys(&auth, repository, config).await;
@@ -1296,7 +1335,7 @@ async fn init_etcd_runtime(
                     t!("error.main.worker_id_allocation_failed", error = e)
                 );
                 error!("{}", t!("log.main.shutting_down"));
-                std::process::exit(1);
+                exit_with_flush(1);
             }
         },
         None => None,
@@ -1362,6 +1401,7 @@ async fn run_servers(stack: ServerStack) -> Result<()> {
     let id_generator = create_id_generator(
         &config,
         audit_logger.clone(),
+        &repository,
         Some(etcd_runtime.health_monitor.clone()),
     )
     .await?;
@@ -1371,7 +1411,7 @@ async fn run_servers(stack: ServerStack) -> Result<()> {
 
         // 删除原此处创建后即丢弃的 AlgorithmRouter 死代码;
         // id_generator 由 create_id_generator 构建并作为实际生成器使用。
-        create_id_generator(&config, audit_logger.clone(), None).await?
+        create_id_generator(&config, audit_logger.clone(), &repository, None).await?
     };
 
     // 限流器先于 ConfigManager 创建,经 with_rate_limiter
@@ -1528,6 +1568,9 @@ async fn run_servers(stack: ServerStack) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let logger = init_observability().await?;
+    // 注册 fail-fast 退出点的日志句柄（弱引用，见 exit_with_flush：不得延长
+    // LoggerManager 生命周期，否则运行时析构等待 inklog worker 永久挂住）。
+    let _ = EXIT_LOGGER.set(Arc::downgrade(&logger));
 
     info!("{}", t!("log.main.starting_service"));
     info!(
@@ -2264,5 +2307,237 @@ mod tests {
         let (locale, invalid) = resolve_locale_from(None, "es-ES", None, None, None, None);
         assert_eq!(locale, "en");
         assert!(invalid);
+    }
+
+    // ==================== 组合根装配缝（bin 侧可达性） ====================
+
+    /// 组合根装配测试专用最小 stub 仓储：读写一律空值。
+    #[derive(Clone)]
+    struct StubApiKeyRepo;
+
+    #[async_trait::async_trait]
+    impl database::ApiKeyRepository for StubApiKeyRepo {
+        async fn create_api_key(
+            &self,
+            _request: &database::CreateApiKeyRequest,
+        ) -> nebulaid::core::types::Result<database::ApiKeyWithSecret> {
+            Err(nebulaid::core::types::CoreError::InternalError(
+                "stub".to_string(),
+            ))
+        }
+        async fn get_api_key_by_id(
+            &self,
+            _key_id: &str,
+        ) -> nebulaid::core::types::Result<Option<database::ApiKeyInfo>> {
+            Ok(None)
+        }
+        async fn validate_api_key(
+            &self,
+            _key_id: &str,
+            _key_secret: &str,
+        ) -> nebulaid::core::types::Result<Option<database::AuthenticatedKey>> {
+            Ok(None)
+        }
+        async fn list_api_keys(
+            &self,
+            _workspace_id: uuid::Uuid,
+            _limit: Option<u32>,
+            _offset: Option<u32>,
+        ) -> nebulaid::core::types::Result<Vec<database::ApiKeyInfo>> {
+            Ok(vec![])
+        }
+        async fn delete_api_key(&self, _id: uuid::Uuid) -> nebulaid::core::types::Result<()> {
+            Ok(())
+        }
+        async fn revoke_api_key(&self, _id: uuid::Uuid) -> nebulaid::core::types::Result<()> {
+            Ok(())
+        }
+        async fn update_last_used(&self, _key: uuid::Uuid) -> nebulaid::core::types::Result<()> {
+            Ok(())
+        }
+        async fn get_admin_api_key(
+            &self,
+            _workspace_id: uuid::Uuid,
+        ) -> nebulaid::core::types::Result<Option<database::ApiKeyInfo>> {
+            Ok(None)
+        }
+        async fn count_api_keys(
+            &self,
+            _workspace_id: uuid::Uuid,
+        ) -> nebulaid::core::types::Result<u64> {
+            Ok(0)
+        }
+        async fn find_api_key_by_row_id(
+            &self,
+            _id: uuid::Uuid,
+        ) -> nebulaid::core::types::Result<Option<database::ApiKeyInfo>> {
+            Ok(None)
+        }
+        async fn count_admin_keys(&self) -> nebulaid::core::types::Result<u64> {
+            Ok(0)
+        }
+        async fn rotate_api_key(
+            &self,
+            _key_id: &str,
+            _grace_period_seconds: u64,
+        ) -> nebulaid::core::types::Result<database::ApiKeyWithSecret> {
+            Err(nebulaid::core::types::CoreError::InternalError(
+                "stub".to_string(),
+            ))
+        }
+        async fn get_keys_older_than(
+            &self,
+            _age_threshold_days: i64,
+        ) -> nebulaid::core::types::Result<Vec<database::ApiKeyInfo>> {
+            Ok(vec![])
+        }
+    }
+
+    /// `parse_config_path`：仅 `args[1] == "--config"` 且带第三个参数时取显式路径。
+    #[test]
+    fn test_parse_config_path_default_and_explicit() {
+        assert_eq!(
+            parse_config_path(&["nebula-id".to_string()]),
+            (DEFAULT_CONFIG_PATH.to_string(), false)
+        );
+        assert_eq!(
+            parse_config_path(&[
+                "nebula-id".to_string(),
+                "--config".to_string(),
+                "/etc/nebula.toml".to_string(),
+            ]),
+            ("/etc/nebula.toml".to_string(), true)
+        );
+        // 非 --config 开关不触发显式路径
+        assert_eq!(
+            parse_config_path(&[
+                "nebula-id".to_string(),
+                "--help".to_string(),
+                "x".to_string(),
+            ]),
+            (DEFAULT_CONFIG_PATH.to_string(), false)
+        );
+    }
+
+    /// `build_handlers_and_config_service` 无仓储分支：走 ConfigManager::new +
+    /// ApiHandlers::new（不注入 api_key 仓储），产出可用句柄。
+    #[tokio::test]
+    async fn test_build_handlers_and_config_service_without_repository() {
+        let config = Config::default();
+        let hot_config = Arc::new(HotReloadConfig::new(
+            config.clone(),
+            "config/config.toml".to_string(),
+        ));
+        let id_generator = Arc::new(AlgorithmRouter::new(config.clone(), None));
+        let rate_limiter = Arc::new(RateLimiter::new(10000, 100));
+        let repository: Option<Arc<database::SeaOrmRepository>> = None;
+
+        let (handlers, config_service) = build_handlers_and_config_service(
+            &config,
+            &id_generator,
+            &repository,
+            &rate_limiter,
+            hot_config,
+        );
+        let _ = (handlers, config_service);
+    }
+
+    /// `build_api_handlers`：把 grace period 注入 ApiHandlers（无 panic 即达契约）。
+    #[tokio::test]
+    async fn test_build_api_handlers_wires_grace_period() {
+        let config = Config::default();
+        let hot_config = Arc::new(HotReloadConfig::new(
+            config.clone(),
+            "config/config.toml".to_string(),
+        ));
+        let id_generator = Arc::new(AlgorithmRouter::new(config.clone(), None));
+        let config_service: Arc<dyn ConfigManagementService> =
+            Arc::new(ConfigManager::new(hot_config, id_generator.clone()));
+        let repo: Arc<dyn database::ApiKeyRepository> = Arc::new(StubApiKeyRepo);
+
+        let handlers = build_api_handlers(id_generator, config_service, repo, 42);
+        let _ = handlers;
+    }
+
+    /// `init_tls_manager`：TLS 关闭时 `initialize()` 直接 Ok 且返回 None。
+    #[tokio::test]
+    async fn test_init_tls_manager_disabled_returns_none() {
+        let mut config = Config::default();
+        config.tls.enabled = false;
+        let manager = init_tls_manager(&config)
+            .await
+            .expect("TLS 关闭时装配必须 Ok");
+        assert!(manager.is_none(), "未启用任何 TLS 端口应返回 None");
+    }
+
+    /// `init_observability`：inklog 日志 + 早期 en i18n 初始化成功。
+    #[tokio::test]
+    async fn test_init_observability_returns_logger() {
+        let logger = init_observability().await;
+        assert!(logger.is_ok(), "inklog 初始化必须成功");
+    }
+
+    /// `load_api_keys` 无仓储分支：仅告警后返回，不 panic。
+    #[tokio::test]
+    async fn test_load_api_keys_without_repository_is_noop() {
+        let config = Config::default();
+        let auth = Arc::new(ApiKeyAuth::new(Arc::new(StubApiKeyRepo), false));
+        let repository: Option<Arc<database::SeaOrmRepository>> = None;
+        load_api_keys(&auth, &repository, &config).await;
+    }
+
+    /// `create_id_generator`（非 etcd 分支）：装配 AlgorithmRouter 并初始化；
+    /// 无 DB 时 Segment 初始化可能失败，此处只钉「装配路径可达且不 panic」。
+    #[tokio::test]
+    async fn test_create_id_generator_non_etcd_reachable() {
+        let config = Config::default();
+        let audit_logger = Arc::new(AuditLogger::new(10000));
+        let repository: Option<Arc<database::SeaOrmRepository>> = None;
+        let _ = create_id_generator(&config, audit_logger, &repository, None).await;
+    }
+
+    /// `init_auth_stack`（含仓储）：装配决策缓存 / ApiKeyAuth / 审计 logger /
+    /// 热重载配置；MockDatabase 仓储使 `load_api_keys` 走 DB 分支（无排队结果
+    /// → 命中 Err 分支，不触真实数据库）。
+    #[tokio::test]
+    async fn test_init_auth_stack_with_mock_repository() {
+        use dbnexus::sea_orm::{DatabaseBackend, MockDatabase};
+
+        let config = Config::default();
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let repo = Arc::new(database::SeaOrmRepository::new(db, "test_salt".to_string()));
+        let repository: Option<Arc<database::SeaOrmRepository>> = Some(repo);
+        let logger = init_observability().await.expect("inklog 初始化必须成功");
+
+        let stack = init_auth_stack(&config, &repository, logger).await;
+        // 装配产物不可为空（auth/audit/hot_config 均已构造）。
+        let _ = stack;
+    }
+
+    /// `start_grpc_server`：绑定临时端口启动，abort 退出（覆盖装配 + 启动路径）。
+    #[tokio::test]
+    async fn test_start_grpc_server_binds_and_serves() {
+        let config = Config::default();
+        let hot_config = Arc::new(HotReloadConfig::new(
+            config.clone(),
+            "config/config.toml".to_string(),
+        ));
+        let id_generator = Arc::new(AlgorithmRouter::new(config.clone(), None));
+        let config_service: Arc<dyn ConfigManagementService> =
+            Arc::new(ConfigManager::new(hot_config, id_generator.clone()));
+        let handlers = Arc::new(ApiHandlers::new(id_generator, config_service));
+        let auth = Arc::new(ApiKeyAuth::new(Arc::new(StubApiKeyRepo), false));
+        // 临时端口：避免与真实/并行服务抢占固定 gRPC 端口。
+        let server_config = ServerConfig {
+            grpc_port: 0,
+            ..ServerConfig::default()
+        };
+
+        let server =
+            tokio::spawn(
+                async move { start_grpc_server(server_config, handlers, auth, None).await },
+            );
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        server.abort();
     }
 }

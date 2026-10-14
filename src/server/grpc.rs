@@ -32,6 +32,16 @@ pub struct GrpcServer {
     auth: Option<Arc<ApiKeyAuth>>,
 }
 
+/// HTTP 响应时间戳（RFC3339 文本）→ gRPC `int64` 时间戳（Unix 毫秒）。
+///
+/// proto 的 `timestamp` 是 `int64`，handlers 装配的是 RFC3339 文本；直接
+/// 按 `i64` 解析恒失败并静默回退 0，使响应字段恒为 0（调用方拿到假时间）。
+fn rfc3339_to_unix_millis(timestamp: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(0)
+}
+
 impl GrpcServer {
     pub fn new(handlers: Arc<ApiHandlers>) -> Self {
         Self {
@@ -377,7 +387,7 @@ impl NebulaIdService for GrpcServer {
 
         match self.handlers.generate(generate_req).await {
             Ok(resp) => {
-                let timestamp = resp.timestamp.parse().unwrap_or(0);
+                let timestamp = rfc3339_to_unix_millis(&resp.timestamp);
                 Ok(Response::new(GrpcGenerateResponse {
                     id: resp.id,
                     timestamp,
@@ -460,7 +470,7 @@ impl NebulaIdService for GrpcServer {
 
         match self.handlers.batch_generate(batch_req).await {
             Ok(resp) => {
-                let timestamp = resp.timestamp.parse().unwrap_or(0);
+                let timestamp = rfc3339_to_unix_millis(&resp.timestamp);
                 let ids = resp
                     .ids
                     .into_iter()
@@ -517,7 +527,7 @@ impl NebulaIdService for GrpcServer {
 
                         match handlers.batch_generate(batch_req).await {
                             Ok(resp) => {
-                                let timestamp = resp.timestamp.parse().unwrap_or(0);
+                                let timestamp = rfc3339_to_unix_millis(&resp.timestamp);
                                 for id in resp.ids {
                                     let stream_resp = BatchGenerateStreamResponse {
                                         id: Some(GrpcGenerateResponse {
@@ -570,7 +580,7 @@ impl NebulaIdService for GrpcServer {
 
         match self.handlers.parse(parse_req).await {
             Ok(resp) => {
-                let timestamp = resp.timestamp.parse().unwrap_or(0);
+                let timestamp = rfc3339_to_unix_millis(&resp.timestamp);
                 let metadata: HashMap<String, String> = vec![
                     ("timestamp".to_string(), resp.metadata.timestamp.to_string()),
                     (
@@ -900,5 +910,300 @@ mod tests {
             service: String::new(),
         });
         assert_eq!(peer_ip(&req), "unknown");
+    }
+
+    // ===== 认证路径：authenticate / reject / classify_miss =====
+
+    use crate::core::database::{
+        ApiKey, ApiKeyInfo, ApiKeyRepository, ApiKeyRole as DbRole, AuthenticatedKey,
+    };
+    use uuid::Uuid;
+
+    /// 认证路径专用 stub 仓储：`validate_api_key` / `get_api_key_by_id`
+    /// 返回预置值，其余读写一律空值（authenticate 仅消费这两条）。
+    #[derive(Clone)]
+    struct AuthStubRepo {
+        validated: Option<AuthenticatedKey>,
+        row: Option<ApiKeyInfo>,
+    }
+
+    impl AuthStubRepo {
+        fn accepting(role: DbRole, workspace_id: Option<Uuid>) -> Self {
+            Self {
+                validated: Some(AuthenticatedKey {
+                    workspace_id,
+                    role,
+                    used_previous_credential: false,
+                }),
+                row: None,
+            }
+        }
+
+        fn with_row(row: Option<ApiKeyInfo>) -> Self {
+            Self {
+                validated: None,
+                row,
+            }
+        }
+    }
+
+    fn stub_row(enabled: bool, expires_at: Option<chrono::NaiveDateTime>) -> ApiKeyInfo {
+        ApiKey {
+            id: Uuid::new_v4(),
+            key_id: "stub-key".to_string(),
+            key_prefix: "nino_".to_string(),
+            role: DbRole::User,
+            workspace_id: None,
+            name: "stub".to_string(),
+            description: None,
+            rate_limit: 1000,
+            enabled,
+            expires_at,
+            last_used_at: None,
+            created_at: chrono::Utc::now().naive_utc(),
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ApiKeyRepository for AuthStubRepo {
+        async fn create_api_key(
+            &self,
+            _request: &crate::core::database::CreateApiKeyRequest,
+        ) -> crate::core::types::Result<crate::core::database::ApiKeyWithSecret> {
+            Err(crate::core::types::CoreError::InternalError("stub".into()))
+        }
+        async fn get_api_key_by_id(
+            &self,
+            _key_id: &str,
+        ) -> crate::core::types::Result<Option<ApiKeyInfo>> {
+            Ok(self.row.clone())
+        }
+        async fn validate_api_key(
+            &self,
+            _key_id: &str,
+            _key_secret: &str,
+        ) -> crate::core::types::Result<Option<AuthenticatedKey>> {
+            Ok(self.validated.clone())
+        }
+        async fn list_api_keys(
+            &self,
+            _workspace_id: Uuid,
+            _limit: Option<u32>,
+            _offset: Option<u32>,
+        ) -> crate::core::types::Result<Vec<ApiKeyInfo>> {
+            Ok(vec![])
+        }
+        async fn delete_api_key(&self, _id: Uuid) -> crate::core::types::Result<()> {
+            Ok(())
+        }
+        async fn revoke_api_key(&self, _id: Uuid) -> crate::core::types::Result<()> {
+            Ok(())
+        }
+        async fn update_last_used(&self, _id: Uuid) -> crate::core::types::Result<()> {
+            Ok(())
+        }
+        async fn get_admin_api_key(
+            &self,
+            _workspace_id: Uuid,
+        ) -> crate::core::types::Result<Option<ApiKeyInfo>> {
+            Ok(None)
+        }
+        async fn count_api_keys(&self, _workspace_id: Uuid) -> crate::core::types::Result<u64> {
+            Ok(0)
+        }
+        async fn find_api_key_by_row_id(
+            &self,
+            _id: Uuid,
+        ) -> crate::core::types::Result<Option<ApiKeyInfo>> {
+            Ok(None)
+        }
+        async fn count_admin_keys(&self) -> crate::core::types::Result<u64> {
+            Ok(0)
+        }
+        async fn rotate_api_key(
+            &self,
+            _key_id: &str,
+            _grace_period_seconds: u64,
+        ) -> crate::core::types::Result<crate::core::database::ApiKeyWithSecret> {
+            Err(crate::core::types::CoreError::InternalError("stub".into()))
+        }
+        async fn get_keys_older_than(
+            &self,
+            _age_threshold_days: i64,
+        ) -> crate::core::types::Result<Vec<ApiKeyInfo>> {
+            Ok(vec![])
+        }
+    }
+
+    /// 构造启用认证的 GrpcServer（stub 仓储）。
+    fn auth_grpc_server(repo: AuthStubRepo, enabled: bool) -> GrpcServer {
+        let config = Config::default();
+        let hot_config = Arc::new(HotReloadConfig::new(
+            config.clone(),
+            "config/config.toml".to_string(),
+        ));
+        let algorithm_router = Arc::new(AlgorithmRouter::new(config, None));
+        let config_service: Arc<dyn ConfigManagementService> =
+            Arc::new(ConfigManager::new(hot_config, algorithm_router));
+        let id_generator: Arc<dyn crate::core::algorithm::IdGenerator> =
+            Arc::new(MockIdGenerator::new());
+        let handlers = Arc::new(ApiHandlers::new(id_generator, config_service));
+        let auth = Arc::new(ApiKeyAuth::new(Arc::new(repo), enabled));
+        GrpcServer::with_auth(handlers, auth)
+    }
+
+    /// 携带 `ApiKey key:secret` 头（解析器支持的明文格式，免 base64）。
+    fn generate_req_with_auth(value: Option<&str>) -> Request<GrpcGenerateRequest> {
+        let mut req = Request::new(GrpcGenerateRequest {
+            namespace: "auth-ns".to_string(),
+            tag: "t".to_string(),
+            metadata: Default::default(),
+        });
+        if let Some(v) = value {
+            req.metadata_mut()
+                .insert("authorization", v.parse().unwrap());
+        }
+        req
+    }
+
+    /// auth.enabled=false：降级放行（对齐 HTTP Anonymous 语义）。
+    #[tokio::test]
+    async fn test_authenticate_disabled_passes_through() {
+        let server = auth_grpc_server(AuthStubRepo::accepting(DbRole::User, None), false);
+        assert!(server
+            .authenticate(generate_req_with_auth(None))
+            .await
+            .is_ok());
+    }
+
+    /// 启用认证但缺 authorization metadata → unauthenticated。
+    #[tokio::test]
+    async fn test_authenticate_missing_metadata_rejected() {
+        let server = auth_grpc_server(AuthStubRepo::accepting(DbRole::User, None), true);
+        let err = server
+            .authenticate(generate_req_with_auth(None))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), sdforge::tonic::Code::Unauthenticated);
+    }
+
+    /// 启用认证但 authorization 格式非法 → unauthenticated。
+    #[tokio::test]
+    async fn test_authenticate_unsupported_format_rejected() {
+        let server = auth_grpc_server(AuthStubRepo::accepting(DbRole::User, None), true);
+        let err = server
+            .authenticate(generate_req_with_auth(Some("Bearer whatever")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), sdforge::tonic::Code::Unauthenticated);
+    }
+
+    /// 启用认证且凭证有效 → 放行并注入身份扩展。
+    #[tokio::test]
+    async fn test_authenticate_valid_credentials_injects_identity() {
+        let ws = Uuid::new_v4();
+        let server = auth_grpc_server(AuthStubRepo::accepting(DbRole::User, Some(ws)), true);
+        let req = server
+            .authenticate(generate_req_with_auth(Some("ApiKey k:s")))
+            .await
+            .expect("有效凭证必须放行");
+        assert_eq!(
+            req.extensions().get::<ApiKeyRole>(),
+            Some(&ApiKeyRole::User)
+        );
+        assert_eq!(req.extensions().get::<Option<Uuid>>(), Some(&Some(ws)));
+    }
+
+    /// 凭证无效且回查不到 key 行 → unauthenticated（unknown_key）。
+    #[tokio::test]
+    async fn test_authenticate_invalid_credentials_unknown_key() {
+        let server = auth_grpc_server(AuthStubRepo::with_row(None), true);
+        let err = server
+            .authenticate(generate_req_with_auth(Some("ApiKey k:s")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), sdforge::tonic::Code::Unauthenticated);
+    }
+
+    /// 凭证无效但 key 行被禁用 → permission_denied（key_disabled）。
+    #[tokio::test]
+    async fn test_authenticate_disabled_key_permission_denied() {
+        let server = auth_grpc_server(AuthStubRepo::with_row(Some(stub_row(false, None))), true);
+        let err = server
+            .authenticate(generate_req_with_auth(Some("ApiKey k:s")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), sdforge::tonic::Code::PermissionDenied);
+    }
+
+    /// 凭证无效但 key 行已过期 → permission_denied（key_expired）。
+    #[tokio::test]
+    async fn test_authenticate_expired_key_permission_denied() {
+        let past = chrono::Utc::now().naive_utc() - chrono::Duration::days(1);
+        let server = auth_grpc_server(
+            AuthStubRepo::with_row(Some(stub_row(true, Some(past)))),
+            true,
+        );
+        let err = server
+            .authenticate(generate_req_with_auth(Some("ApiKey k:s")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), sdforge::tonic::Code::PermissionDenied);
+    }
+
+    /// 凭证无效但 key 行有效 → bad_secret（unauthenticated）。
+    #[tokio::test]
+    async fn test_authenticate_bad_secret_unauthenticated() {
+        let future = chrono::Utc::now().naive_utc() + chrono::Duration::days(1);
+        let server = auth_grpc_server(
+            AuthStubRepo::with_row(Some(stub_row(true, Some(future)))),
+            true,
+        );
+        let err = server
+            .authenticate(generate_req_with_auth(Some("ApiKey k:s")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), sdforge::tonic::Code::Unauthenticated);
+    }
+
+    // ===== 资源级授权：authorize_namespace（经 generate 入口） =====
+
+    /// Admin key 调 generate 类接口 → permission_denied（仅面向 User）。
+    #[tokio::test]
+    async fn test_generate_admin_key_permission_denied() {
+        let server = auth_grpc_server(
+            AuthStubRepo::accepting(DbRole::Admin, Some(Uuid::new_v4())),
+            true,
+        );
+        let err = server
+            .generate(generate_req_with_auth(Some("ApiKey k:s")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), sdforge::tonic::Code::PermissionDenied);
+    }
+
+    /// User key 无租户绑定 → permission_denied（fail-closed，无法证明归属）。
+    #[tokio::test]
+    async fn test_generate_user_key_without_workspace_permission_denied() {
+        let server = auth_grpc_server(AuthStubRepo::accepting(DbRole::User, None), true);
+        let err = server
+            .generate(generate_req_with_auth(Some("ApiKey k:s")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), sdforge::tonic::Code::PermissionDenied);
+    }
+
+    /// User key 有租户绑定但反查失败（无仓储）→ internal（固定文案，不透出内部错误）。
+    #[tokio::test]
+    async fn test_generate_user_key_workspace_lookup_failure_internal() {
+        let server = auth_grpc_server(
+            AuthStubRepo::accepting(DbRole::User, Some(Uuid::new_v4())),
+            true,
+        );
+        let err = server
+            .generate(generate_req_with_auth(Some("ApiKey k:s")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), sdforge::tonic::Code::Internal);
     }
 }

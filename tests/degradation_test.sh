@@ -24,7 +24,7 @@
 #
 # @requires
 #     - curl
-#     - jq (用于 JSON 解析)
+#     - jq (用于 JSON 解析；/metrics 为 Prometheus 文本，按文本解析)
 #     - 运行的 Nebula ID 服务
 #
 # @environment_variables
@@ -44,7 +44,7 @@
 #     distributed_test.sh - 分布式一致性测试
 #
 # @author      Nebula ID Team
-# @version     1.2.0
+# @version     1.3.0
 # @date        2026-01-12
 #
 # @changelog
@@ -56,6 +56,11 @@
 #         - 启用严格模式（set -e，继承 lib.sh 的 -euo pipefail）
 #         - 启动前以 wait_http_ready 轮询服务就绪（默认 30s）
 #         - 对被测服务的 curl 增加连接级重试（--retry 3 --retry-connrefused）
+#     1.3.0 - 2026-10-15
+#         - 【3】按 Prometheus 文本解析 /metrics（原 JSON/jq 解析在文本端点上中止）
+#         - 【4】算法选择改用 generate 请求体 algorithm 字段
+#           （/api/v1/config/algorithm 为 Admin-only，user 凭据必然 403）
+#         - 【3】新增发号计数推进硬性检查（>0），失败以退出码 1 显性化
 #
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -82,6 +87,8 @@ fi
 # ========== 测试配置 ==========
 TEST_WORKSPACE="${TEST_WORKSPACE:-degradation}"
 CLEANUP_ENABLED="${CLEANUP_ENABLED:-true}"
+# 硬性检查失败数（如指标计数未推进）；>0 时脚本以 1 退出（文档化的"部分测试失败"）。
+check_failures=0
 
 # ========== 清理函数 ==========
 cleanup_test_data() {
@@ -169,20 +176,31 @@ done
 
 echo -e "\n【3】验证指标端点"
 echo "----------------------------------------"
+# /metrics 输出 Prometheus 文本（text/plain; version=0.0.4），非 JSON：
+# 用 awk 提取 `<name> <value>` 序列（跳过 `# HELP`/`# TYPE` 注释行），
+# 带标签的序列按指标名累加。
 metrics_result=$(curl -s --retry 3 --retry-connrefused "$(get_api_base)/metrics")
 echo "指标响应长度: ${#metrics_result} 字符"
 
-total=$(echo $metrics_result | jq -r '.total_requests')
-success=$(echo $metrics_result | jq -r '.successful_generations')
-failed=$(echo $metrics_result | jq -r '.failed_generations')
-total_ids=$(echo $metrics_result | jq -r '.total_ids_generated')
-latency=$(echo $metrics_result | jq -r '.avg_latency_ms')
+read_metric() {
+    local name="$1"
+    printf '%s\n' "$metrics_result" | awk -v metric="$name" '
+        $1 == metric || index($1, metric "{") == 1 { sum += $2 }
+        END { printf "%d", sum + 0 }
+    '
+}
+
+total=$(read_metric "nebula_id_requests_total")
+success=$(read_metric "nebula_id_successful_generations_total")
+failed=$(read_metric "nebula_id_failed_generations_total")
+total_ids=$(read_metric "nebula_id_ids_generated_total")
+latency=$(read_metric "nebula_id_uptime_seconds")
 
 echo "总请求数: $total"
 echo "成功请求: $success"
 echo "失败请求: $failed"
 echo "生成ID总数: $total_ids"
-echo "平均延迟: ${latency}ms"
+echo "运行时长: ${latency}s"
 
 if [ "$failed" -eq 0 ]; then
     echo "✓ 无失败请求,系统运行正常"
@@ -190,58 +208,53 @@ else
     echo "⚠ 发现 $failed 个失败请求"
 fi
 
+# 发号计数必须随成功请求推进（历史缺陷：ids_generated 恒 0，与延迟分位数不同源）。
+if [ "$total_ids" -gt 0 ]; then
+    echo "✓ 发号计数已推进: $total_ids 个 IDs"
+else
+    echo "✗ nebula_id_ids_generated_total 为 0: 发号成功但计数未推进" >&2
+    check_failures=$((check_failures + 1))
+fi
+
 echo -e "\n【4】不同算法的降级行为测试"
 echo "----------------------------------------"
+# 算法选择走 generate 请求体的 `algorithm` 字段（User key 可用）；
+# `/api/v1/config/algorithm` 为 Admin-only，user 凭据调用必然 403。
 
 echo -e "\n4.1 测试Segment算法(依赖数据库)"
 echo "----------------------------------------"
-curl -s --retry 3 --retry-connrefused -X POST "$(get_api_base)/api/v1/config/algorithm" \
-  -H "Content-Type: application/json" \
-  -H "$AUTH_HEADER" \
-  -d '{"biz_tag": "degradation:segment", "algorithm": "segment"}'
-
 for i in {1..3}; do
     result=$(curl -s --retry 3 --retry-connrefused -X POST "$(get_api_base)/api/v1/generate" \
       -H "Content-Type: application/json" \
       -H "$AUTH_HEADER" \
-      -d '{"workspace": "degradation", "group": "segment", "biz_tag": "degradation:segment"}')
+      -d '{"workspace": "degradation", "group": "segment", "biz_tag": "degradation:segment", "algorithm": "segment"}')
     id=$(echo $result | jq -r '.id')
     algo=$(echo $result | jq -r '.algorithm')
-    echo "Segment请求 $i: ID=$id"
+    echo "Segment请求 $i: ID=$id, Algorithm=$algo"
 done
 
 echo -e "\n4.2 测试Snowflake算法(本地生成)"
 echo "----------------------------------------"
-curl -s --retry 3 --retry-connrefused -X POST "$(get_api_base)/api/v1/config/algorithm" \
-  -H "Content-Type: application/json" \
-  -H "$AUTH_HEADER" \
-  -d '{"biz_tag": "degradation:snowflake", "algorithm": "snowflake"}'
-
 for i in {1..3}; do
     result=$(curl -s --retry 3 --retry-connrefused -X POST "$(get_api_base)/api/v1/generate" \
       -H "Content-Type: application/json" \
       -H "$AUTH_HEADER" \
-      -d '{"workspace": "degradation", "group": "snowflake", "biz_tag": "degradation:snowflake"}')
+      -d '{"workspace": "degradation", "group": "snowflake", "biz_tag": "degradation:snowflake", "algorithm": "snowflake"}')
     id=$(echo $result | jq -r '.id')
     algo=$(echo $result | jq -r '.algorithm')
-    echo "Snowflake请求 $i: ID=$id"
+    echo "Snowflake请求 $i: ID=$id, Algorithm=$algo"
 done
 
 echo -e "\n4.3 测试UUID V7算法(本地生成)"
 echo "----------------------------------------"
-curl -s --retry 3 --retry-connrefused -X POST "$(get_api_base)/api/v1/config/algorithm" \
-  -H "Content-Type: application/json" \
-  -H "$AUTH_HEADER" \
-  -d '{"biz_tag": "degradation:uuid", "algorithm": "uuid_v7"}'
-
 for i in {1..3}; do
     result=$(curl -s --retry 3 --retry-connrefused -X POST "$(get_api_base)/api/v1/generate" \
       -H "Content-Type: application/json" \
       -H "$AUTH_HEADER" \
-      -d '{"workspace": "degradation", "group": "uuid", "biz_tag": "degradation:uuid"}')
+      -d '{"workspace": "degradation", "group": "uuid", "biz_tag": "degradation:uuid", "algorithm": "uuid_v7"}')
     id=$(echo $result | jq -r '.id')
     algo=$(echo $result | jq -r '.algorithm')
-    echo "UUID V7请求 $i: $id"
+    echo "UUID V7请求 $i: ID=$id, Algorithm=$algo"
 done
 
 echo -e "\n【5】批量生成降级测试"
@@ -324,3 +337,10 @@ echo "降级链工作正常:"
 echo "- 数据库故障 → 依赖Redis缓存/本地缓存"
 echo "- Redis故障 → 降级到本地内存缓存"
 echo "- Snowflake/UuidV7 → 完全本地生成,不受影响"
+
+if [ "$check_failures" -ne 0 ]; then
+    echo ""
+    echo "✗ 硬性检查失败项: $check_failures" >&2
+    exit 1
+fi
+exit 0

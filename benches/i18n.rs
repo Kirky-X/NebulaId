@@ -1,21 +1,15 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! Criterion micro-benchmarks for the Phase 8 i18n hot paths.
+//! Criterion micro-benchmarks for the i18n hot paths.
 //!
 //! Run with: `cargo bench --bench i18n`
 //!
-//! Covers:
-//! - `translate_with_locale` (no-args lookup, en + zh-CN)
-//! - `translate_with_locale_args` (single-arg lookup, en)
-//! - `CoreError::to_localized_string` (delegates to `i18n_key()` +
-//!   `i18n_args()` + `translate_with_locale_args_cow`)
-//! - `parse_accept_language` (locale negotiation from raw header)
+//! Covers the concurrency-safe per-call i18n APIs: `translate_with_locale`,
+//! `translate_with_locale_args`, `CoreError::to_localized_string`, and
+//! `negotiate_locale_str` (locale negotiation from the raw header).
 //!
-//! Phase 8 (perf fix) — establishes a baseline so future
-//! i18n changes can be quantified. The bench intentionally avoids
-//! `set_locale` (global state) and exercises only the per-call
-//! `translate_with_locale*` APIs which are concurrency-safe.
+//! The bench deliberately avoids `set_locale` (global state).
 
 use criterion::{criterion_group, criterion_main, Criterion};
 // criterion 0.8 弃用了自身的 `black_box`，直接用标准库的稳定实现

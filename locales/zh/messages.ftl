@@ -673,3 +673,27 @@ log-example-sdk_server_routes_generate = POST /generate            生成单个 
 log-example-sdk_server_routes_batch = POST /generate/batch      批量生成 ID
 log-example-sdk_server_routes_openapi = GET  /api-docs/openapi.json  OpenAPI 文档
 error-sdk-generator_not_initialized = IdGenerator 未初始化（main 应先调用 build 并 set）
+
+# benches/auth_cache_adoption.rs —— T009 认证缓存收编性能门禁：门禁读数、
+# P50 诊断、公平性复核与写盘状态均经 `t!` 取值（进程默认 locale）。
+# 基准未调用 init_i18n，恒取 i18n 默认 en，无中文硬编码默认值。
+log-bench-auth_cache_adoption_gate_header = { "\u000A" }================ T009 性能门禁结果 ================
+log-bench-auth_cache_adoption_gate_baseline = 基线 AuthCache   : P99 = { $p99 }  吞吐 = { $tput } ops/s
+log-bench-auth_cache_adoption_gate_candidate = 候选 oxcache     : P99 = { $p99 }  吞吐 = { $tput } ops/s
+log-bench-auth_cache_adoption_gate_p99_increase = P99 增幅         : { $pct }%   (门禁 ≤ +{ $limit }%)
+log-bench-auth_cache_adoption_gate_throughput_decrease = 吞吐降幅         : { $pct }%   (门禁 ≤ +{ $limit }%)
+log-bench-auth_cache_adoption_gate_pass = 门禁通过：候选实现的 P99 增幅与吞吐降幅均在阈值内。
+log-bench-auth_cache_adoption_gate_reject_enforced = T009 门禁否决：P99 增幅 { $p99 }%、吞吐降幅 { $tput }%。依据 proposal D3 必须保留手写 AuthCache，并把本数据写入变更记录。
+log-bench-auth_cache_adoption_gate_reject_recorded = 门禁否决（未强制退出）：保留手写 AuthCache，数据已记录。
+log-bench-auth_cache_adoption_gate_rerun_hint = 复跑验证请设 NEBULAID_AUTH_CACHE_GATE=1。
+log-bench-auth_cache_adoption_hit_path_only = 基准只测命中路径
+log-bench-auth_cache_adoption_diag_p50 = { "\u000A" }(T009 诊断) P50 基线 { $baseline } / 候选 get_or { $get_or } / 候选 get { $get }
+log-bench-auth_cache_adoption_fairness_header = { "\u000A" }---- 公平性复核：纯命中路径（oxcache get，不含 single-flight 账本） ----
+log-bench-auth_cache_adoption_fairness_baseline = 基线 AuthCache : P99 = { $p99 }  吞吐 = { $tput } ops/s
+log-bench-auth_cache_adoption_fairness_candidate = 候选 oxcache get: P99 = { $p99 }  吞吐 = { $tput } ops/s
+log-bench-auth_cache_adoption_fairness_p99_increase = P99 增幅         : { $pct }%
+log-bench-auth_cache_adoption_fairness_throughput_decrease = 吞吐降幅         : { $pct }%
+log-bench-auth_cache_adoption_designated_header = { "\u000A" }---- 设计点名路径（oxcache get_or，含 single-flight 账本） ----
+log-bench-auth_cache_adoption_verdict_header = { "\u000A" }---- 门禁判定以纯命中路径为准 ----
+log-bench-auth_cache_adoption_report_write_failed = (warn) 基准结果写盘失败 { $path }: { $error }
+log-bench-auth_cache_adoption_report_written = (T009) 机器可读结果已写入 { $path }

@@ -1,26 +1,22 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! T009 认证缓存收编**性能门禁基准**。
+//! 认证缓存收编性能门禁基准。
 //!
-//! 对比认证命中路径（缓存键构造 + 命中读取）在两种实现下的 P99 延迟与吞吐：
+//! 对比认证命中路径（键构造 + 命中读取）在两种实现下的 P99 延迟与吞吐：
+//! 基线 `AuthCache`（类型化直存 + `Arc` 条目，命中即克隆，无序列化往返）
+//! 与候选 oxcache `Cache<String, CachedIdentity>`（经 `get_or` 读取，TTL 由
+//! `set_with_ttl` 施加，命中含一次 JSON 反序列化）。
 //!
-//! - **基线**：`nebulaid::server::auth::AuthCache`（类型化直存 + `Arc` 条目，
-//!   命中即克隆，无序列化往返）；
-//! - **候选**：oxcache `Cache<String, CachedIdentity>` 经 `get_or` 命中读取，
-//!   TTL 由 fallback 闭包内 `set_with_ttl` 施加（lockfile 解析 oxcache
-//!   0.5.0-rc.6，`get_or_with_ttl` 已存在；两者落点一致，取 `get_or` 是与
-//!   基线同口径的最小读取面）。命中路径含一次 JSON 反序列化——这正是
-//!   `cache.rs:6-9` 记录的历史回退点，故本基准须用数据说话。
-//!
-//! 门禁阈值（proposal D3 / R-auth-002，显式代码化，不交由人判断）：
-//! - P99 延迟增幅 ≤ 10%
-//! - 吞吐降幅 ≤ 5%
-//!
-//! 断言写在 `gate` 函数里：不达标时基准以 panic 收场（而非只打印数字），
-//! 使 CI 与本地跑出的结论一致。达标则输出可粘贴进 PR 的数据。
+//! 门禁阈值（proposal D3 / R-auth-002）：P99 增幅 ≤ 10%、吞吐降幅 ≤ 5%，
+//! 判定在 `gate` 函数，默认输出数据与判定，设 `NEBULAID_AUTH_CACHE_GATE=1`
+//! 时否决即 panic 供 CI/复核复跑。
 //!
 //! 运行：`cargo bench --bench auth_cache_adoption`
+
+// `t!` 经 #[macro_use] 拉入文本作用域（同 src/main.rs），取默认 locale 翻译。
+#[macro_use]
+extern crate nebulaid;
 
 use std::hint::black_box;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -29,16 +25,14 @@ use std::time::{Duration, Instant};
 use nebulaid::server::auth::{AuthCache, CachedIdentity};
 use oxcache::Cache;
 
-/// 命中路径的 key 基数：足够多以摊掉 `HashMap` 冷启动，又不至于让工作集
-/// 超出 L2（那是测量内存带宽而非缓存实现）。
+/// 命中路径 key 基数：摊掉 `HashMap` 冷启动，又不让工作集超出 L2。
 const KEY_COUNT: usize = 1_024;
-/// 每个实现单独测量的次数（单线程逐次计时，支撑 P99 分位数）。
+/// 每实现采样次数（单线程逐次计时，支撑 P99 分位数）。
 const SAMPLES: usize = 40_000;
-/// 吞吐批次：每批连续命中次数，批次计时摊掉单次 `Instant::now()` 开销。
+/// 吞吐批次：每批连续命中数，批次计时摊掉单次 `Instant::now()` 开销。
 const BATCH: usize = 2_000;
-/// 批次数。
 const BATCHES: usize = 40;
-/// 预热次数（不计入统计，令 `HashMap`/后端与分支预测进入稳态）。
+/// 预热次数：不计入统计，令 `HashMap`/后端与分支预测进入稳态。
 const WARMUP: usize = 20_000;
 
 /// P99 延迟增幅上限（proposal D3）。
@@ -62,9 +56,8 @@ fn key_pair(i: usize) -> (String, String) {
     (format!("key-{i:06}"), format!("secret-{i:06}"))
 }
 
-/// 单次计时的延迟样本（纳秒）。整段循环跑在同一个 `block_on` 内，
-/// 逐次只付一次 `Instant::now()`，不付运行时装配开销——否则两侧被加上
-/// 同一常量，会把真实百分比差稀释成假通过。
+/// 单次计时的延迟样本（纳秒）：整段循环跑在同一 `block_on` 内，逐次只付
+/// 一次 `Instant::now()`——否则两侧被加同一常量，稀释真实百分比差。
 async fn sample_p99<F, Fut>(mut f: F) -> (Duration, Duration, Duration)
 where
     F: FnMut(usize) -> Fut,
@@ -117,39 +110,68 @@ fn pct(new: f64, old: f64) -> f64 {
     (new - old) / old * 100.0
 }
 
-/// 门禁：显性 panic 而非只打印。返回 (p99 增幅 %, 吞吐降幅 %)。
+/// 门禁判定：默认输出数据与判定，`NEBULAID_AUTH_CACHE_GATE=1` 时否决即
+/// panic。返回 (p99 增幅 %, 吞吐降幅 %)。
 fn gate(p99_base: Duration, p99_cand: Duration, tput_base: f64, tput_cand: f64) -> (f64, f64) {
     let p99_increase = pct(p99_cand.as_secs_f64(), p99_base.as_secs_f64());
     let tput_decrease = -pct(tput_cand, tput_base);
 
-    println!("\n================ T009 性能门禁结果 ================");
-    println!("基线 AuthCache   : P99 = {p99_base:>10.2?}  吞吐 = {tput_base:>12.0} ops/s");
-    println!("候选 oxcache     : P99 = {p99_cand:>10.2?}  吞吐 = {tput_cand:>12.0} ops/s");
+    println!("{}", t!("log.bench.auth_cache_adoption_gate_header"));
     println!(
-        "P99 增幅         : {p99_increase:+.2}%   (门禁 ≤ +{:.0}%)",
-        P99_MAX_INCREASE_RATIO * 100.0
+        "{}",
+        t!(
+            "log.bench.auth_cache_adoption_gate_baseline",
+            p99 = format!("{:>10.2?}", p99_base),
+            tput = format!("{:>12.0}", tput_base),
+        )
     );
     println!(
-        "吞吐降幅         : {tput_decrease:+.2}%   (门禁 ≤ +{:.0}%)",
-        THROUGHPUT_MAX_DECREASE_RATIO * 100.0
+        "{}",
+        t!(
+            "log.bench.auth_cache_adoption_gate_candidate",
+            p99 = format!("{:>10.2?}", p99_cand),
+            tput = format!("{:>12.0}", tput_cand),
+        )
+    );
+    println!(
+        "{}",
+        t!(
+            "log.bench.auth_cache_adoption_gate_p99_increase",
+            pct = format!("{p99_increase:+.2}"),
+            limit = format!("{:.0}", P99_MAX_INCREASE_RATIO * 100.0),
+        )
+    );
+    println!(
+        "{}",
+        t!(
+            "log.bench.auth_cache_adoption_gate_throughput_decrease",
+            pct = format!("{tput_decrease:+.2}"),
+            limit = format!("{:.0}", THROUGHPUT_MAX_DECREASE_RATIO * 100.0),
+        )
     );
 
-    // 门禁强制为 opt-in（NEBULAID_AUTH_CACHE_GATE=1）：默认只输出数据与判定，
-    // 使 `cargo bench` 不被一次已知否决炸掉；设了环境变量则按 proposal D3
-    // 「判定标准代码化」的要求硬失败，供 CI/复核时复跑验证。
+    // 门禁 opt-in（NEBULAID_AUTH_CACHE_GATE=1）：默认只输出数据与判定，不因
+    // 一次否决炸掉 `cargo bench`；设了则按 proposal D3「判定标准代码化」硬失败。
     let enforce = std::env::var_os("NEBULAID_AUTH_CACHE_GATE").is_some();
     let pass = p99_increase <= P99_MAX_INCREASE_RATIO * 100.0
         && tput_decrease <= THROUGHPUT_MAX_DECREASE_RATIO * 100.0;
     if pass {
-        println!("门禁通过：候选实现的 P99 增幅与吞吐降幅均在阈值内。");
+        println!("{}", t!("log.bench.auth_cache_adoption_gate_pass"));
     } else if enforce {
         panic!(
-            "T009 门禁否决：P99 增幅 {p99_increase:.2}%、吞吐降幅 {tput_decrease:.2}%。\
-             依据 proposal D3 必须保留手写 AuthCache，并把本数据写入变更记录。"
+            "{}",
+            t!(
+                "log.bench.auth_cache_adoption_gate_reject_enforced",
+                p99 = format!("{p99_increase:.2}"),
+                tput = format!("{tput_decrease:.2}"),
+            )
         );
     } else {
-        println!("门禁否决（未强制退出）：保留手写 AuthCache，数据已记录。");
-        println!("复跑验证请设 NEBULAID_AUTH_CACHE_GATE=1。");
+        println!(
+            "{}",
+            t!("log.bench.auth_cache_adoption_gate_reject_recorded")
+        );
+        println!("{}", t!("log.bench.auth_cache_adoption_gate_rerun_hint"));
     }
     println!("===================================================\n");
     (p99_increase, tput_decrease)
@@ -214,7 +236,9 @@ fn main() {
                 async move {
                     let key = format!("cb::{}:{}", keys[i].0, keys[i].1);
                     let out = cache
-                        .get_or(&key, || async { unreachable!("基准只测命中路径") })
+                        .get_or(&key, || async {
+                            unreachable!("{}", t!("log.bench.auth_cache_adoption_hit_path_only"))
+                        })
                         .await;
                     let _ = black_box(out);
                 }
@@ -225,17 +249,18 @@ fn main() {
                 async move {
                     let key = format!("cb::{}:{}", keys[i].0, keys[i].1);
                     let out = cache
-                        .get_or(&key, || async { unreachable!("基准只测命中路径") })
+                        .get_or(&key, || async {
+                            unreachable!("{}", t!("log.bench.auth_cache_adoption_hit_path_only"))
+                        })
                         .await;
                     let _ = black_box(out);
                 }
             })
             .await;
 
-            // 公平性复核：`get_or` 的账本（GET_OR_LOCKS 分片表换取 single-flight）
-            // 不是命中读取的必需成本。设计文档点名 `get_or`，但纯命中路径的
-            // 诚实对照是 `get`。两者都测，门禁以 `get` 判定——若 `get` 达标而
-            // `get_or` 不达标，结论须改写为「可吸收但须改用 get」而非直接否决。
+            // 公平性复核：`get_or` 的账本（single-flight）非命中读取必需成本，
+            // `get` 是纯命中路径的诚实对照，门禁以 `get` 判定；若仅 `get_or`
+            // 不达标，结论须为「可吸收但须改用 `get`」而非直接否决。
             let (p50_g, p99_g, _) = sample_p99(|i| {
                 let (cache, keys) = (&cache, &keys);
                 async move {
@@ -260,28 +285,55 @@ fn main() {
     let (p50_c, p99_c, tput_c, p50_g, p99_g, tput_g) = candidate;
 
     println!(
-        "\n(T009 诊断) P50 基线 {:?} / 候选 get_or {:?} / 候选 get {:?}",
-        p50_b, p50_c, p50_g
+        "{}",
+        t!(
+            "log.bench.auth_cache_adoption_diag_p50",
+            baseline = format!("{p50_b:?}"),
+            get_or = format!("{p50_c:?}"),
+            get = format!("{p50_g:?}"),
+        )
     );
 
-    println!("\n---- 公平性复核：纯命中路径（oxcache get，不含 single-flight 账本） ----");
-    println!("基线 AuthCache : P99 = {p99_b:>10.2?}  吞吐 = {tput_b:>12.0} ops/s");
-    println!("候选 oxcache get: P99 = {p99_g:>10.2?}  吞吐 = {tput_g:>12.0} ops/s");
+    println!("{}", t!("log.bench.auth_cache_adoption_fairness_header"));
     println!(
-        "P99 增幅         : {:+.2}%",
-        pct(p99_g.as_secs_f64(), p99_b.as_secs_f64())
+        "{}",
+        t!(
+            "log.bench.auth_cache_adoption_fairness_baseline",
+            p99 = format!("{:>10.2?}", p99_b),
+            tput = format!("{:>12.0}", tput_b),
+        )
     );
-    println!("吞吐降幅         : {:+.2}%", -pct(tput_g, tput_b));
+    println!(
+        "{}",
+        t!(
+            "log.bench.auth_cache_adoption_fairness_candidate",
+            p99 = format!("{:>10.2?}", p99_g),
+            tput = format!("{:>12.0}", tput_g),
+        )
+    );
+    println!(
+        "{}",
+        t!(
+            "log.bench.auth_cache_adoption_fairness_p99_increase",
+            pct = format!("{:+.2}", pct(p99_g.as_secs_f64(), p99_b.as_secs_f64())),
+        )
+    );
+    println!(
+        "{}",
+        t!(
+            "log.bench.auth_cache_adoption_fairness_throughput_decrease",
+            pct = format!("{:+.2}", -pct(tput_g, tput_b)),
+        )
+    );
 
-    println!("\n---- 设计点名路径（oxcache get_or，含 single-flight 账本） ----");
+    println!("{}", t!("log.bench.auth_cache_adoption_designated_header"));
     gate(p99_b, p99_c, tput_b, tput_c);
 
-    println!("\n---- 门禁判定以纯命中路径为准 ----");
+    println!("{}", t!("log.bench.auth_cache_adoption_verdict_header"));
     let (p99_inc, tput_dec) = gate(p99_b, p99_g, tput_b, tput_g);
 
-    // 结果以机器可读形式落盘，供变更记录与 PR 描述引用。写盘放在 gate
-    // 之后且不依赖 enforce 分支：enforce 模式下门禁否决会 panic，若写盘
-    // 在其之前则数据反而留存，故此处保证两分支都能拿到同一份 JSON。
+    // 结果以机器可读形式落盘，供变更记录与 PR 引用。写盘放在 gate 之后：
+    // enforce 模式下否决会 panic，写在其前则两分支数据不一致。
     let pass = p99_inc <= 10.0 && tput_dec <= 5.0;
     let report = format!(
         "{{\n  \"bench\": \"auth_cache_adoption\",\n  \"samples\": {SAMPLES},\n           \"key_count\": {KEY_COUNT},\n  \"p50_baseline_ns\": {},\n           \"p99_baseline_ns\": {},\n  \"p99_candidate_get_ns\": {},\n           \"p99_candidate_get_or_ns\": {},\n  \"throughput_baseline_ops\": {:.0},\n           \"throughput_candidate_get_ops\": {:.0},\n  \"throughput_candidate_get_or_ops\": {:.0},\n           \"p99_increase_pct\": {p99_inc:.4},\n  \"throughput_decrease_pct\": {tput_dec:.4},\n           \"thresholds\": {{\"p99_max_increase_pct\": 10.0, \"throughput_max_decrease_pct\": 5.0}},\n           \"verdict\": \"{}\"\n}}\n",
@@ -296,9 +348,19 @@ fn main() {
     );
     let path = "target/auth_cache_adoption-latest.json";
     if let Err(e) = std::fs::write(path, &report) {
-        eprintln!("(warn) 基准结果写盘失败 {path}: {e}");
+        eprintln!(
+            "{}",
+            t!(
+                "log.bench.auth_cache_adoption_report_write_failed",
+                path = path,
+                error = e,
+            )
+        );
     } else {
-        println!("(T009) 机器可读结果已写入 {path}");
+        println!(
+            "{}",
+            t!("log.bench.auth_cache_adoption_report_written", path = path)
+        );
         println!("(T009) verdict = {}", if pass { "adopt" } else { "reject" });
     }
 }

@@ -682,3 +682,28 @@ log-example-sdk_server_routes_generate = POST /generate            Generate a si
 log-example-sdk_server_routes_batch = POST /generate/batch      Batch generate IDs
 log-example-sdk_server_routes_openapi = GET  /api-docs/openapi.json  OpenAPI documentation
 error-sdk-generator_not_initialized = IdGenerator is not initialized (main should call build() and set it first)
+
+# benches/auth_cache_adoption.rs — T009 auth-cache adoption performance gate:
+# the gate readout, P50 diagnostics, fairness check and report-write status
+# all resolve through `t!` (process default locale). The bench never calls
+# init_i18n, so the i18n default "en" applies — no Chinese default output.
+log-bench-auth_cache_adoption_gate_header = { "\u000A" }================ T009 performance gate result ================
+log-bench-auth_cache_adoption_gate_baseline = Baseline AuthCache: P99 = { $p99 }  Throughput = { $tput } ops/s
+log-bench-auth_cache_adoption_gate_candidate = Candidate oxcache: P99 = { $p99 }  Throughput = { $tput } ops/s
+log-bench-auth_cache_adoption_gate_p99_increase = P99 increase     : { $pct }%   (gate ≤ +{ $limit }%)
+log-bench-auth_cache_adoption_gate_throughput_decrease = Throughput drop  : { $pct }%   (gate ≤ +{ $limit }%)
+log-bench-auth_cache_adoption_gate_pass = Gate passed: the candidate's P99 increase and throughput drop are within the thresholds.
+log-bench-auth_cache_adoption_gate_reject_enforced = T009 gate rejected: P99 increase { $p99 }%, throughput drop { $tput }%. Per proposal D3 the hand-written AuthCache must be kept and this data recorded in the change log.
+log-bench-auth_cache_adoption_gate_reject_recorded = Gate rejected (not enforced): keeping the hand-written AuthCache; data recorded.
+log-bench-auth_cache_adoption_gate_rerun_hint = Set NEBULAID_AUTH_CACHE_GATE=1 to re-run with enforcement.
+log-bench-auth_cache_adoption_hit_path_only = benchmark only exercises the cache hit path
+log-bench-auth_cache_adoption_diag_p50 = { "\u000A" }(T009 diagnostics) P50 baseline { $baseline } / candidate get_or { $get_or } / candidate get { $get }
+log-bench-auth_cache_adoption_fairness_header = { "\u000A" }---- Fairness check: pure hit path (oxcache get, without the single-flight ledger) ----
+log-bench-auth_cache_adoption_fairness_baseline = Baseline AuthCache: P99 = { $p99 }  Throughput = { $tput } ops/s
+log-bench-auth_cache_adoption_fairness_candidate = Candidate oxcache get: P99 = { $p99 }  Throughput = { $tput } ops/s
+log-bench-auth_cache_adoption_fairness_p99_increase = P99 increase     : { $pct }%
+log-bench-auth_cache_adoption_fairness_throughput_decrease = Throughput drop  : { $pct }%
+log-bench-auth_cache_adoption_designated_header = { "\u000A" }---- Designated path (oxcache get_or, including the single-flight ledger) ----
+log-bench-auth_cache_adoption_verdict_header = { "\u000A" }---- Gate verdict uses the pure hit path ----
+log-bench-auth_cache_adoption_report_write_failed = (warn) failed to write the benchmark report { $path }: { $error }
+log-bench-auth_cache_adoption_report_written = (T009) machine-readable result written to { $path }

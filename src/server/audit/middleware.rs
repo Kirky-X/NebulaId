@@ -61,10 +61,8 @@ impl AuditMiddleware {
 
         let action = format!("{} {}", method, path);
 
-        // 请求上下文关联（sdforge `context` feature 的环境上下文，由
-        // router 最外侧 context_middleware 安装）：审计事件经 details
-        // 携带 request_id/trace_id，跨请求串联审计链。上下文缺失时
-        // （如直连测试 Router 未挂 context 层）静默跳过。
+        // 审计事件经 details 携带 request_id/trace_id（由 router 最外侧
+        // context_middleware 安装的环境上下文）；上下文缺失时静默跳过。
         let request_ctx = sdforge::context::current();
 
         let mut audit_event = crate::server::audit::AuditEvent::new(
@@ -104,15 +102,11 @@ impl AuditMiddleware {
 }
 
 fn get_client_ip(req: &Request<Body>, trusted_proxies: &[IpAddr]) -> Option<String> {
-    // Phase 9 — delegate to the single shared implementation
-    // in `server::middleware::utils`. Previously this was a duplicate copy
-    // of the same logic; now the audit/rate_limit/api_key_auth middleware
-    // all share one source of truth.
+    // 委托共享实现 `server::middleware::utils::get_client_ip`（唯一来源）。
     crate::server::middleware::utils::get_client_ip(req, trusted_proxies)
 }
 
-/// 包装 `AuditMiddleware::audit_middleware` 方法为 axum 中间件函数。
-/// `from_fn_with_state` 要求自由函数，方法必须通过 wrapper 调用。
+/// 包装 `AuditMiddleware::audit_middleware` 为 axum 中间件函数（`from_fn_with_state` 要求自由函数）。
 pub async fn audit_middleware_fn(
     State(mid): State<Arc<AuditMiddleware>>,
     req: Request<Body>,
@@ -137,14 +131,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_client_ip_from_header() {
-        // Create a request with a connection IP
         let req = Request::builder()
             .extension(std::net::SocketAddr::from(([10, 0, 0, 1], 8080)))
             .header("x-forwarded-for", "192.168.1.1, 10.0.0.1")
             .body(Body::empty())
             .unwrap();
 
-        // Add the connection IP to trusted proxies
         let trusted_proxies: Vec<std::net::IpAddr> = vec!["10.0.0.1".parse().unwrap()];
         let ip = get_client_ip(&req, &trusted_proxies);
         assert_eq!(ip, Some("192.168.1.1".to_string()));
@@ -152,14 +144,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_client_ip_from_real_ip() {
-        // Create a request with a connection IP
         let req = Request::builder()
             .extension(std::net::SocketAddr::from(([10, 0, 0, 1], 8080)))
             .header("x-real-ip", "192.168.1.100")
             .body(Body::empty())
             .unwrap();
 
-        // Add the connection IP to trusted proxies
         let trusted_proxies: Vec<std::net::IpAddr> = vec!["10.0.0.1".parse().unwrap()];
         let ip = get_client_ip(&req, &trusted_proxies);
         assert_eq!(ip, Some("192.168.1.100".to_string()));
@@ -175,8 +165,7 @@ mod tests {
     }
 
     // ========== Helpers for audit_middleware tests ==========
-    // 复用 mock repo 模式（与 test_audit_middleware_creation 中的实现一致），
-    // 提取到模块级以便多个测试共享。
+    // 提取到模块级，供多个测试共享。
 
     use axum::http::StatusCode;
     use axum::middleware::from_fn_with_state;
@@ -282,8 +271,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_audit_middleware_details_carry_request_context_when_ambient() {
-        // sdforge context 环境上下文存在时，审计事件 details 携带
-        // request_id/trace_id（由 router 最外侧 context_middleware 安装）。
+        // 环境上下文存在时，审计事件 details 携带 request_id/trace_id。
         let (mid, logger) = make_audit_middleware();
         let router = build_ok_router(mid);
         let ctx = sdforge::context::RequestContext::with_ids(
@@ -397,8 +385,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_audit_middleware_without_client_ip_records_empty_string() {
-        // 无 SocketAddr extension 且无 trusted proxies → client_ip = None
-        // unwrap_or_default() → 空字符串
+        // 无 SocketAddr extension 且无 trusted proxies → client_ip 为空字符串。
         let (mid, logger) = make_audit_middleware();
         let router = build_ok_router(mid);
         let _resp = router
@@ -501,8 +488,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_audit_middleware_records_duration_ms_field() {
-        // duration_ms 由 Instant::elapsed 计算，可能为 0（快机器），
-        // 仅验证字段被设置（u64 类型，默认 0 也会被 with_duration 覆盖）
+        // duration_ms 由 Instant::elapsed 计算，快机器上可能为 0。
         let (mid, logger) = make_audit_middleware();
         let router = build_ok_router(mid);
         let _resp = router
@@ -511,15 +497,14 @@ mod tests {
             .unwrap();
         let events = logger.get_recent_events(10).await;
         assert_eq!(events.len(), 1);
-        // duration_ms 是 u64，验证它被设置了（非默认值 0 也会被 with_duration 覆盖）
-        // 由于无法保证 > 0，仅验证字段存在
+        // 无法保证 > 0，仅验证字段存在且被 with_duration 覆盖。
         let _duration = events[0].duration_ms;
     }
 
     #[tokio::test]
     async fn test_audit_middleware_multiple_requests_log_multiple_events() {
         let (mid, logger) = make_audit_middleware();
-        // 每次调用 build_ok_router 消费 mid，所以需要 Clone
+        // build_ok_router 消费 mid，需要 Clone。
         let mid_clone = mid.clone();
         let router = build_ok_router(mid_clone);
         let _resp1 = router

@@ -23,13 +23,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-/// Configuration management service trait.
-///
-/// Decouples handlers/router from the concrete `ConfigManager` implementation
-/// so business logic can be mock-tested (rule 25: trait + pub re-export in
-/// mod.rs; impl lives in this file). All async methods are object-safe via
-/// `async_trait`; sync methods (`get_config`, `get_secure_config`,
-/// `get_batch_max_size`) take `&self` and are naturally object-safe.
+/// 配置管理服务 trait：让 handlers/router 依赖抽象而非具体 `ConfigManager`，
+/// 便于 mock 测试；异步方法经 `async_trait` 保持 object-safe。
 #[async_trait]
 pub trait ConfigManagementService: Send + Sync {
     fn get_config(&self) -> ConfigResponse;
@@ -88,16 +83,11 @@ pub trait ConfigManagementService: Send + Sync {
     )>;
 }
 
-/// Production implementation of `ConfigManagementService`.
-///
-/// Renamed from `ConfigManagementService` (the struct) to `ConfigManager` so
-/// the trait can claim the canonical name; callers refer to the trait via
-/// `Arc<dyn ConfigManagementService>` and construct via `ConfigManager::new`.
+/// `ConfigManagementService` 的生产实现，经 `ConfigManager::new` 构造。
 pub struct ConfigManager {
     hot_config: Arc<HotReloadConfig>,
     rate_limiter: Arc<RwLock<Option<(u32, u32)>>>,
-    /// 运行中限流器的共享引用；`update_rate_limit` 同时
-    /// 更新其参数，使热更新作用于实际流量（None = 未接线，仅记录 override）。
+    /// 与路由共享的限流器；`update_rate_limit` 同步其参数（None = 未接线，仅记录 override）。
     live_rate_limiter: Option<Arc<crate::server::rate_limit::limiter::RateLimiter>>,
     algorithm_router: Arc<crate::core::algorithm::AlgorithmRouter>,
     repository: Option<Arc<dyn crate::core::database::BizTagRepository + Send + Sync>>,
@@ -121,8 +111,7 @@ impl ConfigManager {
         }
     }
 
-    /// 注入与 `create_router` 共享的限流器实例，
-    /// 使 `POST /config/rate-limit` 热更新作用于实际流量。
+    /// 注入与 `create_router` 共享的限流器，使 `/config/rate-limit` 热更新作用于真实流量。
     pub fn with_rate_limiter(
         mut self,
         limiter: Arc<crate::server::rate_limit::limiter::RateLimiter>,
@@ -286,9 +275,7 @@ impl ConfigManagementService for ConfigManager {
             config.rate_limit.burst_size = burst;
         }
 
-        // 跨字段约束复用启动期同一校验入口（Config::validate
-        // 校验 enabled 下 rps/burst 非 0 且 burst ≤ 10×rps）。单字段 range
-        // 校验挡不住"burst=1000 + rps=1"这类运行期不一致配置经热更新写入。
+        // 复用启动期 Config::validate（burst ≤ 10×rps）：单字段 range 挡不住跨字段不一致。
         if let Err(e) = config.validate() {
             return UpdateConfigResponse {
                 success: false,
@@ -303,8 +290,7 @@ impl ConfigManagementService for ConfigManager {
                 Some((config.rate_limit.default_rps, config.rate_limit.burst_size));
         }
 
-        // 同步更新运行中的限流器（清桶惰性重建），
-        // 使热更新立即作用于实际流量，而非仅记录 override。
+        // 同步更新运行中限流器（清桶惰性重建），使热更新立即生效。
         if let Some(ref live) = self.live_rate_limiter {
             live.update_config(config.rate_limit.default_rps, config.rate_limit.burst_size);
         }
@@ -372,8 +358,7 @@ impl ConfigManagementService for ConfigManager {
             };
         }
 
-        // 串面唯一映射源：AlgorithmType::from_str（别名/大小写/新算法零重复
-        // 维护，add-uuid-v4-v7 后 v4/v7 字符串亦在此解析为真算法）。
+        // 唯一解析源：AlgorithmType::from_str（别名/大小写统一在此处理）。
         let algorithm_type = match AlgorithmType::from_str(&req.algorithm) {
             Ok(alg) => alg,
             Err(_) => {
@@ -578,7 +563,6 @@ impl ConfigManagementService for ConfigManager {
     async fn create_group(&self, req: CreateGroupRequest) -> crate::core::Result<GroupResponse> {
         if let Some(ref workspace_repo) = self.workspace_repository {
             if let Some(ref group_repo) = self.group_repository {
-                // First get the workspace by name
                 let workspace = workspace_repo.get_workspace_by_name(&req.workspace).await?;
                 match workspace {
                     Some(ws) => {
@@ -661,15 +645,11 @@ impl ConfigManagementService for ConfigManager {
     }
 
     async fn get_database_metrics(&self) -> DatabaseMetrics {
-        // Get database adapter from container if available
         let metrics = if let Some(ref repo) = self.repository {
-            // Check database health
             match repo.health_check().await {
                 Ok(()) => {
-                    // Get pool statistics from the database adapter
-                    // Note: SeaORM repository doesn't expose pool stats directly
-                    // We return healthy status with zeroed metrics for now
-                    // Future: Consider using dbnexus adapter which has PoolStatus
+                    // SeaORM 仓储不暴露连接池统计：健康时返回零值指标
+                    // （dbnexus 适配器有 PoolStatus，未来可替换）。
                     DatabaseMetrics {
                         status: crate::server::models::HealthStatus::Healthy,
                         connection_pool: ConnectionPoolMetrics {
@@ -681,10 +661,8 @@ impl ConfigManagementService for ConfigManager {
                     }
                 }
                 Err(e) => {
-                    // （CWE-209 / strix vuln-0003）：/metrics
-                    // 端点公开且无认证，原始 DB 错误字符串可能暴露主机名、端口、
-                    // 驱动诊断信息。此处返回通用消息，详细错误通过 tracing::error!
-                    // 记录到服务端日志保留运维可见性。
+                    // （CWE-209）—— /metrics 公开无认证：原始 DB 错误可能泄露主机/
+                    // 端口/驱动信息，故返回通用消息，详细错误只记录服务端日志。
                     tracing::error!(
                         error = %e,
                         "database health check failed — details redacted from /metrics"
@@ -718,14 +696,9 @@ impl ConfigManagementService for ConfigManager {
     }
 
     async fn get_cache_metrics(&self) -> CacheMetrics {
-        // Get algorithm metrics for cache hit rate
         let algorithm_metrics = self.algorithm_router.metrics().await;
-        // 修复：只统计 `cache_hit_rate = Some(_)` 的算法（即有缓存的算法，
-        // 如 Segment）。原代码把 UUID/Snowflake 的 `0.0` 也纳入平均，导致
-        // 整体缓存命中率被低估（误把"无缓存"当成"命中率 0%"）。
-        //
-        // 用 `has_cache` 显式表达「是否有缓存算法」，
-        // 避免监控面板把 `hit_rate = 0.0` 误读为「缓存性能极差」。
+        // 仅统计 cache_hit_rate = Some(_) 的算法（有缓存者，如 Segment）：把
+        // 「无缓存」计成 0% 会低估命中率；has_cache 显式区分两种情况。
         let hit_rates: Vec<f64> = algorithm_metrics
             .iter()
             .filter_map(|(_, m)| m.cache_hit_rate)
@@ -958,8 +931,7 @@ mod tests {
         let response = service.get_secure_config();
         assert_eq!(response.app.name, "nebula-id");
         assert_eq!(response.algorithm.default, "segment");
-        // SecureConfigResponse does not have a `database` field — verified
-        // at compile time by the fact this compiles.
+        // SecureConfigResponse 无 database 字段（编译期保证）。
     }
 
     /// `get_batch_max_size` reads through to `batch_generate.max_batch_size`.
@@ -973,7 +945,6 @@ mod tests {
         let service = ConfigManager::new(hot_config, algorithm_router);
 
         let max_size = service.get_batch_max_size();
-        // Default Config sets batch_generate.max_batch_size = 100.
         assert_eq!(max_size, 100);
     }
 
@@ -1415,10 +1386,7 @@ mod tests {
     async fn test_get_algorithm_metrics_returns_vec() {
         let service = service_no_repo().await;
         let metrics = service.get_algorithm_metrics().await;
-        // Default router may have 0 or more algorithms registered; just
-        // verify it doesn't panic and returns a Vec. The previous
-        // `assert!(metrics.len() >= 0)` was a tautology (usize is always
-        // >= 0); a plain binding documents "call must succeed" intent.
+        // 默认路由注册的算法数不定，仅验证调用成功且返回 Vec。
         let _ = metrics.len();
     }
 
@@ -1436,19 +1404,15 @@ mod tests {
         let service = ConfigManager::new(hot_config, algorithm_router);
 
         let response = service.get_secure_config();
-        // Verify all expected fields are present and non-default.
         assert!(!response.app.name.is_empty());
         assert!(!response.algorithm.default.is_empty());
         assert!(!response.logging.level.is_empty());
     }
 
     // ========== with_repository constructor (indirect) ==========
-    // with_repository requires actual repository instances (Arc<dyn ...>);
-    // we can't easily construct them without a DB. We verify the constructor
-    // exists and has the right signature by referencing it.
+    // 需要真实仓储实例，此处仅以类型引用验证签名存在。
 
-    /// `with_repository` constructor must be callable with the right types.
-    /// We verify the function exists by type-checking a reference.
+    /// 仅以类型检查验证 with_repository 签名存在。
     #[tokio::test]
     async fn test_with_repository_signature() {
         let _ = std::any::TypeId::of::<
@@ -1524,9 +1488,8 @@ mod tests {
 
 #[cfg(test)]
 mod repository_backed_paths {
-    //! 覆盖率补充：`with_repository` 注入路径下的 Workspace/Group 读取映射分支
-    //! （既有测试仅覆盖仓储为 `None` 的 fallback 分支）。以最小假仓储打通
-    //! list/get workspace 与 list groups 的真实映射代码路径。
+    //! 覆盖率补充：以最小假仓储打通 with_repository 注入路径下 Workspace/Group
+    //! 读取映射分支（既有测试只覆盖仓储为 `None` 的 fallback）。
 
     use super::*;
     use crate::core::database::{
@@ -1751,8 +1714,7 @@ mod repository_backed_paths {
 
 #[cfg(test)]
 mod fake_repo_unused_paths {
-    //! 假仓储的「本模块测试不触及」路径显式返回错误：这里逐一遍历调用，钉住
-    //! 「假仓储绝不静默成功」的契约，同时消除未执行方法体的覆盖率盲区。
+    //! 遍历假仓储的未使用路径，钉住「绝不静默成功」契约并消除覆盖率盲区。
 
     use super::repository_backed_paths::{manager_with_repos, test_workspace};
 

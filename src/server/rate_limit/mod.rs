@@ -6,6 +6,5 @@
 pub mod limiter;
 pub mod middleware;
 
-// Re-exports
 pub use limiter::{RateLimitResult, RateLimitStatus, RateLimiter};
 pub use middleware::RateLimitMiddleware;

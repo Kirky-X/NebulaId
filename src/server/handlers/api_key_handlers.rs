@@ -1,7 +1,7 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! API Key management handlers + `KeyRotationHandle` (rule 25 split).
+//! API Key 管理 handlers 与 `KeyRotationHandle`（impl 拆分到子模块）。
 
 use super::helpers::map_db_error;
 use crate::core::database::{ApiKeyRole, CreateApiKeyRequest as CoreCreateApiKeyRequest};
@@ -11,21 +11,21 @@ use crate::server::models::{
     ErrorResponse, RevokeApiKeyResponse,
 };
 
-/// Handle for managing the key rotation background task.
+/// 密钥轮换后台任务的句柄。
 #[derive(Clone, Debug)]
 pub struct KeyRotationHandle {
     pub(super) shutdown_tx: tokio::sync::watch::Sender<bool>,
 }
 
 impl KeyRotationHandle {
-    /// Signal the key rotation task to stop.
+    /// 通知密钥轮换任务停止。
     pub fn shutdown(&self) {
         let _ = self.shutdown_tx.send(true);
     }
 }
 
 impl super::ApiHandlers {
-    /// Create a new API Key (admin only).
+    /// 新建 API Key（仅 Admin）。
     pub async fn create_api_key(
         &self,
         workspace_id: Option<uuid::Uuid>,
@@ -48,19 +48,10 @@ impl super::ApiHandlers {
         };
 
         if role == ApiKeyRole::Admin {
-            // Phase 9 — reject additional admin keys
-            // instead of merely warning. Combined with the C3 SQL CHECK
-            // fix (admin key must have NULL workspace_id), this enforces
-            // a single global admin key invariant. Previously an
-            // attacker with admin credentials could create a second
-            // admin key as a persistence backdoor.
-            //
-            // 缺陷根因（与 revoke 守卫同源）：旧实现用
-            // `list_api_keys(Uuid::nil(), Some(1000), Some(0))` + 内存扫描，
-            // 而全局 admin key 的 `workspace_id` 是 NULL，`NULL = nil_uuid`
-            // 在 SQL 中不成立 → 该查询恒空 → 守卫从未生效。改用
-            // `count_admin_keys()`（SQL 侧 `role='admin' AND enabled=true`
-            // 计数、不带 workspace 过滤、无 1000 行分页上界）。
+            // 拒绝创建第二个 admin key（与 SQL CHECK「admin key 的 workspace_id 必须
+            // 为 NULL」共同构成单一全局 admin 不变量）；旧实现仅告警，可留后门。
+            // 根因：旧守卫 `list_api_keys(Uuid::nil(), ..)` 因 NULL != nil_uuid 恒空，
+            // 改用 `count_admin_keys()`（SQL 侧按 role + enabled 计数，无分页上界）。
             let admin_count = repo.count_admin_keys().await.map_err(map_db_error)?;
 
             if admin_count > 0 {
@@ -129,7 +120,7 @@ impl super::ApiHandlers {
         key_with_secret.try_into()
     }
 
-    /// List API Keys for a workspace (admin only).
+    /// 列出 workspace 的 API Key（仅 Admin）。
     pub async fn list_api_keys(
         &self,
         workspace_id: uuid::Uuid,
@@ -175,8 +166,8 @@ impl super::ApiHandlers {
     #[cfg(not(feature = "garrison-auth"))]
     pub(super) async fn invalidate_auth_cache(&self, _key_id: &str) {}
 
-    /// 整体清空认证缓存。用于只能拿到行 `id`、无法定位 `key_id` 的吊销路径 ——
-    /// 宁可多失效一些条目（下一次校验回源 DB），也不能留下可继续通过的旧凭证。
+    /// 整体清空认证缓存（吊销路径只能拿到行 `id`）：宁可多失效一些条目，
+    /// 也不能留下可继续通过的旧凭证。
     #[cfg(feature = "garrison-auth")]
     async fn clear_auth_cache(&self) {
         if let Some(cache) = self.auth_cache.as_ref() {
@@ -187,7 +178,7 @@ impl super::ApiHandlers {
     #[cfg(not(feature = "garrison-auth"))]
     async fn clear_auth_cache(&self) {}
 
-    /// Revoke (delete) an API Key (admin only).
+    /// 吊销（删除）API Key（仅 Admin）。
     pub async fn revoke_api_key(&self, id: uuid::Uuid) -> Result<RevokeApiKeyResponse> {
         let repo = self.api_key_repo.as_ref().ok_or_else(|| {
             CoreError::NotFound(
@@ -195,28 +186,23 @@ impl super::ApiHandlers {
             )
         })?;
 
-        // 缺陷根因（两处，同一根因的两个面）：
-        // 1) 旧实现用 `get_api_key_by_id(&id.to_string())` 查行 UUID，而该方法按
-        //    `key_id` 字符串过滤 → 永远 `None` → 整块守卫被跳过。
-        // 2) admin 计数走 `list_api_keys(Uuid::nil(), ..)`，而全局 admin key 的
-        //    `workspace_id` 是 NULL，`NULL = nil_uuid` 在 SQL 中不成立 → 该查询恒空。
-        // 代之以 `find_api_key_by_row_id`（按主键取行）+ `count_admin_keys`
-        // （SQL 侧 `role='admin' AND enabled=true` 计数，不带 workspace 过滤）。
+        // 旧实现两处缺陷（同一根因）：按行 UUID 调 `get_api_key_by_id`（其按
+        // key_id 字符串过滤）恒 None 跳过整块守卫；admin 计数用
+        // `list_api_keys(Uuid::nil(), ..)` 因 NULL != nil_uuid 恒空。
+        // 现改用 `find_api_key_by_row_id` + `count_admin_keys`。
         let key_info = repo
             .find_api_key_by_row_id(id)
             .await
             .map_err(map_db_error)?;
 
         if let Some(key) = key_info {
-            // 只保护"启用中"的 admin：已禁用的行不占"最后一个"名额，
-            // `count_admin_keys` 只数 enabled，两侧语义自洽。
+            // 只保护启用中的 admin：count_admin_keys 只数 enabled，两侧语义自洽。
             if key.role == crate::core::database::ApiKeyRole::Admin && key.enabled {
                 let admin_count = repo.count_admin_keys().await.map_err(map_db_error)?;
 
                 if admin_count <= 1 {
-                    // 与 create 守卫（`admin_key_creation_blocked`）同口径留痕：此前这条
-                    // 分支只有返回给客户端的 i18n 文案，服务端零日志，运维无法定位是谁在
-                    // 尝试吊销最后一个管理凭证。
+                    // 与 create 守卫同口径留痕：此前该分支只有客户端 i18n 文案、
+                    // 服务端零日志，运维无法定位是谁在吊销最后一个管理凭证。
                     tracing::warn!(
                         event = "admin_key_revoke_blocked",
                         key_id = %id,
@@ -231,8 +217,8 @@ impl super::ApiHandlers {
         }
 
         repo.delete_api_key(id).await.map_err(map_db_error)?;
-        // 吊销后本进程的缓存必须立即失效，不能等 TTL 自然过期。
-        // 多节点部署时其他节点最长滞后一个 cache_ttl（口径见 docs/DEPLOYMENT.md 7.1）。
+        // 吊销后本进程缓存立即失效，不等 TTL；多节点最长滞后一个 cache_ttl
+        // （口径见 docs/DEPLOYMENT.md 7.1）。
         self.clear_auth_cache().await;
 
         Ok(RevokeApiKeyResponse {
@@ -241,7 +227,7 @@ impl super::ApiHandlers {
         })
     }
 
-    /// Rotate an API Key (generate new secret, keep old key active during grace period).
+    /// 轮换 API Key：生成新 secret，宽限期内旧 key 仍可用。
     pub async fn rotate_api_key(&self, key_id: &str) -> Result<ApiKeyWithSecretResponse> {
         if key_id.is_empty() {
             return Err(CoreError::InvalidInput(
@@ -255,12 +241,8 @@ impl super::ApiHandlers {
             )
         })?;
 
-        // 修复：从 `ApiHandlers::key_rotation_grace_period_seconds`
-        // 读取，原为硬编码 `const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60`。
-        // 默认 0 = 关闭宽限期（见
-        // `core::config::defaults::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`），
-        // 需要"轮换不掉请求"时用 `AuthConfig::key_rotation_grace_period_seconds`
-        // + `ApiHandlers::with_key_rotation_grace_period` 显式开启。
+        // 宽限期取自 ApiHandlers 字段（默认 0 = 关闭）；需「轮换不掉请求」时
+        // 用 AuthConfig::key_rotation_grace_period_seconds 显式开启。
         let grace_period_seconds = self.key_rotation_grace_period_seconds;
 
         let key_with_secret = repo
@@ -276,13 +258,9 @@ impl super::ApiHandlers {
     }
 }
 
-// ========== OpenAPI path 注解==========
-//
-// 实际的 axum handler 函数位于 `src/server/router.rs`（本 lane 不可修改），
-// 此处以「注解载体函数」承载 `#[utoipa::path]`，仅供 `openapi.rs` 的
-// `paths(...)` 注册；路由信息（路径/方法）以 router.rs 注册处为准。
-// 错误响应统一引用 `ErrorResponse`（信封）。
-// 三个端点均为 Admin-only（router.rs 中位于 v1_admin_routes）。
+// ========== OpenAPI path 注解 ==========
+// axum handler 在 router.rs；载体函数仅承载 #[utoipa::path] 供 openapi.rs 注册，
+// 不参与运行时路由；错误响应统一引用 ErrorResponse（信封），三端点均 Admin-only。
 
 /// OpenAPI 注解载体：`POST /api/v1/api-keys`（实际 handler：`router::handle_create_api_key`，Admin-only）。
 #[sdforge::utoipa::path(
@@ -374,8 +352,8 @@ mod tests {
             key_id: "niad_test-key-id".to_string(),
             key_prefix: "niad_".to_string(),
             role,
-            // 全局 admin key 的 workspace_id 是 NULL —— 正是它让
-            // `list_api_keys(nil, ..)` 恒空，从而让旧守卫从不生效。
+            // 全局 admin key 的 workspace_id 为 NULL —— 正是旧守卫
+            // `list_api_keys(nil, ..)` 恒空、从不生效的原因。
             workspace_id: None,
             name: "test-key".to_string(),
             description: None,
@@ -388,9 +366,7 @@ mod tests {
     }
 
     /// 唯一一个启用中的 admin key 不得被吊销 —— 否则管理员把自己锁在系统外。
-    ///
-    /// 缺陷根因：旧实现用 `get_api_key_by_id(&id.to_string())` 查行 UUID（该方法按
-    /// `key_id` 字符串过滤），永远查不到 → 整块守卫被跳过 → 吊销成功。
+    /// 旧实现按行 UUID 误调 `get_api_key_by_id`（按 key_id 过滤），守卫整块被跳过。
     #[tokio::test]
     async fn test_revoke_last_enabled_admin_key_is_rejected() {
         let mut mock_repo = MockApiKeyRepository::new();
@@ -415,19 +391,15 @@ mod tests {
         }
     }
 
-    /// 已存在 admin key 时，第二个 admin key 必须被拒 —— 即便同库有 1000 条 user key。
-    ///
-    /// 缺陷根因：旧实现用 `list_api_keys(Uuid::nil(), Some(1000), Some(0))` + 内存扫描，
-    /// 而全局 admin key 的 `workspace_id` 是 NULL（`NULL = nil_uuid` 在 SQL 中不成立）
-    /// → 查询恒空 → 守卫从未生效；1000 行分页上界是叠加的第二重隐患。
-    /// 桩里 `list_api_keys` 故意返回 1000 条 **user** 行：若实现退回到内存扫描，
-    /// 这里会因为找不到 admin 而放行（回归会立刻暴露）。
+    /// 已存在 admin key 时第二个必须被拒（即便同库有 1000 条 user key）。
+    /// 旧实现 `list_api_keys(Uuid::nil(), ..)` 因 NULL != nil_uuid 恒空，守卫从未生效。
+    /// 桩故意返回 1000 条 **user** 行：若实现退回内存扫描，回归会立刻暴露。
     #[tokio::test]
     async fn test_create_second_admin_key_is_rejected_even_with_thousand_user_keys() {
         let mut mock_repo = MockApiKeyRepository::new();
         mock_repo.expect_count_admin_keys().return_once(|| Ok(1));
-        // `returning` 而非 `return_once`：修好后 admin 路径不会调它（期望 0 次），
-        // 未修好时调 1 次并返回 1000 条 user 行 —— 两种状态都不该因次数校验而 panic。
+        // 用 returning 而非 return_once：修好后该路径不调它（0 次），
+        // 未修好时调 1 次也不因次数校验 panic。
         mock_repo.expect_list_api_keys().returning(|_, _, _| {
             let rows: Vec<_> = (0..1000)
                 .map(|_| make_api_key_info(ApiKeyRole::User, true))
@@ -459,10 +431,8 @@ mod tests {
         }
     }
 
-    /// 目标行已禁用（不占"最后一个"名额）、另有启用中的 admin 时，吊销必须放行。
-    ///
-    /// 这条用例把 `count_admin_keys` 只数 enabled 的语义钉住：若守卫退化成按行计数
-    /// （把 disabled 行也算进去），这里会误拒。
+    /// 目标行已禁用（不占"最后一个"名额）且另有启用中的 admin 时，吊销必须放行。
+    /// 钉住 `count_admin_keys` 只数 enabled 的语义：若按行计数会把 disabled 算进去。
     #[tokio::test]
     async fn test_revoke_disabled_admin_key_when_another_enabled_admin_exists_is_allowed() {
         let mut mock_repo = MockApiKeyRepository::new();
@@ -532,13 +502,11 @@ mod tests {
     }
 }
 
-// 模块内 handlers_with 助手的签名持有 AuthCache（garrison-auth 门控），
-// 故整个模块随该特性编译。
+// 助手签名持有 AuthCache（garrison-auth 门控），整个模块随该特性编译。
 #[cfg(all(test, feature = "garrison-auth"))]
 mod create_guard_branches {
-    //! create_api_key 守卫分支补测：User 角色缺 workspace_id、expires_at
-    //! 非法格式两条错误出口（既有测试未覆盖），以及认证缓存
-    //! invalidate/clear 在接线缓存后的真实执行路径。
+    //! create_api_key 守卫分支补测：User 缺 workspace_id、expires_at 非法，
+    //! 以及缓存 invalidate/clear 接线后的真实执行路径。
 
     use super::super::ApiHandlers;
     use super::*;
@@ -569,8 +537,8 @@ mod create_guard_branches {
 
     #[tokio::test]
     async fn test_create_user_key_without_workspace_is_rejected() {
-        // User 角色必须显式绑定 workspace：缺 workspace_id 直接 InvalidInput，
-        // 不触达仓储（mock 未设任何期望，意外调用会 panic）。
+        // User 必须显式绑定 workspace；缺 workspace_id 直接 InvalidInput，
+        // 不触达仓储（mock 未设期望，意外调用会 panic）。
         let handlers = handlers_with(MockApiKeyRepository::new(), None);
         let req = CreateApiKeyRequest {
             workspace_id: None,
@@ -592,7 +560,7 @@ mod create_guard_branches {
     async fn test_create_api_key_with_invalid_expires_at_is_rejected() {
         let mut mock_repo = MockApiKeyRepository::new();
         mock_repo.expect_count_admin_keys().return_once(|| Ok(0));
-        // 过期时间解析失败必须在到达仓储创建之前发生。
+        // 过期时间解析失败必须发生在仓储创建之前。
         mock_repo.expect_create_api_key().never();
 
         let handlers = handlers_with(mock_repo, None);

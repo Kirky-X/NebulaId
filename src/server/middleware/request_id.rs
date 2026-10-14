@@ -1,26 +1,9 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! Request ID 中间件：提取 / 校验 / 生成 / 贯穿。
-//!
-//! 语义：
-//! - 请求头 `x-request-id` 存在且为合法 UUID 时**透传原值**（不重排格式）；
-//!   缺失、非 UTF-8 或非法时生成 `uuid::Uuid::now_v7`。
-//! - 解析结果写入：
-//!   1. 请求头 `x-request-id`（回写规范化值，供内侧
-//!      `sdforge::context::context_middleware` 透传装配 RequestContext）；
-//!   2. 请求 extensions（[`RequestId`] newtype，handler / 中间件可
-//!      `Extension<RequestId>` 直接读取）；
-//!   3. 任务局部上下文（[`current_request_id`]，`helpers` 错误响应装配处
-//!      读取，保证错误响应体 `request_id` 与响应头一致）；
-//!   4. tracing span 属性（`http_request` span 的 `request_id` 字段贯穿
-//!      下游全部日志）。
-//! - 响应回显 `x-request-id`。
-//!
-//! 挂载位置：router 中**最后 `.layer()`**（axum 0.8 后挂载者先执行），
-//! 位于 `sdforge::context::context_middleware` 外侧——本中间件先完成
-//! 校验/生成与回写，context_middleware 对同一取值透传，两条路径的
-//! 响应头必然一致。
+//! Request ID 中间件：合法 UUID 透传原值，缺失/非 UTF-8/非法则生成 UUID v7。
+//! 结果写入请求头 / extensions / 任务局部上下文 / tracing span，并回显响应头；
+//! 挂载须在 `sdforge::context::context_middleware` 外侧（最后 `.layer()`）。
 
 use axum::extract::Request;
 use axum::middleware::Next;
@@ -33,15 +16,13 @@ tokio::task_local! {
 
 /// 请求关联 ID（extensions 载荷）。
 ///
-/// 持有的是**回显值**：合法上游头原样透传，否则为新生成的 UUID v7 字符串。
+/// 持有回显值：合法上游头原样透传，否则为新生成的 UUID v7。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestId(pub String);
 
 /// 读取当前请求的关联 ID。
 ///
-/// 由 [`request_id_middleware`] 安装；无中间件上下文（独立调用、
-/// 单元测试、非 HTTP 入口）时返回 `None`，调用方应回退自有生成逻辑
-/// （如 `helpers` 响应装配处的 UUID v4）。
+/// 无中间件上下文（独立调用、单元测试、非 HTTP 入口）返回 `None`，调用方回退自有生成逻辑。
 pub fn current_request_id() -> Option<String> {
     CURRENT_REQUEST_ID.try_with(|id| id.clone()).ok()
 }
@@ -56,9 +37,7 @@ fn resolve_request_id(header_value: Option<&str>) -> String {
 
 /// HTTP 中间件：解析/生成 request ID 并贯穿请求-响应全链路。
 ///
-/// 挂载方式：`axum::middleware::from_fn(request_id_middleware)`，且必须
-/// 位于 `sdforge::context::context_middleware` **外侧**（后 `.layer()`），
-/// 详见模块文档。
+/// 必须位于 `sdforge::context::context_middleware` 外侧（后 `.layer()`）。
 pub async fn request_id_middleware(mut req: Request, next: Next) -> axum::response::Response {
     let incoming = req
         .headers()
@@ -66,8 +45,7 @@ pub async fn request_id_middleware(mut req: Request, next: Next) -> axum::respon
         .and_then(|v| v.to_str().ok());
     let request_id = resolve_request_id(incoming);
 
-    // 回写请求头（内侧 sdforge context_middleware 据此透传同一取值），
-    // 并放入 extensions 供 handler / 下游中间件直接读取。
+    // 回写请求头供内侧 context_middleware 透传，并放入 extensions 供 handler 读取。
     if let Ok(value) = axum::http::HeaderValue::from_str(&request_id) {
         req.headers_mut().insert(
             axum::http::header::HeaderName::from_static("x-request-id"),
@@ -252,8 +230,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_current_request_id_visible_inside_handler_scope() {
-        // current_request_id 在中间件作用域内可读，且与响应头一致；
-        // 在作用域外（如本测试顶部）读取返回 None。
+        // 作用域内可读且与响应头一致；作用域外（本测试顶部）返回 None。
         assert_eq!(current_request_id(), None, "作用域外必须返回 None");
 
         let resp = mini_app()

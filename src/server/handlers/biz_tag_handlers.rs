@@ -178,10 +178,7 @@ impl super::ApiHandlers {
         self.config_service.delete_biz_tag(id).await
     }
 
-    /// 修复：缺失 workspace_id 时返回 InvalidInput，避免静默回退到
-    /// nil UUID 触发 `WHERE workspace_id = '00000000-...'` 查询，
-    /// 该查询在底层 SeaORM 中可能意外匹配到 workspace_id 字段为 nil
-    /// 的脏数据记录，导致越权返回其他 workspace 的 BizTag。
+    /// 缺失 workspace_id 必须报错，禁止回退 nil UUID 匹配脏数据导致越权。
     fn require_workspace_id(workspace_id: Option<uuid::Uuid>) -> Result<uuid::Uuid> {
         workspace_id.ok_or_else(|| {
             CoreError::InvalidInput(
@@ -190,12 +187,7 @@ impl super::ApiHandlers {
         })
     }
 
-    /// 两处 list 路径的共享实现：按 workspace（可选 group/分页）查询并映射为
-    /// 响应，同时取真实总数。
-    ///
-    /// 修复：`total` 取 `count_biz_tags` 而非当前页列表长度 —— 原实现
-    /// `total = responses.len() as u64` 在分页场景下会让前端分页控件只显示
-    /// 当前页条数。
+    /// 两处 list 路径共享实现：按 workspace（可选 group/分页）查询映射并返回真实总数。
     async fn fetch_biz_tags(
         &self,
         workspace_id: uuid::Uuid,
@@ -236,12 +228,7 @@ impl super::ApiHandlers {
     }
 }
 
-// ========== OpenAPI path 注解==========
-//
-// 实际的 axum handler 函数位于 `src/server/router.rs`（本 lane 不可修改），
-// 此处以「注解载体函数」承载 `#[utoipa::path]`，仅供 `openapi.rs` 的
-// `paths(...)` 注册；路由信息（路径/方法）以 router.rs 注册处为准。
-// 错误响应统一引用 `ErrorResponse`（信封）。
+// ========== axum handler 在 router.rs；以下为载体 #[utoipa::path] 的注解函数 ==========
 
 /// OpenAPI 注解载体：`POST /api/v1/biz-tags`（实际 handler：`router::handle_create_biz_tag`，User-only）。
 #[sdforge::utoipa::path(
@@ -472,7 +459,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_biz_tag_defaults_when_algo_format_none() {
-        // algorithm=None defaults to "segment", format=None defaults to "numeric".
         let biz_tag = make_biz_tag();
         let biz_tag_clone = biz_tag.clone();
         let mut mock = MockBizTagTestService::new();
@@ -746,7 +732,7 @@ mod tests {
         let response = result.unwrap();
         assert_eq!(response.total, 10);
         assert_eq!(response.biz_tags.len(), 1);
-        assert_eq!(response.page, 1); // offset=0, limit=5 → page 1
+        assert_eq!(response.page, 1);
         assert_eq!(response.page_size, 5);
     }
 
@@ -768,7 +754,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_biz_tags_with_pagination_page_calculation() {
-        // offset=10, limit=5 → page = (10/5)+1 = 3
         let mut mock = MockBizTagTestService::new();
         mock.expect_list_biz_tags()
             .return_once(|_, _, _, _| Ok(Vec::new()));

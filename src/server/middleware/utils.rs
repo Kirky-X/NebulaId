@@ -2,18 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Shared middleware utilities.
-//!
-//! Phase 9 — single source of truth for
-//! `get_client_ip`. Previously this logic was duplicated in
-//! `api_key_auth.rs`, `audit/middleware.rs`, `rate_limit/middleware.rs`,
-//! and a dead-code copy in this file, with **inconsistent security
-//! policies**: only `audit` and `rate_limit` checked `trusted_proxies`
-//! before trusting `X-Forwarded-For`; `api_key_auth.rs` blindly trusted
-//! the header, allowing an attacker to spoof IPs and bypass
-//! IP-based auth-failure rate limiting (diting H3 / tiangang CWE-290).
-//!
-//! All four copies now delegate to [`get_client_ip`] below, which
-//! enforces the `trusted_proxies` check uniformly.
+//! [`get_client_ip`] is the single source of truth for client IP extraction:
+//! proxy headers are trusted only when the direct peer is in `trusted_proxies`.
 
 use crate::server::config::tls::PeerAddr;
 use axum::body::Body;
@@ -22,25 +12,11 @@ use std::net::{IpAddr, SocketAddr};
 
 /// Extract the originating client IP from a request.
 ///
-/// Strategy (in order):
-/// 1. If the direct peer (TCP connection) IP is in `trusted_proxies`,
-///    trust `X-Forwarded-For` (first hop) then `X-Real-IP`.
-/// 2. Otherwise, return the direct peer IP.
-/// 3. If neither is available, return `None`.
-///
-/// # Security
-///
-/// `X-Forwarded-For` and `X-Real-IP` are **only** consulted when the
-/// peer is a configured trusted proxy. This prevents clients from
-/// spoofing their IP via a forged header to bypass IP-based rate
-/// limiting or auth-failure tracking. An empty `trusted_proxies` slice
-/// disables header-based IP discovery entirely (default).
+/// `X-Forwarded-For` (first hop) then `X-Real-IP` are trusted only when the
+/// direct peer is in `trusted_proxies`; empty slice disables them (default).
 pub fn get_client_ip(req: &Request<Body>, trusted_proxies: &[IpAddr]) -> Option<String> {
-    // axum serve 经 into_make_service_with_connect_info::<T>() 注入 ConnectInfo<T>
-    // 扩展（此前只查裸 SocketAddr，生产恒 None → 限流/认证失败
-    // 计数/审计 client_ip 全部落入共享单桶）。生产监听器是 DualListener，其 T 为
-    // PeerAddr；ConnectInfo<SocketAddr> 与裸 SocketAddr 回退保留给 axum 内置
-    // TcpListener 的测试及手工构造的请求。
+    // 生产 DualListener 注入 ConnectInfo<PeerAddr>，axum 内置 TcpListener 注入
+    // ConnectInfo<SocketAddr>；两者与裸 SocketAddr 都须识别，否则退化为共享单桶。
     let connection_ip = req
         .extensions()
         .get::<axum::extract::connect_info::ConnectInfo<PeerAddr>>()
@@ -124,8 +100,7 @@ mod tests {
 
     #[test]
     fn reads_connectinfo_extension_injected_by_axum_serve() {
-        // axum 内置 TcpListener 路径注入 ConnectInfo<SocketAddr>；
-        // 生产 DualListener 路径注入 ConnectInfo<PeerAddr>（见下一个测试）。
+        // axum 内置 TcpListener 注入 ConnectInfo<SocketAddr>；生产见下一个测试。
         let mut req = Request::builder().uri("/").body(Body::empty()).unwrap();
         req.extensions_mut()
             .insert(axum::extract::connect_info::ConnectInfo(SocketAddr::from(
@@ -136,8 +111,8 @@ mod tests {
 
     #[test]
     fn reads_peeraddr_connectinfo_injected_by_dual_listener() {
-        // 生产监听器 DualListener 注入 ConnectInfo<PeerAddr>，
-        // 必须被识别，否则 per-IP 限流/认证失败计数全部退化为 anonymous 单桶。
+        // 生产 DualListener 注入 ConnectInfo<PeerAddr>，未识别则 per-IP
+        // 限流/认证失败计数全部退化为 anonymous 单桶。
         let mut req = Request::builder().uri("/").body(Body::empty()).unwrap();
         req.extensions_mut()
             .insert(axum::extract::connect_info::ConnectInfo(PeerAddr(
@@ -145,7 +120,7 @@ mod tests {
             )));
         assert_eq!(get_client_ip(&req, &[]).as_deref(), Some("203.0.113.9"));
 
-        // 可信代理场景下 PeerAddr 同样参与判定
+        // 可信代理下 PeerAddr 同样参与判定
         let trusted: Vec<IpAddr> = vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))];
         let mut req = Request::builder().uri("/").body(Body::empty()).unwrap();
         req.extensions_mut()

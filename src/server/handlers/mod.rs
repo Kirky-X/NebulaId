@@ -3,10 +3,7 @@
 
 //! API handlers for Nebula ID.
 //!
-//! `ApiHandlers` struct + constructors live here; per-domain method impls
-//! are split into sub-modules (`id_handlers`, `system_handlers`,
-//! `biz_tag_handlers`, `workspace_handlers`, `api_key_handlers`)
-//! (rule 25: mod.rs 只放 trait + pub struct + re-export).
+//! `ApiHandlers` 定义在此；各域方法 impl 拆分到子模块，mod.rs 只放 pub 类型与 re-export。
 
 use crate::core::database::ApiKeyRepository;
 use crate::server::config::management::ConfigManagementService;
@@ -16,10 +13,7 @@ pub mod api_key_handlers;
 pub mod biz_tag_handlers;
 pub mod helpers;
 pub mod id_handlers;
-// pre-existing test helper module (MockIdGenerator); not part of split,
-// retained from pre-refactor codebase (convergence annotation).
-// #[cfg(test)] 门控：仅参与测试编译单元，
-// 不再进入生产二进制。所有调用点均位于 cfg(test) 模块内。
+// MockIdGenerator 仅测试使用：#[cfg(test)] 门控，不进生产二进制。
 #[cfg(test)]
 pub mod mock_generator;
 pub mod system_handlers;
@@ -27,22 +21,17 @@ pub mod workspace_handlers;
 
 pub use api_key_handlers::KeyRotationHandle;
 
-/// Top-level API handler aggregating ID generator, metrics, config service
-/// and optional API key repository.
+/// 顶层 API handler：聚合 ID 生成器、指标、配置服务与可选 API key 仓库。
 pub struct ApiHandlers {
     pub(super) id_generator: Arc<dyn crate::core::algorithm::IdGenerator>,
     pub(super) metrics: ApiMetrics,
     pub(super) start_time: std::time::Instant,
     pub(super) config_service: Arc<dyn ConfigManagementService>,
     pub(super) api_key_repo: Option<Arc<dyn ApiKeyRepository>>,
-    /// 修复：密钥轮换宽限期（秒）。原为 `api_key_handlers.rs` /
-    /// `system_handlers.rs` 中硬编码 `const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60`，
-    /// 现移到 `AuthConfig::key_rotation_grace_period_seconds`，由
-    /// `with_key_rotation_grace_period` builder 方法注入。
+    /// 密钥轮换宽限期（秒），由 `AuthConfig` 经 builder 注入；`0` = 关闭。
     pub(super) key_rotation_grace_period_seconds: u64,
-    /// 认证缓存句柄。密钥吊销 / 轮换 / 重置时据此失效缓存条目，
-    /// 避免 TTL 内旧凭证仍可通过认证。`None` = 未启用缓存（garrison-auth 关闭
-    /// 或未装配）。
+    /// 认证缓存句柄；密钥吊销/轮换/重置时据此失效缓存条目。
+    /// `None` = 未启用缓存（garrison-auth 关闭或未装配）。
     #[cfg(feature = "garrison-auth")]
     pub(super) auth_cache: Option<Arc<crate::server::auth::AuthCache>>,
 }
@@ -54,14 +43,11 @@ pub struct ApiMetrics {
     pub failed_generations: std::sync::atomic::AtomicU64,
     pub total_ids_generated: std::sync::atomic::AtomicU64,
     pub avg_latency_ms: std::sync::atomic::AtomicU64,
-    // 修复：累积总延迟，用于计算真实平均值 avg = total_latency / total_requests
+    // 累积总延迟，用于计算 avg = total_latency / total_requests
     pub total_latency_ms: std::sync::atomic::AtomicU64,
 }
 
-/// 修复：默认密钥轮换宽限期取自配置默认值注册表（为 `0` = 关闭）。
-///
-/// 删除重复 `const`，统一引用
-/// `crate::core::config::defaults::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS`。
+/// 默认宽限期取自配置默认值注册表（0 = 关闭）。
 use crate::core::config::defaults::DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECONDS;
 
 impl ApiHandlers {
@@ -105,16 +91,9 @@ impl ApiHandlers {
         self
     }
 
-    /// 修复：注入 `AuthConfig::key_rotation_grace_period_seconds`。
-    /// 未调用时使用注册表默认值（为 `0` = 关闭宽限期）。
+    /// 注入 `AuthConfig::key_rotation_grace_period_seconds`；未调用时用注册表默认值（0 = 关闭）。
     ///
-    /// （CWE-358 信任边界）：过大（> 30 天）时旧密钥几乎永久
-    /// 有效，密钥泄露窗口无限大；超上限记录警告并 clamp 到 30 天，既不破坏启动
-    /// 流程（fail-open），也让运维在日志中看到问题（规则 12）。
-    ///
-    /// 原下限 `MIN = 1`（把 0 抬成 1 秒，理由是"轮换瞬间会拒掉进行中的请求"）
-    /// 已删除。自 宽限期真正生效后，1 秒窗口同样会写入 `prev_secret_hash`
-    /// 并放行上一代凭证，与"默认关闭"的决策直接冲突；`0` 是合法值而非待纠正的输入。
+    /// 超过 30 天则记录警告并 clamp 到 30 天；`0` 是合法值，不做下限抬升。
     pub fn with_key_rotation_grace_period(mut self, seconds: u64) -> Self {
         const MAX_GRACE_PERIOD_SECONDS: u64 = 30 * 24 * 60 * 60; // 30 天
 
@@ -135,12 +114,7 @@ impl ApiHandlers {
         self.config_service.clone()
     }
 
-    /// Shut down a previously started key rotation background task.
-    ///
-    /// Delegate entry point on `ApiHandlers` (aligns with spec wording);
-    /// the actual shutdown signalling stays on `KeyRotationHandle::shutdown`
-    /// (convergence: closes the partial gap where spec listed
-    /// `shutdown` under `ApiHandlers` but impl placed it on the handle).
+    /// 关闭先前启动的密钥轮换后台任务，委托 `KeyRotationHandle::shutdown`。
     pub fn shutdown(&self, handle: KeyRotationHandle) {
         handle.shutdown();
     }
@@ -905,7 +879,7 @@ pub(crate) mod mock_tests {
         mock_config
             .expect_list_biz_tags()
             .return_once(move |_, _, _, _| Ok(vec![biz_tag]));
-        // 修复后 list_biz_tags 会调用 count_biz_tags 获取真实 total
+        // list_biz_tags 依赖 count_biz_tags 计算真实 total
         mock_config
             .expect_count_biz_tags()
             .return_once(|_, _| Ok(1));
@@ -928,7 +902,7 @@ pub(crate) mod mock_tests {
             .expect_count_biz_tags()
             .return_once(|_, _| Ok(0));
         let handlers = create_mock_handlers(mock_config);
-        // 修复：缺失 workspace_id 时返回 InvalidInput，需传 Some(Uuid)
+        // 缺失 workspace_id 返回 InvalidInput，须传 Some(Uuid)
         let result = handlers.list_biz_tags(Some(Uuid::new_v4()), None).await;
         assert!(result.is_ok());
         let response = result.unwrap();
@@ -943,7 +917,7 @@ pub(crate) mod mock_tests {
             .expect_list_biz_tags()
             .return_once(|_, _, _, _| Err(CoreError::InternalError("DB error".to_string())));
         let handlers = create_mock_handlers(mock_config);
-        // 修复：缺失 workspace_id 时返回 InvalidInput，需传 Some(Uuid)
+        // 缺失 workspace_id 返回 InvalidInput，须传 Some(Uuid)
         let result = handlers.list_biz_tags(Some(Uuid::new_v4()), None).await;
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -954,8 +928,7 @@ pub(crate) mod mock_tests {
 
     #[tokio::test]
     async fn mock_test_list_biz_tags_missing_workspace() {
-        // 修复：缺失 workspace_id 时应返回 InvalidInput，
-        // 避免静默回退到 nil UUID 越权返回其他 workspace 的 BizTag。
+        // 缺失 workspace_id 返回 InvalidInput，避免回退 nil UUID 越权读取。
         let mock_config = MockConfigManagementService::new();
         let handlers = create_mock_handlers(mock_config);
         let result = handlers.list_biz_tags(None, None).await;
@@ -1116,8 +1089,7 @@ pub(crate) mod mock_tests {
 
     #[tokio::test]
     async fn mock_test_list_workspaces_service_error() {
-        // 修复后：handler 直接传播 CoreError，不再包装为 DatabaseError。
-        // 测试用 InternalError 模拟服务层错误，期望原样传播。
+        // handler 原样传播 CoreError，不包装为 DatabaseError。
         let mut mock_config = MockConfigManagementService::new();
         mock_config
             .expect_list_workspaces()
@@ -1159,7 +1131,7 @@ pub(crate) mod mock_tests {
 
     #[tokio::test]
     async fn mock_test_get_workspace_service_error() {
-        // 修复后：handler 直接传播 CoreError，不再包装为 DatabaseError。
+        // handler 原样传播 CoreError，不包装为 DatabaseError。
         let mut mock_config = MockConfigManagementService::new();
         mock_config
             .expect_get_workspace()
@@ -1196,7 +1168,7 @@ pub(crate) mod mock_tests {
 
     #[tokio::test]
     async fn mock_test_create_group_service_error() {
-        // 修复后：handler 直接传播 CoreError，不再包装为 DatabaseError。
+        // handler 原样传播 CoreError，不包装为 DatabaseError。
         let mut mock_config = MockConfigManagementService::new();
         mock_config
             .expect_create_group()
@@ -1497,15 +1469,13 @@ pub(crate) mod mock_tests {
         let handle = KeyRotationHandle { shutdown_tx };
         let handlers = create_mock_handlers(MockConfigManagementService::new());
         handlers.shutdown(handle);
-        // If we reach here without panic, the test passes
     }
 }
 
 #[cfg(test)]
 mod openapi_doc_carriers {
-    //! OpenAPI 注解载体函数（`*_docs`）：`#[utoipa::path]` 宏的编译期挂载点，
-    //! 生产路径经 `openapi.rs` 的 `paths(...)` 引用、运行时零调用，是行覆盖率的
-    //! 恒定盲区。此处集中显式调用：既钉住「可调用、不 panic」的契约，也消除该盲区。
+    //! OpenAPI 注解载体函数（`*_docs`）：`#[utoipa::path]` 的编译期挂载点，生产零调用，
+    //! 此处集中调用以钉住「可调用、不 panic」契约并消除行覆盖率盲区。
 
     use crate::server::handlers::{
         api_key_handlers, biz_tag_handlers, id_handlers, system_handlers, workspace_handlers,

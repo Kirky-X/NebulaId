@@ -144,9 +144,7 @@ use crate::server::models::{
         )
     ),
     tags(
-        // tag 体系与 handlers 注解载体的资源域对齐
-        // ids / workspaces / groups / biz-tags / api-keys / config / system / docs。
-        // （admin 语义并入 api-keys / config 的端点描述与 403 响应说明。）
+        // tag 体系与 handlers 注解载体的资源域对齐；admin 语义并入 api-keys / config。
         (name = "ids", description = "ID generation and parsing"),
         (name = "workspaces", description = "Workspace management"),
         (name = "groups", description = "Group management"),
@@ -168,9 +166,8 @@ pub fn create_swagger_router() -> Router {
 // OpenAPI 运行时本地化（unify-rust-i18n）
 // ============================================================================
 
-/// 由 spec 路径生成 operation 键的 path-slug 段（与 etyma 先例同一规则）：
-/// 去首尾 `/`，段间 `/` → `-`，剥离路径参数花括号
-/// （`/api/v1/biz-tags/{id}` → `api-v1-biz-tags-id`，`/api/v1/` → `api-v1`）。
+/// 由 spec 路径生成 operation 键的 path-slug 段：去首尾 `/`，段间 `/` → `-`，
+/// 剥离路径参数花括号（`/api/v1/biz-tags/{id}` → `api-v1-biz-tags-id`）。
 fn operation_slug(path: &str) -> String {
     path.trim_matches('/')
         .split('/')
@@ -179,8 +176,8 @@ fn operation_slug(path: &str) -> String {
         .join("-")
 }
 
-/// 是否 HTTP method 键（遍历 path item 成员时区分 method 与 `parameters` 等
-/// OpenAPI 对象字段；口径与 FTL operation 键的 `<method>-` 前缀一致）。
+/// 是否 HTTP method 键（遍历 path item 成员时区分 method 与 `parameters`
+/// 等 OpenAPI 对象字段；口径与 FTL operation 键的 `<method>-` 前缀一致）。
 fn is_http_method(s: &str) -> bool {
     matches!(
         s,
@@ -188,16 +185,10 @@ fn is_http_method(s: &str) -> bool {
     )
 }
 
-/// 构建经运行时本地化的 OpenAPI JSON（`/api-docs/openapi.json` 出口）。
-///
-/// `ApiDoc` 的 utoipa derive 装配是编译期静态的，注解 description 只能是
-/// 单语规范串（为英文规范串，与 FTL en 串逐字节一致）；此处序列化后
-/// 按当前进程 locale 做「命中才替换」：
-/// - response description 键 `<method>-<path-slug>-<status>`；
-/// - parameter description 键 `<method>-<path-slug>-param-<name>`；
-///
-/// FTL 键登记见 `locales/{en,zh}/messages.ftl` 的 T021 段。未命中的
-/// description 保持静态英文规范串，契约结构与 HTTP 语义不变。
+/// 构建经运行时本地化的 OpenAPI JSON（`/api-docs/openapi.json` 出口）：
+/// utoipa derive 静态装配下的 description 只能是英文规范串，此处序列化后
+/// 按当前 locale「命中才替换」（response 键 `<method>-<slug>-<status>`、
+/// parameter 键 `<method>-<slug>-param-<name>`），未命中保持原英文串。
 pub(crate) fn localized_openapi_json() -> serde_json::Value {
     let mut doc = serde_json::to_value(ApiDoc::openapi()).expect("ApiDoc must serialize to JSON");
     localize_openapi_json(&mut doc, &crate::core::i18n::current_locale());
@@ -298,20 +289,12 @@ mod tests {
 
     // ========== —— paths 守卫 ==========
 
-    /// `/api/v1` 业务路由清单—— openapi paths 与 `router.rs`
-    /// 注册处的一一对应表（路径用 OpenAPI `{}` 语法；router.rs 注册处
-    /// 为同名 `{}` 语法，语义一一对应；`/api/v1` 根以 `/api/v1/` 呈现）。
-    ///
-    /// 方案说明（选型见任务报告）： axum 0.8 `Router::routes()` 不展开
-    /// `nest()` 的子路由，且完整装配 router 需要克隆整套 auth/audit/限流
-    /// mock，故守卫不遍历运行时 Router，而是对齐既有 parity 清单
-    /// （`router.rs::API_V1_ROUTE_PREFIXES` / api-info endpoints）维护本表：
-    /// - 正向：本表每条路径+方法都必须出现在 openapi 文档（漏注解即失败）；
-    /// - 反向：openapi 文档中 `/api/` 前缀路径不得超出本表（注解漂移即失败）；
-    /// - 上界：paths 总数 ≥ 表长（任务要求的「paths 数 ≥ 路由数」）。
-    ///
-    /// 新增 /api/v1 路由时 守卫会先失败并把开发者引到 router.rs，
-    /// 同步本表与注解即可。
+    /// `/api/v1` 路由清单：openapi paths 与 `router.rs` 注册的一一对应表
+    /// （`{}` 为 OpenAPI 参数语法，根路径呈现为 `/api/v1/`）。守卫不变量：
+    /// 表内路径+方法必须出现在 openapi（漏注解失败）；openapi 的 `/api/`
+    /// 路径不得超出本表（漂移失败）；paths 总数 ≥ 表长。新增路由时守卫先
+    /// 失败，需同步本表与 router.rs（不遍历运行时 Router：axum 0.8 的
+    /// `Router::routes()` 不展开 `nest()` 子路由，且完整装配需全套 mock）。
     const EXPECTED_V1_PATHS: &[(&str, &[&str])] = &[
         ("/api/v1/", &["get"]),
         ("/api/v1/generate", &["post"]),
@@ -341,7 +324,6 @@ mod tests {
         let doc = openapi_json();
         let paths = doc["paths"].as_object().expect("paths must be an object");
 
-        // 正向：清单内每条路径与方法都必须注册。
         for (path, methods) in EXPECTED_V1_PATHS {
             let item = paths
                 .get(*path)
@@ -354,8 +336,6 @@ mod tests {
             }
         }
 
-        // 上界：paths 总数（含 /health、/ready、/metrics、/api-docs/openapi.json）
-        // ≥ v1 清单长度。
         assert!(
             paths.len() >= EXPECTED_V1_PATHS.len(),
             "openapi paths 数量({}) 不得少于 v1 路由数({})",
@@ -363,7 +343,6 @@ mod tests {
             EXPECTED_V1_PATHS.len()
         );
 
-        // 反向：/api/ 前缀路径不得超出清单（注解漂移检测）。
         let extra: Vec<&String> = paths
             .keys()
             .filter(|k| k.starts_with("/api/") && !EXPECTED_V1_PATHS.iter().any(|(p, _)| p == k))
@@ -453,8 +432,7 @@ mod tests {
         );
     }
 
-    /// 从磁盘读取 en FTL 的键集合（与 `core::i18n` 键齐性守卫同一解析口径：
-    /// `key = value` 行，`.`→`-` 映射不适用——本测试只消费 FTL 原生键）。
+    /// 从磁盘读取 en FTL 的键集合（`key = value` 行口径；`.`→`-` 映射不适用）。
     fn en_ftl_keys() -> Vec<String> {
         let ftl = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales/en/messages.ftl"),
@@ -466,10 +444,8 @@ mod tests {
             .collect()
     }
 
-    /// 守卫：messages.ftl 中全部 `<method>-` 前缀键都必须可由 spec 路由
-    /// 经 `operation_slug` 计算命中（response 键 `<method>-<slug>-<status>`、
-    /// parameter 键 `<method>-<slug>-param-<name>`）——防止 slug 与 FTL 键
-    /// 漂移导致运行时替换静默失效。
+    /// 守卫：messages.ftl 中全部 `<method>-` 前缀键都必须可由 spec 路由经
+    /// `operation_slug` 命中——防止 slug 与 FTL 键漂移导致替换静默失效。
     #[test]
     fn all_openapi_ftl_operation_keys_reachable_from_spec_routes() {
         let doc = openapi_json();
@@ -509,8 +485,7 @@ mod tests {
         );
     }
 
-    /// 本地化替换语义：en/zh 双 locale 下命中键的 description 均被
-    /// 对应 FTL 文案替换（en 替换结果与注解内联英文规范串同源）。
+    /// 本地化替换语义：en/zh 双 locale 下命中键的 description 均被 FTL 文案替换。
     #[test]
     fn localized_openapi_replaces_descriptions_on_hit() {
         for locale in ["en", "zh-CN"] {
@@ -528,7 +503,6 @@ mod tests {
                 "200 description must be localized ({locale})"
             );
 
-            // parameter description：GET /api/v1/groups 的 workspace 参数
             let groups = &doc["paths"]["/api/v1/groups"]["get"];
             let params = groups["parameters"].as_array().expect("parameters array");
             let workspace = params

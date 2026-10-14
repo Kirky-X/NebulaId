@@ -1,8 +1,7 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! TLS 服务器模块
-//! 提供 HTTPS 和 gRPC TLS 支持
+//! TLS 服务器模块：提供 HTTPS 与 gRPC TLS 支持。
 
 use crate::core::config::TlsConfig;
 use axum::extract::connect_info::Connected;
@@ -38,17 +37,10 @@ const PROTOCOL_VERSIONS_TLS13: &[&SupportedProtocolVersion] = &[&rustls::version
 const PROTOCOL_VERSIONS_TLS12_PLUS: &[&SupportedProtocolVersion] =
     &[&rustls::version::TLS13, &rustls::version::TLS12];
 
-/// 把 `tls.min_tls_version` 映射为 rustls 服务端允许协商的协议版本集合
-/// （真实强制：此前 `min_tls_version` 只写日志，不进 `ServerConfig`，
-/// 实际恒为 rustls 默认的 TLS 1.2 + 1.3）。
+/// 把 `tls.min_tls_version` 映射为 rustls 允许协商的协议版本集合。
 ///
-/// 「无法识别的取值显性失败、绝不静默降级」由以下两道防线保证：
-/// 1. 运行期：[`crate::core::config::TlsVersion`] 是闭合枚举，
-///    `min_tls_version = "tls11"` 之类的字面量在配置反序列化阶段就被 serde 拒绝
-///    （`#[serde(default)]` 只兜底「字段缺失」，不会吞掉非法值），
-///    配置根本到不了这里；
-/// 2. 编译期：此处是穷尽 match，后续给 `TlsVersion` 加变体而忘记登记会直接
-///    编译失败，不会出现「配置写了但不生效」。
+/// 非法取值在配置反序列化阶段被 serde 拒绝（闭合枚举）；穷尽 match 保证
+/// 新增变体漏登记即编译失败，不会出现「配置写了但不生效」。
 fn enabled_protocol_versions(
     min: crate::core::config::TlsVersion,
 ) -> &'static [&'static SupportedProtocolVersion] {
@@ -92,9 +84,8 @@ impl TlsManager {
 
     pub async fn initialize(&mut self) -> TlsResult<()> {
         if !self.config.enabled {
-            // 矛盾配置显性上报。`enabled = false` 会整体关闭 TLS，
-            // 此时 `http_enabled` / `grpc_enabled` 被忽略，端口按明文启动。
-            // 旧实现静默返回，运维读到 `tls.http_enabled = true` 会误以为链路已加密。
+            // 矛盾配置显性上报：enabled=false 时整体关闭 TLS，per-port 开关被忽略，
+            // 端口按明文启动。
             if self.config.http_enabled || self.config.grpc_enabled {
                 tracing::warn!(
                     event = "tls_config_conflict",
@@ -109,8 +100,7 @@ impl TlsManager {
             return Ok(());
         }
 
-        // SECURITY: Validate minimum TLS version configuration
-        // Prevent use of insecure TLS versions (TLS 1.0, TLS 1.1)
+        // 记录生效的最低 TLS 版本；非法值在配置反序列化阶段已被 serde 拒绝。
         match self.config.min_tls_version {
             crate::core::config::TlsVersion::Tls12 => {
                 tracing::info!("{}", t!("log.server.config.tls.tls12_min_configured"));
@@ -128,7 +118,7 @@ impl TlsManager {
             Self::private_key_der_bytes(&private_key_der),
         );
 
-        // 为 HTTP 配置 TLS with version enforcement
+        // 为 HTTP 配置 TLS（版本下限经 builder 强制）
         if self.config.http_enabled {
             self.setup_http_acceptor(cert_der.clone(), private_key_der.clone_key())?;
         }
@@ -150,8 +140,7 @@ impl TlsManager {
         Ok(())
     }
 
-    /// 加载并解析证书与私钥 PEM（首个证书/私钥项，非对应项跳过；缺失项
-    /// 或文件不存在分别显性报错）。
+    /// 加载并解析证书与私钥 PEM（首个匹配项；缺失或文件不存在显性报错）。
     fn load_cert_and_key(&self) -> TlsResult<(CertificateDer<'static>, PrivateKeyDer<'static>)> {
         let cert_path = Path::new(&self.config.cert_path);
         let key_path = Path::new(&self.config.key_path);
@@ -170,21 +159,18 @@ impl TlsManager {
             )));
         }
 
-        // 读取 PEM 文件
         let cert_file =
             File::open(cert_path).map_err(|e| TlsError::CertificateLoadError(e.to_string()))?;
         let key_file =
             File::open(key_path).map_err(|e| TlsError::PrivateKeyLoadError(e.to_string()))?;
 
-        // 读取证书 - rustls-pki-types PemObject（首个证书项，非证书项跳过；
-        // 无证书项 → NoItemsFound → "Empty certificate chain"）
+        // 首个证书项（非证书项跳过）；无证书项 → NoItemsFound → "Empty certificate chain"
         let cert_der = CertificateDer::pem_reader_iter(cert_file)
             .next()
             .ok_or_else(|| TlsError::CertificateLoadError("Empty certificate chain".to_string()))?
             .map_err(|e| TlsError::CertificateLoadError(e.to_string()))?;
 
-        // 读取密钥 - PemObject（首个私钥项，Pkcs1/Pkcs8/Sec1 皆可；无密钥项 →
-        // NoItemsFound → "Empty private key"）
+        // 首个私钥项（Pkcs1/Pkcs8/Sec1 皆可）；无密钥项 → NoItemsFound → "Empty private key"
         let private_key_der = PrivateKeyDer::pem_reader_iter(key_file)
             .next()
             .ok_or_else(|| TlsError::PrivateKeyLoadError("Empty private key".to_string()))?
@@ -193,8 +179,7 @@ impl TlsManager {
         Ok((cert_der, private_key_der))
     }
 
-    /// 私钥的 DER 字节视图（gRPC Identity 装配用；历史变量名 `key_pem`
-    /// 实为 DER，本名如实描述内容）。
+    /// 私钥的 DER 字节视图（gRPC Identity 装配用）。
     fn private_key_der_bytes<'a>(key: &'a PrivateKeyDer<'a>) -> &'a [u8] {
         match key {
             PrivateKeyDer::Pkcs1(k) => k.secret_pkcs1_der(),
@@ -204,9 +189,8 @@ impl TlsManager {
         }
     }
 
-    /// HTTP TLS acceptor：min_tls_version 经 builder_with_protocol_versions
-    /// 声明服务端可协商的版本集合，低于该集合的 ClientHello 被 rustls 直接
-    /// 拒绝（不再"只记日志不生效"）；并配置 ALPN（HTTP/2 支持）。
+    /// HTTP acceptor：builder_with_protocol_versions 强制版本下限，低于下限的
+    /// ClientHello 被 rustls 拒绝；同时按配置设置 ALPN。
     fn setup_http_acceptor(
         &mut self,
         cert_der: CertificateDer<'static>,
@@ -231,10 +215,8 @@ impl TlsManager {
         Ok(())
     }
 
-    /// gRPC TLS 配置：Identity + 可选 mTLS CA。边界如实上报：min_tls_version
-    /// 只强制到 HTTP acceptor（gRPC 侧 TLS 由 tonic 自行装配 ServerConfig，
-    /// 不接受本 crate 注入版本集合，可协商范围恒为 TLS 1.2 + 1.3），
-    /// 配置 1.3 时两侧不一致必须显式说明。
+    /// gRPC TLS 配置：Identity + 可选 mTLS CA。min_tls_version 只强制到 HTTP
+    /// acceptor，gRPC 侧由 tonic 自行装配，恒可协商 TLS 1.2 + 1.3。
     fn setup_grpc_config(&mut self, identity: Identity) -> TlsResult<()> {
         let mut grpc_config = ServerTlsConfig::new().identity(identity);
 
@@ -242,7 +224,7 @@ impl TlsManager {
             let ca_file =
                 File::open(ca_path).map_err(|e| TlsError::CertificateLoadError(e.to_string()))?;
 
-            // 读取 CA 证书（首个证书项，语义同上）
+            // 首个 CA 证书项
             let ca_cert = CertificateDer::pem_reader_iter(ca_file)
                 .next()
                 .ok_or_else(|| TlsError::CertificateLoadError("Empty CA certificate".to_string()))?
@@ -267,19 +249,15 @@ impl TlsManager {
     }
 }
 
-// ============================================================================
-// DualListener: HTTP 端口真实 TLS
-// ============================================================================
+// ===== DualListener: HTTP 端口真实 TLS =====
 
-/// 双模监听器：按配置选择明文 TCP 或 TLS（经 `TlsAcceptor` 包装）。
+/// 双模监听器：按配置选择明文 TCP 或 TLS（`TlsAcceptor` 包装）。
 ///
-/// 实现 `axum::serve::Listener`（axum 0.8 该 trait 未 sealed，可外部实现），
-/// 使 `axum::serve` 无需 `axum-server` 等额外依赖即可在单一端口上启用 HTTPS。
-/// 未启用 TLS 时行为与裸 `TcpListener` 完全一致（明文回退）。
+/// 实现 `axum::serve::Listener`（该 trait 未 sealed），使 `axum::serve` 无需
+/// 额外依赖即在单一端口启用 HTTPS；未启用 TLS 时等价于裸 `TcpListener`。
 ///
-/// TLS 模式下握手在 per-connection 任务中并发完成
-/// 旧实现把 `acceptor.accept(tcp).await` 内联在 accept 循环里，客户端
-/// 只建连不发 ClientHello 即可永久冻结整个 HTTP 端口（未认证 DoS）。
+/// TLS 握手在 per-connection 任务并发完成：只建连不发 ClientHello 的客户端
+/// 无法冻结整个 HTTP 端口（未认证 DoS）。
 pub enum DualListener {
     Plain(tokio::net::TcpListener),
     Tls(TlsEndpoint),
@@ -300,8 +278,7 @@ pub struct TlsEndpoint {
     acceptor: TlsAcceptor,
     /// 每个握手任务用的发送端克隆。
     tx: tokio::sync::mpsc::Sender<(DualStream, std::net::SocketAddr)>,
-    /// 常驻发送端：保证 `rx` 不因"所有 sender 已 drop"而立刻返回 None，
-    /// 使 `select!` 在空闲期正确挂起而非忙轮询。本字段只持有、从不发送。
+    /// 常驻发送端：防止 `rx` 因全部 sender drop 而返回 None，使 `select!` 空闲期正确挂起；只持有、从不发送。
     _keepalive: tokio::sync::mpsc::Sender<(DualStream, std::net::SocketAddr)>,
     rx: tokio::sync::mpsc::Receiver<(DualStream, std::net::SocketAddr)>,
 }
@@ -342,9 +319,8 @@ impl axum::serve::Listener for DualListener {
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         match self {
             DualListener::Plain(listener) => {
-                // 与 axum 内置 TcpListener 实现一致：accept 错误记日志后重试
-                // （补充 50ms 退避：EMFILE 等持续性错误不再热自旋）。
-                // 注意用固有方法全限定调用，避免解析到本 trait 的 accept。
+                // 与 axum 内置实现一致：accept 错误记日志后按 50ms 退避重试
+                // （EMFILE 等持续错误不热自旋）；用固有方法全限定调用避免解析到本 trait。
                 loop {
                     match tokio::net::TcpListener::accept(listener).await {
                         Ok((stream, addr)) => return (DualStream::Plain(stream), addr),
@@ -411,16 +387,13 @@ impl axum::serve::Listener for DualListener {
     }
 }
 
-/// 由 axum 注入的连接对端地址。
-///
-/// 孤儿规则禁止为外来的 `SocketAddr` 实现 axum 的 `Connected`，
-/// 故用本 crate 新类型承载；读取端见 `middleware::utils::get_client_ip`。
+/// 由 axum 注入的连接对端地址：孤儿规则禁止为外来 `SocketAddr` 实现
+/// `Connected`，故用 crate 新类型承载；读取端见 `middleware::utils::get_client_ip`。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PeerAddr(pub std::net::SocketAddr);
 
-/// 支撑 `into_make_service_with_connect_info::<PeerAddr>()`：axum 经本 trait
-/// 从已接受的流提取对端地址并注入 `ConnectInfo<PeerAddr>`，使限流 / 认证失败
-/// 计数 / 审计拿到真实 per-IP 语义。
+/// 支撑 `into_make_service_with_connect_info::<PeerAddr>()`：注入
+/// `ConnectInfo<PeerAddr>`，使限流 / 认证失败计数 / 审计拿到真实 per-IP。
 impl Connected<IncomingStream<'_, DualListener>> for PeerAddr {
     fn connect_info(target: IncomingStream<'_, DualListener>) -> Self {
         PeerAddr(*target.remote_addr())
@@ -484,16 +457,12 @@ mod tests {
     use tempfile::NamedTempFile;
     use tokio_rustls::TlsConnector;
 
-    /// Generate a self-signed cert + key pair as PEM files for testing.
-    /// Returns (cert_file, key_file) NamedTempFile handles.
+    /// 生成自签证书+私钥 PEM 临时文件，返回 (cert_file, key_file)。
     fn generate_test_cert_files() -> (NamedTempFile, NamedTempFile) {
-        // Install ring crypto provider (required by rustls 0.23 + rcgen 0.13).
-        // `install_default()` is idempotent; safe to call multiple times.
+        // 安装 ring crypto provider（幂等，可重复调用）。
         let _ = rustls::crypto::ring::default_provider().install_default();
 
-        // rcgen 0.14 API: `generate_simple_self_signed` returns a
-        // `CertifiedKey { cert, signing_key }`. `cert.pem()` and
-        // `signing_key.serialize_pem()` both return `String`.
+        // rcgen 0.14：generate_simple_self_signed 返回 CertifiedKey。
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
             .expect("generate self-signed cert");
         let cert_pem = certified.cert.pem();
@@ -556,7 +525,6 @@ mod tests {
         let err3 = TlsError::PrivateKeyLoadError("a".to_string());
         assert_eq!(err1, err2);
         assert_ne!(err1, err3);
-        // Clone produces equal value
         assert_eq!(err1.clone(), err1);
     }
 
@@ -566,7 +534,6 @@ mod tests {
     fn test_tls_manager_new_disabled_config() {
         let config = TlsConfig::default();
         let manager = TlsManager::new(config);
-        // Disabled config: nothing should be initialized
         assert!(!manager.is_http_enabled());
         assert!(!manager.is_grpc_enabled());
         assert!(manager.http_acceptor().is_none());
@@ -575,8 +542,7 @@ mod tests {
 
     #[test]
     fn test_tls_manager_new_preserves_disabled_flags() {
-        // Even if http_enabled/grpc_enabled are true in config, when not
-        // initialized, is_*_enabled returns false (acceptor is None).
+        // 未 initialize 时 acceptor 为 None，is_*_enabled 恒 false。
         let config = TlsConfig {
             enabled: true,
             http_enabled: true,
@@ -597,7 +563,6 @@ mod tests {
         let mut manager = TlsManager::new(TlsConfig::default());
         let result = manager.initialize().await;
         assert!(result.is_ok());
-        // Even after initialize, disabled means acceptors remain None
         assert!(manager.http_acceptor().is_none());
         assert!(manager.grpc_tls_config().is_none());
         assert!(!manager.is_http_enabled());
@@ -794,11 +759,9 @@ mod tests {
         assert!(manager.is_http_enabled());
     }
 
-    // ===== min_tls_version 真实强制（公开可观测面 = 实际协商结果）=====
-    //
-    // `rustls::ServerConfig` 的 `versions` 字段是 `pub(super)`（本 crate 读不到），
-    // 因此不引入任何测试专用 pub API，改用真实回环 TCP + TLS 握手的协商结果证明：
-    // 低于下限的 ClientHello 被服务端拒绝（握手不完成），达到下限的协商成功。
+    // ===== min_tls_version 真实强制（以实际协商结果验证）=====
+    // ServerConfig::versions 读不到，故用回环 TCP 真实握手证明：低于下限的
+    // ClientHello 被拒，达到下限的协商成功。
 
     /// 握手两端的等待上限：断言前挂起的兜底（远超本地回环握手耗时）。
     const HANDSHAKE_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -809,8 +772,7 @@ mod tests {
     /// 客户端只通告 TLS 1.3。
     const CLIENT_TLS13: &[&SupportedProtocolVersion] = &[&rustls::version::TLS13];
 
-    /// 测试专用证书校验器：本模块证书由 rcgen 现造（自签、非 CA、不在信任库），
-    /// 而这里只关心**版本协商结果**，故跳过证书链与签名校验。
+    /// 测试证书校验器：仅关心版本协商结果，跳过证书链与签名校验。
     #[derive(Debug)]
     struct AcceptAnyServerCert;
 
@@ -845,8 +807,7 @@ mod tests {
         }
 
         fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-            // 跟随已安装 provider 的能力（rcgen 默认签发 ECDSA P-256 证书），
-            // 避免因通告算法缺失导致握手在版本协商之前就失败。
+            // 跟随 provider 能力（rcgen 默认 ECDSA P-256），避免握手在版本协商前失败。
             rustls::crypto::CryptoProvider::get_default()
                 .map(|provider| {
                     provider
@@ -860,11 +821,8 @@ mod tests {
         }
     }
 
-    /// 用 `acceptor`（生产路径 `TlsManager::initialize()` 的产物）与一个
-    /// 只通告 `client_versions` 的 rustls 客户端在 127.0.0.1 上握手。
-    ///
-    /// 返回服务端视角结论：`Some(version)` 表示握手完成并协商到该版本，
-    /// `None` 表示服务端拒绝（含超时）。
+    /// 与只通告 `client_versions` 的客户端在回环地址握手，返回服务端结论：
+    /// `Some(version)` = 协商成功，`None` = 被拒（含超时）。
     async fn negotiate_with_client_versions(
         acceptor: TlsAcceptor,
         client_versions: &'static [&'static SupportedProtocolVersion],
@@ -928,8 +886,7 @@ mod tests {
             .expect("http acceptor present after initialize")
     }
 
-    /// min_tls_version = tls13：只允许 TLS 1.3 —— 仅支持 1.2 的客户端被拒，
-    /// 支持 1.3 的客户端握手成功且协商结果为 1.3。
+    /// tls13 下限：仅支持 1.2 的客户端被拒，TLS 1.3 客户端协商为 1.3。
     #[tokio::test]
     async fn test_http_min_tls13_acceptor_only_negotiates_tls13() {
         let acceptor = http_acceptor_for(TlsVersion::Tls13).await;
@@ -946,8 +903,7 @@ mod tests {
         );
     }
 
-    /// min_tls_version = tls12：下限放宽真实生效 —— TLS 1.2 客户端握手成功，
-    /// 同时 TLS 1.3 客户端仍优先协商到 1.3（证明未写死为单一版本）。
+    /// tls12 下限：TLS 1.2 客户端握手成功，TLS 1.3 客户端仍协商为 1.3。
     #[tokio::test]
     async fn test_http_min_tls12_acceptor_negotiates_both_versions() {
         let acceptor = http_acceptor_for(TlsVersion::Tls12).await;
@@ -964,9 +920,8 @@ mod tests {
         );
     }
 
-    /// `enabled = false` 且任一 per-port 开关为 true 属矛盾配置：
-    /// 不报错但必须保持"不产出 acceptor"（明文启动），由 initialize 内的
-    /// warn 显式上报。
+    /// enabled=false 且 per-port 开关为 true 属矛盾配置：不报错、不产出
+    /// acceptor（明文启动），仅由 initialize 内 warn 上报。
     #[tokio::test]
     async fn test_disabled_with_per_port_flags_stays_plaintext() {
         let mut manager = TlsManager::new(TlsConfig {
@@ -1005,10 +960,7 @@ mod tests {
         let result = manager.initialize().await;
         assert!(result.is_ok(), "ALPN config should succeed: {:?}", result);
         assert!(manager.is_http_enabled());
-        // The acceptor was created; ALPN protocols are baked into the
-        // ServerConfig (we cannot introspect them via TlsAcceptor's public
-        // API, but the fact that initialize() returned Ok with non-empty
-        // alpn_protocols confirms the branch was exercised).
+        // ALPN 无法从 TlsAcceptor 读回；initialize() 成功即证明该分支被执行。
         assert!(manager.http_acceptor().is_some());
     }
 
@@ -1036,7 +988,7 @@ mod tests {
     #[tokio::test]
     async fn test_initialize_grpc_with_ca_cert_succeeds() {
         let (cert_file, key_file) = generate_test_cert_files();
-        // Use the same cert as the CA for testing purposes (self-signed).
+        // 自签证书在测试中同时充当 CA。
         let ca_file = NamedTempFile::new().expect("ca tmp");
         std::fs::write(ca_file.path(), std::fs::read(cert_file.path()).unwrap()).unwrap();
 
@@ -1105,8 +1057,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_initialize_neither_http_nor_grpc_enabled_succeeds() {
-        // Even with enabled=true, if both http_enabled and grpc_enabled are
-        // false, the function should succeed without creating acceptors.
+        // enabled=true 但两个 per-port 开关皆 false 时成功且不产出 acceptor。
         let (cert_file, key_file) = generate_test_cert_files();
         let config = TlsConfig {
             enabled: true,
@@ -1142,7 +1093,7 @@ mod tests {
     #[test]
     fn test_tls_manager_is_cloneable() {
         let manager = TlsManager::new(TlsConfig::default());
-        // TlsManager derives Clone — required for use in axum State.
+        // Clone 用于 axum State。
         let _cloned = manager.clone();
     }
 }

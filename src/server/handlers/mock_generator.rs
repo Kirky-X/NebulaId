@@ -130,7 +130,6 @@ mod tests {
     async fn test_mock_generator() {
         let generator = MockIdGenerator::new();
         let id = generator.generate("w", "g", "t").await.unwrap();
-        // Just verify it doesn't panic
         assert!(id.to_string().parse::<u128>().is_ok());
     }
 

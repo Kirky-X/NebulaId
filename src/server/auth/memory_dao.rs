@@ -1,50 +1,18 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! 进程内 `GarrisonDao` 实现。
+//! 进程内 `GarrisonDao` 实现：re-export garrison 库 `dao::InMemoryDao`。
 //!
-//! 该实现已收敛到 garrison 库：本模块 re-export `garrison::dao::InMemoryDao`
-//! 作为进程内 DAO 的正名，`MemoryGarrisonDao` 类型与本地重复实现已删除。
-//! garrison `InMemoryDao` 与本文档此前记录的接口契约一致（`GarrisonDao`
-//! trait 的 `get` / `set` / `set_permanent` / `keys` / `get_and_delete` /
-//! `incr` / `decr` / `set_if_absent` / `compare_and_swap`），差异点集中在
-//! 两处需要钉桩的行为：`keys(pattern)` 走 glob 匹配（含 `*` / `?` 的 key 在
-//! `set` / `get` 直读时按字面量访问，只有扫描参数才被解释为模式），
-//! `set(..., 0)` 表示永久驻留。
-//!
-//! 适用场景：单实例部署、集成测试、开发环境。多实例部署需使用 Redis 后端
-//! （garrison `cache-redis` feature）。
+//! 适用单实例部署 / 集成测试 / 开发环境；多实例需 Redis 后端（`cache-redis` feature）。
 
-/// 进程内 `GarrisonDao` 实现（ garrison 库 `dao::InMemoryDao` 的 re-export）。
-///
-/// `pub use` 保持 `nebulaid::server::auth::InMemoryDao` 门面路径稳定；
-/// 需直接以 trait object 使用处改引 `garrison::dao::GarrisonDao`。
+/// garrison `dao::InMemoryDao` 的 re-export，保持 `server::auth::InMemoryDao` 门面路径稳定。
 pub use garrison::dao::InMemoryDao;
 
 /// garrison `InMemoryDao` 的有界装饰器：容量阀 + FIFO 淘汰。
 ///
-/// 防爆破桶的键空间受攻击者控制（可信代理场景下 XFF 首段可任意伪造，
-/// `client_ip_to_context_ip` 把任意文本映射为独立桶），而 garrison
-/// `InMemoryDao` 无容量上限、过期键只在同键再次被访问时惰性清理
-/// （`keys()` 只过滤不删除，无后台 sweeper）——轮换 IP 的分布式爆破会让
-/// 永不回访的计数键 `bf:{ip}:count` 与封禁键常驻不删。旧实现（剪裁构建
-/// 的进程内滑窗）有 `MAX_TRACKED_AUTH_FAILURE_IPS = 10_000` 容量阀；
-/// 本装饰器把同一约束补回 garrison 路径（审查实测 30 万条无界 ≈ +52MB）。
-///
-/// 淘汰策略：超过 `max_keys` 时删除最早插入的存活键（FIFO）。淘汰一个
-/// 计数键只是丢掉该 IP 的失败计数（安全方向：少封禁）；淘汰一个封禁键
-/// 会让被封者重新获得失败预算（可接受：重建封禁仍需再失败满阈值）。
-///
-/// `order`（队列 + 已登记集合）记录插入意图，与 `inner` 的存在性允许漂移
-/// （键可能在 inner 侧已过期）：淘汰一个已消失的键是一次无害空删。集合使
-/// 「是否已登记」O(1) 可判，因此只有**首次**写入的键入队，对既有键的重复
-/// `set` 不产生重复记账——否则队列通胀后 FIFO 队首会是仍存活的热键，
-/// 淘汰它等于「重写热的键把它自己逐出」。队列长度以 `max_keys` 为上界，
-/// 不会成为第二个无界结构。
-///
-/// 委托面与 `InMemoryDao` 的实现面一致（16 个方法）；其余 trait 成员
-/// 继承默认实现，行为与直连 `InMemoryDao` 相同（默认即 NotImplemented 或
-/// 经本装饰器的 get 系列转发）。
+/// 防爆破桶键空间受攻击者控制，而 InMemoryDao 无容量上限、过期键只惰性清理；
+/// 超限淘汰最早插入的存活键（丢计数＝少封禁，丢封禁＝需再失败满阈值重建）。
+/// `order` 只登记首次写入，队列以 `max_keys` 为上界，不产生第二个无界结构。
 pub struct BoundedDao {
     inner: InMemoryDao,
     max_keys: usize,
@@ -52,10 +20,7 @@ pub struct BoundedDao {
 }
 
 /// 插入序索引：FIFO 队列 + 已登记键集合。
-///
-/// 集合使「是否已登记」O(1) 可判，从而 `track` 只对新键入队——否则对既有键
-/// 的重复 `set` 会把同一键反复压队，队列通胀后 FIFO 队首可能是仍存活的热键，
-/// 被淘汰时就是「重写热的键把它自己逐出」的自淘汰。
+/// 集合使 `track` 只对新键入队，避免热键重复登记后被 FIFO 自淘汰。
 struct OrderIndex {
     queue: std::collections::VecDeque<String>,
     present: std::collections::HashSet<String>,
@@ -101,9 +66,8 @@ impl BoundedDao {
         }
     }
 
-    /// 登记新键插入意图，并把超限部分按 FIFO 淘汰回 inner。
-    ///
-    /// 锁不跨 await：先在临界区内取出待淘汰键，释放锁后再逐个删除。
+    /// 登记新键插入意图，把超限部分按 FIFO 淘汰回 inner。
+    /// 锁不跨 await：临界区内取出待淘汰键，释放锁后再删除。
     async fn track(&self, new_keys: &[&str]) {
         use garrison::dao::GarrisonDao;
 
@@ -116,7 +80,7 @@ impl BoundedDao {
             while order.queue_len() > self.max_keys {
                 match order.queue.pop_front() {
                     Some(victim) => {
-                        // 同步移除登记态：该键被淘汰后若再次写入，须能重新登记
+                        // 淘汰后移除登记态，该键再次写入时可重新登记
                         order.present.remove(&victim);
                         victims.push(victim);
                     }
@@ -257,16 +221,14 @@ impl garrison::dao::GarrisonDao for BoundedDao {
     }
 }
 
-/// BoundedDao 只登记新键：对既有键重复 `set` 不得重复入队，否则
-/// 队列通胀后 FIFO 队首可能是仍存活的热键，被 `track` 的 delete 直接
-/// 逐出（自淘汰）。钉住「反复 set 同一热键不会导致它被淘汰」。
+/// BoundedDao 只登记新键：反复 `set` 同一热键不得重复入队，否则热键会被 FIFO 自淘汰。
 #[tokio::test]
 async fn test_bounded_dao_reset_hot_key_is_not_evicted() {
     use garrison::dao::GarrisonDao;
 
     let dao = BoundedDao::new(InMemoryDao::new(), 4);
 
-    // 4 个不同键填满容量
+    // 填满容量
     for i in 0..4 {
         dao.set(&format!("cold-{i}"), "v", 0).await.unwrap();
     }
@@ -274,14 +236,13 @@ async fn test_bounded_dao_reset_hot_key_is_not_evicted() {
     for _ in 0..50 {
         dao.set("hot", "v", 0).await.unwrap();
     }
-    // 热键必须仍在（未被自淘汰）
     assert_eq!(
         dao.get("hot").await.unwrap(),
         Some("v".to_string()),
         "反复重写的热键不得被容量阀自淘汰"
     );
 
-    // 未被重写的旧键按 FIFO 淘汰（这是容量阀的本职）
+    // 冷键按 FIFO 被淘汰（容量阀本职）
     let mut evicted = 0;
     for i in 0..4 {
         if dao.get(&format!("cold-{i}")).await.unwrap().is_none() {
@@ -335,8 +296,7 @@ mod tests {
         assert_eq!(d.get("ttl-key").await.unwrap(), Some("v".to_string()));
         assert_eq!(d.get("perm-key").await.unwrap(), Some("v".to_string()));
 
-        // 等待 TTL 到期：过期键不再可见（惰性过期时机由库实现决定，
-        // 断言用轮询而非固定 sleep，避免 CI 抖动）。
+        // 惰性过期时机由库实现决定，轮询而非固定 sleep，避免 CI 抖动。
         let start = std::time::Instant::now();
         while start.elapsed() < std::time::Duration::from_secs(5) {
             if d.get("ttl-key").await.unwrap().is_none() {
@@ -357,19 +317,16 @@ mod tests {
             d.get_and_delete("k1").await.unwrap(),
             Some("v1".to_string())
         );
-        // 原子 get_and_delete 的第二读必须为 None（已删除）。
+        // get_and_delete 第二读必须为 None（已删除）。
         assert_eq!(d.get("k1").await.unwrap(), None);
 
         assert_eq!(d.incr("counter", 100).await.unwrap(), 1);
         assert_eq!(d.incr("counter", 100).await.unwrap(), 2);
         assert_eq!(d.incr("counter", 100).await.unwrap(), 3);
-        // 计数器带 TTL：set(...,0) 之外 incr 的 ttl_seconds 参数生效路径
-        // 由库内部保证；这里只钉住计数累计语义。
+        // incr 的 ttl_seconds 生效路径由库内部保证，这里只钉住计数累计语义。
     }
 
-    /// glob 语义差异点：`*` / `?` 在直读 key 时按字面量，只有扫描参数
-    /// 才解释为模式。含 glob 字符的 key 不能通过 `*` 模式误命中，
-    /// 反之 `keys` 的模式匹配照常工作。
+    /// glob 语义：`*` / `?` 在直读 key 时按字面量，只有扫描参数才解释为模式。
     #[tokio::test]
     async fn test_glob_chars_literal_on_direct_access_pattern_on_scan() {
         let d = dao();
@@ -379,7 +336,7 @@ mod tests {
         assert_eq!(d.get("key:*").await.unwrap(), Some("star".to_string()));
         assert_eq!(d.get("key:?").await.unwrap(), Some("question".to_string()));
 
-        // 扫描参数按 glob 解释：`*` 命中含 glob 字符的两条（以及文字 key）。
+        // 扫描参数按 glob 解释：`*` 命中 glob 字面 key 与文字 key。
         d.set("key:plain", "plain", 0).await.unwrap();
         let mut scanned = d.keys("key:*").await.unwrap();
         scanned.sort();
@@ -404,8 +361,7 @@ mod tests {
         assert_eq!(d.get("permanent").await.unwrap(), Some("v".to_string()));
     }
 
-    /// BoundedDao 容量阀：超过 max_keys 的新建把最早插入的存活键 FIFO
-    /// 淘汰，inner 存活键数以阀为上界（防爆破桶无界增长的修复锚点）。
+    /// 容量阀：超过 max_keys 时 FIFO 淘汰最早插入的存活键（防爆破桶无界增长）。
     #[tokio::test]
     async fn test_bounded_dao_evicts_oldest_beyond_cap() {
         use super::BoundedDao;
@@ -421,8 +377,7 @@ mod tests {
         assert!(d.keys("*").await.unwrap().len() <= 3);
     }
 
-    /// 只有「新建键」路径登记插入：对既有键重复 incr 不重复记账，
-    /// 不提前触发淘汰。
+    /// 只有新建键路径登记插入：对既有键重复 incr 不重复记账，不提前触发淘汰。
     #[tokio::test]
     async fn test_bounded_dao_incr_existing_key_not_double_tracked() {
         use super::BoundedDao;

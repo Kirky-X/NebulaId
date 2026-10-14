@@ -1,7 +1,7 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! ID generation / parsing handlers (rule 25: impl split into sub-module).
+//! ID 生成 / 解析 handlers（impl 拆分到子模块）。
 
 use crate::core::{CoreError, Id, Result};
 use crate::server::models::{
@@ -14,12 +14,8 @@ impl super::ApiHandlers {
     pub async fn generate(&self, req: GenerateRequest) -> Result<GenerateResponse> {
         let start = std::time::Instant::now();
 
-        // Phase 8 (LOW fix) — server-side log uses structured
-        // fields only; no `t!()` translation. The previous `t!()` call
-        // consulted the process-wide global locale, which races with
-        // concurrent requests under different `Accept-Language` headers
-        // (log language mixing). Structured fields are locale-independent
-        // and easier to filter in log aggregation.
+        // 服务端日志只用结构化字段，不用 t!()：t!() 依赖进程级全局 locale，
+        // 与并发请求的 Accept-Language 竞争会导致日志语言混杂。
         tracing::debug!(
             event = "generate_request",
             workspace = %req.workspace,
@@ -27,7 +23,7 @@ impl super::ApiHandlers {
             biz_tag = %req.biz_tag,
         );
 
-        // 修复：提前 parse algorithm，复用结果避免重复 parse。
+        // 提前 parse algorithm，复用结果避免重复解析。
         let parsed_algorithm: Option<crate::core::types::AlgorithmType> =
             if let Some(ref alg_str) = req.algorithm {
                 Some(alg_str.parse()?)
@@ -65,9 +61,8 @@ impl super::ApiHandlers {
             .fetch_add(1, Ordering::SeqCst);
 
         let latency_ms = elapsed.as_millis() as u64;
-        // 修复：使用累积计数 + 总和的方式计算真实平均值，
-        // 而非 `(current_avg + latency) / 2`（后者对早期偏差敏感且非滑动平均）。
-        // avg = total_latency / total_requests
+        // 用累积总和计算真实平均值 avg = total_latency / total_requests，
+        // 而非对早期偏差敏感的增量估计。
         self.metrics
             .total_latency_ms
             .fetch_add(latency_ms, Ordering::SeqCst);
@@ -76,8 +71,7 @@ impl super::ApiHandlers {
         let new_avg = total_latency.checked_div(total_reqs).unwrap_or(latency_ms);
         self.metrics.avg_latency_ms.store(new_avg, Ordering::SeqCst);
 
-        // 修复：复用 line 42 的 parse 结果，避免重复 parse。
-        // algorithm_name 优先使用请求指定的算法，否则查询路由表。
+        // 复用上方 parse 结果；algorithm_name 优先请求指定算法，否则查路由表。
         let algorithm_name = if let Some(parsed) = parsed_algorithm {
             parsed.to_string()
         } else {
@@ -153,7 +147,7 @@ impl super::ApiHandlers {
             .fetch_add(ids.len() as u64, Ordering::SeqCst);
 
         let latency_ms = elapsed.as_millis() as u64;
-        // 修复：同 generate，使用累积平均值
+        // 同 generate，使用累积平均值
         self.metrics
             .total_latency_ms
             .fetch_add(latency_ms, Ordering::SeqCst);
@@ -193,11 +187,9 @@ impl super::ApiHandlers {
         let metadata = match algorithm.as_str() {
             "snowflake" => self.extract_snowflake_metadata(id.clone()),
             "uuid_v8" => self.extract_timestamp_metadata(id.clone(), "uuid_v8"),
-            // add-uuid-v4-v7：v7 走标准时间戳提取（RFC 9562 §5.7 布局，
-            // 与 v8 的私有布局解析同效但 dc/worker/sequence 无对应字段）；
+            // v7 走标准时间戳提取（RFC 9562 §5.7）；dc/worker/sequence 无对应字段。
             "uuid_v7" => self.extract_timestamp_metadata(id.clone(), "uuid_v7"),
-            // v4 显式声明零元数据而非落 unknown——unknown 会被运维当作
-            // 「解析失败」处理，而 v4 的 ID 本就不可解析出任何字段。
+            // v4 显式零元数据而非落 unknown：v4 本就无法解析出任何字段。
             "uuid_v4" => IdMetadataResponse {
                 timestamp: 0,
                 datacenter_id: 0,
@@ -229,8 +221,7 @@ impl super::ApiHandlers {
     // snowflake 特性关闭时无法解析位布局（SnowflakeLayoutInfo 随特性门控）。
     #[cfg(feature = "snowflake")]
     fn extract_snowflake_metadata(&self, id: Id) -> IdMetadataResponse {
-        // 位布局解析知识下沉 core；运行时取当前配置，取不到时
-        // 回退 standard()（与历史硬编码 3/8/10 行为一致）。
+        // 位布局解析下沉 core；运行时取当前配置，取不到回退 standard()。
         let layout = self
             .id_generator
             .snowflake_layout()
@@ -249,8 +240,7 @@ impl super::ApiHandlers {
 
     #[cfg(not(feature = "snowflake"))]
     fn extract_snowflake_metadata(&self, _id: Id) -> IdMetadataResponse {
-        // 位布局不可解析时按本文件不可识别输入的既有语义返回 unknown 占位，
-        // 不产出带 snowflake 算法名的"成功解码"假象（timestamp=0 即 1970 纪元）。
+        // 位布局不可解析时返回 unknown 占位（timestamp=0），不产出「成功解码」假象。
         IdMetadataResponse {
             timestamp: 0,
             datacenter_id: 0,
@@ -261,9 +251,7 @@ impl super::ApiHandlers {
         }
     }
 
-    /// v7/v8 的时间戳提取（v8 私有布局与 v7 标准布局同构：差异仅算法名；
-    /// dc/worker/sequence 均无对应字段，恒 0）。合并为一处实现避免逐行
-    /// 复制（规则 6 复用优先）。
+    /// v7/v8 共用的时间戳提取（布局同构，仅算法名不同；dc/worker/sequence 恒 0）。
     fn extract_timestamp_metadata(&self, id: Id, algorithm: &str) -> IdMetadataResponse {
         let uuid = id.to_uuid_v8();
         let timestamp = uuid
@@ -296,13 +284,9 @@ impl super::ApiHandlers {
     }
 }
 
-// ========== OpenAPI path 注解==========
-//
-// 实际的 axum handler 函数（`handle_generate` 等）位于 `src/server/router.rs`
-// （本 lane 不可修改），故此处以「注解载体函数」承载 `#[utoipa::path]`：
-// 载体函数不参与运行时路由，仅供 `openapi.rs` 的 `paths(...)` 注册。
-// 路由信息（路径/方法）以 router.rs 注册处为准；错误响应统一引用
-// `ErrorResponse`（信封，business_code 见 openapi.rs 错误码表）。
+// ========== OpenAPI path 注解 ==========
+// axum handler 在 router.rs；载体函数仅承载 #[utoipa::path] 供 openapi.rs 注册，
+// 不参与运行时路由；错误响应统一引用 ErrorResponse（信封）。
 
 /// OpenAPI 注解载体：`POST /api/v1/generate`（实际 handler：`router::handle_generate`）。
 #[sdforge::utoipa::path(
@@ -509,9 +493,7 @@ mod tests {
         }
     }
 
-    /// add-uuid-v4-v7：v7 分支提取标准时间戳（非零、量级为 ms），
-    /// v4 分支显式零元数据（timestamp == 0 且 algorithm 名为 uuid_v4，
-    /// 不是 unknown）。
+    /// v7 提取标准时间戳（非零 ms）；v4 显式零元数据（timestamp=0 且算法名 uuid_v4，不是 unknown）。
     #[tokio::test]
     #[cfg(feature = "uuid-v7")]
     async fn test_handle_parse_uuid_v7_timestamp_and_v4_zero_metadata() {

@@ -117,16 +117,13 @@ impl super::ApiHandlers {
             .await
             .map_err(map_db_error)?;
 
-        // Anonymous 防御已内移到 `impl TryFrom<...> for ApiKeyWithSecretResponse`
-        // （`src/server/models.rs`），错误文案不变。
+        // Anonymous 防御已内移到 models.rs 的 TryFrom 实现。
         user_key.try_into()
     }
 
     /// List all Workspaces.
     pub async fn list_workspaces(&self) -> Result<WorkspaceListResponse> {
-        // 修复：直接传播 CoreError，避免 `e.to_string()` 丢失类型信息
-        // 导致 HTTP 响应全部变成 500。helpers.rs 的错误转换层会根据
-        // CoreError 变体映射到正确的 HTTP 状态码。
+        // 直接传播 CoreError，由错误转换层按变体映射 HTTP 状态码。
         self.config_service.list_workspaces().await
     }
 
@@ -146,12 +143,7 @@ impl super::ApiHandlers {
     }
 }
 
-// ========== OpenAPI path 注解==========
-//
-// 实际的 axum handler 函数位于 `src/server/router.rs`（本 lane 不可修改），
-// 此处以「注解载体函数」承载 `#[utoipa::path]`，仅供 `openapi.rs` 的
-// `paths(...)` 注册；路由信息（路径/方法）以 router.rs 注册处为准。
-// 错误响应统一引用 `ErrorResponse`（信封）。
+// ========== axum handler 在 router.rs；以下为载体 #[utoipa::path] 的注解函数 ==========
 
 /// OpenAPI 注解载体：`POST /api/v1/workspaces`（实际 handler：`router::handle_create_workspace`，Admin-only）。
 #[sdforge::utoipa::path(
@@ -523,7 +515,6 @@ mod tests {
         let response = result.unwrap();
         assert_eq!(response.key_secret, expected_secret);
         assert_eq!(response.key.role, "user");
-        // 验证 workspace id 被正确解析（无 panic 即可）。
         let _ = ws_id;
     }
 
@@ -623,7 +614,6 @@ mod tests {
         mock_repo
             .expect_list_api_keys()
             .return_once(move |_, _, _| Ok(vec![admin_key, user_key]));
-        // 只期望删除 user key（不删除 admin key）。
         mock_repo
             .expect_delete_api_key()
             .withf(move |id| *id == user_key_id)
@@ -713,7 +703,6 @@ mod tests {
 
         let result = handlers.list_workspaces().await;
         assert!(result.is_err());
-        // list_workspaces 直接传播 CoreError，不经过 map_db_error。
         assert!(matches!(result.unwrap_err(), CoreError::InternalError(_)));
     }
 

@@ -1,37 +1,9 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! Internal error-mapping helpers shared across handler sub-modules.
-//!
-//! Phase 8 — the helpers in this file produce locale-translated
-//! `ErrorResponse` payloads by reading the `Locale` negotiated by
-//! `locale_middleware` (from the `Accept-Language` header). They are the
-//! single entry point for `CoreError → HTTP response` conversion in
-//! `router.rs`, ensuring consistent status codes and i18n coverage.
-//!
-//! # Style guide
-//!
-//! This file intentionally uses two translation call styles:
-//! - For errors derived from `CoreError`, use
-//!   `e.to_localized_string(locale.as_str())` which delegates to
-//!   `i18n_key()` + `i18n_args()` + `translate_with_locale_args_cow`.
-//!   This is the path used by `core_error_to_response` for 4xx variants
-//!   that carry a caller-supplied `String` payload.
-//! - For handler-constructed errors (UUID parse failure, validation
-//!   failure, workspace mismatch, workspace-name-not-found, etc.) where
-//!   there is no `CoreError` instance to dispatch on, call
-//!   `translate_with_locale_args(locale.as_str(), key, &args)` (or
-//!   `translate_with_locale` for the no-args case) directly with the
-//!   `api.error.*` key.
-//! - For generic 5xx errors (`database_error`, `internal_error`, etc.),
-//!   call `translate_with_locale(locale.as_str(), key)` — no args.
-//!
-//! The two styles exist because `CoreError::i18n_key()`/`i18n_args()`
-//! only model the `error.*` namespace (Display strings); handler-constructed
-//! errors live in the `api.error.*` namespace and have no `CoreError`
-//! variant to dispatch on. Mixing them within a single helper would
-//! require either a fake `CoreError` variant or a separate trait — both
-//! add complexity without value.
+//! CoreError → HTTP/gRPC 响应的错误映射助手（单一口径）。
+//! 文案经 `locale_middleware` 协商的 `Locale` 翻译；5xx 只回固定文案，
+//! 4xx 携带的调用方字符串经 `sanitize_for_production` 截断至 200 字节。
 
 use crate::core::database::ApiKeyRole;
 use crate::core::i18n::{translate_with_locale, translate_with_locale_args};
@@ -41,11 +13,8 @@ use crate::server::models::{ApiErrorCode, ErrorResponse};
 use axum::http::StatusCode;
 use axum::Json;
 
-/// Convert database errors to `CoreError::DatabaseError`.
-///
-/// 第一层文案与改前逐字节一致(`error.to_string()`),底层错误
-/// 对象经 [`crate::core::types::ErrorSource`] 保链(source() 非空;错误链
-/// 仅进服务端日志,见 `core_error_to_response`)。
+/// 数据库错误 → `CoreError::DatabaseError`，底层错误经 `ErrorSource` 保链
+/// （错误链仅进服务端日志，见 `core_error_to_response`）。
 pub(super) fn map_db_error<E>(error: E) -> CoreError
 where
     E: std::error::Error + Send + Sync + 'static,
@@ -56,31 +25,18 @@ where
     )
 }
 
-/// Convert UUID parse errors to `CoreError::InvalidInput`.
+/// UUID 解析错误 → `CoreError::InvalidInput`。
 pub(super) fn map_uuid_error<E: std::fmt::Display>(error: E) -> CoreError {
     CoreError::InvalidInput(
         t!("api.error.handlers.helpers.invalid_uuid", error = error).to_string(),
     )
 }
 
-/// `CoreError` → `(HTTP 状态码, 业务错误码)` 单表分类。
+/// `CoreError` → `(HTTP 状态码, 业务错误码)` 单表分类，唯一事实来源：
+/// 状态码与 `business_code` 都取自此表；gRPC 侧 `core_error_grpc_code` 与之同语义。
 ///
-/// 这是唯一的事实来源：HTTP 错误响应的状态码与 `business_code`
-/// （[`ErrorResponse`]）都从本表取值，保证两者不会各自漂移；
-/// gRPC 侧的 [`core_error_grpc_code`] 与本表逐行同语义。
-///
-/// Phase 8 (LOW fix) 历史 — 本表承接自原 `core_error_status_code`
-/// （旧 `CoreError::to_http_response` / `http_status_code` /
-/// `error_code` 依赖进程级全局 locale，已作为死代码移除）；locale
-/// 化文案统一经 `to_localized_string` + 下方 helpers 生成。
-/// 原函数并入本表（一张映射表两用），不再单设状态码查询口。
-///
-/// 业务码沿用 `ApiErrorCode` 注册表：
-/// - 404 泛型 `NotFound` 默认映射 `WorkspaceNotFound`（2001，沿用被移除的
-///   `From<ErrorResponse>` 的「默认资源错误」惯例）；特定资源由
-///   `BizTagNotFound`（2003）区分。
-/// - `GroupNotFound`（2002）/`ResourceAlreadyExists`（2004）当前无对应
-///   `CoreError` 变体、不会出现（预留码，见 openapi 错误码表标注）。
+/// 404 泛型 `NotFound` 默认映射 `WorkspaceNotFound`（2001），特定资源用 `BizTagNotFound`（2003）；
+/// `GroupNotFound`/`ResourceAlreadyExists` 为预留码，当前无对应 CoreError 变体。
 fn core_error_classification(e: &CoreError) -> (StatusCode, ApiErrorCode) {
     match e {
         CoreError::InvalidIdFormat(_)
@@ -119,42 +75,21 @@ fn core_error_classification(e: &CoreError) -> (StatusCode, ApiErrorCode) {
     }
 }
 
-/// HTTP status code for a `CoreError` variant.
-///
-/// Phase 8 (LOW fix) — this is the single source of
-/// truth for the `CoreError → axum::http::StatusCode` mapping. The
-/// old `CoreError::to_http_response` / `http_status_code` /
-/// `error_code` methods (which consulted the process-wide global
-/// locale via `to_string()`) were removed as dead code; all
-/// locale-aware translation now goes through `to_localized_string`
-/// + the helpers below.
-///
-/// 状态码判定委托给 [`core_error_classification`] 单表
-/// （同一张表同时给出 `business_code`），本函数只保留旧行接口。
+/// `CoreError` 的 HTTP 状态码；判定委托 `core_error_classification` 单表，
+/// 本函数只保留旧行接口（测试用）。
 #[cfg(test)]
 fn core_error_status_code(e: &CoreError) -> StatusCode {
     core_error_classification(e).0
 }
 
-/// Maximum message length returned to clients for 4xx-class errors.
-///
-/// Phase 8 (CRITICAL C-1 / HIGH fix) — guards against
-/// information disclosure and DoS when a 4xx `CoreError` embeds a
-/// long caller-controlled string (e.g. `InvalidInput(user_input)`).
+/// 4xx 错误返回客户端的消息长度上限（200 字节），防长调用方字符串撑大响应。
 const MAX_CLIENT_MESSAGE_LEN: usize = 200;
 
-/// Truncate a message to `MAX_CLIENT_MESSAGE_LEN` bytes, appending an
-/// explicit truncation marker when cut.
-///
-/// SECURITY: this is the last-resort length filter applied to 4xx
-/// responses whose underlying `CoreError` carries a caller-supplied
-/// `String`. 5xx errors bypass this entirely — they return a fixed
-/// generic message via [`core_error_to_response`].
+/// 按 `MAX_CLIENT_MESSAGE_LEN` 字节截断，超长时追加显式标记（char 边界安全）。
+/// 仅作用于携带调用方字符串的 4xx；5xx 走固定文案不经此处。
 fn sanitize_for_production(msg: &str) -> String {
     if msg.len() > MAX_CLIENT_MESSAGE_LEN {
-        // `msg` originates from a UTF-8 `String` so slicing at a byte
-        // boundary <= 200 is not always char-safe; round down to the
-        // nearest char boundary to never panic on multi-byte sequences.
+        // 按 char 边界向下取整，避免切断多字节 UTF-8。
         let mut end = MAX_CLIENT_MESSAGE_LEN;
         while end > 0 && !msg.is_char_boundary(end) {
             end -= 1;
@@ -165,33 +100,13 @@ fn sanitize_for_production(msg: &str) -> String {
     }
 }
 
-/// Convert `CoreError` to `(StatusCode, Json<ErrorResponse>)` with a
-/// locale-translated message.
+/// `CoreError` → `(StatusCode, Json<ErrorResponse>)`，message 按 locale 翻译。
 ///
-/// Phase 8 (CRITICAL C-1 / HIGH fix) — the response message
-/// is chosen per variant:
-///
-/// - **5xx-class internal errors** (`DatabaseError`, `CacheError`,
-///   `InternalError`, `ConfigurationError`, `EtcdError`, `IoError`,
-///   `ClockMovedBackward`, `SequenceOverflow`, `SegmentExhausted`,
-///   `Unknown`): the full error (including the inner `String` which may
-///   carry DB URLs, file paths, or stack traces) is recorded server-side
-///   via `tracing::error!`. The client only sees a fixed generic message
-///   looked up under `api.error.<variant>` — never the raw `String`.
-/// - **4xx-class errors with caller-supplied `String`** (`InvalidInput`,
-///   `NotFound`, `BizTagNotFound`, `AuthenticationError`,
-///   `WorkspaceDisabled`, `InvalidIdFormat`, `InvalidIdString`,
-///   `InvalidAlgorithmType`, `ParseError`): the localized message is
-///   generated via `CoreError::to_localized_string` and then run through
-///   `sanitize_for_production` to cap length at
-///   `MAX_CLIENT_MESSAGE_LEN` bytes.
-/// - **4xx-class errors without inner `String`**
-///   (`RateLimitExceeded`, `ApiKeyDisabled`, `ApiKeyExpired`,
-///   `InvalidApiKeySignature`, `TimeoutError`): the localized message is
-///   returned verbatim — there is no caller-controlled content to filter.
+/// 5xx 类：完整错误只记 `tracing::error!`，客户端仅见 `api.error.<variant>` 固定文案。
+/// 4xx 携带调用方字符串：`to_localized_string` 后经 `sanitize_for_production` 截断；
+/// 4xx 无内层字符串（RateLimitExceeded/ApiKeyDisabled 等）原样返回本地化文案。
 pub fn core_error_to_response(e: &CoreError, locale: Locale) -> (StatusCode, Json<ErrorResponse>) {
-    // 5xx-class internal errors — log full detail server-side, return
-    // generic locale-translated message to the client.
+    // 5xx 类：仅服务端记录完整错误，客户端拿固定本地化文案。
     let message = match e {
         CoreError::DatabaseError(_, _) => {
             tracing::error!(
@@ -267,8 +182,7 @@ pub fn core_error_to_response(e: &CoreError, locale: Locale) -> (StatusCode, Jso
             );
             translate_with_locale(locale.as_str(), "api.error.internal_error")
         }
-        // 4xx-class with caller-supplied String — localize, then cap
-        // length via `sanitize_for_production`.
+        // 4xx 携带调用方字符串：本地化后截断。
         CoreError::InvalidInput(_)
         | CoreError::NotFound(_)
         | CoreError::BizTagNotFound(_)
@@ -281,8 +195,7 @@ pub fn core_error_to_response(e: &CoreError, locale: Locale) -> (StatusCode, Jso
             let msg = e.to_localized_string(locale.as_str());
             sanitize_for_production(&msg)
         }
-        // 4xx-class without inner String — no caller-controlled content,
-        // no truncation needed.
+        // 4xx 无内层字符串：无调用方内容，无需截断。
         CoreError::RateLimitExceeded
         | CoreError::ApiKeyDisabled
         | CoreError::ApiKeyExpired
@@ -290,10 +203,8 @@ pub fn core_error_to_response(e: &CoreError, locale: Locale) -> (StatusCode, Jso
         | CoreError::TimeoutError => e.to_localized_string(locale.as_str()),
     };
 
-    // 状态码与业务码同表判定，request_id/timestamp 在装配处生成。
-    // request_id 优先取请求上下文（request_id 中间件安装的任务局部
-    // 上下文），保证错误响应体与 x-request-id 响应头一致；无中间件上下文
-    // （单元测试 / 独立调用）时保留装配处新生成的 UUID v4。
+    // 状态码与业务码同表判定；request_id 优先取请求上下文（与 x-request-id
+    // 响应头一致），无中间件上下文（单元测试 / 独立调用）时保留装配处生成的 UUID v4。
     let (status, business_code) = core_error_classification(e);
     let code = status.as_u16() as i32;
     let mut error = ErrorResponse::new(code, business_code, message);
@@ -303,31 +214,14 @@ pub fn core_error_to_response(e: &CoreError, locale: Locale) -> (StatusCode, Jso
     (status, Json(error))
 }
 
-// ========== 共享授权==========
+// ========== 共享授权 ==========
 
-/// 共享的 workspace 资源级授权决策（HTTP 与 gRPC 同源）。
+/// 共享的 workspace 资源级授权决策（HTTP 与 gRPC 同源）：User 仅可访问自身
+/// workspace，Admin 跨租户放行，Anonymous 一律拒绝；调用方负责按名反查 UUID 等传输步骤。
 ///
-/// 语义 = `router.rs` 既有 `verify_user_role` / `verify_user_workspace`
-/// 泛化：User 仅可访问自身 workspace，Admin 跨租户放行，Anonymous 一律拒绝。
-/// 「按 workspace 名反查 UUID」「NotFound 处理」等传输相关步骤由调用方完成，
-/// 本函数只做**确定性角色-租户判定**，保证两条传输线的判定不会漂移。
-///
-/// # 错误变体契约（与现实现映射表一致）
-///
-/// 返回的 `CoreError` 是「拒绝类别」的载体，其选择与
-/// [`core_error_status_code`] 既有 variant→状态码表保持一致：
-///
-/// - User 跨 workspace → `CoreError::WorkspaceDisabled`：映射表中唯一落到
-///   `FORBIDDEN`（403）的变体，即 HTTP 侧 `workspace_mismatch_response` 的
-///   同类。HTTP 调用点将其重新映射回 locale 化的 workspace mismatch 响应，
-///   gRPC 调用点映射为 `Status::permission_denied`；内层 String 不面向客户端
-///   透出，仅作服务端日志/判因用途。
-/// - Anonymous → `CoreError::AuthenticationError`：映射表中 401 载体，与
-///   HTTP 侧 `auth_required_response` 同状态码语义。
-///
-/// # Errors
-///
-/// 见上方错误变体契约；放行时返回 `Ok(())`。
+/// 拒绝类别载体：User 跨 workspace → `WorkspaceDisabled`（唯一 403/FORBIDDEN
+/// 载体，HTTP 侧重映射为 workspace mismatch，gRPC 映射 `permission_denied`）；
+/// Anonymous → `AuthenticationError`（401 载体）；放行返回 `Ok(())`。
 pub(crate) async fn authorize_workspace_access(
     role: &ApiKeyRole,
     key_workspace_id: uuid::Uuid,
@@ -349,15 +243,10 @@ pub(crate) async fn authorize_workspace_access(
     }
 }
 
-// ========== gRPC 错误消毒==========
+// ========== gRPC 错误消毒 ==========
 
-/// gRPC 侧「变体 → Code」映射，与 [`core_error_status_code`] 同源：
-/// 4xx 变体逐一对应同语义的 gRPC Code（400→InvalidArgument、401→
-/// Unauthenticated、403→PermissionDenied、404→NotFound、429→
-/// ResourceExhausted、503→Unavailable），5xx 一律收敛到 `Code::Internal`。
-///
-/// 映射表不含 `Code::AlreadyExists`：`CoreError` 当前没有冲突类变体，
-/// 不预造空映射。
+/// gRPC 侧「变体 → Code」映射，与 `core_error_status_code` 同源：4xx 逐一对应
+/// 同语义 Code，5xx 收敛 `Code::Internal`；不预造无变体的 `AlreadyExists`。
 fn core_error_grpc_code(e: &CoreError) -> sdforge::tonic::Code {
     match e {
         CoreError::InvalidIdFormat(_)
@@ -377,18 +266,10 @@ fn core_error_grpc_code(e: &CoreError) -> sdforge::tonic::Code {
     }
 }
 
-/// Convert `CoreError` to a sanitized gRPC `Status`（与 HTTP 侧
-/// [`core_error_status_code`] / [`core_error_to_response`] 同源）。
+/// `CoreError` → 消毒后的 gRPC `Status`（与 HTTP 侧同源）。
 ///
-/// 消毒策略与 HTTP 侧逐条对应：
-///
-/// - **5xx 类**（`DatabaseError`、`CacheError`、`InternalError` 等）：全量
-///   错误细节（内层 `String` 可能携带 DB URL、文件路径）只进服务端
-///   `tracing::error!` 日志；客户端只拿固定文案 `"internal error"` 的
-///   `Code::Internal` —— 此前 gRPC 的 `Status::internal(format!("{}", e))`
-///   会把内部细节明文回传，与 HTTP 侧的消毒承诺不一致。
-/// - **4xx 类**：本地化 Display 消息，经 [`sanitize_for_production`] 截断
-///   （与 HTTP 4xx 同一上限），消息本身面向调用方（与 HTTP 同策略）。
+/// 5xx 类：细节只进 `tracing::error!`，客户端只拿固定 `"internal error"`。
+/// 4xx 类：本地化 Display 消息经 `sanitize_for_production` 截断（与 HTTP 同上限）。
 pub(crate) fn core_error_to_grpc_status(e: &CoreError) -> sdforge::tonic::Status {
     let code = core_error_grpc_code(e);
     if code == sdforge::tonic::Code::Internal {
@@ -402,8 +283,7 @@ pub(crate) fn core_error_to_grpc_status(e: &CoreError) -> sdforge::tonic::Status
     sdforge::tonic::Status::new(code, sanitize_for_production(&e.to_string()))
 }
 
-/// Build a 400 response for an invalid UUID path parameter, with the
-/// locale-translated message.
+/// 非法 UUID 路径参数 → 400（本地化文案）。
 pub fn invalid_uuid_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>) {
     let message = translate_with_locale(locale.as_str(), "api.error.invalid_uuid_format");
     (
@@ -412,20 +292,9 @@ pub fn invalid_uuid_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>
     )
 }
 
-/// Build a 400 response for `sdforge::validator::ValidationErrors`, with the
-/// locale-translated message.
-///
-/// Phase 8 (MEDIUM fix) — uses `errors.field_errors()` to
-/// extract structured `(field, rule)` pairs instead of stringifying
-/// the entire `ValidationErrors`. This avoids leaking internal
-/// constraint values (e.g. `length [min = 1, max = 64]`,
-/// `range [min = 100, max = 1000000]`) which `ValidationErrors::to_string()`
-/// would otherwise expose via `ValidationError::params` formatting.
-///
-/// Each field error contributes one localized entry of the form
-/// `"Validation error in field: <field> (<rule>)"`; multiple entries
-/// are joined by `"; "` and capped at `MAX_CLIENT_MESSAGE_LEN` bytes
-/// via `sanitize_for_production` to bound response size.
+/// `ValidationErrors` → 400（本地化文案）：用 `field_errors()` 提取 (field, rule)，
+/// 不 stringify 整个 `ValidationErrors`，避免泄露 length/range 的 min/max 参数。
+/// 多条以 `"; "` 连接，经 `sanitize_for_production` 截断以限制响应大小。
 pub(crate) fn validation_error_response(
     errors: &sdforge::validator::ValidationErrors,
     locale: Locale,
@@ -433,9 +302,7 @@ pub(crate) fn validation_error_response(
     let mut parts: Vec<String> = Vec::new();
     for (field, field_errs) in errors.field_errors() {
         for err in field_errs {
-            // `err.code` is the rule name (e.g. "required", "length",
-            // "range"). It carries no constraint values, only the rule
-            // identifier — safe to surface to the client.
+            // `err.code` 只是规则名（无约束值），可安全下发客户端。
             let rule = err.code.as_ref();
             let msg = translate_with_locale_args(
                 locale.as_str(),
@@ -446,9 +313,7 @@ pub(crate) fn validation_error_response(
         }
     }
     let message = if parts.is_empty() {
-        // Fallback: no field-level errors extracted (e.g. only nested
-        // struct errors). Use the generic key with an empty error
-        // string so the client still sees a localized message.
+        // 无字段级错误（如仅嵌套结构错误）时回退通用 key，客户端仍得本地化文案。
         translate_with_locale_args(
             locale.as_str(),
             "api.error.validation_error",
@@ -468,7 +333,7 @@ pub(crate) fn validation_error_response(
     )
 }
 
-/// Build a 403 response for "Admin API key cannot perform this operation".
+/// Admin key 不可执行该操作 → 403。
 pub(crate) fn admin_cannot_perform_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>) {
     let message = translate_with_locale(locale.as_str(), "api.error.admin_cannot_perform");
     (
@@ -477,8 +342,7 @@ pub(crate) fn admin_cannot_perform_response(locale: Locale) -> (StatusCode, Json
     )
 }
 
-/// （CWE-1188）：Anonymous 角色（认证禁用时）访问受保护端点的响应。
-/// 返回 401 Unauthorized，明确要求启用认证并提供有效 API key。
+/// Anonymous 角色（认证禁用时注入）访问受保护端点 → 401，要求有效 API key（CWE-1188）。
 pub(crate) fn auth_required_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>) {
     let message = translate_with_locale(locale.as_str(), "api.error.auth_required");
     (
@@ -487,7 +351,7 @@ pub(crate) fn auth_required_response(locale: Locale) -> (StatusCode, Json<ErrorR
     )
 }
 
-/// Build a 403 response for "Access denied: workspace mismatch".
+/// workspace 不匹配 → 403。
 pub(crate) fn workspace_mismatch_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>) {
     let message = translate_with_locale(locale.as_str(), "api.error.workspace_mismatch");
     (
@@ -496,23 +360,15 @@ pub(crate) fn workspace_mismatch_response(locale: Locale) -> (StatusCode, Json<E
     )
 }
 
-/// Build a 404 response for "Workspace '<name>' not found".
-///
-/// Phase 8 (LOW fix) — `name` originates from a URL path
-/// parameter and is caller-controlled. JSON serialization already
-/// escapes special characters (no XSS risk), but a pathologically
-/// long `name` could inflate response size or be logged unescaped
-/// downstream (log injection). We cap `name` at
-/// `MAX_WORKSPACE_NAME_LEN` bytes (char-boundary-safe truncation)
-/// before interpolation so the response message is bounded.
+/// workspace 名未找到 → 404；`name` 来自 URL 路径且受调用方控制，
+/// 超 64 字节先按 char 边界截断再插值，限制响应体大小与日志注入面。
 pub(crate) fn workspace_name_not_found_response(
     name: &str,
     locale: Locale,
 ) -> (StatusCode, Json<ErrorResponse>) {
     const MAX_WORKSPACE_NAME_LEN: usize = 64;
     let safe_name: String = if name.len() > MAX_WORKSPACE_NAME_LEN {
-        // Round down to a char boundary to avoid splitting a
-        // multi-byte UTF-8 codepoint.
+        // 按 char 边界向下取整，避免切断多字节 UTF-8。
         let mut end = MAX_WORKSPACE_NAME_LEN;
         while end > 0 && !name.is_char_boundary(end) {
             end -= 1;
@@ -536,7 +392,7 @@ pub(crate) fn workspace_name_not_found_response(
     )
 }
 
-/// Build a 404 response for "Workspace not found" (no name).
+/// workspace 未找到（不带名字）→ 404。
 pub(crate) fn workspace_not_found_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>) {
     let message = translate_with_locale(locale.as_str(), "api.error.workspace_not_found");
     (
@@ -549,7 +405,7 @@ pub(crate) fn workspace_not_found_response(locale: Locale) -> (StatusCode, Json<
     )
 }
 
-/// Build a 500 response for "Invalid workspace ID".
+/// Invalid workspace ID → 500。
 pub(crate) fn invalid_workspace_id_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>) {
     let message = translate_with_locale(locale.as_str(), "api.error.invalid_workspace_id");
     (
@@ -562,7 +418,7 @@ pub(crate) fn invalid_workspace_id_response(locale: Locale) -> (StatusCode, Json
     )
 }
 
-/// Build a 400 response for "workspace_id is required for user keys".
+/// 用户 key 缺 workspace_id → 400。
 pub(crate) fn workspace_id_required_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>) {
     let message = translate_with_locale(locale.as_str(), "api.error.workspace_id_required");
     (
@@ -581,8 +437,7 @@ mod tests {
     use crate::core::types::error::CoreError;
     use sdforge::validator::Validate;
 
-    /// Save and restore the global locale around tests(与 i18n.rs /
-    /// error.rs 共用 test_support 锁串行化)。
+    /// 保存并在测试期间恢复全局 locale（与 i18n.rs / error.rs 共用 test_support 锁串行化）。
     struct LocaleGuard {
         saved: String,
         _lock: std::sync::MutexGuard<'static, ()>,
@@ -628,7 +483,7 @@ mod tests {
         assert_eq!(json.code, 400);
         assert_eq!(json.message, "无效输入：negative");
 
-        // Global locale must remain "en"
+        // 全局 locale 必须保持 "en"
         assert_eq!(crate::core::i18n::current_locale(), "en");
     }
 
@@ -685,7 +540,7 @@ mod tests {
         let (s, _) = core_error_to_response(&CoreError::TimeoutError, Locale::En);
         assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
 
-        // 500 — 5xx-class variants (full coverage)
+        // 500：5xx 变体全量覆盖
         let (s, _) =
             core_error_to_response(&CoreError::DatabaseError("x".to_string(), None), Locale::En);
         assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
@@ -717,9 +572,8 @@ mod tests {
 
     // ========== —— 统一错误信封 business_code ==========
 
-    /// 单表分类全变体矩阵：`core_error_classification` 给出的
-    /// (状态码, business_code) 必须与 `core_error_status_code` 既有
-    /// 映射逐行一致（一张映射表两用的钉桩）。
+    /// 单表分类全变体矩阵：`core_error_classification` 的 (状态码, business_code)
+    /// 必须与既有映射逐行一致（一张映射表两用的钉桩）。
     #[test]
     fn test_core_error_classification_full_matrix() {
         use crate::server::models::ApiErrorCode;
@@ -851,24 +705,23 @@ mod tests {
             let (status, business) = core_error_classification(e);
             assert_eq!(status, *expected_status, "variant: {e:?}");
             assert_eq!(business, *expected_business, "variant: {e:?}");
-            // 同源性：core_error_status_code 与单表 .0 一致。
+            // 同源性：core_error_status_code 与单表 .0 一致
             assert_eq!(core_error_status_code(e), *expected_status);
         }
     }
 
-    /// 任务规定的三类代表性错误信封断言：
-    /// 限流 → 4001；校验失败 → 3002；资源不存在 → 2001/2003。
+    /// 任务规定的三类代表性错误信封断言：限流 → 4001；校验失败 → 3002；资源不存在 → 2001/2003。
     #[test]
     fn test_error_envelope_business_codes_for_required_classes() {
         let _g = LocaleGuard::new();
         crate::core::i18n::init_i18n("en");
 
-        // 限流：RateLimitExceeded → "4001"。
+        // 限流：RateLimitExceeded → "4001"
         let (_, json) = core_error_to_response(&CoreError::RateLimitExceeded, Locale::En);
         assert_eq!(json.business_code, "4001");
         assert_eq!(json.code, 429);
 
-        // 校验失败：validation_error_response → "3002"。
+        // 校验失败：validation_error_response → "3002"
         #[derive(sdforge::validator::Validate)]
         #[validate(crate = "::sdforge::validator")]
         struct SampleReq {
@@ -885,7 +738,7 @@ mod tests {
         assert_eq!(json.code, 400);
 
         // 资源不存在：泛型 NotFound → "2001"；BizTagNotFound → "2003"；
-        // workspace 名未找到（handler 构造）→ "2001"。
+        // workspace 名未找到（handler 构造）→ "2001"
         let (_, json) = core_error_to_response(&CoreError::NotFound("ghost".into()), Locale::En);
         assert_eq!(json.business_code, "2001");
         assert_eq!(json.code, 404);
@@ -897,8 +750,7 @@ mod tests {
         assert_eq!(json.code, 404);
     }
 
-    /// handler 构造类错误的业务码：UUID 非法 → 3004、缺必填 → 3003、
-    /// 跨 workspace/Admin 拒绝 → 1002、未认证 → 1001。
+    /// handler 构造类错误的业务码：UUID 非法 3004、缺必填 3003、跨 workspace/Admin 1002、未认证 1001。
     #[test]
     fn test_error_envelope_business_codes_for_handler_constructed() {
         let _g = LocaleGuard::new();
@@ -923,8 +775,7 @@ mod tests {
         assert_eq!(json.business_code, "5001");
     }
 
-    /// 信封装配：`core_error_to_response` 生成的响应必须携带
-    /// request_id（UUID v4）与毫秒级 timestamp。
+    /// 信封装配：响应必须携带 UUID v4 request_id 与毫秒级 timestamp。
     #[test]
     fn test_core_error_to_response_envelope_tracks_request() {
         let _g = LocaleGuard::new();
@@ -938,17 +789,14 @@ mod tests {
         assert!(json.timestamp > 0, "timestamp must be millis since epoch");
     }
 
-    /// CRITICAL C-1 / HIGH — 5xx internal errors MUST NOT leak the
-    /// raw `CoreError` inner `String` to the client. The full error is
-    /// logged server-side via `tracing::error!`; the client only sees a
-    /// generic locale-translated message.
+    /// 5xx 内部错误不得把内层 `String` 泄露给客户端：完整错误仅进 `tracing::error!`，
+    /// 客户端只拿通用本地化文案。
     #[test]
     fn test_core_error_to_response_5xx_does_not_leak_internal_string() {
         let _g = LocaleGuard::new();
         crate::core::i18n::init_i18n("en");
 
-        // A sensitive DB URL embedded in DatabaseError — typical of what
-        // an upstream diesel/sqlx error would stringify to.
+        // 典型泄露样本：上游 DB 错误内嵌的连接串
         let sensitive = "postgres://user:pwd@internal-host:5432/nebulaid";
         let (status, json) = core_error_to_response(
             &CoreError::DatabaseError(sensitive.to_string(), None),
@@ -970,7 +818,7 @@ mod tests {
             "5xx response must not contain the DB password"
         );
 
-        // zh-CN locale returns the translated generic message.
+        // zh-CN locale 返回翻译后的通用文案
         let (_, json_zh) = core_error_to_response(
             &CoreError::DatabaseError(sensitive.to_string(), None),
             Locale::ZhCn,
@@ -978,7 +826,7 @@ mod tests {
         assert_eq!(json_zh.message, "数据库操作失败");
         assert!(!json_zh.message.contains(sensitive));
 
-        // CacheError — sensitive Redis URL
+        // CacheError：敏感 Redis URL
         let redis_url = "redis://:secret@cache.internal:6379/0";
         let (_, json) =
             core_error_to_response(&CoreError::CacheError(redis_url.to_string()), Locale::En);
@@ -986,14 +834,14 @@ mod tests {
         assert!(!json.message.contains(redis_url));
         assert!(!json.message.contains("secret"));
 
-        // InternalError — sensitive file path
+        // InternalError：敏感文件路径
         let path = "/etc/nebulaid/secrets/admin.key";
         let (_, json) =
             core_error_to_response(&CoreError::InternalError(path.to_string()), Locale::En);
         assert_eq!(json.message, "Internal server error");
         assert!(!json.message.contains(path));
 
-        // ConfigurationError — sensitive env var value
+        // ConfigurationError：敏感环境变量值
         let env_leak = "NEBULA_DATABASE_PASSWORD=hunter2";
         let (_, json) = core_error_to_response(
             &CoreError::ConfigurationError(env_leak.to_string()),
@@ -1003,7 +851,7 @@ mod tests {
         assert!(!json.message.contains("hunter2"));
         assert!(!json.message.contains("NEBULA_DATABASE_PASSWORD"));
 
-        // EtcdError — sensitive endpoint
+        // EtcdError：敏感端点
         let etcd_url = "http://etcd.internal:2379, token=admin-token";
         let (_, json) = core_error_to_response(
             &CoreError::EtcdError(etcd_url.to_string(), None),
@@ -1013,16 +861,14 @@ mod tests {
         assert!(!json.message.contains(etcd_url));
         assert!(!json.message.contains("admin-token"));
 
-        // IoError — sensitive fs path
+        // IoError：敏感文件系统路径
         let fs_path = "/var/lib/nebulaid/private/keys/0xdeadbeef.pem";
         let (_, json) =
             core_error_to_response(&CoreError::IoError(fs_path.to_string(), None), Locale::En);
         assert_eq!(json.message, "I/O error");
         assert!(!json.message.contains(fs_path));
 
-        // Algorithm errors — ClockMovedBackward / SequenceOverflow /
-        // SegmentExhausted carry numeric context only, but verify the
-        // generic message and that the numeric value is not surfaced.
+        // 算法类错误只带数值上下文，同样验证不下发。
         let (_, json) = core_error_to_response(
             &CoreError::ClockMovedBackward {
                 last_timestamp: 1700000000000,
@@ -1048,27 +894,23 @@ mod tests {
         assert_eq!(json.message, "ID generation algorithm error");
         assert!(!json.message.contains("123456789"));
 
-        // Unknown — no inner string, still returns generic message
+        // Unknown：无内层字符串，仍返回通用文案
         let (_, json) = core_error_to_response(&CoreError::Unknown, Locale::En);
         assert_eq!(json.message, "Internal server error");
     }
 
-    /// HIGH — 4xx-class errors with caller-supplied `String` must
-    /// be capped at `MAX_CLIENT_MESSAGE_LEN` (200) bytes via
-    /// `sanitize_for_production` to prevent log-style overflow / DoS.
+    /// 4xx 携带调用方 `String` 必须经 `sanitize_for_production` 截断到 200 字节，防响应撑大。
     #[test]
     fn test_core_error_to_response_4xx_sanitizes_long_message() {
         let _g = LocaleGuard::new();
         crate::core::i18n::init_i18n("en");
 
-        // 301-byte payload — exceeds the 200-byte cap.
+        // 300 字节载荷，超过 200 字节上限
         let big = "x".repeat(300);
         let (status, json) =
             core_error_to_response(&CoreError::InvalidInput(big.clone()), Locale::En);
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        // Prefix from the i18n template "Invalid input: " (14 bytes)
-        // plus 200 bytes of 'x' plus "... (truncated)" (15 bytes) =
-        // 229 bytes — well under hyper's default header limit.
+        // 前缀 "Invalid input: "（14 字节）+ 200 字节 + 标记（15 字节）≈ 229 字节
         assert!(
             json.message.ends_with("... (truncated)"),
             "truncated message must end with sentinel, got: {}",
@@ -1084,13 +926,13 @@ mod tests {
             "truncated message must respect the 200-byte cap plus sentinel, got len={}",
             json.message.len()
         );
-        // The message still starts with the localized prefix.
+        // 消息仍以本地化前缀开头
         assert!(
             json.message.starts_with("Invalid input: x"),
             "truncated message must preserve the localized prefix"
         );
 
-        // ParseError — also 4xx-class, sanitize path.
+        // ParseError 同走 4xx 截断路径
         let big_parse = "y".repeat(500);
         let (status, json) =
             core_error_to_response(&CoreError::ParseError(big_parse.clone()), Locale::En);
@@ -1098,28 +940,23 @@ mod tests {
         assert!(json.message.ends_with("... (truncated)"));
         assert!(json.message.len() < 500);
 
-        // Sanity: short 4xx messages are returned verbatim (no truncation).
+        // 短 4xx 消息原样返回，不截断
         let (status, json) =
             core_error_to_response(&CoreError::InvalidInput("short".to_string()), Locale::En);
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(json.message, "Invalid input: short");
         assert!(!json.message.contains("truncated"));
 
-        // zh-CN — same truncation behaviour with multi-byte chars.
-        // The localized prefix is "无效输入：" (4 chars * 3 bytes = 12 bytes);
-        // we craft a payload that crosses 200 bytes mid-char-boundary.
+        // zh-CN：多字节字符同样截断且不切断 char 边界（"无效输入：" 前缀 12 字节）
         let big_zh = "长".repeat(100); // 100 * 3 bytes = 300 bytes
         let (_, json_zh) = core_error_to_response(&CoreError::InvalidInput(big_zh), Locale::ZhCn);
         assert!(json_zh.message.ends_with("... (truncated)"));
-        // Verify char-boundary safety: the message must be valid UTF-8
-        // (it's a `String`, but assert to be explicit).
+        // 消息必须是合法 UTF-8
         assert!(std::str::from_utf8(json_zh.message.as_bytes()).is_ok());
     }
 
-    /// 4xx-class errors WITHOUT an inner `String` (RateLimitExceeded,
-    /// ApiKeyDisabled, ApiKeyExpired, InvalidApiKeySignature,
-    /// TimeoutError) must return their localized message verbatim —
-    /// no caller-controlled content, no truncation.
+    /// 无内层 `String` 的 4xx（RateLimitExceeded/ApiKeyDisabled/ApiKeyExpired/
+    /// InvalidApiKeySignature/TimeoutError）原样返回本地化文案，不截断。
     #[test]
     fn test_core_error_to_response_4xx_no_inner_string_verbatim() {
         let _g = LocaleGuard::new();
@@ -1137,23 +974,21 @@ mod tests {
         let (_, json) = core_error_to_response(&CoreError::InvalidApiKeySignature, Locale::En);
         assert_eq!(json.message, "Invalid API key signature");
 
-        // TimeoutError maps to 503 per `core_error_status_code`, but its
-        // Display carries no inner String — verify verbatim message.
+        // TimeoutError 映射 503，Display 无内层字符串，验证原样消息
         let (status, json) = core_error_to_response(&CoreError::TimeoutError, Locale::En);
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(json.message, "Timeout error");
         assert!(!json.message.contains("truncated"));
     }
 
-    /// `sanitize_for_production` directly — char-boundary safety and
-    /// short-message passthrough.
+    /// `sanitize_for_production` 直测：char 边界安全与短消息原样返回。
     #[test]
     fn test_sanitize_for_production_direct() {
-        // Short — verbatim
+        // 短消息：原样
         assert_eq!(sanitize_for_production("hello"), "hello");
         assert_eq!(sanitize_for_production(""), "");
 
-        // Exactly at the cap — verbatim (boundary is `>`, not `>=`)
+        // 恰好等于上限：不截断（边界是 `>` 而非 `>=`）
         let exact = "a".repeat(MAX_CLIENT_MESSAGE_LEN);
         assert_eq!(
             sanitize_for_production(&exact).len(),
@@ -1161,15 +996,9 @@ mod tests {
         );
         assert!(!sanitize_for_production(&exact).contains("truncated"));
 
-        // Over the cap by 1 byte — truncated. Note: the sanitized form
-        // is `prefix + "... (truncated)"`; for ASCII input `prefix` is
-        // exactly `MAX_CLIENT_MESSAGE_LEN` bytes, so the sanitized total
-        // is `MAX_CLIENT_MESSAGE_LEN + 15` bytes. When the input is
-        // only `MAX_CLIENT_MESSAGE_LEN + 1` bytes long, the sanitized
-        // form is actually LONGER than the input — that's expected
-        // because the truncation sentinel itself carries information.
-        // The invariant we enforce is that the *prefix* (content
-        // portion) is at most `MAX_CLIENT_MESSAGE_LEN` bytes.
+        // 超上限 1 字节即截断：净化结果是 prefix + "... (truncated)"，ASCII 下
+        // prefix 恰为上限；输入仅超 1 字节时净化结果反而更长，属预期（标记本身携带信息）。
+        // 不变量是 prefix（内容部分）不超过上限。
         let one_over = "a".repeat(MAX_CLIENT_MESSAGE_LEN + 1);
         let sanitized = sanitize_for_production(&one_over);
         assert!(sanitized.ends_with("... (truncated)"));
@@ -1177,8 +1006,7 @@ mod tests {
         assert!(prefix_len <= MAX_CLIENT_MESSAGE_LEN);
         assert_eq!(prefix_len, MAX_CLIENT_MESSAGE_LEN); // ASCII round-down is exact
 
-        // Substantially over the cap — sanitized must be shorter than
-        // the original input.
+        // 明显超上限：净化后必须短于原输入。
         let way_over = "a".repeat(MAX_CLIENT_MESSAGE_LEN + 100); // 300 bytes
         let sanitized = sanitize_for_production(&way_over);
         assert!(sanitized.ends_with("... (truncated)"));
@@ -1193,20 +1021,14 @@ mod tests {
             MAX_CLIENT_MESSAGE_LEN + "... (truncated)".len()
         );
 
-        // Multi-byte char boundary safety — slice at 200 must never
-        // split a UTF-8 codepoint. Use a string of 4-byte chars (🤖)
-        // so the function must round `end` down to a char boundary.
-        // (200 % 4 == 0, so 200 is already a 🤖 boundary — the test
-        // still validates UTF-8 validity and the multiple-of-4 rule.)
+        // 多字节边界安全：200 字节处不得切断 UTF-8（🤖 为 4 字节，200 % 4 == 0）。
         let multi = "🤖".repeat(100); // 400 bytes total
         let sanitized = sanitize_for_production(&multi);
         assert!(sanitized.ends_with("... (truncated)"));
-        // The truncated prefix must be valid UTF-8 (the function uses
-        // `is_char_boundary` to round down).
+        // 截断前缀必须是合法 UTF-8（`is_char_boundary` 向下取整）。
         let prefix_end = sanitized.len() - "... (truncated)".len();
         assert!(std::str::from_utf8(&sanitized.as_bytes()[..prefix_end]).is_ok());
-        // Prefix length must be a multiple of 4 (each 🤖 is 4 bytes)
-        // and at most MAX_CLIENT_MESSAGE_LEN.
+        // 前缀长度须为 4 的倍数且不超过上限。
         assert_eq!(prefix_end % 4, 0);
         assert!(prefix_end <= MAX_CLIENT_MESSAGE_LEN);
     }
@@ -1221,9 +1043,8 @@ mod tests {
         assert!(result.is_ok(), "User must access its own workspace");
     }
 
-    /// User 跨 workspace → 拒绝，错误变体为 `WorkspaceDisabled`
-    /// （core_error_status_code 映射表中唯一的 403/FORBIDDEN 载体，
-    /// 与 HTTP 侧 workspace_mismatch 响应同类）。
+    /// User 跨 workspace → 拒绝，变体 `WorkspaceDisabled`（映射表唯一 403 载体，
+    /// 与 HTTP 侧 workspace_mismatch 同类）。
     #[tokio::test]
     async fn test_authorize_workspace_access_user_cross_workspace_denied() {
         let key_ws = uuid::Uuid::new_v4();
@@ -1254,8 +1075,7 @@ mod tests {
         assert!(result.is_ok(), "Admin must have cross-tenant access");
     }
 
-    /// Anonymous（认证禁用时注入的角色）→ 一律拒绝（fail-closed），
-    /// 变体为 AuthenticationError（映射表 401 载体）。
+    /// Anonymous（认证禁用时注入）→ 一律拒绝（fail-closed），变体 `AuthenticationError`（401 载体）。
     #[tokio::test]
     async fn test_authorize_workspace_access_anonymous_denied() {
         let ws = uuid::Uuid::new_v4();
@@ -1269,9 +1089,8 @@ mod tests {
 
     // ========== core_error_to_grpc_status（gRPC 错误消毒）==========
 
-    /// 5xx 类错误必须消毒：Code 固定 Internal，message 固定 "internal
-    /// error"，不得携带 Display 明文（含变体前缀 "Database error"）或内层
-    /// 敏感串 —— 与 HTTP 侧 5xx 泛化承诺对齐。
+    /// 5xx 必须消毒：Code 固定 Internal、message 固定 "internal error"，
+    /// 不得携带 Display 明文或内层敏感串（与 HTTP 侧 5xx 泛化承诺对齐）。
     #[test]
     fn test_core_error_to_grpc_status_sanitizes_5xx() {
         let sensitive = "postgres://idgen:pwd@internal-host:5432/nebulaid";
@@ -1299,8 +1118,7 @@ mod tests {
         assert_eq!(status.message(), "internal error");
     }
 
-    /// NotFound → Code::NotFound 且消息保留（4xx 面向调用方）；
-    /// 4xx 变体逐一映射到同语义 Code（抽验 400/401/403/404/429/503）。
+    /// NotFound → Code::NotFound 且消息保留；4xx 逐一映射同语义 Code（抽验 400/401/403/404/429/503）。
     #[test]
     fn test_core_error_to_grpc_status_maps_4xx_codes() {
         let status = core_error_to_grpc_status(&CoreError::NotFound("ghost-ws".to_string()));
@@ -1378,44 +1196,37 @@ mod tests {
         assert_eq!(json.message, "工作空间 'my-ws' 未找到");
     }
 
-    /// LOW — long workspace `name` must be truncated before
-    /// interpolation into the response message. Verifies char-boundary
-    /// safety (multi-byte UTF-8) and that the response stays bounded.
+    /// 超长 workspace `name` 必须先截断再插值；验证 char 边界安全与响应有界。
     #[test]
     fn test_workspace_name_not_found_response_truncates_long_name() {
         let _g = LocaleGuard::new();
         crate::core::i18n::init_i18n("en");
 
-        // 200-byte ASCII name — well over the 64-byte cap.
+        // 200 字节 ASCII name，远超 64 字节上限
         let long_name = "a".repeat(200);
         let (status, json) = workspace_name_not_found_response(&long_name, Locale::En);
         assert_eq!(status, StatusCode::NOT_FOUND);
-        // Truncation marker must appear.
+        // 必须出现截断标记
         assert!(
             json.message.contains("..."),
             "expected truncation marker '...' in message, got: {}",
             json.message
         );
-        // Total message length must be bounded — prefix
-        // "Workspace '" + 64 bytes + "..." + "' not found" = ~84 bytes.
-        // We assert < 100 to leave room for locale-specific prefix/suffix.
+        // 消息总长有界：前缀 + 64 字节 + "..." ≈ 84 字节，断言 < 100 留 locale 余量。
         assert!(
             json.message.len() < 100,
             "truncated response message must be < 100 bytes, got len={} msg={:?}",
             json.message.len(),
             json.message
         );
-        // The full 200-byte name must NOT appear verbatim.
+        // 完整的 200 字节 name 不得原样出现
         assert!(
             !json.message.contains(&long_name),
             "full long name must not appear in message"
         );
 
-        // Multi-byte UTF-8 char-boundary safety: 100 x '长' (3 bytes
-        // each = 300 bytes). The 64-byte cap is not a char boundary
-        // (64 % 3 != 0), so the function must round down to 63 bytes
-        // (21 chars). The message must be valid UTF-8 by construction
-        // (it's a `String`), but assert to be explicit.
+        // 多字节边界：100 × '长'（300 字节），64 不是 char 边界（64 % 3 != 0），
+        // 须向下取整到 63 字节（21 字符）；消息必须合法 UTF-8。
         let long_zh_name = "长".repeat(100);
         let (_, json_zh) = workspace_name_not_found_response(&long_zh_name, Locale::ZhCn);
         assert!(json_zh.message.contains("..."));
@@ -1426,7 +1237,7 @@ mod tests {
             json_zh.message.len()
         );
 
-        // Boundary: exactly 64 bytes — no truncation.
+        // 边界：恰好 64 字节，不截断
         let exact = "b".repeat(64);
         let (status, json) = workspace_name_not_found_response(&exact, Locale::En);
         assert_eq!(status, StatusCode::NOT_FOUND);
@@ -1437,7 +1248,7 @@ mod tests {
         );
         assert!(json.message.contains(&exact));
 
-        // Boundary: 65 bytes — truncated.
+        // 边界：65 字节，截断
         let over_by_one = "c".repeat(65);
         let (_, json) = workspace_name_not_found_response(&over_by_one, Locale::En);
         assert!(
@@ -1445,7 +1256,7 @@ mod tests {
             "over-cap name must be truncated, got: {}",
             json.message
         );
-        // Truncated prefix is 64 bytes of 'c' + "...".
+        // 截断前缀是 64 字节 'c' + "..."
         assert!(json.message.contains(&"c".repeat(64)));
         assert!(!json.message.contains(&"c".repeat(65)));
     }
@@ -1463,17 +1274,14 @@ mod tests {
         assert!(json.message.contains("workspace_id"));
     }
 
-    /// MEDIUM — `validation_error_response` must surface the field
-    /// name and rule code (e.g. "length", "range") without leaking the
-    /// constraint values (min/max) that `ValidationErrors::to_string()`
-    /// would otherwise expose via `ValidationError::params`.
+    /// `validation_error_response` 必须给出字段名与规则码（length/range），
+    /// 但不得泄露 min/max 约束值。
     #[test]
     fn test_validation_error_response_en() {
         let _g = LocaleGuard::new();
         crate::core::i18n::init_i18n("en");
 
-        // Construct a struct with `#[validate(length(min = 1, max = 64))]`
-        // and trigger a validation failure by setting the field to "".
+        // 构造 length(min = 1, max = 64)，以空串触发校验失败。
         #[derive(sdforge::validator::Validate)]
         #[validate(crate = "::sdforge::validator")]
         struct SampleReq {
@@ -1488,7 +1296,7 @@ mod tests {
         let (status, json) = validation_error_response(&errs, Locale::En);
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(json.code, 400);
-        // The field name and rule code must be present.
+        // 字段名与规则码必须出现
         assert!(
             json.message.contains("workspace_id"),
             "expected field name in message, got: {}",
@@ -1499,7 +1307,7 @@ mod tests {
             "expected rule code 'length' in message, got: {}",
             json.message
         );
-        // Constraint values must NOT be leaked.
+        // 约束值不得泄露
         assert!(
             !json.message.contains("min ="),
             "message must not leak min constraint, got: {}",
@@ -1517,7 +1325,7 @@ mod tests {
         );
     }
 
-    /// zh-CN path — same assertions as the English variant.
+    /// zh-CN 路径，断言与英文版相同。
     #[test]
     fn test_validation_error_response_zh_cn() {
         let _g = LocaleGuard::new();
@@ -1544,10 +1352,8 @@ mod tests {
         assert!(!json.message.contains("64"));
     }
 
-    /// MEDIUM — explicit regression test: construct a struct with
-    /// a `range(min = 100, max = 1000000)` constraint and trigger a
-    /// failure by setting the field below the minimum. The response
-    /// must NOT contain "100", "1000000", "min = 100", "max = 1000000".
+    /// 回归：range(min = 100, max = 1000000) 校验失败的响应不得含
+    /// "100"、"1000000"、"min = 100"、"max = 1000000"。
     #[test]
     fn test_validation_error_response_does_not_leak_constraints() {
         let _g = LocaleGuard::new();
@@ -1575,7 +1381,7 @@ mod tests {
             "expected rule code 'range' in message, got: {}",
             json.message
         );
-        // The numeric constraints must NOT be leaked.
+        // 数值约束不得泄露
         assert!(
             !json.message.contains("min ="),
             "message must not leak min constraint, got: {}",
@@ -1598,9 +1404,7 @@ mod tests {
         );
     }
 
-    /// MEDIUM — multiple field errors are joined by "; " and
-    /// capped at `MAX_CLIENT_MESSAGE_LEN` bytes via
-    /// `sanitize_for_production`.
+    /// 多条字段错误以 "; " 连接，并经 `sanitize_for_production` 截断。
     #[test]
     fn test_validation_error_response_multiple_fields_joined() {
         let _g = LocaleGuard::new();
@@ -1622,7 +1426,7 @@ mod tests {
         let errs = req.validate().unwrap_err();
         let (status, json) = validation_error_response(&errs, Locale::En);
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        // Both field names must appear, separated by "; ".
+        // 两个字段名都要出现，以 "; " 分隔
         assert!(json.message.contains("workspace_id"));
         assert!(json.message.contains("name"));
         assert!(

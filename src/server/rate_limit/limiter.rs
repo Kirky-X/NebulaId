@@ -1,22 +1,8 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! Rate limiting module powered by limiteron library.
-//!
-//! This module provides unified rate limiting, concurrency control, and quota management
-//! using the limiteron library's robust implementations.
-//!
-//! # Key Components
-//!
-//! - [`RateLimiter`]: Main rate limiter using Token Bucket algorithm
-//! - [`ConcurrencyLimiter`]: Controls maximum concurrent operations
-//!
-//! # Features
-//!
-//! - Token bucket algorithm for smooth rate limiting
-//! - Thread-safe and async-native design
-//! - Support for per-key rate limits
-//! - Built-in concurrency control
+//! 基于 limiteron 的限流模块：统一限流、并发控制与配额管理。
+//! [`RateLimiter`] 用令牌桶算法按 key 限流；[`ConcurrencyLimiter`] 控制最大并发数。
 
 use limiteron::error::LimiteronError;
 use limiteron::limiters::{
@@ -33,20 +19,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::interval;
 use tracing::debug;
 
-/// 限流表分片数（2 的幂）。按 key 哈希分摊读写热点：单把全局
-/// `RwLock<HashMap>` 在多核高 QPS 下会让所有 check 在同一写锁上串行
-/// （去热点）。依赖选型：`dashmap` 不在 Cargo.toml（本任务禁改
-/// 依赖），采用 `parking_lot::RwLock<HashMap>` 分片等价实现。
+/// 限流表分片数（2 的幂）：按 key 哈希分摊读写热点，避免所有 check 串行在一把全局写锁上。
 const LIMITER_SHARDS: usize = 16;
 
-/// `last_accessed` 的时钟精度（Unix 纳秒，u64 可容纳至 2554 年）。原子量
-/// 替代 `Arc<RwLock<Instant>>`（每次 touch 一次写锁 → 一次 store，清理路径
-/// 读 last_accessed 也不再进锁）。
+/// `last_accessed` 的时钟（Unix 纳秒，u64 可容纳至 2554 年）。
 ///
-/// 选 `SystemTime` 而非 `Instant`：原子量只能存整数，`Instant` 无稳定
-/// 基准可换算；墙钟回拨在极端情况下最多让空闲桶多存活一个回拨窗口，
-/// 对分钟级 max_idle 的清理语义无实际影响。纳秒精度保住原 `Instant`
-/// 实现的亚毫秒差判定（`cleanup(Duration::ZERO)` 立即清除刚建桶）。
+/// 原子量替代 `Arc<RwLock<Instant>>`；用 `SystemTime` 因原子量只能存整数，
+/// 墙钟回拨最多让空闲桶多存活一个回拨窗口，对分钟级 max_idle 无实际影响。
 fn unix_nanos() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -84,17 +63,12 @@ struct InternalRateLimiter {
     limiter: Arc<TokenBucketLimiter>,
     rate: u32,
     capacity: u32,
-    /// 最后访问时刻（Unix 纳秒，原子量）。语义与原 `Arc<RwLock<Instant>>`
-    /// 一致：仅用于空闲清理判定。
+    /// 最后访问时刻（Unix 纳秒原子量），仅用于空闲清理判定。
     last_accessed: Arc<AtomicU64>,
 }
 
 impl InternalRateLimiter {
-    /// Creates a new internal rate limiter
-    ///
-    /// # Arguments
-    /// * `rate` - Requests per second (refill rate)
-    /// * `capacity` - Burst capacity (bucket size)
+    /// 新建内部限流器：`rate` = 每秒补充数，`capacity` = 桶容量（突发上限）。
     fn new(rate: u32, capacity: u32) -> Self {
         Self {
             limiter: Arc::new(TokenBucketLimiter::new(capacity as u64, rate as u64)),
@@ -114,16 +88,14 @@ impl InternalRateLimiter {
         self.last_accessed.load(Ordering::Relaxed)
     }
 
-    /// Check if a request is allowed and consume a token
+    /// 检查是否放行并消费一个令牌。
     async fn check(&self) -> Result<RateLimitResult, LimiteronError> {
-        // Update last accessed time
         self.touch();
 
         let allowed = self.limiter.allow(1).await?;
 
-        // 消费后经 limiteron 标准快照 API 读取限流头数据（limit/remaining/
-        // reset_secs），与 allow 共用同一补充逻辑；reset_secs 即补满所需秒数，
-        // 被拒时作为 Retry-After（此前硬编码 1 秒，慢补充大容量桶会过早放行）。
+        // 消费后经 limiteron 快照读取 limit/remaining/reset_secs；被拒时
+        // reset_secs（补满所需秒数）作为 Retry-After，避免过早放行慢补充桶。
         let snapshot = self.limiter.remaining().await?;
         let retry_after = if allowed {
             None
@@ -140,9 +112,7 @@ impl InternalRateLimiter {
     }
 }
 
-/// 分片限流表：`LIMITER_SHARDS` 个 `RwLock<HashMap>` 按 key 哈希分布，
-/// 语义与原单把 `RwLock<HashMap<String, InternalRateLimiter>>` 等价
-/// （get-or-insert / get / len / 逐出 / 整表换新），仅锁粒度按分片细化。
+/// 分片限流表：`LIMITER_SHARDS` 个 `RwLock<HashMap>` 按 key 哈希分布，语义与单表等价仅细化锁粒度。
 struct ShardedLimiters {
     shards: Vec<RwLock<HashMap<String, InternalRateLimiter>>>,
 }
@@ -156,8 +126,7 @@ impl ShardedLimiters {
         }
     }
 
-    /// 定位 key 所属分片。`DefaultHasher` 每次 new() 种子固定（std 实现），
-    /// 进程内分布稳定即可，无需跨进程稳定。
+    /// 定位 key 所属分片；`DefaultHasher` 种子固定，仅需进程内分布稳定。
     fn shard_for(&self, key: &str) -> &RwLock<HashMap<String, InternalRateLimiter>> {
         let mut hasher = DefaultHasher::new();
         key.hash(&mut hasher);
@@ -174,10 +143,7 @@ impl ShardedLimiters {
     }
 }
 
-/// Main rate limiter for the application.
-///
-/// Uses limiteron's TokenBucketLimiter for smooth, accurate rate limiting
-/// with per-key tracking.
+/// 应用主限流器：limiteron 令牌桶 + 按 key 跟踪。
 #[derive(Clone)]
 pub struct RateLimiter {
     limiters: Arc<ShardedLimiters>,
@@ -186,13 +152,8 @@ pub struct RateLimiter {
 }
 
 impl RateLimiter {
-    /// Creates a new rate limiter with default settings.
+    /// 新建限流器：`default_rps` = 默认每秒补充数，`default_burst` = 默认桶容量。
     ///
-    /// # Arguments
-    /// * `default_rps` - Default requests per second (refill rate)
-    /// * `default_burst` - Burst capacity (bucket size)
-    ///
-    /// # Example
     /// ```ignore
     /// use nebulaid::server::rate_limit::RateLimiter;
     /// let limiter = RateLimiter::new(1000, 100);
@@ -205,23 +166,14 @@ impl RateLimiter {
         }
     }
 
-    /// Start background cleanup task to remove expired rate limit entries.
+    /// 启动后台清理任务：周期清除空闲超过 `max_idle` 的限流桶。
     ///
-    /// This task runs periodically and removes limiters that haven't been used
-    /// for longer than the specified idle duration.
-    ///
-    /// # Arguments
-    /// * `max_idle` - Maximum idle duration before a limiter is removed
-    /// * `cleanup_interval` - How often to run cleanup
-    ///
-    /// # Returns
-    /// A join handle that can be used to await the cleanup task
+    /// 返回 JoinHandle，可用于等待清理任务。
     pub fn start_cleanup(
         &self,
         max_idle: Duration,
         cleanup_interval: Duration,
     ) -> tokio::task::JoinHandle<()> {
-        // Update cleanup interval
         *self.cleanup_interval.write() = cleanup_interval;
 
         let limiters = self.limiters.clone();
@@ -233,9 +185,8 @@ impl RateLimiter {
                 interval_timer.tick().await;
 
                 let now_nanos = unix_nanos();
-                // 锁内只做「收集 key + 从分片摘除」：摘下的桶（内含
-                // TokenBucketLimiter 状态）先移出各分片锁作用域，统一在锁外
-                // 释放，避免 drop 成本随待删桶数量线性放大分片写锁。
+                // 锁内只收集 key 并从分片摘除；桶先移出锁作用域，统一在锁外释放，
+                // 避免 drop 成本随待删桶数量放大分片写锁持有时长。
                 let (removed_count, removed_buckets) = {
                     let per_shard = limiters.for_each_shard(|shard| {
                         let mut shard_guard = shard.write();
@@ -279,15 +230,9 @@ impl RateLimiter {
         })
     }
 
-    /// Check rate limit for a specific key.
+    /// 检查指定 key 的限流；`custom_rate`/`custom_burst` 仅在该 key 首次建桶时生效。
     ///
-    /// # Arguments
-    /// * `key` - The identifier to rate limit (e.g., IP, user ID, API key)
-    /// * `custom_rate` - Optional custom rate limit for this key (only used on first request)
-    /// * `custom_burst` - Optional custom burst limit for this key (only used on first request)
-    ///
-    /// # Returns
-    /// Returns `RateLimitResult` indicating if the request is allowed.
+    /// 返回 `RateLimitResult` 表示是否放行及 Retry-After。
     pub async fn check_rate_limit(
         &self,
         key: &str,
@@ -296,7 +241,6 @@ impl RateLimiter {
     ) -> RateLimitResult {
         let (default_rps, default_burst) = *self.defaults.read();
 
-        // Determine the rate and capacity to use
         let (rate, capacity) = if custom_rate.is_some() || custom_burst.is_some() {
             (
                 custom_rate.unwrap_or(default_rps),
@@ -306,7 +250,7 @@ impl RateLimiter {
             (default_rps, default_burst)
         };
 
-        // Get or create the limiter for this key（写锁粒度=key 所属分片）
+        // 取或建该 key 的限流桶（写锁粒度 = key 所属分片）
         let limiter = {
             let mut shard = self.limiters.shard_for(key).write();
             shard
@@ -323,7 +267,7 @@ impl RateLimiter {
                     "{}",
                     t!("log.server.rate_limit.limiter.rate_limit_check_error")
                 );
-                // Fail open - allow request if rate limiter has an error
+                // fail-open：限流器异常时放行，可用性优先
                 RateLimitResult {
                     allowed: true,
                     remaining: default_burst as u64,
@@ -334,7 +278,7 @@ impl RateLimiter {
         }
     }
 
-    /// Get the current rate limit status for a key.
+    /// 查询指定 key 的限流状态。
     pub fn get_usage(&self, key: &str) -> Option<RateLimitStatus> {
         let shard = self.limiters.shard_for(key).read();
         shard.get(key).map(|entry| RateLimitStatus {
@@ -344,7 +288,7 @@ impl RateLimiter {
         })
     }
 
-    /// Get the current number of rate limit buckets.
+    /// 当前限流桶总数。
     pub fn bucket_count(&self) -> usize {
         self.limiters
             .for_each_shard(|shard| shard.read().len())
@@ -352,22 +296,12 @@ impl RateLimiter {
             .sum()
     }
 
-    /// Cleanup expired rate limit entries.
-    ///
-    /// This method removes limiters that haven't been accessed for longer than
-    /// the specified max_idle duration.
-    ///
-    /// # Arguments
-    /// * `max_idle` - Maximum idle duration before a limiter is removed
-    ///
-    /// # Returns
-    /// Number of limiters removed
+    /// 手动清理空闲超过 `max_idle` 的限流桶，返回删除数量。
     pub fn cleanup(&self, max_idle: Duration) -> usize {
         let now_nanos = unix_nanos();
         let max_idle_nanos = max_idle.as_nanos() as u64;
 
-        // 锁内只做「收集 key + 从分片摘除」；摘下的桶带出各分片锁作用域后才
-        // 释放，使分片写锁的持有时长与 drop 成本解耦（与后台清理循环同一边界）。
+        // 锁内只收集 key 并从分片摘除，桶在所有分片锁外释放（与后台清理同一边界）。
         let per_shard = self.limiters.for_each_shard(|shard| {
             let mut shard_guard = shard.write();
             let keys_to_remove: Vec<String> = shard_guard
@@ -399,7 +333,6 @@ impl RateLimiter {
             );
         }
 
-        // 桶在所有分片锁外释放
         let removed_buckets: Vec<InternalRateLimiter> = per_shard
             .into_iter()
             .flat_map(|(_, buckets)| buckets)
@@ -408,7 +341,7 @@ impl RateLimiter {
         removed_count
     }
 
-    /// Get the current number of active rate limiters.
+    /// 当前活跃限流器数量。
     pub fn active_limiters_count(&self) -> usize {
         self.limiters
             .for_each_shard(|shard| shard.read().len())
@@ -416,7 +349,7 @@ impl RateLimiter {
             .sum()
     }
 
-    /// Get memory usage statistics for monitoring.
+    /// 内存使用统计（供监控）。
     pub fn memory_stats(&self) -> RateLimiterMemoryStats {
         let active_limiters = self
             .limiters
@@ -430,27 +363,19 @@ impl RateLimiter {
         }
     }
 
-    /// Update the default rate limit settings.
+    /// 更新默认限流设置。
     pub fn update_defaults(&self, default_rps: u32, default_burst: u32) {
         let mut defaults = self.defaults.write();
         *defaults = (default_rps, default_burst);
     }
 
-    /// Update the default rate limit configuration at runtime.
-    ///
-    /// Unlike [`Self::update_defaults`], this also drops existing buckets so
-    /// they are lazily rebuilt with the new configuration on the next
-    /// `check_rate_limit` call — otherwise pre-existing keys keep their old
-    /// rate/capacity forever and hot updates never take effect on traffic.
-    /// Dropping buckets resets their token state (one-time grace window
-    /// immediately after an update); documented and accepted trade-off.
+    /// 运行时更新默认限流配置，并丢弃现有桶以便下次请求按新配置重建
+    /// （否则既有 key 永远保留旧速率）；重建会重置令牌状态，是一次性宽限窗口。
     pub fn update_config(&self, default_rps: u32, default_burst: u32) {
         self.update_defaults(default_rps, default_burst);
 
-        // 各分片锁内只做一次 O(1) 换表；旧表连同其全部桶（TokenBucketLimiter
-        // 状态、last_accessed 原子量）在所有分片锁外释放。此前用
-        // `write().clear()`，逐个 drop 发生在持锁期间，锁持有时间随桶数量
-        // 线性放大。
+        // 各分片锁内只做一次 O(1) 换表；旧表连同全部桶在所有分片锁外释放，
+        // 避免持锁期间逐个 drop 使锁持有时间随桶数量线性放大。
         let old_buckets: Vec<HashMap<String, InternalRateLimiter>> =
             self.limiters.for_each_shard(|shard| {
                 let mut shard_guard = shard.write();
@@ -460,13 +385,13 @@ impl RateLimiter {
         drop(old_buckets);
     }
 
-    /// Get the limiteron concurrency limiter for internal use.
+    /// 构造内部使用的 limiteron 并发限流器。
     pub fn get_concurrency_limiter(max_concurrent: u64) -> ConcurrencyLimiter {
         ConcurrencyLimiter::new(max_concurrent)
     }
 }
 
-/// Memory usage statistics for rate limiter monitoring
+/// 限流器内存使用统计（供监控）。
 #[derive(Debug, Clone)]
 pub struct RateLimiterMemoryStats {
     /// Number of active rate limit buckets
@@ -477,28 +402,21 @@ pub struct RateLimiterMemoryStats {
     pub default_burst: u32,
 }
 
-/// Concurrency limiter wrapper using limiteron's ConcurrencyLimiter.
+/// limiteron `ConcurrencyLimiter` 的包装。
 #[derive(Clone)]
 pub struct ConcurrencyLimiter {
     inner: Arc<LimiteronConcurrencyLimiter>,
 }
 
 impl ConcurrencyLimiter {
-    /// Create a new concurrency limiter.
-    ///
-    /// # Arguments
-    /// * `max_concurrent` - Maximum number of concurrent operations
+    /// 新建并发限流器：`max_concurrent` = 最大并发操作数。
     pub fn new(max_concurrent: u64) -> Self {
         Self {
             inner: Arc::new(LimiteronConcurrencyLimiter::new(max_concurrent)),
         }
     }
 
-    /// Create a concurrency limiter with a timeout.
-    ///
-    /// # Arguments
-    /// * `max_concurrent` - Maximum number of concurrent operations
-    /// * `timeout` - Maximum time to wait for a permit
+    /// 带超时的并发限流器：等待许可超过 `timeout` 即失败。
     pub fn with_timeout(max_concurrent: u64, timeout: Duration) -> Self {
         Self {
             inner: Arc::new(LimiteronConcurrencyLimiter::with_timeout(
@@ -508,32 +426,18 @@ impl ConcurrencyLimiter {
         }
     }
 
-    /// Acquire a permit for concurrent execution.
-    ///
-    /// Returns a permit that will be released when dropped.
+    /// 获取并发许可；许可在 drop 时归还。
     pub async fn acquire(&self) -> Result<tokio::sync::SemaphorePermit<'_>, LimiteronError> {
         self.inner.acquire(1).await
     }
 
-    // Phase 9 — `try_acquire` removed. The previous
-    // implementation called `self.inner.allow(1).await?` (consuming a
-    // token) and then **unconditionally** returned `Err(...)`, so the
-    // method could never produce a `SemaphorePermit`. No caller in the
-    // codebase used it. Per rule 2 (简洁优先) + rule 12 (失败必须显性化),
-    // a method whose contract lies about its return type must be
-    // deleted, not left as a footgun. If non-blocking permit semantics
-    // are needed in the future, `tokio::sync::Semaphore::try_acquire`
-    // is the right primitive.
-
-    /// Get maximum concurrent limit.
+    /// 最大并发数。
     pub fn max_concurrent(&self) -> u64 {
         self.inner.max_concurrent()
     }
 }
 
-// ============================================================================
-// Unit Tests
-// ============================================================================
+// ============================== Unit Tests ==============================
 
 #[cfg(test)]
 mod tests {
@@ -543,13 +447,11 @@ mod tests {
     async fn test_rate_limiter_basic() {
         let limiter = RateLimiter::new(10, 5);
 
-        // First 5 requests should be allowed (burst size)
         for i in 0..5 {
             let result = limiter.check_rate_limit("test-key", None, None).await;
             assert!(result.allowed, "Request {} should be allowed", i + 1);
         }
 
-        // 6th request should be rate limited
         let result = limiter.check_rate_limit("test-key", None, None).await;
         assert!(!result.allowed, "6th request should be rate limited");
         assert_eq!(result.limit, 5);
@@ -559,21 +461,18 @@ mod tests {
     async fn test_rate_limiter_different_keys() {
         let limiter = RateLimiter::new(10, 5);
 
-        // Exhaust key1's limit
         for _ in 0..5 {
             let result = limiter.check_rate_limit("key1", None, None).await;
             assert!(result.allowed);
         }
 
-        // key1 should be rate limited
         let result = limiter.check_rate_limit("key1", None, None).await;
         assert!(!result.allowed);
 
-        // key2 should still be allowed (different key, different bucket)
+        // key2 是不同 key、不同桶，不受 key1 耗尽影响
         let result = limiter.check_rate_limit("key2", None, None).await;
         assert!(result.allowed);
 
-        // Verify bucket count
         assert_eq!(limiter.bucket_count(), 2);
     }
 
@@ -581,7 +480,7 @@ mod tests {
     async fn test_rate_limiter_custom_limits() {
         let limiter = RateLimiter::new(10, 5);
 
-        // Use custom limits for key1: rate=20, capacity=10
+        // 自定义速率 20 / 容量 10
         for i in 0..10 {
             let result = limiter.check_rate_limit("key1", Some(20), Some(10)).await;
             assert!(
@@ -591,7 +490,7 @@ mod tests {
             );
         }
 
-        // 11th request should be limited
+        // 第 11 次应被拒
         let result = limiter.check_rate_limit("key1", Some(20), Some(10)).await;
         assert!(!result.allowed, "11th request should be limited");
         assert_eq!(result.limit, 10);
@@ -627,14 +526,13 @@ mod tests {
             .filter_map(Result::ok)
             .collect();
 
-        // All requests should be allowed (each key has its own bucket with capacity 100)
+        // 每 key 独立桶、容量 100，全部请求应放行
         for task_results in results {
             for result in task_results {
                 assert!(result.allowed, "Concurrent request should be allowed");
             }
         }
 
-        // Verify bucket count
         assert_eq!(limiter.bucket_count(), num_tasks);
     }
 
@@ -642,20 +540,16 @@ mod tests {
     async fn test_rate_limiter_cleanup() {
         let limiter = RateLimiter::new(10, 5);
 
-        // Add some buckets
         limiter.check_rate_limit("key1", None, None).await;
         limiter.check_rate_limit("key2", None, None).await;
 
         assert_eq!(limiter.bucket_count(), 2);
 
-        // Wait for a short time
         tokio::time::sleep(Duration::from_millis(10)).await;
 
-        // Cleanup with very short max_idle should remove entries
         let removed = limiter.cleanup(Duration::from_millis(5));
         assert_eq!(removed, 2);
 
-        // Buckets should be removed
         assert_eq!(limiter.bucket_count(), 0);
     }
 
@@ -663,7 +557,6 @@ mod tests {
     async fn test_rate_limiter_memory_stats() {
         let limiter = RateLimiter::new(10, 5);
 
-        // Add some buckets
         limiter.check_rate_limit("key1", None, None).await;
         limiter.check_rate_limit("key2", None, None).await;
 
@@ -684,13 +577,11 @@ mod tests {
         let permit2 = limiter.acquire().await;
         assert!(permit2.is_ok());
 
-        // Third acquire would block (handled by semaphore)
-        // We use a short timeout to test
+        // 第三个许可会阻塞，用短超时验证
         let timeout_limiter = ConcurrencyLimiter::with_timeout(2, Duration::from_millis(10));
         let _p1 = timeout_limiter.acquire().await.unwrap();
         let _p2 = timeout_limiter.acquire().await.unwrap();
 
-        // Third would block/timeout
         let result = timeout_limiter.acquire().await;
         assert!(result.is_err() || result.as_ref().is_err());
 
@@ -709,10 +600,9 @@ mod tests {
         let status = status.unwrap();
         assert_eq!(status.limit, 5);
         assert_eq!(status.rate, 10);
-        // After 1 request, should have 4 tokens remaining
+        // 消费 1 个令牌后剩 4
         assert_eq!(status.remaining, 4);
 
-        // Non-existent key
         let status = limiter.get_usage("non-existent");
         assert!(status.is_none());
     }
@@ -723,7 +613,7 @@ mod tests {
 
         limiter.update_defaults(20, 10);
 
-        // New keys will use new defaults
+        // 新 key 使用新默认值
         let result = limiter.check_rate_limit("new-key", None, None).await;
         assert!(result.allowed);
         assert_eq!(result.limit, 10);
@@ -732,23 +622,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_refill() {
-        // Test that tokens refill over time
         let limiter = RateLimiter::new(10, 5);
 
-        // Exhaust bucket
         for _ in 0..5 {
             let result = limiter.check_rate_limit("key", None, None).await;
             assert!(result.allowed);
         }
 
-        // Should be rate limited now
         let result = limiter.check_rate_limit("key", None, None).await;
         assert!(!result.allowed);
 
-        // Wait for some tokens to refill (10 RPS means 1 token per 100ms)
+        // 10 RPS 即每 100ms 补 1 个令牌
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // Should have some tokens now
+        // 补充后应放行
         let result = limiter.check_rate_limit("key", None, None).await;
         assert!(result.allowed, "Should allow after token refill");
     }
@@ -756,7 +643,7 @@ mod tests {
     #[tokio::test]
     async fn test_retry_after_uses_snapshot_reset_secs() {
         // rate=1, capacity=3：耗尽后被拒，Retry-After = 补满 3 个缺口所需 3 秒
-        // （快照 reset_secs；旧实现硬编码 1，对慢补充大容量桶会过早放行）。
+        // （快照 reset_secs；旧实现硬编码 1，慢补充大容量桶会过早放行）。
         let limiter = RateLimiter::new(1, 3);
         for _ in 0..3 {
             assert!(limiter.check_rate_limit("slow", None, None).await.allowed);
@@ -794,8 +681,7 @@ mod tests {
         drop(RateLimiter::get_concurrency_limiter(4));
     }
 
-    /// 分片表语义回归：大量 distinct key 并发 check（跨所有分片）
-    /// 不 panic，桶计数与 key 总数一致，清理语义逐 key 正确。
+    /// 分片表回归：大量 distinct key 并发 check 不 panic，桶计数与清理语义正确。
     #[tokio::test]
     async fn test_sharded_table_many_concurrent_keys_no_panic() {
         use futures_util::future::join_all;

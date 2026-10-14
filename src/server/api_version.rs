@@ -1,13 +1,7 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-/*! API 版本控制模块
-
-该模块提供 API 版本化功能，包括：
-- 版本常量定义
-- 版本解析和验证
-- 版本响应头管理
-*/
+/*! API 版本控制模块：版本常量、解析验证、版本响应头管理。*/
 
 use axum::{
     body::Body,
@@ -102,18 +96,11 @@ pub fn parse_api_version_from_request(req: &Request<Body>) -> ApiVersion {
         .unwrap_or_default()
 }
 
-/// API 版本中间件
-///
-/// 这个中间件执行以下操作：
-/// 1. 尝试从请求头 `X-API-Version` 读取版本
-/// 2. 如果没有提供，使用默认版本 (v1)
-/// 3. 验证版本是否受支持
-/// 4. 在响应头中添加版本信息
+/// API 版本中间件：读取 `X-API-Version` 头（默认 v1），校验支持后回写版本响应头。
 pub async fn api_version_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, ApiVersionErrorResponse> {
-    // 从请求头获取版本，如果不存在则使用默认版本
     let version = req
         .headers()
         .get(&API_VERSION_HEADER)
@@ -121,7 +108,6 @@ pub async fn api_version_middleware(
         .and_then(|s| ApiVersion::from_str(s).ok())
         .unwrap_or_default();
 
-    // 检查版本是否受支持
     if !version.is_supported() {
         return Err(ApiVersionErrorResponse::UnsupportedVersion {
             requested: version.as_str().to_string(),
@@ -129,11 +115,9 @@ pub async fn api_version_middleware(
         });
     }
 
-    // 继续处理请求
     let mut response = next.run(req).await;
 
-    // 在响应头中添加 API 版本
-    // invariant: ApiVersion::as_str() returns "v1"/"v2" which are valid HeaderValue bytes
+    // invariant: ApiVersion::as_str() returns "v1"/"v2", always valid HeaderValues
     response.headers_mut().insert(
         &API_VERSION_HEADER,
         version
@@ -157,8 +141,7 @@ pub enum ApiVersionErrorResponse {
 
 impl IntoResponse for ApiVersionErrorResponse {
     fn into_response(self) -> Response {
-        // 统一错误信封（ErrorResponse，含 business_code）；
-        // 原 ApiErrorResponse 双格式已移除。
+        // 统一错误信封（ErrorResponse，含 business_code）
         use crate::server::models::{ApiErrorCode, ErrorResponse};
 
         match self {
@@ -236,8 +219,7 @@ mod tests {
         let response = error.into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-        // 统一错误信封：400 + business_code=3001（InvalidInput），
-        // 且携带装配处生成的 request_id/timestamp。
+        // 统一错误信封：400 + business_code=3001（InvalidInput）+ request_id/timestamp
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();

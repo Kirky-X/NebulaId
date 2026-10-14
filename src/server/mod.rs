@@ -3,7 +3,7 @@
 
 //! Server module - HTTP/gRPC 服务实现
 
-// Public API modules (re-exported in lib.rs)
+// Public API modules
 pub mod api_version;
 pub mod grpc;
 pub mod router;
@@ -12,9 +12,8 @@ pub mod router;
 #[cfg(feature = "garrison-auth")]
 pub mod auth;
 
-// Internal implementation modules
-// These are pub for binary target access but NOT part of the public library API
-// Users should only use types re-exported in lib.rs
+// Internal implementation modules: pub for binary target access,
+// NOT part of the public library API
 pub mod audit;
 pub mod config;
 pub mod handlers;

@@ -12,10 +12,8 @@ use tokio::fs;
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 
-/// 计算本次应上报的「事件丢弃增量」。
-///
-/// 只在计数上升时返回 `Some(增量)`——计数不变则无事可报，计数回退
-/// （watcher 重建、计数归零）也不报，避免重建被误判成丢失。
+/// 计算事件丢弃增量：仅计数上升时返回 `Some(delta)`；计数回退
+/// （watcher 重建归零）不报，避免误判为一次丢失。
 fn dropped_delta(current: u64, last_reported: u64) -> Option<u64> {
     if current <= last_reported {
         return None;
@@ -60,9 +58,7 @@ impl HotReloadConfig {
     where
         F: Fn(Config) + Send + Sync + 'static,
     {
-        // 修复：原实现先检查锁中毒再 `write().unwrap()`，逻辑矛盾
-        // （锁中毒时第二次 write 仍会 Err，unwrap 会 panic）。
-        // 改为复用 guard，与 `update_config` (line 228-240) 的正确模式一致。
+        // 复用 write guard，避免锁中毒时 unwrap panic。
         let mut guard = match self.reload_callbacks.write() {
             Ok(g) => g,
             Err(e) => {
@@ -109,7 +105,6 @@ impl HotReloadConfig {
         let old_config = self.config.load().as_ref().clone();
         self.config.store(Arc::new(new_config.clone()));
 
-        // 使用map_err处理可能的锁中毒情况
         let callbacks: Vec<_> = {
             match self.reload_callbacks.read() {
                 Ok(guard) => guard.iter().cloned().collect(),
@@ -200,12 +195,8 @@ impl HotReloadConfig {
     }
 
     pub async fn watch(&self, interval_ms: u64) {
-        // confers `FsWatcher`（notify 事件驱动 + 自适应去抖）替换旧 mtime
-        // 轮询：变更即时触发，消除轮询间隔的检测延迟与空转开销。
-        // `interval_ms` 语义由「轮询周期」收敛为「去抖窗口 + 监视器重建间隔」。
-        //
-        // 启动即重载一次：保持旧轮询「首个 tick 必触发 reload」的语义，使
-        // watch 启动前对文件的未跟踪修改被显性同步。
+        // confers `FsWatcher`（事件驱动 + 自适应去抖）：`interval_ms` 为去抖窗口
+        // 与监视器重建间隔。启动即重载一次，使启动前对文件的未跟踪修改被显性同步。
         if let Err(e) = self.reload_config().await {
             error!(
                 "{}",
@@ -218,8 +209,8 @@ impl HotReloadConfig {
             let mut watcher = match FsWatcher::new(&self.config_path, interval_ms).await {
                 Ok(watcher) => watcher,
                 Err(e) => {
-                    // 监视器建立失败（配置文件尚未创建 / inotify 资源耗尽等）：
-                    // 按间隔重试，文件出现或资源释放后自动进入事件驱动模式。
+                    // 监视器建立失败（文件未创建 / inotify 资源耗尽）：按间隔重试，
+                    // 恢复后自动进入事件驱动模式。
                     warn!(
                         error = %e,
                         path = %self.config_path,
@@ -231,10 +222,8 @@ impl HotReloadConfig {
             };
             // 丢弃增量上报水位：每个 watcher 实例一份（重建后归零重报）。
             let mut reported_dropped: u64 = 0;
-            // 丢弃增量上报（循环内逐次与通道关闭前收尾共用，规则 6 DRY）：
-            // 事件丢弃可观测性（R-hotreload-001）——dropped_events 非零表示
-            // 本消费方跟不上、有变更通知已丢失，那是一次重载触发丢失，必须
-            // 显性上报供运维手工对账，不能静默漏掉一次热加载。
+            // 事件丢弃必须显性上报（dropped_events 非零 = 有变更通知已丢失，
+            // 运维需手工对账）；循环内逐次与通道关闭前收尾共用。
             let report_dropped = |current: u64, reported: &mut u64, path: &str| {
                 if let Some(delta) = dropped_delta(current, *reported) {
                     *reported = current;
@@ -265,8 +254,7 @@ impl HotReloadConfig {
                     );
                 }
             }
-            // 通道关闭前把本实例累计丢弃量报掉：重建监视器后计数归零，
-            // 不报就等于把最后一段丢失量静默丢弃。
+            // 通道关闭前上报累计丢弃量：重建后计数归零，不报会静默丢弃最后一段。
             report_dropped(
                 watcher.dropped_events(),
                 &mut reported_dropped,
@@ -281,7 +269,6 @@ impl HotReloadConfig {
         let old_config = self.config.load().as_ref().clone();
         self.config.store(Arc::new(new_config.clone()));
 
-        // 使用map_err处理可能的锁中毒情况
         let callbacks = match self.reload_callbacks.read() {
             Ok(guard) => guard,
             Err(e) => {
@@ -331,7 +318,6 @@ impl HotReloadConfig {
     }
 
     pub fn set_algorithm(&self, biz_tag: &str, algorithm: AlgorithmType) {
-        // 使用map_err处理可能的锁中毒情况，避免panic
         let mut map = match self.biz_algorithm_map.write() {
             Ok(map) => map,
             Err(e) => {
@@ -357,7 +343,6 @@ impl HotReloadConfig {
     }
 
     pub fn get_algorithm(&self, biz_tag: &str) -> Option<AlgorithmType> {
-        // 使用map_err处理可能的锁中毒情况，避免panic
         let map = match self.biz_algorithm_map.read() {
             Ok(map) => map,
             Err(e) => {
@@ -405,7 +390,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    /// Setup test environment - must be called at the start of each test
+    /// 每个测试开头调用：设置测试环境变量。
     fn setup_test_env() {
         std::env::set_var("NEBULA_DATABASE_PASSWORD", "test_password");
     }
@@ -627,8 +612,7 @@ max_batch_size = 100
 
     // ========== with_audit_logger / add_reload_callback ==========
 
-    /// `with_audit_logger` builder must store the logger without changing
-    /// the underlying config (audit_logger is `None` by default).
+    /// with_audit_logger 不得改变底层配置（audit_logger 默认为 None）。
     #[tokio::test]
     async fn test_with_audit_logger_does_not_alter_config() {
         setup_test_env();
@@ -639,8 +623,7 @@ max_batch_size = 100
         assert_eq!(config.app.name, "nebula-id");
     }
 
-    /// `add_reload_callback` must invoke the callback on `update_config`.
-    /// Verifies the callback receives the new config.
+    /// update_config 须触发回调并传入新配置。
     #[tokio::test]
     async fn test_add_reload_callback_invoked_on_update() {
         setup_test_env();
@@ -685,8 +668,7 @@ max_batch_size = 100
 
     // ========== reload_from_file error paths ==========
 
-    /// `reload_from_file` on a non-existent path must return `Ok(false)`,
-    /// not `Err` — the inner `reload_config` swallows read errors.
+    /// 路径不存在时返回 `Ok(false)` 而非 `Err`（读取错误内部吞掉并记录）。
     #[tokio::test]
     async fn test_reload_from_file_missing_path_returns_ok_false() {
         setup_test_env();
@@ -705,8 +687,7 @@ max_batch_size = 100
         );
     }
 
-    /// `reload_from_file` on a malformed TOML must return `Ok(false)`,
-    /// not `Err` — parse errors are swallowed and logged.
+    /// TOML 解析失败时返回 `Ok(false)` 而非 `Err`（解析错误吞掉并记录）。
     #[tokio::test]
     async fn test_reload_from_file_malformed_toml_returns_ok_false() {
         setup_test_env();
@@ -728,13 +709,9 @@ max_batch_size = 100
     }
 
     // ========== detect_config_changes (via update_config + audit logger) ==========
-    // detect_config_changes is private; we exercise it indirectly through
-    // update_config / reload_from_file. The audit-logger path is covered
-    // by test_with_audit_logger_* above. Here we verify that detect_config_changes
-    // produces the expected diff string format by checking the public surface.
+    // detect_config_changes 为私有：经 update_config / reload_from_file 间接覆盖。
 
-    /// `update_config` with changed rate_limit / logging must not panic
-    /// and must update the relevant fields.
+    /// 多字段变更时 update_config 不得 panic 且字段须更新。
     #[tokio::test]
     async fn test_update_config_changes_multiple_fields() {
         setup_test_env();
@@ -768,7 +745,6 @@ max_batch_size = 100
         setup_test_env();
         let hot_config = HotReloadConfig::new(Config::default(), "config/config.toml".to_string());
 
-        // Initially None.
         assert!(hot_config.get_algorithm("tag-a").is_none());
 
         hot_config.set_algorithm("tag-a", AlgorithmType::Snowflake);
@@ -819,13 +795,9 @@ max_batch_size = 100
     }
 
     // ========== watch (background loop) ==========
-    // watch() is an infinite loop; we can't test it directly without
-    // spawning + aborting. We verify that watch() compiles and can be
-    // spawned, then aborted before the first tick (interval_ms=large
-    // ensures no reload attempt happens in the window).
+    // watch() 为无限循环：spawn 后立即 abort，仅验证可启动且不 panic。
 
-    /// `watch` must be spawnable as a background task. We abort it
-    /// immediately to verify it doesn't panic on startup.
+    /// watch 可作为后台任务 spawn，启动阶段不 panic。
     #[tokio::test]
     async fn test_watch_is_spawnable_and_abortable() {
         setup_test_env();
@@ -834,24 +806,20 @@ max_batch_size = 100
         let handle = tokio::spawn(async move {
             hot_config.watch(60_000).await;
         });
-        // Abort before the first tick (60s interval, ~0s elapsed).
         handle.abort();
-        // Yield once to let the abort propagate.
         tokio::time::sleep(Duration::from_millis(10)).await;
         // If we reach here without panic, the test passes.
     }
 
     // ========== HotReloadConfig::new edge cases ==========
 
-    /// `new` with empty path must still produce a working config (path
-    /// only matters for reload_from_file / watch).
+    /// 空路径仍产出可用配置（路径仅影响 reload_from_file / watch）。
     #[tokio::test]
     async fn test_new_with_empty_path() {
         setup_test_env();
         let hot_config = HotReloadConfig::new(Config::default(), String::new());
         let config = hot_config.get_config();
         assert_eq!(config.app.name, "nebula-id");
-        // reload_from_file with empty path returns Ok(false) (read fails).
         let result = hot_config.reload_from_file().await;
         assert!(result.is_ok());
         assert!(!result.unwrap());
@@ -870,14 +838,12 @@ max_batch_size = 100
         assert_eq!(retrieved.app.http_port, 7777);
     }
 
-    /// `add_reload_callback` after `update_config` must fire on subsequent
-    /// updates (callbacks registered later don't get retroactive calls).
+    /// 后注册的回调不追溯，只在后续 update 时触发。
     #[tokio::test]
     async fn test_callback_registered_after_first_update_only_fires_on_next() {
         setup_test_env();
         let hot_config = HotReloadConfig::new(Config::default(), "config/config.toml".to_string());
 
-        // First update — no callbacks yet.
         hot_config.update_config(Config::default());
 
         let counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -886,20 +852,16 @@ max_batch_size = 100
             c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         });
 
-        // Second update — callback should fire exactly once.
+        // 第二次 update 恰好触发一次回调。
         hot_config.update_config(Config::default());
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
-    // ==================================================================
-    // Additional coverage (Phase 2 P0: bring hot_reload.rs to ≥95%)
-    // ==================================================================
+    // ===== 补充覆盖（Phase 2 P0）=====
 
     // ----- Helper: write a complete valid TOML config with overrides -----
 
-    /// Write a complete valid TOML config file with the given field
-    /// overrides. Used by the audit-logger and watch tests below to
-    /// avoid repeating the ~80-line TOML boilerplate in each test.
+    /// 写完整合法 TOML（字段可覆盖），避免各测试重复约 80 行样板。
     fn write_test_config_file(
         path: &std::path::Path,
         app_name: &str,
@@ -992,11 +954,7 @@ max_batch_size = 100
 
     // ----- with_audit_logger builder -----
 
-    /// `with_audit_logger` must store the logger so the HotReloadConfig
-    /// can call `log_config_change` on subsequent updates. We can't
-    /// directly observe the stored `Option<Arc<AuditLogger>>` field, but
-    /// we can verify the builder returns a usable `HotReloadConfig` whose
-    /// other fields (config, callbacks, biz_algorithm_map) are intact.
+    /// with_audit_logger 后 config/callbacks/algorithm map 须保持可用。
     #[tokio::test]
     async fn test_with_audit_logger_builder_returns_usable_config() {
         setup_test_env();
@@ -1004,10 +962,8 @@ max_batch_size = 100
         let hot_config = HotReloadConfig::new(Config::default(), "config/config.toml".to_string())
             .with_audit_logger(logger);
 
-        // Verify the config is still readable and other fields work.
         assert_eq!(hot_config.get_config().app.name, "nebula-id");
 
-        // Callbacks still fire after with_audit_logger.
         let counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let c = counter.clone();
         hot_config.add_reload_callback(move |_| {
@@ -1016,7 +972,6 @@ max_batch_size = 100
         hot_config.update_config(Config::default());
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
 
-        // Algorithm map still works.
         hot_config.set_algorithm("audit-tag", AlgorithmType::Snowflake);
         assert_eq!(
             hot_config.get_algorithm("audit-tag").unwrap(),
@@ -1024,16 +979,10 @@ max_batch_size = 100
         );
     }
 
-    // ----- update_config + audit_logger: covers L247-265, L164-199 -----
+    // ----- update_config + audit_logger -----
 
-    /// `update_config` with an audit logger attached and changed fields
-    /// must invoke `detect_config_changes` (covering all 5 field
-    /// comparisons) and construct the audit event. The `let _ =
-    /// logger.log_config_change(...)` call site is executed (covering
-    /// L259-264) but the future is intentionally not awaited (per the
-    /// `#[allow(clippy::let_underscore_future)]` annotation), so
-    /// `total_logged` is NOT incremented on this path. The reload
-    /// path (test below) does await the future.
+    /// update_config 附审计日志且字段变化：须走 detect_config_changes 并构造
+    /// 审计事件；此处 future 不 await（let_underscore_future），total_logged 不增。
     #[tokio::test]
     async fn test_with_audit_logger_update_config_with_changes_covers_detect() {
         setup_test_env();
@@ -1049,18 +998,14 @@ max_batch_size = 100
         new_config.rate_limit.burst_size = 50;
         new_config.logging.level = crate::core::config::LogLevel::Debug;
 
-        // The update_config call itself exercises the audit-logger branch
-        // and detect_config_changes. It should not panic.
+        // 覆盖审计分支与 detect_config_changes，不得 panic。
         hot_config.update_config(new_config);
 
-        // Verify the config update itself took effect.
         assert_eq!(hot_config.get_config().app.name, "audit-update");
         assert_eq!(hot_config.get_config().app.http_port, 9999);
     }
 
-    /// `update_config` with an audit logger attached but identical config
-    /// must NOT construct an audit event (`has_changes` is false). Covers
-    /// the `if has_changes` false branch.
+    /// 配置无变化时不构造审计事件（覆盖 has_changes 为 false 分支）。
     #[tokio::test]
     async fn test_with_audit_logger_update_config_no_changes_skips_audit() {
         setup_test_env();
@@ -1069,18 +1014,14 @@ max_batch_size = 100
         let hot_config = HotReloadConfig::new(config.clone(), "config/config.toml".to_string())
             .with_audit_logger(logger);
 
-        // Same config → no changes → audit branch is skipped.
         hot_config.update_config(config);
-        // No assertion on total_logged because the audit future is
-        // dropped anyway; we only verify no panic occurs.
+        // 审计 future 被丢弃，仅验证不 panic。
     }
 
-    // ----- reload_from_file + audit_logger: covers L131-151, L164-199 -----
+    // ----- reload_from_file + audit_logger -----
 
-    /// `reload_from_file` with an audit logger attached and a real file
-    /// modification must invoke `log_config_change` and increment
-    /// `total_logged`. Unlike `update_config`, this path awaits the
-    /// audit future (no `let_underscore_future`).
+    /// reload_from_file 附审计日志且文件真实变更：await 审计 future 并令
+    /// total_logged +1（与 update_config 的 fire-and-forget 不同）。
     #[tokio::test]
     async fn test_with_audit_logger_reload_from_file_logs_change() {
         setup_test_env();
@@ -1095,7 +1036,6 @@ max_batch_size = 100
         )
         .with_audit_logger(logger.clone());
 
-        // Rewrite file with several fields changed.
         write_test_config_file(&config_path, "reloaded", 9090, 5000, 50, "debug");
 
         let before = logger.total_logged();
@@ -1111,13 +1051,10 @@ max_batch_size = 100
         );
     }
 
-    // ----- watch: file modification detection (covers L201-221) -----
+    // ----- watch: 文件变更检测 -----
 
-    /// `watch` must detect a file modification on the configured path
-    /// and trigger `reload_config`. We spawn `watch` with a short
-    /// interval, wait for the first tick (which sets `last_modified`),
-    /// then modify the file and verify the in-memory config was updated
-    /// on a subsequent tick. The task is aborted before the test ends.
+    /// watch 检测文件修改并触发 reload_config：短间隔 spawn，改文件后验证
+    /// 内存配置更新，随后 abort。
     #[tokio::test]
     async fn test_watch_detects_file_modification_and_reloads() {
         setup_test_env();
@@ -1135,9 +1072,7 @@ max_batch_size = 100
             hot_config_clone.watch(50).await;
         });
 
-        // Wait for the watch task to start and the first tick to complete.
-        // The first tick sets `last_modified = Some(mtime)` and triggers
-        // a reload from the initial file content ("before-watch").
+        // 等待启动重载完成（初始内容 before-watch 生效）。
         tokio::time::sleep(Duration::from_millis(120)).await;
         assert_eq!(
             hot_config.get_config().app.name,
@@ -1145,17 +1080,14 @@ max_batch_size = 100
             "first tick should reload initial config"
         );
 
-        // Modify the file — change app.name so we can verify reload happened.
-        // Sleep briefly to ensure filesystem mtime advances past the
-        // previous value (Windows NTFS mtime precision ~15ms).
+        // 改 app.name 以验证 reload；短暂等待确保变更可被观测。
         tokio::time::sleep(Duration::from_millis(50)).await;
         write_test_config_file(&config_path, "after-watch", 8080, 10000, 100, "info");
 
-        // Wait for the next tick to detect the mtime change and reload.
+        // 等待事件触发 reload。
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         handle.abort();
-        // Yield to let abort propagate.
         tokio::time::sleep(Duration::from_millis(10)).await;
 
         let config = hot_config.get_config();
@@ -1165,10 +1097,7 @@ max_batch_size = 100
         );
     }
 
-    /// `watch` must handle a missing config file gracefully (no panic,
-    /// no reload). Covers the `if let Ok(metadata) = ...` false branch
-    /// (L208) — when `fs::metadata` returns `Err`, the inner block is
-    /// skipped entirely.
+    /// 配置文件缺失时 watch 不得 panic，也不得改动内存配置。
     #[tokio::test]
     async fn test_watch_handles_missing_file_no_reload() {
         setup_test_env();
@@ -1182,14 +1111,12 @@ max_batch_size = 100
             hot_config_clone.watch(50).await;
         });
 
-        // Wait for a couple of ticks — file is missing, should not panic
-        // and should not change the in-memory config.
+        // 文件缺失：等待若干轮询，不得 panic，配置保持默认。
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         handle.abort();
         tokio::time::sleep(Duration::from_millis(10)).await;
 
-        // Config should still be the default (no reload happened).
         assert_eq!(
             hot_config.get_config().app.name,
             "nebula-id",
@@ -1197,32 +1124,9 @@ max_batch_size = 100
         );
     }
 
-    // ----- reload_callbacks lock poisoning: UNREACHABLE in practice -----
-    //
-    // The lock-poisoning error paths in `add_reload_callback` (L67-75),
-    // `reload_config` (L115-123), `update_config` (L232-240),
-    // `set_algorithm` (L282-290), and `get_algorithm` (L308-316) are
-    // defensive code that cannot be triggered in practice:
-    //
-    // - `std::sync::RwLock` is poisoned ONLY when a thread panics while
-    //   holding a WRITE guard. READ guards do NOT poison the lock on
-    //   panic. (See https://doc.rust-lang.org/std/sync/struct.RwLock.html#poisoning)
-    //
-    // - The only WRITE locks on `reload_callbacks` and `biz_algorithm_map`
-    //   are in `add_reload_callback` and `set_algorithm` respectively.
-    //   The code inside those write guards is `guard.push(Arc::new(callback))`
-    //   and `map.insert(biz_tag.to_string(), algorithm)`, neither of which
-    //   can panic (Vec::push and HashMap::insert abort on OOM, not panic).
-    //
-    // - The READ locks in `update_config`, `reload_config`, and
-    //   `get_algorithm` do NOT poison the lock when a callback panics,
-    //   because READ guards don't poison on drop.
-    //
-    // - There is no public API to manually poison an `RwLock` without
-    //   `unsafe`, and `parking_lot::RwLock` (not used here) has no
-    //   poisoning at all.
-    //
-    // These paths are documented as known coverage gaps.
+    // ----- reload_callbacks 锁中毒路径：实践中不可达（已知覆盖缺口）-----
+    // RwLock 仅写锁守护期间 panic 才中毒；reload_callbacks/biz_algorithm_map 的
+    // 写锁体（push/insert）不会 panic，读锁不中毒，故这些错误分支无法在测试触发。
 
     #[tokio::test]
     async fn test_reload_config_missing_file_returns_false() {
@@ -1252,12 +1156,10 @@ max_batch_size = 100
     }
 }
 
-/// auto_watch 关闭（缺省）时不产生任何行为；watch 循环在文件
-/// mtime 变化后触发 reload 回调。使用 tempfile + 短轮询间隔验证。
+/// watch 循环在文件变更后触发 reload 回调（tempfile + 短间隔验证）。
 #[tokio::test]
 async fn test_watch_triggers_reload_callback_on_mtime_change() {
-    // 以完整默认配置序列化产物为底稿，保证 TOML 必填段齐全；
-    // 再注入可观测的差异字段（shutdown_timeout_seconds = 45）
+    // 以默认配置序列化产物为底稿，注入可观测的差异字段。
     let mut base = toml::to_string(&Config::default()).expect("序列化默认配置应成功");
     if base.contains("shutdown_timeout_seconds") {
         base = base.replace(
@@ -1288,13 +1190,12 @@ async fn test_watch_triggers_reload_callback_on_mtime_change() {
     let watcher = hot.clone();
     let handle = tokio::spawn(async move { watcher.watch(20).await });
 
-    // 修改内容 → mtime 变化 → 首个 tick 或后续 tick 触发 reload
+    // 覆写内容后等待 reload 回调（启动重载或事件驱动均可能先到）。
     std::fs::write(temp.path(), updated).expect("覆写内容应成功");
 
     let seen = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
         .await
         .expect("2 秒内应触发一次 reload 回调");
-    // 内容变化（name probe→probe2）触发 reload；回调携带重载后的配置
     assert_eq!(
         seen,
         Some(46),

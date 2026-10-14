@@ -44,8 +44,7 @@ impl From<String> for HealthStatus {
     }
 }
 
-/// OpenAPI 示例值与 `docs/API_REFERENCE.md` 同一口径
-/// （workspace `demo`、biz_tag `order`）。
+/// OpenAPI 示例值与 `docs/API_REFERENCE.md` 同口径（workspace `demo`、biz_tag `order`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 #[validate(crate = "::sdforge::validator")]
 #[schema(example = json!({
@@ -99,8 +98,7 @@ pub struct BatchGenerateRequest {
     #[validate(length(min = 1, max = 64))]
     pub biz_tag: String,
 
-    // 上限由 config.batch_generate.max_batch_size 运行时校验，
-    // 静态 validator 仅保留下界。
+    // 上限由 config.batch_generate.max_batch_size 运行时校验，静态 validator 仅保留下界。
     #[validate(range(min = 1))]
     pub size: Option<usize>,
 
@@ -152,9 +150,8 @@ pub struct ErrorResponse {
     pub code: i32,
     /// 结构化业务错误码（`ApiErrorCode` 的四位数字串，如 `"4001"`）。
     ///
-    /// 统一错误信封：与 HTTP 状态码 `code` 同源于 helpers 的
-    /// 单张分类映射表（`CoreError` → 状态码 + 业务码一次判定），客户端
-    /// 以本字段做语义分支，不再解析 `message` 文案。
+    /// 与 HTTP 状态码 `code` 同源于 helpers 单张分类映射表（`CoreError` →
+    /// 状态码 + 业务码一次判定）；客户端应以本字段做语义分支，不解析 `message`。
     pub business_code: String,
     pub message: String,
     pub details: Option<String>,
@@ -168,9 +165,8 @@ impl ErrorResponse {
     /// 构造统一错误信封。
     ///
     /// `business_code` 必须来自调用点的既定映射（`CoreError` 走
-    /// `core_error_classification` 单表判定；handler 构造类错误使用
-    /// 各自既定的 `ApiErrorCode`），`request_id` / `timestamp` 在装配
-    /// 处生成，保证所有错误响应携带可追踪上下文。
+    /// `core_error_classification` 单表；handler 构造类错误用既定
+    /// `ApiErrorCode`）；`request_id`/`timestamp` 装配处生成，保证可追踪。
     pub fn new(code: i32, business_code: ApiErrorCode, message: String) -> Self {
         Self {
             code,
@@ -308,12 +304,6 @@ impl ErrorMessage {
     }
 }
 
-/// 原 `ApiErrorResponse`（`code`/`message`/`details`/`request_id`/
-/// `timestamp` 双格式信封）及其 `From<ErrorResponse>` 转换已移除：
-/// 全部错误响应统一走上方 [`ErrorResponse`]（含 `business_code`）单信封，
-/// 避免两套错误 JSON 形状并存漂移。原 404→WorkspaceNotFound 等状态码
-/// 到业务码的默认映射由 helpers 的 `core_error_classification` 单表承接。
-
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiKeyInfo {
     pub key_id: String,
@@ -353,13 +343,11 @@ pub struct ConnectionPoolMetrics {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CacheMetrics {
     pub status: HealthStatus,
-    /// 修复：缓存命中率。`hit_rate = 0.0` 在 `has_cache = false` 时
-    /// 表示「无缓存概念」，不是「命中率 0%」。客户端必须先检查 `has_cache`
-    /// 再决定是否展示 `hit_rate`。
+    /// 缓存命中率。`has_cache = false` 时 `hit_rate = 0.0` 表示「无缓存
+    /// 概念」，不是「命中率 0%」；客户端须先检查 `has_cache`。
     pub hit_rate: f64,
-    /// 明确表达「当前部署是否有缓存算法」。
-    /// `false` 时 `hit_rate` 字段无意义（恒为 0.0），客户端不应展示。
-    /// `true` 时 `hit_rate` 是所有缓存算法的平均命中率。
+    /// 当前部署是否有缓存算法。`false` 时 `hit_rate` 无意义（恒 0.0），
+    /// 客户端不应展示；`true` 时 `hit_rate` 为所有缓存算法的平均命中率。
     pub has_cache: bool,
     pub memory_usage_mb: Option<u64>,
     pub key_count: Option<u64>,
@@ -378,7 +366,7 @@ pub struct AlgorithmMetrics {
     pub p999_latency_ms: f64,
     /// 累计观测到的时钟回拨次数（雪花算法时钟回拨告警的真实信号）。
     pub clock_backwards: u64,
-    /// 修复：`None` 表示该算法无缓存概念，`Some(rate)` 表示真实命中率。
+    /// `None` 表示该算法无缓存概念，`Some(rate)` 表示真实命中率。
     pub cache_hit_rate: Option<f64>,
 }
 
@@ -787,13 +775,9 @@ pub struct ApiKeyWithSecretResponse {
     pub grace_expires_at: Option<String>,
 }
 
-/// 内部模型 → HTTP wire 的单一映射。
-///
-/// 架构审查 MEDIUM：此前同一份 9 字段映射在 4 个 handler 里各写一遍，`ApiKeyWithSecret`
-/// 新增 `grace_expires_at` 时必须同步改多处，漏改就是静默丢字段。
-///
-/// `Anonymous` 角色不落库（与 `workspace_handlers.rs::regenerate_user_key` 的同名防御一致）：
-/// 数据库里出现该行说明被外部直接写入，这里显性报错，而不是渲染成 `"anonymous"` 蒙混下发。
+/// 内部模型 → HTTP wire 的单一映射：`Anonymous` 角色不落库（与
+/// `workspace_handlers.rs::regenerate_user_key` 同名防御一致），数据库
+/// 出现该行说明被外部直接写入，显性报错而非渲染成 "anonymous" 下发。
 impl TryFrom<crate::core::database::ApiKeyResponse> for ApiKeyResponse {
     type Error = crate::core::types::CoreError;
 
@@ -823,8 +807,7 @@ impl TryFrom<crate::core::database::ApiKeyResponse> for ApiKeyResponse {
     }
 }
 
-/// 列表接口的元素是 `ApiKey`（= `ApiKeyInfo`）。先由核心层收敛成 `ApiKeyResponse`
-/// 形状，再复用上面那一份唯一的 wire 字段表，避免列表路径再抄一遍。
+/// 列表元素为 `ApiKey`：先由核心层收敛成 `ApiKeyResponse`，再复用上面唯一的 wire 映射。
 impl TryFrom<crate::core::database::ApiKey> for ApiKeyResponse {
     type Error = crate::core::types::CoreError;
 
@@ -1055,11 +1038,9 @@ mod tests {
             "Not Found".to_string(),
         );
         assert_eq!(resp.code, 404);
-        // business_code 是 ApiErrorCode 的四位数字串。
         assert_eq!(resp.business_code, "2001");
         assert_eq!(resp.message, "Not Found");
         assert_eq!(resp.details, None);
-        // request_id/timestamp 在装配处生成。
         assert!(!resp.request_id.is_empty());
         assert!(resp.timestamp > 0);
     }
@@ -1105,7 +1086,6 @@ mod tests {
 
     #[test]
     fn test_error_response_request_id_is_uuid_v4() {
-        // request_id 必须是可解析的 UUID（装配处生成，非空常量）。
         let resp = ErrorResponse::new(
             429,
             ApiErrorCode::RateLimitExceeded,
@@ -1141,11 +1121,7 @@ mod tests {
     }
 
     // ========== —— ApiErrorResponse 双格式已移除 ==========
-    //
-    // 原 `ApiErrorResponse` 及 `From<ErrorResponse> for ApiErrorResponse`
-    // 的测试随类型一并删除；业务码映射的钉桩改由
-    // `server::handlers::helpers` 的 `core_error_classification` 单表
-    // 测试承接（见 helpers.rs `test_core_error_classification_*`）。
+    // 业务码映射的钉桩改由 helpers 的 `core_error_classification` 单表测试承接。
 
     // ========== ErrorMessage::message ==========
 
@@ -1297,7 +1273,6 @@ mod tests {
 
     #[test]
     fn test_pagination_params_uses_defaults_when_empty() {
-        // Exercises default_page (returns 1) and default_page_size (returns 20).
         let params: PaginationParams = serde_json::from_str("{}").unwrap();
         assert_eq!(params.page, 1);
         assert_eq!(params.page_size, 20);

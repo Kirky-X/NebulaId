@@ -1,30 +1,9 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! Locale negotiation middleware (Phase 8 ).
-//!
-//! Parses the `Accept-Language` HTTP header per RFC 7231 §5.3.5,
-//! picks the best supported locale (`en` or `zh-CN`), and injects
-//! `Extension<Locale>` into the request for downstream handlers.
-//!
-//! Negotiation rules:
-//! 1. Parse each `<language-tag>[;q=<weight>]` entry.
-//! 2. Drop entries with `q=0` (explicitly not accepted) or malformed q-value
-//!    (per RFC 7231 §5.3.1, the entire entry becomes invalid).
-//! 3. Sort by descending q-value; ties keep header order (stable sort).
-//! 4. For each candidate, try exact match → prefix match (e.g. `zh` → `zh-CN`).
-//!    Wildcard `*` is treated as no concrete match and falls through to default.
-//! 5. If no match, fall back to the default locale (`en`).
-//!
-//! Missing or malformed `Accept-Language` header also falls back to `en`.
-//!
-//! # Security
-//!
-//! `Locale` is **user-controlled** (derived from the `Accept-Language` header)
-//! and MUST NOT be used for authorization, authentication, or any security
-//! decision. It is intended solely for content negotiation (e.g. translating
-//! error messages). Treating locale as a trust boundary will introduce
-//! header-forging vulnerabilities.
+//! Locale negotiation middleware：解析 `Accept-Language`（RFC 7231 §5.3.5），
+//! 选出 `en` / `zh-CN` 并注入 `Extension<Locale>`；缺失/非法回退 `en`。
+//! 安全：`Locale` 来自用户输入，禁止用于鉴权/认证等安全决策。
 
 use axum::body::Body;
 use axum::extract::Request;
@@ -34,12 +13,7 @@ use std::fmt;
 
 /// Supported locales for NebulaID.
 ///
-/// Variants match the top-level keys in `locales/{en,zh}/messages.ftl`.
-///
-/// # Security
-///
-/// `Locale` is derived from user input (`Accept-Language` header) and is
-/// forgeable. Do NOT use it for authorization decisions.
+/// 变体对应 `locales/{en,zh}/messages.ftl` 顶层键；由用户输入派生，禁止用于鉴权。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Locale {
     /// English (default).
@@ -52,8 +26,7 @@ impl Locale {
     /// Default locale when `Accept-Language` is missing or no match.
     pub const DEFAULT: Self = Locale::En;
 
-    /// Return the string identifier consumed by `core::i18n`
-    /// (`translate_with_locale*` / `init_i18n` normalize "en" / "zh-CN").
+    /// 返回 `core::i18n` 消费的字符串标识（"en" / "zh-CN"）。
     pub fn as_str(&self) -> &'static str {
         match self {
             Locale::En => "en",
@@ -61,17 +34,12 @@ impl Locale {
         }
     }
 
-    /// Parse a language tag into a `Locale`.
-    ///
-    /// Matching is case-insensitive on the tag. `zh`, `zh-CN`, `zh-Hans`,
-    /// and `zh-Hans-CN` all map to `ZhCn`. `en`, `en-US`, `en-GB` map to `En`.
-    /// Unknown tags return `None`.
+    /// 解析语言标签（大小写不敏感）：`zh*` → `ZhCn`，`en*` → `En`，未知返回 `None`。
     pub fn from_tag(tag: &str) -> Option<Self> {
         let trimmed = tag.trim();
         if trimmed.is_empty() {
             return None;
         }
-        // Exact match (case-insensitive, no allocation)
         if trimmed.eq_ignore_ascii_case("en") {
             return Some(Locale::En);
         }
@@ -105,17 +73,14 @@ impl Default for Locale {
     }
 }
 
-/// Axum middleware: negotiate locale from `Accept-Language` and inject
-/// `Extension<Locale>` into the request.
+/// Axum middleware：从 `Accept-Language` 协商 locale 并注入 `Extension<Locale>`。
 pub async fn locale_middleware(mut req: Request<Body>, next: Next) -> Response {
     let locale = negotiate_locale(req.headers().get(axum::http::header::ACCEPT_LANGUAGE));
     req.extensions_mut().insert(locale);
     next.run(req).await
 }
 
-/// Negotiate the best `Locale` from an `Accept-Language` header value.
-///
-/// Accepts `None` (header missing) — returns `Locale::DEFAULT`.
+/// 从 `Accept-Language` 头协商 `Locale`；头缺失返回 `Locale::DEFAULT`。
 pub fn negotiate_locale(header: Option<&axum::http::HeaderValue>) -> Locale {
     let Some(value) = header else {
         return Locale::DEFAULT;
@@ -143,37 +108,19 @@ pub fn negotiate_locale_str(accept_language: &str) -> Locale {
 
 /// A single entry in the `Accept-Language` header.
 ///
-/// Phase 8 (HIGH perf fix) — `tag` borrows from the underlying
-/// `Accept-Language` header string instead of cloning, eliminating
-/// per-candidate `String` allocation. At 10K QPS with ~5 candidates per
-/// header this removes ~50K allocations/sec.
+/// `tag` 借用头部字符串，避免逐候选 `String` 分配。
 #[derive(Debug, PartialEq)]
 struct Candidate<'a> {
     tag: &'a str,
     quality: f32,
 }
 
-/// Maximum accepted `Accept-Language` header length (bytes).
-///
-/// Defends against DoS via pathologically long headers. Typical browser
-/// headers are < 100 bytes; 4 KiB is a generous upper bound (hyper's
-/// default MaxRequestHeaderSize is much larger, so we cap here).
+/// `Accept-Language` 头部长度上限（4 KiB），防御超长头部 DoS。
 const MAX_ACCEPT_LANGUAGE_LEN: usize = 4096;
 
-/// Parse `Accept-Language` into a list of candidates sorted by descending
-/// q-value (stable on ties to preserve header order).
+/// 解析 `Accept-Language` 为按 q 值降序（稳定排序，同值保留头部顺序）的候选列表。
 ///
-/// Entries with `q=0` are dropped (explicitly not accepted). Entries with
-/// malformed q-values are also dropped (per RFC 7231 §5.3.1, the entire
-/// entry becomes invalid). Wildcard `*` is kept for explicit fallthrough
-/// handling but never matches a concrete `Locale`.
-///
-/// Returns an empty `Vec` if the header is empty, too long, or contains
-/// no valid entries.
-///
-/// Phase 8 (HIGH perf fix) — returns `Vec<Candidate<'a>>`
-/// borrowing from `header`, so no `String` allocation is performed per
-/// candidate. The lifetime ties the result to the input header.
+/// 丢弃 `q=0` 与 q 值非法条目（RFC 7231 §5.3.1）；空/超长/无有效条目返回空 `Vec`。
 fn parse_accept_language<'a>(header: &'a str) -> Vec<Candidate<'a>> {
     if header.trim().is_empty() {
         return Vec::new();
@@ -181,14 +128,8 @@ fn parse_accept_language<'a>(header: &'a str) -> Vec<Candidate<'a>> {
     if header.len() > MAX_ACCEPT_LANGUAGE_LEN {
         return Vec::new();
     }
-    // Phase 8 (perf fix) — typical `Accept-Language` headers
-    // carry 2–3 candidates (e.g. `en,zh-CN;q=0.8`). The previous
-    // `header.matches(',').count() + 1` pre-scan was a second O(n) pass
-    // over the (potentially 4 KiB) header just to size the Vec. For the
-    // typical case `Vec::new()` + a couple of amortized-growth reallocs
-    // is cheaper than the extra scan; for the pathological 4 KiB case
-    // the realloc cost is bounded (~11 doublings × 4 KiB memcpy) and
-    // still faster than scanning the header twice.
+    // 不预扫描逗号计数：典型头部仅 2–3 个候选，增长式扩容比
+    // 二次 O(n) 扫描更便宜，4 KiB 病态输入下的重分配成本也有界。
     let mut out: Vec<Candidate<'a>> = Vec::new();
     for entry in header.split(',') {
         if let Some(c) = parse_entry(entry.trim()) {
@@ -197,7 +138,7 @@ fn parse_accept_language<'a>(header: &'a str) -> Vec<Candidate<'a>> {
             }
         }
     }
-    // Stable sort by descending q-value (preserves header order on ties)
+    // 按 q 值降序稳定排序（同值保留头部顺序）
     out.sort_by(|a, b| {
         b.quality
             .partial_cmp(&a.quality)
@@ -206,15 +147,7 @@ fn parse_accept_language<'a>(header: &'a str) -> Vec<Candidate<'a>> {
     out
 }
 
-/// Parse a single `<tag>[;q=<weight>]` entry.
-///
-/// Returns `None` for empty entries or entries with malformed q-values
-/// (per RFC 7231 §5.3.1).
-///
-/// Phase 8 (HIGH perf fix) — borrows from `entry` instead of
-/// allocating a `String` for the tag, and uses `eq_ignore_ascii_case`
-/// instead of `to_ascii_lowercase` to detect the `q=` parameter
-/// case-insensitively without allocating.
+/// 解析单个 `<tag>[;q=<weight>]` 条目；空条目或 q 值非法返回 `None`（RFC 7231 §5.3.1）。
 fn parse_entry<'a>(entry: &'a str) -> Option<Candidate<'a>> {
     if entry.is_empty() {
         return None;
@@ -227,29 +160,19 @@ fn parse_entry<'a>(entry: &'a str) -> Option<Candidate<'a>> {
     let mut quality = 1.0_f32;
     for param in parts {
         let param = param.trim();
-        // q-parameter is case-insensitive on the parameter name (RFC 7230
-        // token is case-insensitive). Some proxies emit `Q=` instead of `q=`.
-        // Avoid `to_ascii_lowercase` allocation — compare the first two
-        // bytes directly. `HeaderValue::to_str` guarantees visible ASCII
-        // (so byte 0/1 are ASCII char boundaries), but the byte form is
-        // also safe for arbitrary UTF-8 since we only inspect the leading
-        // ASCII bytes and never slice mid-codepoint.
+        // q 参数名大小写不敏感（RFC 7230），部分代理会发 `Q=`；比较前两字节
+        // 避免分配，只检查前导 ASCII 字节，不会切到多字节字符中间。
         let bytes = param.as_bytes();
         if bytes.len() >= 2 && bytes[0].eq_ignore_ascii_case(&b'q') && bytes[1] == b'=' {
-            // The remainder starts at byte 2, which is a char boundary
-            // (byte 0 and 1 are each single-byte ASCII chars).
-            // Malformed q-value invalidates the entire entry (RFC 7231 §5.3.1)
+            // 余下部分从字节 2（ASCII 边界）起解析。
+            // q 值非法则整条条目无效（RFC 7231 §5.3.1）
             quality = parse_qvalue(&param[2..])?;
         }
     }
     Some(Candidate { tag, quality })
 }
 
-/// Parse a q-value string (`1.0`, `0.9`, `0`, `0.001`) into f32.
-///
-/// Per RFC 7231 §5.3.1, q-values are 0–1 with up to 3 decimal places.
-/// Out-of-range or unparseable values return `None` (caller should drop
-/// the entire entry).
+/// 解析 q 值（0–1，最多 3 位小数）；越界或不可解析返回 `None`（RFC 7231 §5.3.1）。
 fn parse_qvalue(s: &str) -> Option<f32> {
     let s = s.trim();
     let v: f32 = s.parse().ok()?;
@@ -291,14 +214,12 @@ mod tests {
 
     #[test]
     fn test_from_tag_zh_hans_variants() {
-        // zh-Hans and zh-Hans-CN should map to ZhCn
         assert_eq!(Locale::from_tag("zh-Hans"), Some(Locale::ZhCn));
         assert_eq!(Locale::from_tag("zh-Hans-CN"), Some(Locale::ZhCn));
     }
 
     #[test]
     fn test_from_tag_prefix_match() {
-        // Prefix match: bare "zh" maps to ZhCn, bare "en" maps to En
         assert_eq!(Locale::from_tag("zh"), Some(Locale::ZhCn));
         assert_eq!(Locale::from_tag("en-US"), Some(Locale::En));
         assert_eq!(Locale::from_tag("en-GB"), Some(Locale::En));
@@ -347,21 +268,15 @@ mod tests {
 
     #[test]
     fn test_negotiate_qvalue_sorting() {
-        // zh-CN has lower q than en, so en wins
         assert_eq!(negotiate("zh-CN;q=0.9, en;q=0.8"), Locale::ZhCn);
-        // Reverse: en first with higher q
         assert_eq!(negotiate("en;q=0.8, zh-CN;q=0.9"), Locale::ZhCn);
-        // Equal q: header order wins (en first)
         assert_eq!(negotiate("en, zh-CN"), Locale::En);
-        // Equal q: header order wins (zh-CN first)
         assert_eq!(negotiate("zh-CN, en"), Locale::ZhCn);
     }
 
     #[test]
     fn test_negotiate_qvalue_zero_drops() {
-        // q=0 means "not acceptable"
         assert_eq!(negotiate("zh-CN;q=0, en;q=0.8"), Locale::En);
-        // All q=0: falls back to default
         assert_eq!(negotiate("zh-CN;q=0, en;q=0"), Locale::En);
     }
 
@@ -387,7 +302,6 @@ mod tests {
 
     #[test]
     fn test_negotiate_missing_header() {
-        // None header → default
         assert_eq!(negotiate_locale(None), Locale::En);
     }
 
@@ -398,7 +312,6 @@ mod tests {
 
     #[test]
     fn test_negotiate_malformed_header() {
-        // Malformed entries should be skipped, not crash
         assert_eq!(negotiate(",,"), Locale::En);
         assert_eq!(negotiate(";q=0.5"), Locale::En);
         assert_eq!(negotiate("fr;badparam, en"), Locale::En);
@@ -406,9 +319,7 @@ mod tests {
 
     #[test]
     fn test_negotiate_wildcard() {
-        // Wildcard `*` matches nothing concrete, falls back to default
         assert_eq!(negotiate("*"), Locale::En);
-        // Wildcard with q-value still matches nothing concrete
         assert_eq!(negotiate("zh-CN;q=0, *;q=0.5"), Locale::En);
     }
 
@@ -428,54 +339,45 @@ mod tests {
 
     #[test]
     fn test_negotiate_qvalue_three_decimals() {
-        // q=0.001 is the minimum positive q-value per RFC
+        // 0.001 是 RFC 规定的最小正 q 值
         assert_eq!(negotiate("fr;q=0.001, en;q=0.000"), Locale::En);
-        // fr with tiny q-value, en excluded → fr not supported → default
         assert_eq!(negotiate("fr;q=0.001"), Locale::En);
     }
 
     #[test]
     fn test_negotiate_qvalue_out_of_range_drops_entry() {
-        // q > 1.0 is invalid → entire entry dropped (RFC 7231 §5.3.1)
+        // q > 1.0 非法，整条条目丢弃（RFC 7231 §5.3.1）
         assert_eq!(negotiate("zh-CN;q=2.0, en;q=0.5"), Locale::En);
-        // Negative q is also invalid → entry dropped
         assert_eq!(negotiate("zh-CN;q=-1.0, en;q=0.5"), Locale::En);
     }
 
     #[test]
     fn test_negotiate_malformed_qvalue_drops_entry() {
-        // Malformed q-value invalidates the entire entry (RFC 7231 §5.3.1)
-        // fr;q=abc is dropped, en;q=0.1 wins
+        // q 值非法导致整条条目失效（RFC 7231 §5.3.1）
         assert_eq!(negotiate("fr;q=abc, en;q=0.1"), Locale::En);
-        // zh-CN;q=abc is dropped, falls to default
         assert_eq!(negotiate("zh-CN;q=abc"), Locale::En);
     }
 
     #[test]
     fn test_negotiate_q_param_case_insensitive() {
-        // Q= (uppercase) should be treated same as q=
         assert_eq!(negotiate("zh-CN;Q=0.5, en;Q=0.9"), Locale::En);
         assert_eq!(negotiate("zh-CN;Q=0.9, en;Q=0.5"), Locale::ZhCn);
     }
 
     #[test]
     fn test_negotiate_header_too_long_returns_default() {
-        // Header > 4 KiB → empty candidates → default
         let huge = "en, ".repeat(3000); // ~12 KiB
         assert_eq!(negotiate(&huge), Locale::En);
     }
 
     // ========== parse_accept_language / parse_entry unit tests ==========
 
-    /// Phase 8 (HIGH perf fix) — verify `parse_accept_language`
-    /// returns `Candidate<'a>` borrowing from the input header (no
-    /// `String` allocation per candidate). The static lifetime check
-    /// below would not compile if `Candidate` owned its tag.
+    /// 验证 `parse_accept_language` 返回借用输入的 `Candidate<'a>`（不逐条分配）：
+    /// 若 `Candidate` 改为 own `String`，下方 `_accept_borrowed` 将无法编译。
     #[test]
     fn test_parse_accept_language_returns_borrowed_candidates() {
         let header = String::from("en;q=0.9, zh-CN;q=0.8, *;q=0.1");
         let candidates = parse_accept_language(&header);
-        // Sorted by descending q-value: en (0.9), zh-CN (0.8), * (0.1)
         assert_eq!(candidates.len(), 3);
         assert_eq!(candidates[0].tag, "en");
         assert!((candidates[0].quality - 0.9).abs() < 1e-6);
@@ -484,18 +386,13 @@ mod tests {
         assert_eq!(candidates[2].tag, "*");
         assert!((candidates[2].quality - 0.1).abs() < 1e-6);
 
-        // Static check: `Candidate<'a>` borrows from the input. The
-        // helper below accepts `Vec<Candidate<'a>>` and would fail to
-        // compile if `Candidate` owned its tag as a `String` (the
-        // lifetime parameter would be unused / the bound would not
-        // match). This guards against accidental regression to the
-        // pre- allocation-per-candidate implementation.
+        // 静态检查：helper 接受 `Vec<Candidate<'a>>`，若 Candidate own String
+        // 则生命周期不匹配、无法编译，防止回归到逐条分配实现。
         fn _accept_borrowed<'a>(_c: Vec<Candidate<'a>>) {}
         _accept_borrowed(candidates);
     }
 
-    /// `q=0` entries must be dropped by `parse_accept_language` per
-    /// RFC 7231 §5.3.1 (explicitly not accepted).
+    /// `q=0` 条目必须丢弃（RFC 7231 §5.3.1，显式不可接受）。
     #[test]
     fn test_parse_accept_language_drops_q_zero() {
         let candidates = parse_accept_language("en;q=0, zh-CN;q=0.9");
@@ -503,11 +400,7 @@ mod tests {
         assert_eq!(candidates[0].tag, "zh-CN");
     }
 
-    /// `q=` parameter is case-insensitive on the parameter name (RFC
-    /// 7230 token). `Q=` and `q=` must be treated identically at the
-    /// `parse_entry` level — direct unit test (existing
-    /// `test_negotiate_q_param_case_insensitive` only covers the
-    /// end-to-end `negotiate_locale_str` path).
+    /// q 参数名大小写不敏感（RFC 7230），`Q=` 与 `q=` 必须等价。
     #[test]
     fn test_parse_entry_q_param_case_insensitive() {
         let lower = parse_entry("zh-CN;q=0.9").unwrap();
@@ -518,12 +411,11 @@ mod tests {
         assert_eq!(upper.tag, "zh-CN");
         assert!((upper.quality - 0.5).abs() < 1e-6);
 
-        // Mixed-case parameter name `q=` is still recognized.
         let mixed = parse_entry("zh-CN;q=0.7").unwrap();
         assert!((mixed.quality - 0.7).abs() < 1e-6);
     }
 
-    /// Malformed `q=` value drops the entire entry (RFC 7231 §5.3.1).
+    /// `q=` 值非法时整条条目丢弃（RFC 7231 §5.3.1）。
     #[test]
     fn test_parse_entry_malformed_q_drops_entry() {
         assert!(parse_entry("zh-CN;q=abc").is_none());
@@ -534,7 +426,7 @@ mod tests {
         assert!((kept.quality - 1.0).abs() < 1e-6);
     }
 
-    /// Empty / whitespace entries are dropped.
+    /// 空 / 纯空白条目丢弃。
     #[test]
     fn test_parse_entry_empty_drops() {
         assert!(parse_entry("").is_none());
@@ -566,7 +458,6 @@ mod tests {
             )
             .layer(axum::middleware::from_fn(locale_middleware));
 
-        // zh-CN request
         let resp = app
             .clone()
             .oneshot(
@@ -584,7 +475,6 @@ mod tests {
             .unwrap();
         assert_eq!(&body[..], b"zh-CN");
 
-        // Missing header → default
         let app2 = Router::new()
             .route(
                 "/locale",

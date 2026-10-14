@@ -21,8 +21,7 @@ pub struct RequestBodyTooLarge;
 
 impl IntoResponse for RequestBodyTooLarge {
     fn into_response(self) -> Response {
-        // 统一错误信封（ErrorResponse，含 business_code）；
-        // 原 ApiErrorResponse 双格式已移除。
+        // 统一错误信封（ErrorResponse，含 business_code）。
         use crate::server::models::{ApiErrorCode, ErrorResponse};
 
         let error_response = ErrorResponse::new(
@@ -52,8 +51,7 @@ mod tests {
     #[test]
     fn test_create_size_limit_middleware() {
         let middleware = create_size_limit_middleware();
-        // This test verifies that the middleware can be created without panicking
-        // Actual size limit testing would require setting up a full Axum server
+        // 仅验证中间件可构造；实际大小限制需完整 Axum server 才能测。
         let _ = middleware;
     }
 
@@ -61,13 +59,11 @@ mod tests {
     async fn test_request_body_too_large_response() {
         let response = RequestBodyTooLarge;
 
-        // Convert to Response and check status code
         let axum_response = response.into_response();
 
         assert_eq!(axum_response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
-        // 统一错误信封：413 + business_code=3001（InvalidInput），
-        // 且携带装配处生成的 request_id/timestamp。
+        // 统一信封：413 + business_code=3001（InvalidInput），携带 request_id/timestamp。
         let bytes = axum::body::to_bytes(axum_response.into_body(), usize::MAX)
             .await
             .unwrap();

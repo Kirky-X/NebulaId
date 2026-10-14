@@ -1,8 +1,7 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! System / observability handlers: health, readiness, metrics,
-//! and the background key-rotation task launcher (rule 25 split).
+//! System / observability handlers：health、ready、metrics 与密钥轮换任务启动器。
 
 use crate::server::models::{
     AlgorithmMetrics, ApiInfoResponse, DegradationMetrics, ErrorResponse, HealthResponse,
@@ -11,8 +10,7 @@ use crate::server::models::{
 };
 use std::sync::atomic::Ordering;
 
-// KeyRotationHandle lives in `api_key_handlers` (it owns the API key repo
-// shutdown channel); we only return it from here.
+// KeyRotationHandle 定义在 api_key_handlers（其持有 repo 关闭通道），此处仅返回。
 use super::api_key_handlers::KeyRotationHandle;
 
 impl super::ApiHandlers {
@@ -108,8 +106,7 @@ impl super::ApiHandlers {
         }
     }
 
-    /// Start background key rotation task.
-    /// Returns a handle that can be used to stop the task.
+    /// 启动密钥轮换后台任务，返回可用于停止任务的句柄。
     pub fn start_key_rotation_task(
         &self,
         check_interval: std::time::Duration,
@@ -128,12 +125,10 @@ impl super::ApiHandlers {
 
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
-        // 修复：从 `ApiHandlers::key_rotation_grace_period_seconds` 读取，
-        // 原为闭包内硬编码 `const GRACE_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60`。
+        // 宽限期取自 ApiHandlers 字段。
         let grace_period_seconds = self.key_rotation_grace_period_seconds;
 
-        // spawn 内的轮换需要失效缓存条目，`&self` 无法跨越 'static
-        // 边界，故先克隆缓存句柄（未启用 garrison-auth 时不存在该变量）。
+        // spawn 需 'static，先克隆缓存句柄；未启用 garrison-auth 时无此变量。
         #[cfg(feature = "garrison-auth")]
         let auth_cache = self.auth_cache.clone();
 
@@ -204,14 +199,9 @@ impl super::ApiHandlers {
     }
 }
 
-// ========== OpenAPI path 注解==========
-//
-// 实际的 axum handler 函数（`handle_health` / `handle_get_config` 等）位于
-// `src/server/router.rs`（本 lane 不可修改），此处以「注解载体函数」承载
-// `#[utoipa::path]`，仅供 `openapi.rs` 的 `paths(...)` 注册；路由信息
-// （路径/方法）以 router.rs 注册处为准。错误响应统一引用 `ErrorResponse`
-// （信封）。config 五个端点的 handler 同在 router.rs，注解就近落在
-// 本文件（system/config 资源域）。
+// ========== OpenAPI path 注解 ==========
+// axum handler 在 router.rs；载体函数仅承载 #[utoipa::path] 供 openapi.rs 注册，
+// 不参与运行时路由；错误响应统一引用 ErrorResponse（信封）。
 
 /// OpenAPI 注解载体：`GET /health`（实际 handler：`router::handle_health`，公开）。
 #[sdforge::utoipa::path(
@@ -362,8 +352,7 @@ mod tests {
     use std::sync::Arc;
     use uuid::Uuid;
 
-    /// Production-like `ApiHandlers` with real `ConfigManager` (no repository)
-    /// backed by `MockIdGenerator`. Used for health/ready/metrics defaults.
+    /// 生产形态的 ApiHandlers（真实 ConfigManager + MockIdGenerator），用于默认值断言。
     fn create_test_api_handlers() -> (Arc<super::super::ApiHandlers>, Arc<MockIdGenerator>) {
         let mock_gen = Arc::new(MockIdGenerator::new());
         let config = crate::core::config::Config::default();
@@ -383,8 +372,7 @@ mod tests {
         (Arc::new(handlers), mock_gen)
     }
 
-    /// Build `ApiHandlers` with a custom `IdGenerator` (real ConfigManager).
-    /// Used to exercise `health()` with non-Healthy generator status.
+    /// 自定义 IdGenerator 的 ApiHandlers，用于 health() 非 Healthy 状态。
     fn create_handlers_with_generator(
         gen: Arc<dyn CoreIdGenerator>,
     ) -> Arc<super::super::ApiHandlers> {
@@ -402,7 +390,7 @@ mod tests {
         Arc::new(super::super::ApiHandlers::new(gen, config_service))
     }
 
-    /// Build `ApiHandlers` with mock config service (no repo).
+    /// mock config service（无 repo）的 ApiHandlers。
     fn create_handlers_with_mock_config(
         mock_config: MockSysMockConfigService,
     ) -> Arc<super::super::ApiHandlers> {
@@ -411,7 +399,7 @@ mod tests {
         Arc::new(super::super::ApiHandlers::new(mock_gen, config_service))
     }
 
-    /// Build `ApiHandlers` with mock config service + mock api key repo.
+    /// mock config service + mock API key repo 的 ApiHandlers。
     fn create_handlers_with_mock_config_and_repo(
         mock_config: MockSysMockConfigService,
         mock_repo: MockSysMockApiKeyRepo,
@@ -426,9 +414,7 @@ mod tests {
         ))
     }
 
-    /// Hand-written `IdGenerator` whose `health_check` is configurable.
-    /// `mockall` struggles with the `&Arc<DegradationManager>` return-by-ref
-    /// method, so we hand-roll a minimal stub.
+    /// 手写 IdGenerator 桩（`health_check` 可配置）：mockall 难以处理返回 `&Arc` 的方法。
     struct ControllableIdGenerator {
         health: CoreHealthStatus,
         primary_algorithm: String,
@@ -557,8 +543,7 @@ mod tests {
         assert_eq!(response.failed_generations, 0);
     }
 
-    // SnowflakeAlgorithm 随 snowflake 特性门控，本用例在无该特性的
-    // 剪裁组合下不参与编译。
+    // SnowflakeAlgorithm 随 snowflake 特性门控，剪裁组合下不参与编译。
     #[cfg(feature = "snowflake")]
     #[tokio::test]
     async fn test_handle_metrics_includes_registered_algorithm_degradation() {
@@ -624,7 +609,7 @@ mod tests {
         let response = handlers.ready().await;
         assert!(!response.ready);
         assert!(!response.database);
-        // Cache metrics are always Healthy in the default ConfigManager.
+        // 默认 ConfigManager 的 cache metrics 恒为 Healthy
         assert!(response.cache);
     }
 
@@ -723,8 +708,7 @@ mod tests {
     async fn test_metrics_uptime_non_negative() {
         let (handlers, _) = create_test_api_handlers();
         let response = handlers.metrics().await;
-        // uptime is computed from Instant::now() - start_time; should be >= 0
-        // (typically 0 on fast machines, occasionally 1).
+        // uptime = Instant::now() - start_time，快机器上通常为 0
         assert!(response.uptime_seconds < u64::MAX);
     }
 
@@ -751,9 +735,7 @@ mod tests {
     async fn test_metrics_algorithms_list_is_vec() {
         let (handlers, _) = create_test_api_handlers();
         let response = handlers.metrics().await;
-        // algorithms is a Vec; default ConfigManager may return empty or
-        // populated depending on router state. We only verify it's a Vec
-        // and each entry has a non-empty algorithm name.
+        // algorithms 可能为空也可能有值，只验证每个条目算法名非空
         for alg in &response.algorithms {
             assert!(!alg.algorithm.is_empty());
         }
@@ -857,7 +839,7 @@ mod tests {
             .returning(Vec::new);
 
         let mut mock_repo = MockSysMockApiKeyRepo::new();
-        // Default expectation: get_keys_older_than returns empty (no rotation work).
+        // 默认期望：无待轮换 key
         mock_repo
             .expect_get_keys_older_than()
             .returning(|_| Ok(Vec::new()));
@@ -865,7 +847,7 @@ mod tests {
         let handlers = create_handlers_with_mock_config_and_repo(mock_config, mock_repo);
         let handle = handlers.start_key_rotation_task(std::time::Duration::from_secs(60), 30);
         assert!(handle.is_some());
-        // Explicitly shut down to clean up the spawned task.
+        // 显式 shutdown 清理 spawn 的任务
         if let Some(h) = handle {
             h.shutdown();
         }
@@ -894,9 +876,9 @@ mod tests {
             .start_key_rotation_task(std::time::Duration::from_secs(1), 7)
             .expect("handle should be Some when repo is configured");
 
-        // shutdown should not panic and should signal the background task.
+        // shutdown 不应 panic，只向后台任务发信号
         handle.shutdown();
-        // Give the background task a moment to observe the shutdown signal.
+        // 给后台任务一点时间观察 shutdown 信号
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
@@ -914,7 +896,7 @@ mod tests {
             .returning(Vec::new);
 
         let mut mock_repo = MockSysMockApiKeyRepo::new();
-        // Allow multiple calls (short interval triggers ticks quickly).
+        // 允许多次调用（短间隔会快速触发 tick）
         mock_repo
             .expect_get_keys_older_than()
             .returning(|_| Ok(Vec::new()));
@@ -923,12 +905,12 @@ mod tests {
         let handle = handlers.start_key_rotation_task(std::time::Duration::from_millis(10), 1);
         assert!(handle.is_some());
 
-        // Let one tick fire so the branch is exercised, then shut down.
+        // 等一次 tick 覆盖分支后 shutdown
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         if let Some(h) = handle {
             h.shutdown();
         }
-        // Brief wait to let the task exit cleanly.
+        // 稍候让任务干净退出
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
@@ -946,7 +928,7 @@ mod tests {
             .returning(Vec::new);
 
         let mut mock_repo = MockSysMockApiKeyRepo::new();
-        // Repo returns error; background task should log and continue.
+        // Repo 报错时后台任务应记日志并继续
         mock_repo
             .expect_get_keys_older_than()
             .returning(|_| Err(CoreError::DatabaseError("db unavailable".to_string(), None)));
@@ -994,7 +976,7 @@ mod tests {
         mock_repo
             .expect_get_keys_older_than()
             .return_once(move |_| Ok(vec![old_key]));
-        // Rotate fails; background task should log error and continue.
+        // 轮换失败；后台任务应记错误并继续
         mock_repo.expect_rotate_api_key().returning(|_, _| {
             Err(CoreError::DatabaseError(
                 "rotation failed".to_string(),
@@ -1006,7 +988,7 @@ mod tests {
         let handle = handlers.start_key_rotation_task(std::time::Duration::from_millis(10), 1);
         assert!(handle.is_some());
 
-        // Allow enough time for the first tick + rotation attempt.
+        // 给首个 tick + 轮换尝试留足时间
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         if let Some(h) = handle {
             h.shutdown();
@@ -1033,7 +1015,7 @@ mod tests {
             .returning(|_| Ok(Vec::new()));
 
         let handlers = create_handlers_with_mock_config_and_repo(mock_config, mock_repo);
-        // max_key_age_days = 0 is a degenerate but valid input; should not panic.
+        // max_key_age_days = 0 退化但合法，不应 panic
         let handle = handlers.start_key_rotation_task(std::time::Duration::from_secs(60), 0);
         assert!(handle.is_some());
         if let Some(h) = handle {
@@ -1041,11 +1023,9 @@ mod tests {
         }
     }
 
-    /// 轮换成功且认证缓存已接线：新 secret 生成后必须立即失效该 key 的
-    /// 缓存条目（否则宽限期内旧凭证在缓存 TTL 内仍被放行）。覆盖轮换
-    /// Ok 分支 + garrison 缓存失效调用 + shutdown 收尾的完整链路。
-    // AuthCache/with_auth_cache 随 garrison-auth 特性门控，本用例在
-    // 无该特性的组合下不参与编译。
+    /// 轮换成功且认证缓存已接线：新 secret 生成后必须立即失效该 key 的缓存条目，
+    /// 否则宽限期内旧凭证在缓存 TTL 内仍被放行。覆盖轮换 Ok 分支 + 缓存失效 + shutdown。
+    // AuthCache/with_auth_cache 随 garrison-auth 门控，无该特性时不参与编译。
     #[cfg(feature = "garrison-auth")]
     #[tokio::test(flavor = "multi_thread")]
     async fn test_key_rotation_success_invalidates_auth_cache() {

@@ -44,34 +44,30 @@ pub struct NebulaIdState {
     pub handlers: Arc<ApiHandlers>,
     pub auth: Arc<ApiKeyAuth>,
     pub config_service: Arc<dyn ConfigManagementService>,
-    /// Prometheus 文本渲染桥：/metrics 渲染路径把既有指标快照
-    /// 灌入 exporter 自有 registry。generate 热路径不经过本桥，零新增开销。
+    /// Prometheus 文本桥：/metrics 把既有指标快照灌入 exporter registry；
+    /// generate 热路径不经过本桥，零新增开销。
     pub prometheus: Arc<PrometheusMetricsBridge>,
 }
 
 // ========== Prometheus /metrics 桥接 ==========
 
-/// `nebula_id_generate_latency_seconds` 直方图桶（秒）。ID 生成典型耗时
-/// 在微秒到毫秒量级，桶按此密度分布并延伸到秒级长尾。
+/// `nebula_id_generate_latency_seconds` 直方图桶（秒）：微秒到毫秒密度，
+/// 延伸到秒级长尾。
 const PROMETHEUS_LATENCY_BUCKETS_SECONDS: &[f64] = &[
     0.000_05, 0.000_1, 0.000_25, 0.000_5, 0.001, 0.002_5, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
     1.0, 2.5, 5.0,
 ];
 
-/// 渲染路径 `register_*` 专用的元数据；本桥不安装全局 recorder，
-/// 该常量只作为 `Recorder` trait 调用的必填参数。
+/// 渲染路径 `register_*` 的必填 `Recorder` 元数据参数；本桥不安装全局 recorder。
 const PROMETHEUS_METADATA: Metadata =
     Metadata::new(module_path!(), metrics::Level::INFO, Some(module_path!()));
 
-/// 把既有指标源（`ApiHandlers::metrics()` 快照：路由层原子计数 +
-/// 观测环分位数 + 降级/熔断状态）渲染成 Prometheus 文本格式的桥。
+/// 把 `ApiHandlers::metrics()` 快照（原子计数 + 观测环分位数 + 降级/熔断
+/// 状态）渲染成 Prometheus 文本的桥。
 ///
-/// **热路径零开销论证**：id 生成热路径（`AlgorithmRouter::observe`）只写
-/// 既有原子计数与延迟环，本桥不对其做任何改动；桥仅在 `/metrics` 被抓取时
-/// （低频）读取快照并把绝对值灌入 exporter registry（counter 用
-/// `Counter::absolute` = `fetch_max`，快照单调故幂等；gauge 直接 `set`；
-/// histogram 以渲染期分位数观测增量累计）。registry 由 exporter 私有，
-/// 未安装为全局 recorder，其余路径不受影响。
+/// 仅在 `/metrics` 被抓取时读取快照灌入 exporter 私有 registry（counter 用
+/// `absolute` 幂等桥接、gauge 用 `set`、histogram 以分位数增量累计），
+/// generate 热路径零额外开销。
 pub struct PrometheusMetricsBridge {
     /// 保活 exporter registry；`handle` 渲染的就是它的内部状态。
     recorder: PrometheusRecorder,
@@ -214,10 +210,8 @@ impl PrometheusMetricsBridge {
                     .set(hit_rate);
             }
 
-            // histogram：渲染期以当前环分位数（p50/p99/p999，秒）做增量观测。
-            // 环数据只暴露分位数不暴露原始样本，三档观测是既有观测环的
-            // 最忠实近似；跨抓取累计，`histogram_quantile` / `rate` 语义成立。
-            // 三档全 0 表示观测环无样本（核心层约定），跳过以免伪造 0 延迟。
+            // histogram：以环分位数（p50/p99/p999 秒）做增量观测——环不暴露原始
+            // 样本，三档是最忠实近似；全 0 = 无样本，跳过以免伪造 0 延迟。
             if alg.p50_latency_ms > 0.0 || alg.p99_latency_ms > 0.0 || alg.p999_latency_ms > 0.0 {
                 let histogram = self.recorder.register_histogram(
                     &Key::from_parts("nebula_id_generate_latency_seconds", labels.clone()),
@@ -229,7 +223,7 @@ impl PrometheusMetricsBridge {
             }
         }
 
-        // 降级 / 熔断状态 gauge（低成本：快照里已是现成布尔/字符串）。
+        // 降级 / 熔断状态 gauge（快照直接给出布尔/字符串）。
         for degradation in &snapshot.degradation_metrics {
             let labels = vec![Label::new("algorithm", degradation.algorithm.clone())];
             self.recorder
@@ -289,15 +283,14 @@ pub async fn create_router(
     rate_limiter: Arc<RateLimiter>,
     audit_logger: Arc<AuditLogger>,
 ) -> Router {
-    // 默认启用全局限流（保持历史行为，兼容既有调用点）
+    // 默认启用全局限流
     create_router_with_rate_limit(handlers, auth, rate_limiter, audit_logger, true).await
 }
 
-/// 带显式限流开关的路由装配。
+/// 带显式限流开关的路由装配：`false` 时不挂载限流层。
 ///
-/// `rate_limit_enabled=false` 时不挂载限流层（此前 `[rate_limit].enabled`
-/// 无消费点，配置关不掉限流）。开关由调用方（main.rs 读真实 Config）传入，
-/// 而非在装配内部回读 config_service —— 避免 mock 服务被牵连出额外期望。
+/// 开关由调用方（main.rs 读真实 Config）传入，避免内部回读 config_service
+/// 牵连出额外 mock 期望。
 pub async fn create_router_with_rate_limit(
     handlers: Arc<ApiHandlers>,
     auth: Arc<ApiKeyAuth>,
@@ -305,17 +298,12 @@ pub async fn create_router_with_rate_limit(
     audit_logger: Arc<AuditLogger>,
     rate_limit_enabled: bool,
 ) -> Router {
-    // Configure CORS with environment-aware settings
-    // In production, specify your actual frontend origins via ALLOWED_ORIGINS env var
-    // Format: comma-separated list of allowed origins
-    // Example: ALLOWED_ORIGINS="https://example.com,https://app.example.com"
+    // CORS 按环境装配：生产用 ALLOWED_ORIGINS 指定前端来源（逗号分隔）
+    // 例：ALLOWED_ORIGINS="https://example.com,https://app.example.com"
     let cors = cors::create_env_aware_cors_layer();
 
-    // Phase 9 — read trusted proxies from the same env
-    // var that `main.rs` uses for `ApiKeyAuth`. Keeping a single source
-    // of truth (env var) avoids plumbing a new parameter through
-    // `create_router` and its 6 call sites. Default: empty list (no
-    // headers trusted).
+    // trusted proxies 读 NEBULA_TRUSTED_PROXIES（与 main.rs 的 ApiKeyAuth 同源，
+    // 避免给 create_router 加参数）；缺省空列表 = 不信任任何转发头。
     let trusted_proxies: Vec<std::net::IpAddr> = std::env::var("NEBULA_TRUSTED_PROXIES")
         .ok()
         .map(|s| s.split(',').filter_map(|p| p.trim().parse().ok()).collect())
@@ -351,16 +339,14 @@ pub async fn create_router_with_rate_limit(
             "/workspaces/{name}/regenerate-user-key",
             post(handle_regenerate_user_key),
         )
-        // （CWE-862 / strix vuln-0002）：服务级配置变更
-        // 端点（速率限制、日志、热重载、默认算法）必须由 Admin 角色执行。
-        // 原本错放在 v1_authenticated_routes，导致任何 User API key 都能
-        // 将全局速率限制降到 1 RPS 或修改默认算法，影响全部租户。
+        // （CWE-862）配置变更端点（速率限制/日志/热重载/默认算法）必须 Admin：
+        // 错放在 authenticated 路由会让任意 User key 改写全局配置。
         .route("/config/rate-limit", post(handle_update_rate_limit))
         .route("/config/logging", post(handle_update_logging))
         .route("/config/reload", post(handle_reload_config))
         .route("/config/algorithm", post(handle_set_algorithm))
-        // Apply admin requirement middleware first, then auth middleware
-        // This ensures auth runs first to set the ApiKeyRole extension
+        // 先接 admin 层、后接 auth 层（axum 0.8 后 layer 者先执行），
+        // 保证 auth 先运行并注入 ApiKeyRole 扩展。
         .layer(axum::middleware::from_fn(
             crate::server::middleware::admin_required_middleware,
         ))
@@ -392,15 +378,9 @@ pub async fn create_router_with_rate_limit(
                 .put(handle_update_biz_tag)
                 .delete(handle_delete_biz_tag),
         )
-        // Apply auth middleware
-        //
-        // （CWE-1188）—— axum 0.8.x layer 语义
-        // 后 `.layer()` 的中间件先执行（outer），先 `.layer()` 的后执行
-        // （inner）。因此此处必须先 `anonymous_block_middleware`（inner，
-        // 后执行），再 `auth_middleware_fn`（outer，先执行注入
-        // `ApiKeyRole` 扩展）。这样 `anonymous_block_middleware` 执行时
-        // `ApiKeyRole` 扩展已由 `auth_middleware_fn` 注入，可正确拒绝
-        // Anonymous 角色。前次修复顺序相反，导致中间件完全无效。
+        // （CWE-1188）axum 0.8 中后 `.layer()` 者先执行：先 layer
+        // `anonymous_block_middleware`（inner），再 layer `auth_middleware_fn`
+        // （outer）以先注入 `ApiKeyRole`，否则匿名拒绝会失效。
         .layer(axum::middleware::from_fn(anonymous_block_middleware))
         .layer(axum::middleware::from_fn_with_state(
             auth.clone(),
@@ -419,12 +399,8 @@ pub async fn create_router_with_rate_limit(
         .nest(&format!("/api/{}", API_V1), v1_public_routes)
         // Apply API version middleware to all API routes
         .layer(axum::middleware::from_fn(api_version_middleware))
-        // Phase 8 (perf fix) — locale negotiation only needs
-        // to run on `/api/v1/*` routes (handlers under this prefix
-        // read `Extension<Locale>` for error translation). `/health`,
-        // `/ready`, `/metrics`, and `/api-docs/openapi.json` do not
-        // consume the locale and were needlessly paying the
-        // `Accept-Language` parse cost on every request.
+        // locale 协商只服务 /api/v1/*（这些 handler 读 `Extension<Locale>`）；
+        // /health、/ready、/metrics、openapi.json 不消费 Locale，无需承担解析开销。
         .layer(axum::middleware::from_fn(locale_middleware));
 
     // ========== Root Routes ==========
@@ -439,17 +415,13 @@ pub async fn create_router_with_rate_limit(
         )
         .merge(api_v1_routes)
         .with_state(app_state)
-        // Swagger UI：只挂 UI 路由，spec 复用上方自有的 /api-docs/openapi.json
-        //（sdforge 0.5.0-rc.5 起提供 with_spec 变体；捆绑版 swagger_ui_router
-        // 会在同路径注册其 inventory 聚合 spec，与本仓路由冲突）。暴露面与
-        // spec 一致：两者均为公开只读文档端点。
+        // Swagger UI 只挂 UI 路由，spec 复用上方 /api-docs/openapi.json：捆绑版
+        // swagger_ui_router 会在同路径注册 inventory spec 造成冲突；两者均公开只读。
         .merge(sdforge::docs::swagger_ui_router_with_spec(
             "/api-docs/openapi.json",
         ));
-    // 全局限流真实挂载，且必须位于 CORS
-    // **内侧**（axum 中先 `.layer()` 的是内层、后挂载的先执行）。此前挂在
-    // CORS 外侧，导致 429 响应缺 CORS 头且 OPTIONS 预检消耗配额。
-    // `[rate_limit].enabled = false` 时不挂载该层。
+    // 限流层必须位于 CORS 内侧（axum 先 `.layer()` 者为内层）：挂外侧会使 429
+    // 缺 CORS 头且 OPTIONS 预检消耗配额；`rate_limit_enabled=false` 时不挂载。
 
     let routes = if rate_limit_enabled {
         routes.layer(axum::middleware::from_fn_with_state(
@@ -493,20 +465,15 @@ pub async fn create_router_with_rate_limit(
             audit_middleware_fn,
         ))
         .layer(axum::Extension(audit_logger))
-        // 请求上下文（吸收 sdforge `context` feature）：解析/生成
-        // x-request-id 与 W3C traceparent/x-trace-id，安装跨协议环境
-        // 上下文（审计/日志经 `sdforge::context::current()` 读取），响应
-        // 回显关联 ID。axum 0.8 后 `.layer()` 者先执行——本层必须最后
-        // 挂载，才能位于最外侧、先于全部业务中间件安装上下文。
+        // 请求上下文（sdforge `context`）：解析/生成 x-request-id 与 W3C
+        // traceparent/x-trace-id，安装跨协议上下文并回显关联 ID；后 layer 者先
+        // 执行，故必须最后挂载才能位于最外侧。
         .layer(axum::middleware::from_fn(
             sdforge::context::context_middleware,
         ))
-        // request_id 中间件：UUID 语义的校验/生成层，挂载在
-        // context_middleware 外侧（后 `.layer()`，先执行）。它把校验通过
-        // /新生成的 UUID v7 回写进请求头，context_middleware 随后对同一
-        // 取值透传装配，保证两条路径响应头一致；同时安装 extensions
-        // （`RequestId`）、任务局部上下文（helpers 错误装配读取）与
-        // tracing span 属性。
+        // request_id 中间件（在 context_middleware 外侧）：校验/生成 UUID v7
+        // 并回写请求头，保证两条路径响应头一致；同时安装 `RequestId` 扩展、
+        // 任务局部上下文（helpers 错误装配读取）与 tracing span 属性。
         .layer(axum::middleware::from_fn(
             crate::server::middleware::request_id::request_id_middleware,
         ))
@@ -514,29 +481,16 @@ pub async fn create_router_with_rate_limit(
 
 // ========== Helper Functions ==========
 
-/// （CWE-1188）：v1_authenticated_routes 的全局
-/// Anonymous 拒绝中间件。
+/// （CWE-1188）v1_authenticated_routes 的全局 Anonymous 拒绝中间件。
 ///
-/// **背景** 在禁用认证时把请求注入 `ApiKeyRole::Anonymous`，
-/// 但 `verify_user_role` 只在 4 个 handler（generate/batch_generate/
-/// create_biz_tag/create_group）中调用，其余 13 个 authenticated
-/// endpoint（含 `POST /config/algorithm`、`DELETE /biz-tags/{id}` 等
-/// 破坏性操作）对 Anonymous 完全开放，违反「Anonymous 无业务权限」契约。
+/// 禁认证时 `verify_user_role` 只在 4 个 handler 调用，其余端点（含
+/// `POST /config/algorithm`、`DELETE /biz-tags/{id}` 等破坏性操作）会对
+/// Anonymous 开放；本层统一拒绝，无需逐 handler 校验。
 ///
-/// **修复**：在 `v1_authenticated_routes` 的 `auth_middleware_fn` 之后
-/// 叠加本中间件，统一拒绝 Anonymous 角色。这样所有 v1 authenticated
-/// endpoint 都受保护，无需逐个 handler 调用 `verify_user_role`。
+/// layer 顺序：本中间件必须为 inner（先 `.layer()`），`auth_middleware_fn`
+/// 为 outer（后 `.layer()`）以保证先注入 `ApiKeyRole`。
 ///
-/// **layer 顺序**：本中间件必须作为 inner layer（先 `.layer()`），
-/// `auth_middleware_fn` 作为 outer layer（后 `.layer()`），保证
-/// `auth_middleware_fn` 先执行并注入 `ApiKeyRole` 扩展。详见
-/// `v1_authenticated_routes` 处的注释。
-///
-/// **NEW-（规则 12 失败显性化）** 若 `ApiKeyRole` 扩展
-/// 缺失（说明 `auth_middleware_fn` 未执行或未注入），fail-closed 返回
-/// 401 + warn 日志，避免静默放行。
-///
-/// `verify_user_role` 保留用于 handler 内的 Admin 拒绝场景。
+/// `ApiKeyRole` 扩展缺失时 fail-closed 401 + warn，避免静默放行。
 pub async fn anonymous_block_middleware(
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
@@ -558,7 +512,7 @@ pub async fn anonymous_block_middleware(
         }
         Some(_) => next.run(req).await,
         None => {
-            // NEW-：ApiKeyRole 扩展缺失，fail-closed。
+            // ApiKeyRole 扩展缺失：fail-closed。
             tracing::warn!(
                 path = %req.uri().path(),
                 method = %req.method(),
@@ -575,13 +529,7 @@ pub async fn anonymous_block_middleware(
     }
 }
 
-/// Verify that the request is from a User API key (not Admin, not Anonymous).
-///
-/// Phase 8 — returns a locale-translated error response when the
-/// caller is an Admin key.
-///
-/// （CWE-1188）：当认证被禁用时，请求会携带 `ApiKeyRole::Anonymous`
-/// 扩展。此角色无业务权限，必须被拒绝（避免禁用认证时所有端点都开放）。
+/// 校验调用者为 User API key：Admin → 403、Anonymous → 401（均含本地化文案）。
 fn verify_user_role(
     role: crate::server::middleware::ApiKeyRole,
     locale: Locale,
@@ -606,9 +554,7 @@ fn validate_request<T: Validate>(
     Ok(())
 }
 
-/// Verify workspace_id match for User API Key (by workspace name lookup).
-///
-/// Phase 8 — all error responses are locale-translated.
+/// 按 workspace 名反查并校验 User key 的 workspace 归属；错误文案本地化。
 async fn verify_user_workspace(
     workspace_name: &str,
     key_workspace_id: &Option<uuid::Uuid>,
@@ -629,16 +575,9 @@ async fn verify_user_workspace(
     verify_workspace_id_match(workspace_uuid, key_workspace_id, locale).await
 }
 
-/// 提取通用的 workspace_id 比较逻辑
-///
-/// Phase 8 — returns locale-translated error on mismatch.
-///
-/// 比较/角色判定决策委托给共享授权函数
-/// `helpers::authorize_workspace_access`（HTTP 与 gRPC 同源），本函数只保留
-/// HTTP 传输相关的部分：认证禁用（key_workspace_id = None）放行与 locale
-/// 错误响应装配。所有调用点上游均已通过 `verify_user_role` 保证角色为
-/// User（Admin/Anonymous 已被拒），故此处以 User 语义走共享判定，行为与
-/// 既有实现逐字节一致（mismatch 仍返回 403 workspace_mismatch）。
+/// workspace_id 比较：判定委托共享授权函数 `authorize_workspace_access`
+/// （HTTP/gRPC 同源），本函数只保留传输层部分 —— None（认证禁用）放行、
+/// locale 错误装配；mismatch 返回 403。
 async fn verify_workspace_id_match(
     workspace_uuid: uuid::Uuid,
     key_workspace_id: &Option<uuid::Uuid>,
@@ -700,12 +639,8 @@ async fn handle_batch_generate(
     // Only User API Key can generate IDs
     verify_user_role(extensions_role.0, locale)?;
 
-    // Phase 8 (perf fix) — server-side log uses structured
-    // fields only; no `t!()` translation. The downstream
-    // `core_error_to_response` already localizes the client-facing
-    // message, so a second `t!()` lookup here would be redundant
-    // work (and would mutate global locale state under the
-    // `tracing::warn!` path).
+    // 服务端日志只用结构化字段、不做 `t!()` 翻译：客户端文案已由
+    // `core_error_to_response` 本地化，重复查询既冗余又会改动全局 locale 状态。
     tracing::debug!(
         event = "batch_generate_request",
         workspace = %req.workspace,
@@ -719,12 +654,8 @@ async fn handle_batch_generate(
     // Verify workspace_id match for User API Key
     verify_user_workspace(&req.workspace, &extensions.0, &state.handlers, locale).await?;
 
-    // Phase 8 (HIGH fix) — route through `core_error_to_response`
-    // so 5xx internal errors are sanitized to generic messages (CRITICAL
-    // C-1) and 4xx caller-supplied strings are length-capped. The helper
-    // records 5xx via `tracing::error!`; we additionally `warn!` 4xx
-    // client errors for observability without re-implementing the
-    // status-code mapping in this handler.
+    // 统一经 `core_error_to_response`：5xx 脱敏为通用消息、4xx 截断长度；
+    // 此处仅对 4xx 补 `warn!` 便于观测，不重复实现状态码映射。
     match state.handlers.batch_generate(req).await {
         Ok(resp) => Ok(Json(resp)),
         Err(e) => {
@@ -750,12 +681,10 @@ async fn handle_ready(State(state): State<NebulaIdState>) -> Json<ReadyResponse>
     Json(state.handlers.ready().await)
 }
 
-/// `/metrics` 输出 Prometheus 文本格式（text/plain; version=0.0.4）。
+/// `/metrics` 输出 Prometheus 文本（text/plain; version=0.0.4）。
 ///
-/// 渲染路径采样：读取既有指标快照（`ApiHandlers::metrics()`，内部仅
-/// 原子计数/观测环读取），灌入 exporter registry 后渲染；JSON 输出移除
-/// （结构化 JSON 快照仍可经 `GET /api/v1/config` 等管理面获取，监控抓取
-/// 统一走本端点）。
+/// 渲染前采样 `ApiHandlers::metrics()` 快照（仅原子计数/观测环读取）再灌入
+/// exporter；监控抓取统一走本端点。
 async fn handle_metrics(State(state): State<NebulaIdState>) -> axum::response::Response {
     let snapshot = state.handlers.metrics().await;
     let body = state.prometheus.render(&snapshot);
@@ -779,12 +708,8 @@ async fn handle_parse(
         return Err(validation_error_response(&validation_errors, locale));
     }
 
-    // Phase 8 (HIGH fix) — route through `core_error_to_response`
-    // so 5xx internal errors are sanitized to generic messages (CRITICAL
-    // C-1) and 4xx caller-supplied strings are length-capped. The helper
-    // records 5xx via `tracing::error!`; we additionally `warn!` 4xx
-    // client errors for observability without re-implementing the
-    // status-code mapping in this handler.
+    // 统一经 `core_error_to_response`：5xx 脱敏为通用消息、4xx 截断长度；
+    // 此处仅对 4xx 补 `warn!` 便于观测，不重复实现状态码映射。
     match state.handlers.parse(req).await {
         Ok(resp) => Ok(Json(resp)),
         Err(e) => {
@@ -811,10 +736,8 @@ async fn handle_update_rate_limit(
     Extension(locale): Extension<Locale>,
     Json(req): Json<UpdateRateLimitRequest>,
 ) -> Result<Json<UpdateConfigResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Phase 8 (MEDIUM fix) — invoke `validate_request` so
-    // `#[validate(range(min = 1, max = 1000000))]` etc. on
-    // `UpdateRateLimitRequest` are actually enforced at the handler
-    // boundary, rather than silently accepted by the config service.
+    // handler 边界强制 `#[validate(range(min = 1, max = 1000000))]`
+    // （防止越界值被 config service 静默接受）。
     validate_request(&req, locale)?;
     Ok(Json(state.config_service.update_rate_limit(req).await))
 }
@@ -824,23 +747,13 @@ async fn handle_update_logging(
     Extension(locale): Extension<Locale>,
     Json(req): Json<UpdateLoggingRequest>,
 ) -> Result<Json<UpdateConfigResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Phase 8 (MEDIUM fix) — enforce `#[validate(length(min = 1, max = 20))]`
-    // on `UpdateLoggingRequest::level` before forwarding to the service.
+    // 转发前强制 `#[validate(length(min = 1, max = 20))]`。
     validate_request(&req, locale)?;
     Ok(Json(state.config_service.update_logging(req).await))
 }
 
-// 注：原 #[axum::debug_handler] 已移除。
-//
-// 根因：axum 0.8 的 debug_handler 是 derive 宏，展开时内部硬编码生成 `::axum::`
-// 绝对路径（不像 utoipa/prost 那样可通过 re-export 调用属性宏）。按 Rust 2018+
-// extern prelude 限制，derive 宏生成的 `::crate_name::` 路径要求该 crate 是直接
-// 依赖。要保留 debug_handler 需添加 axum 为直接依赖，但这违反「axum 完全由
-// sdforge 接管」的架构原则，故移除。
-//
-// 影响：debug_handler 仅用于开发期生成更友好的 handler 类型错误诊断，不影响运行时
-// 行为。移除后若 handler 签名错误，编译错误信息会较晦涩（指向 FromRequest impl），
-// 是已知 trade-off。
+// 不用 #[axum::debug_handler]：axum 0.8 该 derive 宏生成 `::axum::` 绝对路径，
+// 要求 axum 为直接依赖，违反「axum 由 sdforge 接管」原则；签名的编译报错会更晦涩。
 async fn handle_reload_config(State(state): State<NebulaIdState>) -> Json<UpdateConfigResponse> {
     Json(state.config_service.reload_config().await)
 }
@@ -850,22 +763,14 @@ async fn handle_set_algorithm(
     Extension(locale): Extension<Locale>,
     Json(req): Json<SetAlgorithmRequest>,
 ) -> Result<Json<SetAlgorithmResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Phase 8 (MEDIUM fix) — enforce `#[validate(length(min = 1, max = 64))]`
-    // on `biz_tag` and `#[validate(length(min = 1, max = 20))]` on `algorithm`.
+    // 强制 `biz_tag`(1..=64) 与 `algorithm`(1..=20) 的 validate 约束。
     validate_request(&req, locale)?;
     Ok(Json(state.config_service.set_algorithm(req).await))
 }
 
-/// `/api/v1` 路由前缀清单—— `handle_api_info` 的 parity 守卫
-/// 数据源，路径风格与 endpoints 展示一致（`:name`/`:id`；axum 0.8 路由
-/// 注册处为 `{name}` 语法，语义一一对应）。新增 /api/v1 路由时必须同步
-/// 本表：`test_api_info_endpoints_cover_v1_routes` 断言 api-info 的
-/// endpoints 清单覆盖全部前缀，漏登会在测试面显性失败而非静默漂移。
-/// （守卫按子串匹配，条目文字（方法/描述）改动不会误报。）
-///
-/// 标注 `#[cfg(test)]`：本表唯一消费方是 tests 模块的 parity
-/// 守卫测试，非测试构建下为死代码（HEAD 处 `cargo clippy --features
-/// etcd -- -D warnings` 既有失败点，此处一并修复）。
+/// `/api/v1` 路由前缀清单（`:name`/`:id` 风格）：api-info parity 守卫的数据源，
+/// 新增路由必须同步本表，漏登由 `test_api_info_endpoints_cover_v1_routes`
+/// 显性失败（按子串匹配，条目文字改动不误报）；仅测试构建消费，故 `#[cfg(test)]`。
 #[cfg(test)]
 const API_V1_ROUTE_PREFIXES: &[&str] = &[
     "/generate",
@@ -889,8 +794,7 @@ const API_V1_ROUTE_PREFIXES: &[&str] = &[
 async fn handle_api_info() -> Json<ApiInfoResponse> {
     Json(ApiInfoResponse {
         name: "Nebula ID Service".to_string(),
-        // 版本号唯一来源 = Cargo.toml（此前与 openapi.rs 各自
-        // 硬编码 "1.0.0"，发版时会漂移）。
+        // 版本号唯一来源 = Cargo.toml（避免发版漂移）。
         version: env!("CARGO_PKG_VERSION").to_string(),
         description: "Distributed ID Generation Service".to_string(),
         endpoints: vec![
@@ -959,9 +863,8 @@ async fn handle_get_biz_tag(
 ) -> Result<Json<BizTagResponse>, (StatusCode, Json<ErrorResponse>)> {
     let uuid = uuid::Uuid::parse_str(&id).map_err(|_| invalid_uuid_response(locale))?;
 
-    // （CWE-639 / strix vuln-0001）：IDOR 防护。
-    // 与 handle_create_biz_tag 一致，仅 User API key 可访问 BizTag，
-    // 且必须校验目标 BizTag 的 workspace_id 与调用者一致，防止跨租户访问。
+    // （CWE-639）IDOR 防护：仅 User key，且目标 BizTag 的 workspace_id
+    // 必须与调用者一致。
     verify_user_role(extensions_role.0, locale)?;
 
     let response = state
@@ -991,8 +894,7 @@ async fn handle_update_biz_tag(
         return Err(validation_error_response(&validation_errors, locale));
     }
 
-    // （CWE-639 / strix vuln-0001）：IDOR 防护。
-    // 先查询现有 BizTag 校验 workspace 归属，再执行更新。
+    // （CWE-639）IDOR 防护：先查现有 BizTag 校验归属，再更新。
     verify_user_role(extensions_role.0, locale)?;
 
     let existing = state
@@ -1021,8 +923,7 @@ async fn handle_delete_biz_tag(
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
     let uuid = uuid::Uuid::parse_str(&id).map_err(|_| invalid_uuid_response(locale))?;
 
-    // （CWE-639 / strix vuln-0001）：IDOR 防护。
-    // 先查询现有 BizTag 校验 workspace 归属，再执行删除。
+    // （CWE-639）IDOR 防护：先查现有 BizTag 校验归属，再删除。
     verify_user_role(extensions_role.0, locale)?;
 
     let existing = state
@@ -1049,20 +950,15 @@ async fn handle_list_biz_tags(
     Extension(locale): Extension<Locale>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<BizTagListResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Phase 8 (MEDIUM fix) — surface errors
-    // via `core_error_to_response` instead of silently returning an
-    // empty list. The `Extension<Locale>` parameter ensures the
-    // locale-translated message is used.
+    // 经 `core_error_to_response` 上报错误而非静默返回空列表；文案本地化。
     validate_request(&params, locale)?;
 
     let page = params.page.max(1);
     let page_size = params.page_size.clamp(1, 100);
     let offset = (page - 1) * page_size;
 
-    // 修复（CWE-639）：查询键只能来自认证身份或显式合法参数。
-    // User key 强制绑定自身 workspace，`?workspace_id=` 覆盖一律忽略；
-    // Admin key 无租户绑定，必须显式指定 workspace（跨租户全量导出属新增
-    // 管理能力，本变更 Non-Goals 已排除）。
+    // （CWE-639）查询键只来自认证身份或显式参数：User 强制绑定自身 workspace
+    // （忽略 `?workspace_id=`），Admin 必须显式指定。
     let workspace_id = match extensions_role.0 {
         crate::server::middleware::ApiKeyRole::User => {
             extensions.0.ok_or_else(|| auth_required_response(locale))?
@@ -1120,18 +1016,10 @@ async fn handle_list_workspaces(
     extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
     Extension(locale): Extension<Locale>,
 ) -> Result<Json<WorkspaceListResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Phase 8 (MEDIUM fix) — surface errors via
-    // `core_error_to_response` instead of silently returning an empty
-    // list, so 5xx internal errors are logged server-side and the
-    // client sees a generic locale-translated message.
-    // （CWE-862 / CWE-639）—— 跨租户读面收敛。先做角色门禁
-    // （未授权角色不产生仓储查询），再拉取列表并按角色过滤：
-    // - Admin：保持全量列表（跨租户管理语义，行为不变）。
-    // - User：仅保留自身 workspace（逐条经共享授权函数
-    //   `authorize_workspace_access` 判定，语义与写面一致），
-    //   `total` 随过滤结果收敛，避免泄露其他租户的存在性。
-    // - Anonymous：无业务权限，fail-closed 401（正常流量下
-    //   `anonymous_block_middleware` 已先行拒绝，此处兜底）。
+    // （CWE-862 / CWE-639）跨租户读面收敛：先角色门禁（未授权角色不做仓储
+    // 查询）再过滤 —— Admin 全量；User 仅自身 workspace（经
+    // `authorize_workspace_access` 判定，`total` 随过滤收敛以隐藏其他租户）；
+    // Anonymous 兜底 401（`anonymous_block_middleware` 已先拒）。
     let key_workspace_id = match extensions_role.0 {
         crate::server::middleware::ApiKeyRole::Admin => None,
         crate::server::middleware::ApiKeyRole::User => {
@@ -1175,16 +1063,9 @@ async fn handle_list_workspaces(
     Ok(Json(filtered))
 }
 
-/// workspace 单查读面的角色-租户收敛（`handle_get_workspace` 专用）。
-///
-/// - Admin：跨租户放行（行为不变）。
-/// - User：经共享授权函数
-///   [`crate::server::handlers::helpers::authorize_workspace_access`] 判定，
-///   仅自身 workspace；他人 workspace → 403 workspace_mismatch（与写面
-///   `verify_workspace_id_match` 的错误装配同口径）。
-/// - Anonymous：无业务权限，401。`key_workspace_id = None` 的 User 组合在
-///   正常流量下不可能出现（认证禁用时角色为 Anonymous），按 biz_tags 读面
-///   同一口径 fail-closed 401。
+/// 单查 workspace 的角色-租户收敛（`handle_get_workspace` 专用）：Admin 放行；
+/// User 经 `authorize_workspace_access` 仅自身，否则 403；Anonymous 及
+/// User+None 组合 fail-closed 401。
 async fn enforce_workspace_read_access(
     role: &crate::server::middleware::ApiKeyRole,
     key_workspace_id: Option<uuid::Uuid>,
@@ -1219,8 +1100,7 @@ async fn handle_get_workspace(
 ) -> Result<Json<WorkspaceResponse>, (StatusCode, Json<ErrorResponse>)> {
     match state.handlers.get_workspace(&name).await {
         Ok(Some(ws)) => {
-            // （CWE-639）—— User key 仅可查看自身 workspace；Admin
-            // 跨租户放行（行为不变）；判定经共享授权函数。
+            // （CWE-639）User 仅可查看自身 workspace；Admin 跨租户放行。
             enforce_workspace_read_access(&extensions_role.0, extensions.0, &ws, locale).await?;
             Ok(Json(ws))
         }
@@ -1275,22 +1155,15 @@ async fn handle_list_groups(
     Extension(locale): Extension<Locale>,
     Query(params): Query<GroupListParams>,
 ) -> Result<Json<GroupListResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Phase 8 (MEDIUM fix) — surface errors via
-    // `core_error_to_response` and enforce `#[validate(range(min = 1, max = 100))]`
-    // on `page_size`. The `Extension<Locale>` parameter ensures the
-    // locale-translated message is used.
+    // 上报错误并强制 page_size ∈ [1, 100] 的 validate 约束；文案本地化。
     validate_request(&params, locale)?;
 
-    // （CWE-862）—— 角色收敛：list_groups 与 create_group 同为
-    // User-only 端点。此前该 handler 未调用任何角色校验，任何认证主体
-    // （含 Admin/Anonymous）都能按客户端提供的 `?workspace=` 任意列取
-    // group。Admin 需要列 group 时应走管理面而非数据面。
+    // （CWE-862）list_groups 与 create_group 同为 User-only：否则任意认证主体
+    // 都能按 `?workspace=` 列取 group；Admin 应走管理面。
     verify_user_role(extensions_role.0, locale)?;
 
-    // （CWE-639）—— workspace 归属校验：User key 仅可列自身
-    // workspace 的 group。按 workspace 名反查 UUID 后经共享授权函数
-    // `helpers::authorize_workspace_access`（与 create_group/gRPC 同源）
-    // 判定；他人 workspace → 403 workspace_mismatch。
+    // （CWE-639）User 仅可列自身 workspace：反查 UUID 后经
+    // `authorize_workspace_access` 判定，他人 → 403。
     verify_user_workspace(&params.workspace, &extensions.0, &state.handlers, locale).await?;
 
     let workspace = params.workspace.clone();
@@ -1312,12 +1185,8 @@ async fn handle_create_api_key(
 ) -> Result<Json<ApiKeyWithSecretResponse>, (StatusCode, Json<ErrorResponse>)> {
     validate_request(&req, locale)?;
 
-    // Phase 8 (MEDIUM fix) — distinguish `workspace_id`
-    // *missing* (return `workspace_id_required_response`) from
-    // `workspace_id` *malformed* (return `invalid_uuid_response`).
-    // Previously a malformed UUID silently returned "workspace_id is
-    // required", misleading the client about which field was at
-    // fault. The closure below encodes the explicit two-error path.
+    // 区分 `workspace_id` 缺失（`workspace_id_required_response`）与格式错误
+    // （`invalid_uuid_response`），避免错误归因；下方闭包显式编码两条路径。
     let parse_user_workspace_id =
         |raw: &Option<String>| -> Result<uuid::Uuid, (StatusCode, Json<ErrorResponse>)> {
             match raw.as_deref() {
@@ -1332,8 +1201,7 @@ async fn handle_create_api_key(
             // Admin keys are global, not bound to any workspace
             None
         } else {
-            // User keys must be bound to a workspace — distinguish
-            // missing vs malformed (fix).
+            // User key 必须绑定 workspace（缺失/格式错误分路径）。
             Some(parse_user_workspace_id(&req.workspace_id)?)
         }
     } else {
@@ -1354,21 +1222,15 @@ async fn handle_list_api_keys(
     Extension(locale): Extension<Locale>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<ApiKeyListResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Phase 8 (MEDIUM fix) — surface errors via
-    // `core_error_to_response` and enforce `#[validate(range(min = 1, max = 100))]`
-    // on `page_size`. The `Extension<Locale>` parameter ensures the
-    // locale-translated message is used.
+    // 上报错误并强制 page_size ∈ [1, 100] 的 validate 约束；文案本地化。
     validate_request(&params, locale)?;
 
     let page = params.page.max(1);
     let page_size = params.page_size.clamp(1, 100);
     let offset = (page - 1) * page_size;
 
-    // Get workspace_id from query parameters. LOW fix — when
-    // `workspace_id` is provided but is not a valid UUID, log a
-    // server-side warning and fall back to `Uuid::nil()` (admin key
-    // semantics: list across all workspaces). Returning an error here
-    // would break admin-key listing flows that rely on the nil UUID.
+    // 非法 workspace_id 记录 warn 并回退 `Uuid::nil()`（admin 语义：跨全部
+    // workspace 列出）；返回错误会破坏依赖 nil UUID 的既有流程。
     let workspace_id = match params.workspace_id.as_deref() {
         Some(s) => match uuid::Uuid::parse_str(s) {
             Ok(id) => id,
@@ -1416,8 +1278,7 @@ mod tests {
     use crate::server::config::management::ConfigManager;
     use crate::server::config::HotReloadConfig;
     use std::sync::Arc;
-    // `Router::oneshot` is provided by `tower::ServiceExt`. Bring it into
-    // scope so tests can drive the router end-to-end.
+    // `Router::oneshot` 由 `tower::ServiceExt` 提供，引入以端到端驱动路由。
     use sdforge::tower::ServiceExt;
 
     fn create_test_api_handlers() -> Arc<ApiHandlers> {
@@ -1570,7 +1431,7 @@ mod tests {
         let _router = router;
     }
 
-    // ========== 限流层挂载契约（③） ==========
+    // ========== 限流层挂载契约 ==========
 
     fn make_plain_request(uri: &str) -> axum::http::Request<axum::body::Body> {
         axum::http::Request::builder()
@@ -1610,8 +1471,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_429_generated_inside_security_header_layers() {
-        // 层序契约：限流必须在 CORS / 安全头内侧。若限流位于外侧（旧实现），
-        // 429 由最外层短路生成，不会带上内层注入的响应头。
+        // 层序契约：限流必须在 CORS/安全头内侧，否则 429 由最外层生成、不带响应头。
         let limiter = Arc::new(RateLimiter::new(1, 1));
         limiter.check_rate_limit("anonymous", None, None).await;
 
@@ -1651,8 +1511,7 @@ mod tests {
     // ========== anonymous_block_middleware tests ==========
 
     fn build_anonymous_block_router() -> Router {
-        // A router with just the anonymous_block_middleware layer to test
-        // its behavior in isolation.
+        // 仅挂 anonymous_block_middleware，隔离验证其行为。
         Router::new()
             .route("/test", get(|| async { "ok" }))
             .layer(axum::middleware::from_fn(anonymous_block_middleware))
@@ -1795,8 +1654,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_workspace_id_match_none_key_workspace_returns_ok() {
-        // When key_workspace_id is None (admin key or auth disabled),
-        // any workspace_uuid should be accepted.
+        // key_workspace_id 为 None（admin 或禁用认证）时任意 workspace 都接受。
         let workspace_uuid = uuid::Uuid::new_v4();
         let key_workspace_id: Option<uuid::Uuid> = None;
         let result = verify_workspace_id_match(workspace_uuid, &key_workspace_id, Locale::En).await;
@@ -1840,17 +1698,13 @@ mod tests {
         // 版本号唯一来源 = Cargo.toml（openapi.rs 同步）。
         assert_eq!(resp.version, env!("CARGO_PKG_VERSION"));
         assert!(!resp.endpoints.is_empty());
-        // Verify endpoints list contains expected entries.
         assert!(resp.endpoints.iter().any(|e| e.contains("/health")));
         assert!(resp.endpoints.iter().any(|e| e.contains("/generate")));
         assert!(resp.endpoints.iter().any(|e| e.contains("/parse")));
     }
 
-    /// parity 守卫：api-info 的 endpoints 清单必须覆盖
-    /// `API_V1_ROUTE_PREFIXES` 全部路由前缀。方案说明：axum 不公开
-    /// 路由枚举 API，故以 router.rs 内与路由注册同处维护的前缀常量表
-    /// 为准，按「子串包含」断言（条目文字改动不误报）；新增路由漏登
-    /// 清单时本测试显性失败。
+    /// parity 守卫：api-info endpoints 必须覆盖 `API_V1_ROUTE_PREFIXES` 全部
+    /// 前缀（axum 不公开路由枚举；子串匹配，条目文字改动不误报）。
     #[tokio::test]
     async fn test_api_info_endpoints_cover_v1_routes() {
         let resp = handle_api_info().await;
@@ -1969,8 +1823,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_full_router_echoes_uuid_request_id_header() {
-        // 全链路装配：request_id 中间件位于 sdforge context_middleware 外侧，
-        // /health 响应必须回显合法 UUID 的 x-request-id。
+        // request_id 在 context_middleware 外侧：/health 必须回显合法 UUID。
         let router = create_router(
             create_test_api_handlers(),
             create_test_auth(),
@@ -2029,8 +1882,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_response_body_request_id_matches_response_header() {
-        // 错误信封装配（helpers::core_error_to_response）在 request_id
-        // 中间件作用域内执行时，响应体 request_id 必须与响应头一致。
+        // 错误信封在 request_id 作用域内：响应体 request_id 必须与响应头一致。
         async fn failing_handler() -> axum::response::Response {
             let (status, json) = core_error_to_response(
                 &crate::core::types::CoreError::InvalidInput("boom".to_string()),
@@ -2075,8 +1927,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_router_generate_endpoint_requires_auth() {
-        // Without an auth header, /api/v1/generate should return 401
-        // (auth_middleware rejects the request).
+        // 无认证头 → 401（auth_middleware 拒绝）。
         let handlers = create_test_api_handlers();
         let auth = create_test_auth();
         let rate_limiter = create_test_rate_limiter();
@@ -2121,14 +1972,12 @@ mod tests {
             )
             .await
             .unwrap();
-        // The openapi handler should return 200 OK.
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
     async fn test_create_router_security_headers_present() {
-        // Verify that security headers (X-Content-Type-Options, X-Frame-Options,
-        // etc.) are added to responses.
+        // 响应应带全套安全头。
         let handlers = create_test_api_handlers();
         let auth = create_test_auth();
         let rate_limiter = create_test_rate_limiter();
@@ -2145,7 +1994,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        // Security headers
         assert_eq!(
             resp.headers().get("x-content-type-options").unwrap(),
             "nosniff"
@@ -2203,9 +2051,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_user_workspace_without_repository_returns_internal_error() {
-        // ConfigManager::new() has no workspace_repository, so
-        // handlers.get_workspace returns Err(InternalError) which
-        // core_error_to_response maps to 500.
+        // 无 workspace_repository → get_workspace 返回 InternalError → 500。
         let handlers = create_test_api_handlers();
         let result = verify_user_workspace("any-name", &None, &handlers, Locale::En).await;
         assert!(result.is_err());
@@ -2215,8 +2061,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_user_workspace_with_matching_key_returns_error_from_repo() {
-        // Even with a key_workspace_id, the lookup hits the missing
-        // workspace_repository first, so we still get a 500.
+        // 即使带 key_workspace_id，仍先命中缺失的仓储 → 500。
         let handlers = create_test_api_handlers();
         let key = uuid::Uuid::new_v4();
         let result = verify_user_workspace("any-name", &Some(key), &handlers, Locale::En).await;
@@ -2231,9 +2076,7 @@ mod tests {
     async fn test_handle_get_config_returns_secure_config_with_app_info() {
         let state = create_test_app_state();
         let resp = handle_get_config(State(state)).await;
-        // SecureConfigResponse has app field with a name.
         assert!(!resp.app.name.is_empty());
-        // Algorithm config must have a default.
         assert!(!resp.algorithm.default.is_empty());
     }
 
@@ -2243,7 +2086,6 @@ mod tests {
     async fn test_handle_health_returns_status_and_algorithm() {
         let state = create_test_app_state();
         let resp = handle_health(State(state)).await;
-        // status must be a known variant.
         let known = matches!(
             resp.status,
             crate::server::models::HealthStatus::Healthy
@@ -2260,7 +2102,6 @@ mod tests {
     async fn test_handle_ready_returns_ready_flag_and_components() {
         let state = create_test_app_state();
         let resp = handle_ready(State(state)).await;
-        // ready/database/cache booleans are populated; message is a string.
         let _ = resp.ready;
         let _ = resp.database;
         let _ = resp.cache;
@@ -2299,13 +2140,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_metrics_ids_generated_total_increments_after_generates() {
-        // 真实算法路由：多次真实 generate 走 `SnowflakeAlgorithm` 内部计数器
-        // （generate 每次自增 total_generated，无 DB/etcd 依赖），
-        // /metrics 渲染出的 nebula_id_ids_generated_total 必须跟随递增。
-        // 注：快照的 total_generated 来源是各算法内部计数器
-        // （`IdAlgorithm::metrics()`）；uuid_v8 的实现当前返回默认快照
-        // （路由层观测面仅合并分位数/时钟回拨），属于上游既有口径，
-        // 本测试钉住「生成动作必须反映到 nebula_id_ids_generated_total」。
+        // 多次真实 generate 走 Snowflake 内部计数器（无 DB/etcd 依赖），渲染出的
+        // nebula_id_ids_generated_total 必须跟随递增；uuid_v8 返回默认快照属上游
+        // 既有口径，本测试只钉住该计数器的桥接。
         let config = Config::default();
         let hot_config = Arc::new(HotReloadConfig::new(
             config.clone(),
@@ -2366,7 +2203,6 @@ mod tests {
     async fn test_handle_reload_config_returns_response() {
         let state = create_test_app_state();
         let resp = handle_reload_config(State(state)).await;
-        // UpdateConfigResponse has success flag and message.
         let _ = resp.success;
         assert!(!resp.message.is_empty() || resp.message.is_empty());
     }
@@ -2409,7 +2245,6 @@ mod tests {
         let result = handle_update_rate_limit(State(state), Extension(Locale::En), Json(req)).await;
         assert!(result.is_ok());
         let resp = result.unwrap();
-        // success flag is populated.
         let _ = resp.0.success;
     }
 
@@ -2473,8 +2308,7 @@ mod tests {
             algorithm: "segment".to_string(),
         };
         let result = handle_set_algorithm(State(state), Extension(Locale::En), Json(req)).await;
-        // Result depends on config_service behavior; either success or an
-        // error response is acceptable as long as the handler executes.
+        // 只要 handler 执行即可：成功或错误响应均可接受。
         match result {
             Ok(resp) => {
                 let _ = resp.0.success;
@@ -2553,8 +2387,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_generate_user_role_fails_at_workspace_lookup() {
-        // User role passes role + validation, then verify_user_workspace
-        // hits the missing repository and returns 500.
+        // User 通过角色与校验后，workspace 反查命中缺失仓储 → 500。
         let state = create_test_app_state();
         let result = handle_generate(
             State(state),
@@ -2771,7 +2604,6 @@ mod tests {
         let (status, _) = result.unwrap_err();
         // verify_workspace_id returns 403 on mismatch.
         assert_eq!(status, StatusCode::FORBIDDEN);
-        // Silence unused variable warning in a way that documents intent.
         let _ = key_workspace;
     }
 
@@ -2788,10 +2620,8 @@ mod tests {
             Json(req),
         )
         .await;
-        // Role + workspace match, so handlers.create_biz_tag runs.
-        // Without a repository the handler returns Err, which may map to
-        // 400 (InvalidInput/ParseError), 404 (NotFound/BizTagNotFound),
-        // or 500 (InternalError) depending on the CoreError variant.
+        // 角色与 workspace 均匹配 → 调 handlers.create_biz_tag；无仓储时按
+        // CoreError 变体映射 400/404/500。
         assert!(result.is_err());
         let (status, _) = result.unwrap_err();
         assert!(
@@ -3265,12 +3095,11 @@ mod tests {
         .await;
         assert!(result.is_err());
         let (status, _) = result.unwrap_err();
-        // 角色校验通过后进入 workspace 归属校验；无仓库时
-        // workspace 反查返回 InternalError → 500。
+        // 角色通过后进入归属校验；无仓库时反查返回 InternalError → 500。
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    // ========== —— workspace/group 读面租户隔离 ==========
+    // ========== workspace/group 读面租户隔离 ==========
 
     fn make_workspace_response(id: uuid::Uuid, name: &str) -> WorkspaceResponse {
         WorkspaceResponse {
@@ -3311,8 +3140,7 @@ mod tests {
 
         let ws_a = uuid::Uuid::new_v4();
         let mut mock = MockConfigManagementService::new();
-        // workspace 反查命中他人 workspace A；list_groups 不设期望 ——
-        // 若授权短路失败而触达 mock，mockall 会 panic 使测试显性失败。
+        // 反查命中他人 workspace；未设 list_groups 期望，触达 mock 即 panic。
         mock.expect_get_workspace()
             .returning(move |_| Ok(Some(make_workspace_response(ws_a, "ws-a"))));
         let state = app_state_with_mock(mock);
@@ -3635,12 +3463,10 @@ mod tests {
             expires_at: None,
         };
         let result = handle_create_api_key(State(state), Extension(Locale::En), Json(req)).await;
-        // Validation passes, workspace_id is None for admin, then
-        // handlers.create_api_key runs. Without repository it returns Err.
+        // 校验通过、admin 的 workspace_id 为 None；无仓储时返回 Err。
         assert!(result.is_err());
         let (status, _) = result.unwrap_err();
-        // Without a repository, the handler may return NotFound (404) or
-        // InternalError (500) depending on which CoreError variant surfaces.
+        // 无仓储时按 CoreError 变体映射 404 或 500。
         assert!(
             status == StatusCode::NOT_FOUND || status == StatusCode::INTERNAL_SERVER_ERROR,
             "expected NOT_FOUND or INTERNAL_SERVER_ERROR, got {}",
@@ -3660,12 +3486,10 @@ mod tests {
             expires_at: None,
         };
         let result = handle_create_api_key(State(state), Extension(Locale::En), Json(req)).await;
-        // Validation passes, workspace_id parses, then handlers.create_api_key
-        // runs. Without repository it returns Err.
+        // 校验通过、workspace_id 可解析；无仓储时返回 Err。
         assert!(result.is_err());
         let (status, _) = result.unwrap_err();
-        // Without a repository, the handler may return NotFound (404) or
-        // InternalError (500) depending on which CoreError variant surfaces.
+        // 无仓储时按 CoreError 变体映射 404 或 500。
         assert!(
             status == StatusCode::NOT_FOUND || status == StatusCode::INTERNAL_SERVER_ERROR,
             "expected NOT_FOUND or INTERNAL_SERVER_ERROR, got {}",
@@ -3713,8 +3537,7 @@ mod tests {
             page_size: 20,
         };
         let result = handle_list_api_keys(State(state), Extension(Locale::En), Query(params)).await;
-        // Invalid workspace_id is logged and falls back to Uuid::nil().
-        // The handler still calls list_api_keys which fails without a repo.
+        // 非法 workspace_id 记日志并回退 nil；无仓储时调用仍失败。
         assert!(result.is_err());
         let (status, _) = result.unwrap_err();
         assert!(status == StatusCode::INTERNAL_SERVER_ERROR || status == StatusCode::NOT_FOUND);

@@ -40,8 +40,7 @@ impl GrpcServer {
         }
     }
 
-    /// 启用 API key 认证。启用后每个 RPC 入口先经
-    /// [`Self::authenticate`] 校验 `authorization` metadata。
+    /// 启用 API key 认证：启用后每个 RPC 入口先经 [`Self::authenticate`] 校验 metadata。
     pub fn with_auth(handlers: Arc<ApiHandlers>, auth: Arc<ApiKeyAuth>) -> Self {
         Self {
             handlers,
@@ -50,35 +49,30 @@ impl GrpcServer {
     }
 
     /// 单点认证：校验 `authorization` metadata（Basic/ApiKey 双格式），成功时
-    /// 将 workspace_id 与角色注入 request extensions。覆盖全部 RPC（含双向流
-    /// —— request-init 先于流消费被校验）。失败映射（规格）
-    /// - 缺失/格式无效/凭证无效 → `Status::unauthenticated`
-    /// - key 存在但被禁用或已过期 → `Status::permission_denied`
-    /// - 同 peer 认证失败超阈值（5 分钟 10 次）→ `Status::resource_exhausted`
-    ///   （与 HTTP 中间件共享同一失败桶，429 对应 ResourceExhausted）
+    /// 将 workspace_id 与角色注入 request extensions，覆盖全部 RPC（含双向流，
+    /// request-init 先于流消费被校验）。失败映射：
+    /// - 缺失/格式无效/凭证无效 → `unauthenticated`；key 被禁用或已过期 →
+    ///   `permission_denied`；同 peer 5 分钟 10 次失败 → `resource_exhausted`
+    ///   （与 HTTP 中间件共享同一失败桶）。
     /// - `auth.enabled=false` → 放行并记 `auth_disabled_request` 审计日志
-    ///   （对齐 HTTP Anonymous 语义）
-    ///
-    /// 注：设计稿原定 tonic `with_interceptor`，但 Interceptor::call 是同步
-    /// 签名而凭证校验必须异步查库（Argon2id + DB），在拦截器内 block_on 有
-    /// 运行时风险，故改为各 RPC 入口一行调用本助手 —— 单点实现不变。
+    ///   （对齐 HTTP Anonymous 语义）。
     ///
     /// 对端 IP 取自 tonic 传输注入的 `TcpConnectInfo`（TLS 下为
-    /// `TlsConnectInfo<TcpConnectInfo>`），[`Request::remote_addr`] 已封装
-    /// 两种情况；限流桶与审计日志均按直连 IP 归因，不可被头部伪造。
+    /// `TlsConnectInfo<TcpConnectInfo>`，[`Request::remote_addr`] 已封装两种
+    /// 情况）；限流桶与审计日志均按直连 IP 归因，不可被头部伪造。
+    ///
+    /// 注：不走 `with_interceptor` 因其要求同步签名，而校验必须异步查库
+    /// （Argon2id + DB），故改为各 RPC 入口一行调用本助手。
     pub(crate) async fn authenticate<T>(&self, request: Request<T>) -> Result<Request<T>, Status> {
         let Some(auth) = self.auth.as_ref() else {
             return Ok(request);
         };
-        // 对端 IP 提前解析：禁用放行的审计行与失败拒绝行共用同一取值，
-        // 避免为一条日志重复读一次扩展。
+        // 对端 IP 提前解析：禁用放行的审计行与失败拒绝行共用同一取值，避免重复读扩展。
         let client_ip = peer_ip(&request);
 
         if !auth.is_enabled() {
-            // `auth.enabled=false` 的放行不是「无事件」：HTTP 侧同语义
-            // （api_key_auth.rs 的 auth_disabled_request）会留一条 warn，gRPC
-            // 侧静默放行会让降级部署下的流量在审计里隐身。文案与 event 字段名
-            // 沿用 HTTP 侧既有 locale 键，跨传输可按同一 event 检索。
+            // 放行不是「无事件」：HTTP 侧同语义会留 warn，gRPC 静默放行会让降级
+            // 流量在审计里隐身；沿用 HTTP 侧 locale 键便于跨传输按同一 event 检索。
             tracing::warn!(
                 event = "auth_disabled_request",
                 client_ip = %client_ip,
@@ -88,9 +82,8 @@ impl GrpcServer {
             return Ok(request);
         }
 
-        // 与 HTTP 中间件同源：先查失败桶，超限直接拒收，
-        // 不再消耗解析/校验成本。桶体（阈值、窗口、容量阀）全部在
-        // `ApiKeyAuth` 内，两条传输线共享同一计数器。
+        // 与 HTTP 中间件同源：先查失败桶，超限直接拒收，不再消耗解析/校验
+        // 成本；桶体（阈值、窗口、容量阀）全部在 `ApiKeyAuth` 内共享同一计数器。
         if !auth.check_auth_failure_rate(&client_ip).await {
             return Err(Status::resource_exhausted(
                 "Too many authentication attempts. Please try again later.",
@@ -137,9 +130,8 @@ impl GrpcServer {
     }
 }
 
-/// 取 gRPC 对端 IP（直连地址，不可被头部伪造）。非 TCP 传输（如单测里直接
-/// 调用 trait 方法）取不到地址，兜底 `"unknown"` —— 与 HTTP 侧
-/// `api_key_auth.rs::get_client_ip` 的兜底语义一致。
+/// 取 gRPC 对端 IP（直连地址，不可被头部伪造）；非 TCP 传输兜底 `"unknown"`，
+/// 与 HTTP 侧 `api_key_auth.rs::get_client_ip` 的兜底语义一致。
 fn peer_ip<T>(request: &Request<T>) -> String {
     request
         .remote_addr()
@@ -160,18 +152,12 @@ fn auth_identity<T>(request: &Request<T>) -> Option<(ApiKeyRole, Option<uuid::Uu
     Some((role, workspace_id))
 }
 
-/// generate 系接口的资源级授权判定。
-///
-/// 与 HTTP 侧 `verify_user_role` + `verify_user_workspace` 同源：
-///
-/// - Admin key → `Status::permission_denied`（HTTP `verify_user_role` 的
-///   `admin_cannot_perform` 403 语义；generate 类接口仅面向 User）。
-/// - User key 的 namespace 经 handlers 既有 config_service
-///   （`repository::get_workspace_by_name`，不改仓储层）反查 UUID；
-///   反查不到 → `Status::not_found`，反查基础设施失败 → `Status::internal`
-///   （固定文案，与 HTTP 侧 500 泛化消息同语义，不透出内部错误）。
-/// - 反查成功后交由共享授权函数 [`authorize_workspace_access`]做
-///   角色租户判定：跨租户 → `Status::permission_denied`。
+/// generate 系接口的资源级授权判定（与 HTTP 侧 `verify_user_role` +
+/// `verify_user_workspace` 同源）：Admin key → `permission_denied`（generate
+/// 类仅面向 User）；User key 的 namespace 经 config_service 反查 UUID，
+/// 反查不到 → `not_found`，反查基础设施失败 → `internal`（固定文案，不透出
+/// 内部错误）；成功后交 [`authorize_workspace_access`] 做角色租户判定，
+/// 跨租户 → `permission_denied`。
 ///
 /// 认证未装配 / 禁用（`identity = None`）时跳过判定放行：与既有
 /// `bypasses_when_auth_disabled` 等 e2e 钉住的降级语义一致。
@@ -235,7 +221,7 @@ async fn authorize_namespace(
 
     match authorize_workspace_access(&role, key_workspace_id, target_workspace_id).await {
         Ok(()) => Ok(()),
-        // User 请求他人 namespace → permission_denied（HTTP 403
+        // User 请求他人 namespace → permission_denied（对齐 HTTP 403
         // workspace_mismatch 同语义）。
         Err(CoreError::WorkspaceDisabled(_)) => Err(Status::permission_denied(
             t!("api.error.workspace_mismatch").to_string(),
@@ -255,11 +241,8 @@ async fn authorize_namespace(
 /// 再打一条与 HTTP 侧同 schema 的 `auth_failure` 审计日志（`reason` 机器
 /// 可读、`client_ip`、掩码 `key_id_prefix`），最后返回调用方给定的 Status。
 /// 三者缺一不可 —— 只返 Status 会让 gRPC 侧的暴力猜 key 行为既绕过限流、
-/// 又在审计里隐身。
-///
-/// 日志文案复用 `log.server.middleware.api_key_auth.*` 既有键：语义完全对应
-/// （缺少 authorization / 不支持的格式 / 无效凭据），新增 grpc 专属键只会在
-/// 两个 locale 里造出同义重复条目。
+/// 又在审计里隐身。日志文案复用 `log.server.middleware.api_key_auth.*`
+/// 既有键（语义完全对应），避免在两个 locale 造出同义重复条目。
 async fn reject(
     auth: &ApiKeyAuth,
     client_ip: &str,
@@ -268,8 +251,7 @@ async fn reject(
     log_message: &str,
     status: Status,
 ) -> Status {
-    // 与 HTTP `unauthorized_response` 同源：每次认证拒绝都入桶，
-    // 供下一次请求的 `check_auth_failure_rate` 累计判定。
+    // 与 HTTP `unauthorized_response` 同源：每次认证拒绝都入桶，供后续请求累计判定。
     auth.record_auth_failure(client_ip).await;
     tracing::warn!(
         event = "auth_failure",
@@ -282,8 +264,7 @@ async fn reject(
     status
 }
 
-/// `validate_key` miss 的判因结果。用显式枚举而非字符串匹配，避免把
-/// 「哪种失败给哪个 code」这一确定性决策写成隐式约定。
+/// `validate_key` miss 的判因结果（显式枚举，避免隐式约定 code 分配）。
 enum KeyMiss {
     /// key 行存在但 `enabled = false`
     Disabled,
@@ -307,8 +288,7 @@ impl KeyMiss {
                 "key_expired",
                 Status::permission_denied(CoreError::ApiKeyExpired.to_string()),
             ),
-            // 凭证本身无效 ⇒ unauthenticated（文案不区分 key 是否存在，
-            // 避免把「哪些 key_id 有效」泄露给探测者）
+            // 凭证本身无效 ⇒ unauthenticated（文案不区分 key 是否存在，防探测有效 key_id）
             Self::BadSecret => (
                 "bad_secret",
                 Status::unauthenticated("invalid or unknown api key"),
@@ -330,13 +310,12 @@ impl KeyMiss {
     }
 }
 
-/// 回查 key 行完成判因（规格）。HTTP 侧无此分类（一律 401），
-/// 故这里是唯一实现，不构成第二份重复逻辑；禁用/过期文案复用
-/// `CoreError::ApiKeyDisabled/ApiKeyExpired` 的 i18n 条目而非另写字面量。
+/// 回查 key 行完成判因（规格）：HTTP 侧一律 401，故此处为唯一实现；
+/// 禁用/过期文案复用 `CoreError::ApiKeyDisabled/ApiKeyExpired` i18n 条目。
 ///
-/// 回查失败（DB 异常）时保守按 `unauthenticated` 拒绝：既不能确认 key 状态
-/// 就不得放行，也不能凭猜给 `permission_denied` 谎报语义；同时以 error 级
-/// 显性上报，避免 DB 故障被伪装成「凭证无效」。
+/// 回查失败（DB 异常）时保守按 `unauthenticated` 拒绝：不能确认 key 状态
+/// 就不得放行，也不凭猜谎报 `permission_denied`，同时 error 级上报，
+/// 避免 DB 故障被伪装成「凭证无效」。
 async fn classify_miss(auth: &ApiKeyAuth, key_id: &str, client_ip: &str) -> Status {
     let info = match auth.repo.get_api_key_by_id(key_id).await {
         Ok(info) => info,
@@ -555,18 +534,14 @@ impl NebulaIdService for GrpcServer {
                                     }
                                 }
                             }
-                            // 错误消毒：业务失败以 Err(Status) 终止流
-                            // （变体同源映射 + 5xx 固定文案），不再把错误串塞进
-                            // 响应 algorithm 字段伪装成正常项。
+                            // 错误消毒：业务失败以 Err(Status) 终止流（变体同源映射 + 5xx 固定文案）。
                             Err(e) => {
                                 let _ = tx.send(Err(core_error_to_grpc_status(&e))).await;
                                 break;
                             }
                         }
                     }
-                    // 传输层读流失败：Status 本就是 gRPC 原生错误形态，
-                    // 原样终止流（此前塞进 algorithm 字段的
-                    // "stream error: ..." 明文一并移除）。
+                    // 传输层读流失败：Status 本就是 gRPC 原生错误形态，原样终止流。
                     Err(status) => {
                         let _ = tx.send(Err(status)).await;
                         break;
@@ -619,8 +594,8 @@ impl NebulaIdService for GrpcServer {
                     metadata,
                 }))
             }
-            // 错误消毒：parse 的 4xx（InvalidIdString 等）走同一
-            // 变体映射表，消息截断策略与 HTTP 一致。
+            // 错误消毒：parse 的 4xx（InvalidIdString 等）走同一变体映射表，
+            // 消息截断策略与 HTTP 一致。
             Err(e) => Err(core_error_to_grpc_status(&e)),
         }
     }
@@ -629,9 +604,8 @@ impl NebulaIdService for GrpcServer {
         &self,
         request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckResponse>, Status> {
-        // health_check 同样纳入认证（设计 覆盖全部 5 个 RPC）。
-        // 编排探针请改用 HTTP 端口 /health（公开端点）。
-        // 健康状态不依赖租户身份，认证结果只需通过即可，故丢弃 request。
+        // health_check 同样纳入认证（覆盖全部 RPC）；健康状态不依赖租户身份，
+        // 认证通过即可，故丢弃 request。编排探针请改用 HTTP /health（公开端点）。
         self.authenticate(request).await?;
         let health = self.handlers.health().await;
         let status = if health.status == crate::server::models::HealthStatus::Healthy {
@@ -677,7 +651,6 @@ mod tests {
     #[test]
     fn test_grpc_server_new() {
         let server = create_test_grpc_server();
-        // Smoke test: server can be constructed without panic.
         let _ = server;
     }
 
@@ -702,8 +675,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_generate_empty_namespace_returns_invalid_argument() {
-        // MockIdGenerator returns InvalidInput when workspace is empty.
-        // InvalidInput 属 4xx → InvalidArgument（原误映射为 Internal）。
+        // MockIdGenerator 对空 workspace 返回 InvalidInput；4xx → InvalidArgument。
         let server = create_test_grpc_server();
         let req = Request::new(GrpcGenerateRequest {
             namespace: String::new(),
@@ -718,9 +690,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_generate_maps_namespace_and_tag() {
-        // Verify that `namespace` is mapped to `workspace` and `tag` is mapped
-        // to both `group` and `biz_tag` (per the handler's GenerateRequest
-        // construction).
+        // namespace→workspace、tag→group/biz_tag 映射由请求构造保证，此处验证整体成功。
         let server = create_test_grpc_server();
         let req = Request::new(GrpcGenerateRequest {
             namespace: "mapped-ns".to_string(),
@@ -824,7 +794,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_generate_empty_namespace_returns_invalid_argument() {
-        // InvalidInput 属 4xx → InvalidArgument（原误映射为 Internal）。
+        // InvalidInput 属 4xx → InvalidArgument。
         let server = create_test_grpc_server();
         let req = Request::new(GrpcBatchGenerateRequest {
             namespace: String::new(),
@@ -838,9 +808,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_generate_maps_namespace_and_tag() {
-        // Verify namespace→workspace and tag→group/biz_tag mapping by
-        // observing that a valid request succeeds (MockIdGenerator returns
-        // Err only when workspace is empty).
+        // 有效请求成功即隐含映射成立（mock 仅空 workspace 报错）。
         let server = create_test_grpc_server();
         let req = Request::new(GrpcBatchGenerateRequest {
             namespace: "mapped-ns".to_string(),
@@ -867,7 +835,6 @@ mod tests {
         assert!(resp.is_ok(), "parse should succeed: {:?}", resp);
         let inner = resp.unwrap().into_inner();
         assert_eq!(inner.id, "12345");
-        // metadata should contain timestamp, datacenter_id, worker_id, etc.
         assert!(inner.metadata.contains_key("timestamp"));
         assert!(inner.metadata.contains_key("algorithm"));
     }
@@ -894,8 +861,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_health_check_returns_serving() {
-        // MockIdGenerator.health_check() returns Healthy, so the gRPC
-        // health check should report Serving.
+        // MockIdGenerator.health_check() 返回 Healthy ⇒ 上报 Serving。
         let server = create_test_grpc_server();
         let req = Request::new(HealthCheckRequest {
             service: String::new(),
@@ -911,9 +877,9 @@ mod tests {
 
     #[test]
     fn test_peer_ip_reads_connect_info_injected_by_tonic_transport() {
-        // tonic 0.14 的 transport server 在 MakeSvc::call 里用 ConnectInfoLayer
-        // 把 TcpConnectInfo 注入 request extensions。这里手工注入同一类型，
-        // 验证 peer_ip 取的是该真实扩展（而非自造字段或元数据）。
+        // tonic 0.14 transport server 用 ConnectInfoLayer 把 TcpConnectInfo
+        // 注入 request extensions；这里手工注入同一类型，验证 peer_ip 取的是
+        // 该真实扩展（而非自造字段或元数据）。
         let mut req = Request::new(HealthCheckRequest {
             service: String::new(),
         });
@@ -928,8 +894,8 @@ mod tests {
 
     #[test]
     fn test_peer_ip_falls_back_to_unknown_without_transport() {
-        // 无 ConnectInfo（单测直接调用 trait 方法 / 非 TCP 传输）时兜底
-        // "unknown"，与 HTTP 侧 get_client_ip 的兜底语义一致 —— 不伪造地址。
+        // 无 ConnectInfo（单测直调 / 非 TCP 传输）时兜底 "unknown"，与 HTTP 侧
+        // get_client_ip 兜底语义一致，不伪造地址。
         let req = Request::new(HealthCheckRequest {
             service: String::new(),
         });

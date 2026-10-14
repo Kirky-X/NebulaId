@@ -13,27 +13,18 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tracing::info;
 
-// 修复：复用 core 层的 AuditEventType 和 AuditResult，
-// 消除 server/core 重复定义。pub use 使其成为本模块公共 API。
+// 复用 core 层定义，避免 server/core 重复；pub use 使其成为本模块公共 API。
 pub use crate::core::algorithm::{AuditEventType, AuditResult};
 
-/// 生成审计事件 ID。
+/// 生成审计事件 ID：`(unix_millis << 20) | (counter & 0xFFFFF)`。
 ///
-/// 格式：`(unix_millis << 20) | (counter & 0xFFFFF)`
-/// - 高 44 位：Unix 毫秒时间戳，保证进程重启后 ID 单调递增、不冲突
-/// - 低 20 位：进程内计数器（最多 1M/ms，远超任何审计吞吐）
-///
-/// 这避免了原 `static COUNTER: AtomicU64` 在进程重启后从 0 开始导致 ID 冲突的问题。
+/// 高 44 位时间戳保证进程重启后 ID 单调递增不冲突；低 20 位进程内计数器。
 fn next_audit_event_id() -> u64 {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let unix_ms = Utc::now().timestamp_millis() as u64;
     let c = COUNTER.fetch_add(1, Ordering::SeqCst) & 0xFFFFF;
     (unix_ms << 20) | c
 }
-
-// 修复：删除本地 AuditEventType 和 AuditResult 定义，
-// 改用 `crate::core::algorithm::{AuditEventType, AuditResult}`。
-// 这消除了 server/core 重复定义，未来新增事件类型只需修改 core 层一处。
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEvent {
@@ -107,12 +98,8 @@ impl AuditEvent {
         self
     }
 
-    /// 对 IP 地址进行部分遮蔽。
-    ///
-    /// 使用 `std::net::IpAddr` 解析而非字符串操作，避免 IPv4-mapped IPv6
-    /// 等 boundary case 的脱敏不一致。原 `rfind('.')` / `rfind(':')` 方案
-    /// 对 `::1` 返回 `:x`（不正确）、对 `2001:db8::1` 返回 `2001:db8:x`
-    /// （与注释承诺的 `2001:db8::x` 不符）。
+    /// 对 IP 地址做部分遮蔽：IPv4 保留前 3 段、IPv6 保留前 4 段，末段用 `x` 替换。
+    /// 用 `IpAddr` 解析而非字符串操作，避免 `::1` 等边界情形脱敏不一致。
     fn redact_ip(ip: &str) -> String {
         match ip.parse::<std::net::IpAddr>() {
             Ok(std::net::IpAddr::V4(v4)) => {
@@ -120,7 +107,7 @@ impl AuditEvent {
                 format!("{}.{}.{}.x", octets[0], octets[1], octets[2])
             }
             Ok(std::net::IpAddr::V6(v6)) => {
-                // 保留前 4 段，后面 4 段用 x 替换，避免泄露完整地址。
+                // 保留前 4 段，其余用 x 替换，避免泄露完整地址。
                 let segs = v6.segments();
                 format!(
                     "{:x}:{:x}:{:x}:{:x}:x:x:x:x",
@@ -128,7 +115,7 @@ impl AuditEvent {
                 )
             }
             Err(_) => {
-                // 非 IP 格式（可能是 "unknown" 或其他占位符）：保留前 8 字符。
+                // 非 IP 格式（如 "unknown"）保留前 8 字符。
                 let prefix = ip.chars().take(8).collect::<String>();
                 if ip.len() > 8 {
                     format!("{}...redacted", prefix)
@@ -141,9 +128,7 @@ impl AuditEvent {
 }
 
 /// Writer task 命令：写入事件或显式 flush（sync_all 落盘）。
-///
-/// `Flush` 变体携带 oneshot Sender，writer task 处理完所有排队 Event 后
-/// sync_all 文件并回复，使调用方可以确定性等待持久化完成（替代 sleep）。
+/// `Flush` 携带 oneshot ack，调用方可确定性等待持久化完成（替代 sleep）。
 enum AuditCommand {
     /// 写入一条审计事件到文件
     Event(Arc<AuditEvent>),
@@ -151,9 +136,8 @@ enum AuditCommand {
     Flush(tokio::sync::oneshot::Sender<()>),
 }
 
-/// writer task 周期 flush 间隔（常开 `BufWriter<File>` 按行写，
-/// 缓冲行靠本定时器定期落盘；50ms 保证既有「sleep 后读文件」用例语义
-/// 不变，同时把每事件一次 open/close 的系统调用摊薄为每周期一次 flush）。
+/// writer task 周期 flush 间隔；常开 `BufWriter` 靠该定时器落盘，
+/// 50ms 保持既有「sleep 后读文件」用例语义。
 const AUDIT_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Clone)]
@@ -162,22 +146,14 @@ pub struct AuditLogger {
     max_events: usize,
     total_logged: Arc<AtomicU64>,
     total_errors: Arc<AtomicU64>,
-    /// 文件写入 channel：log 方法只发送事件（非阻塞），独立 task 消费并写文件。
-    /// 解决 H7：避免在 Mutex 持有期间执行文件 I/O。
+    /// 文件写入 channel：`log` 只发送事件（非阻塞），独立 task 消费并写文件（H7：避免持锁做 I/O）。
     file_tx: Option<mpsc::UnboundedSender<AuditCommand>>,
-    /// 持有 writer task 的 JoinHandle，保持 task 存活。
-    /// Arc 包装以便 Clone 时共享；JoinHandle drop 不会 cancel task（tokio 默认行为），
-    /// task 会在所有 sender drop 后自然退出。
+    /// 持有 writer task 的 JoinHandle 以保持 task 存活；task 在所有 sender drop 后自然退出。
     _writer_task: Option<Arc<JoinHandle<()>>>,
 }
 
-/// `VecDeque` 预分配条数上限。
-///
-/// `max_events` 由调用方传入，当前唯一生产来源是配置值
-/// （`src/main.rs` 传 `audit.memory_capacity`，不再借用
-/// `rate_limit.default_rps`）——直接按它预分配等于让一个配置数字决定
-/// 进程启动时的内存申请量。`with_capacity` 只是容量提示，钳制它不改变
-/// "最多保留 `max_events` 条"的淘汰语义。
+/// `VecDeque` 预分配条数上限；`max_events` 由配置传入，直接按其预分配等于
+/// 让配置数字决定启动内存申请。`with_capacity` 只是提示，钳制不改变淘汰语义。
 const MAX_AUDIT_PREALLOC: usize = 1024;
 
 fn prealloc_capacity(max_events: usize) -> usize {
@@ -199,18 +175,12 @@ impl AuditLogger {
         }
     }
 
-    /// 创建支持文件持久化的审计日志记录器。
+    /// 创建支持文件持久化的审计日志记录器：独立后台 task 消费事件并写文件，
+    /// `log` 只通过 channel 发送（非阻塞）。必须在 tokio runtime 上下文调用。
     ///
-    /// 启动一个独立的后台 task 消费事件并写文件，`log` 方法只通过 channel
-    /// 发送事件（非阻塞），避免在 Mutex 持有期间执行文件 I/O。
-    ///
-    /// 必须在 tokio runtime 上下文中调用。
-    ///
-    /// （CWE-22 路径遍历）：验证 `log_file_path` 不包含 `..`
-    /// 组件，防止攻击者通过配置注入如 `../../etc/passwd` 路径覆盖系统文件。
-    /// 空路径也被拒绝。
+    /// 路径安全（CWE-22）：拒绝空路径与含 `..` 组件的路径，防遍历覆盖系统文件；
+    /// 校验失败回退为纯内存记录器。
     pub async fn with_file_logging(max_events: usize, log_file_path: String) -> Self {
-        // 路径安全性验证
         if let Err(e) = Self::validate_log_path(&log_file_path) {
             tracing::error!(
                 event = "audit_log_path_invalid",
@@ -219,7 +189,7 @@ impl AuditLogger {
                 "{}",
                 t!("log.server.audit.logger.path_invalid", error = e)
             );
-            // 回退到无文件持久化的内存记录器，避免因路径无效导致启动失败
+            // 路径无效时回退内存记录器，不阻断启动
             return Self::new(max_events);
         }
 
@@ -230,11 +200,8 @@ impl AuditLogger {
 
         let handle = tokio::spawn(async move {
             use std::io::Write;
-            // writer 常开一个 `BufWriter<File>`（append），按行写 +
-            // 周期 flush，替代原「每事件一次 OpenOptions::open」；系统调用
-            // 从 O(事件数) 摊薄到 O(缓冲满 + flush 周期数)。
-            // 打开失败或写失败进入 broken 模式（句柄置 None）：后续事件逐条
-            // 计入 total_errors，不反复重试打开文件。
+            // writer 常开 `BufWriter<File>`（append）按行写 + 周期 flush，替代每事件
+            // 一次 open；打开/写失败进入 broken 模式（句柄 None），后续事件逐条计错。
             let mut writer: Option<std::io::BufWriter<std::fs::File>> =
                 match std::fs::OpenOptions::new()
                     .create(true)
@@ -243,9 +210,8 @@ impl AuditLogger {
                 {
                     Ok(file) => Some(std::io::BufWriter::new(file)),
                     Err(e) => {
-                        // 打开失败只记日志不进 total_errors：total_errors 的
-                        // 口径是「审计事件持久化失败次数」，此时尚无事件丢失；
-                        // 后续每个事件的写入失败（broken 模式）逐条计数。
+                        // 打开失败只记日志不计 total_errors（此时尚无事件丢失）；
+                        // 后续每个事件的写入失败（broken 模式）才逐条计数。
                         tracing::error!(
                             path = %path_clone,
                             error = %e,
@@ -309,15 +275,8 @@ impl AuditLogger {
         }
     }
 
-    /// （CWE-22）：验证审计日志路径安全性。
-    ///
-    /// 拒绝：
-    /// - 空路径
-    /// - 包含 `..` 组件的路径（路径遍历攻击）
-    ///
-    /// 允许：
-    /// - 绝对路径（如 `/var/log/nebulaid/audit.log`）
-    /// - 相对路径（如 `logs/audit.log`）
+    /// （CWE-22）：验证审计日志路径安全性：拒绝空路径与含 `..` 组件的路径；
+    /// 绝对路径（`/var/log/...`）与相对路径（`logs/audit.log`）均可。
     fn validate_log_path(path: &str) -> std::io::Result<()> {
         use std::path::Component;
 
@@ -346,17 +305,14 @@ impl AuditLogger {
 
     /// 记录一条审计事件。
     ///
-    /// 入参收 `impl Into<Arc<AuditEvent>>`：内存环形与文件 writer
-    /// 共享同一 `Arc` 实例，消除原实现的两次深拷贝（push_back 一次深拷贝
-    /// 加 Box::new 一次深拷贝）。调用方传 owned 事件（历史路径零改动）或
-    /// 已构造的 `Arc<AuditEvent>`（多写场景免拷贝）皆可。
+    /// 入参收 `impl Into<Arc<AuditEvent>>`：内存环形与文件 writer 共享同一 `Arc`，
+    /// 消除两次深拷贝；调用方传 owned 事件或 `Arc<AuditEvent>` 皆可。
     pub async fn log(&self, event: impl Into<Arc<AuditEvent>>) {
         self.log_shared(event.into()).await;
     }
 
-    /// `log` 的执行体（inherent async，无 async_trait 反序列化，
-    /// `#[instrument]` 属性覆盖可靠）。 热路径观测：span 字段仅事件
-    /// 类型/workspace/结果，不含事件明细与任何凭据。
+    /// `log` 的执行体（inherent async，`#[instrument]` 覆盖可靠）。
+    /// span 字段只含事件类型/workspace/结果，不含明细与凭据。
     #[tracing::instrument(
         name = "audit.log",
         skip_all,
@@ -367,15 +323,12 @@ impl AuditLogger {
         )
     )]
     async fn log_shared(&self, event: Arc<AuditEvent>) {
-        // 环满时先在锁内摘下最旧事件，丢弃告警在锁外发。tracing 后端可能
-        // 阻塞（实测 inklog 异步通道积压到 capacity 后每条日志 send_timeout
-        // 阻塞 100ms）：warn 一旦横跨互斥锁，全部请求的审计写入就会按日志
-        // 后端的退避速度串行化（历史事故：环满后 HTTP 全服务塌到 ~6 rps）。
+        // 环满时先在锁内摘下最旧事件，丢弃告警在锁外发：tracing 后端可能阻塞，
+        // warn 一旦横跨互斥锁，全部审计写入会按日志后端退避速度串行化。
         let dropped = {
             let mut events = self.events.lock().await;
-            // 修复：VecDeque 满时丢弃最旧事件。如果未配置文件持久化，
-            // 丢弃意味着审计事件永久丢失（违反 SOC2/GDPR 合规）。
-            // 此处记录 warning 提示运维人员配置 `audit_log_path`。
+            // VecDeque 满时丢弃最旧事件；未配置文件持久化即永久丢失，
+            // 故 warn 提示运维配置 `audit_log_path`（合规要求）。
             let mut dropped = Vec::new();
             if events.len() >= self.max_events {
                 let dropped_count = events.len() - self.max_events + 1;
@@ -386,7 +339,7 @@ impl AuditLogger {
                             dropped.push(dropped_event);
                             self.total_errors.fetch_add(1, Ordering::SeqCst);
                         }
-                        // 已配置 file_tx 的事件已被异步写入文件，内存丢弃可接受
+                        // 已配置 file_tx 的事件已异步写入文件，内存丢弃可接受
                     }
                 }
             }
@@ -433,25 +386,12 @@ impl AuditLogger {
         );
     }
 
-    /// 将单个审计事件写入文件（由 writer task 调用，不在 Mutex 持有期间执行）。
+    /// 将单个审计事件写入文件（writer task 调用，不在 Mutex 持有期间执行）。
     ///
-    /// （CWE-532）：写入文件前对 PII 字段脱敏。
-    /// - `client_ip`：保留前 3 段（IPv4）或前 4 段（IPv6），末段用 `x` 替换
-    /// - `user_agent`：替换为固定字符串 `UA(redacted)`，避免记录完整 UA
-    /// - `user_id`：保留（API key 标识符，非个人身份信息）
+    /// CWE-532 脱敏：`client_ip` 遮蔽末段、`user_agent` 替换为 `UA(redacted)`；
+    /// 其余字段引用序列化避免深拷贝；不做每事件 fsync，flush 由调用方触发。
     ///
-    /// PERF- 修复：原实现先 `redact_for_persistence()` 创建完整 AuditEvent
-    /// 深拷贝（6-7 次 String clone + 1 次 Value 深拷贝），再 `to_string`。
-    /// 现直接构建 `serde_json::Value`，仅对需要脱敏的 2 个字段做转换，
-    /// 其余字段通过 `&` 引用序列化（serde 自动处理），避免深拷贝。
-    /// 10k QPS 场景下减少约 1-2 万次/秒的 String 堆分配（注：`json!` 宏
-    /// 仍会克隆 `redacted_client_ip` / `redacted_user_agent`，所以实际
-    /// 节省的是其余字段的深拷贝，量级为 1-2 万次/秒）。
-    ///
-    /// 热路径观测：span 字段仅事件类型/workspace，事件体与路径不进 span。
-    ///
-    /// writer task 走常开 `BufWriter`（`append_event`），本函数仅剩
-    /// 单测直写用途（作为逐字节一致的对照实现），故 cfg(test)。
+    /// 现仅单测直写用途（writer task 走常开 BufWriter 的 `append_event`），故 cfg(test)。
     #[cfg(test)]
     #[tracing::instrument(
         name = "audit.write_event_to_file",
@@ -462,9 +402,8 @@ impl AuditLogger {
         )
     )]
     async fn write_event_to_file(event: &AuditEvent, path: &str) -> std::io::Result<()> {
-        // 使用同步 std::fs 而非 tokio::fs：writer task 是专用串行消费者，
-        // 阻塞 I/O 可接受。同步 I/O 消除 tokio::fs::File 异步 drop 与后续
-        // 读取之间的竞争（数据在 write_all 返回后立即可见，无需 sync_all）。
+        // 用同步 std::fs：writer task 是专用串行消费者，阻塞 I/O 可接受；
+        // 数据在 write_all 返回后立即可见，消除异步 drop 与读取的竞争。
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
@@ -473,14 +412,13 @@ impl AuditLogger {
 
         let line = Self::serialize_event_line(event)?;
         file.write_all(&line)?;
-        // 不在此处 sync_all：每事件 fsync 在高 QPS 场景下会成为 I/O 瓶颈。
-        // 数据持久化由调用方按需调用 `flush()` 触发（writer task 执行 sync_all）。
+        // 不在此处 sync_all：每事件 fsync 在高 QPS 下是 I/O 瓶颈；
+        // 持久化由调用方 `flush()` 触发（writer task 执行 sync_all）。
         Ok(())
     }
 
-    /// 审计事件 → 单行 JSON 字节（含换行）。文件持久化的唯一序列化实现：
-    /// 直写辅助 [`Self::write_event_to_file`] 与 writer task 的常开
-    /// `BufWriter`共用，保证两条写入路径逐字节一致。
+    /// 审计事件 → 单行 JSON 字节（含换行）；文件持久化的唯一序列化实现，
+    /// 直写辅助与 writer task 的常开 `BufWriter` 共用，保证逐字节一致。
     fn serialize_event_line(event: &AuditEvent) -> std::io::Result<Vec<u8>> {
         // 仅对需要脱敏的 client_ip / user_agent 做转换，其余字段引用序列化。
         let redacted_client_ip = event.client_ip.as_deref().map(AuditEvent::redact_ip);
@@ -513,8 +451,7 @@ impl AuditLogger {
     }
 
     /// writer task 写入路径：向常开 `BufWriter` 追加一行。
-    /// 句柄为 `None`（broken 模式：初始打开或写入失败后）时返回错误，
-    /// 由调用方计入 total_errors。
+    /// 句柄为 `None`（broken 模式）时返回错误，由调用方计入 total_errors。
     fn append_event(
         writer: &mut Option<std::io::BufWriter<std::fs::File>>,
         event: &AuditEvent,
@@ -551,14 +488,11 @@ impl AuditLogger {
 
     /// 显式 flush：等待 writer task 处理完所有已发送事件并 sync_all 落盘。
     ///
-    /// 替代测试中的 `sleep(100ms)` 等待模式，提供确定性持久化保证。
-    /// 生产路径中按需调用（如关闭前、关键审计点后），避免每事件 fsync 的性能开销。
-    ///
-    /// 若未配置文件持久化（`file_tx` 为 None），则立即返回（无操作）。
+    /// 替代测试中的 `sleep` 等待，提供确定性持久化保证；未配置持久化时立即返回。
     pub async fn flush(&self) {
         if let Some(ref tx) = self.file_tx {
             let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-            // Flush 命令排在所有已发送 Event 之后，writer task 会先处理完事件再 sync
+            // Flush 命令排在所有已发送 Event 之后，writer 会先处理完事件再 sync
             if tx.send(AuditCommand::Flush(ack_tx)).is_ok() {
                 let _ = ack_rx.await;
             }
@@ -1059,9 +993,8 @@ impl AuditLogger {
 #[async_trait]
 impl CoreAuditLoggerTrait for AuditLogger {
     async fn log(&self, event: CoreAuditEvent) {
-        // 修复：AuditEventType/AuditResult 已统一为 core 层定义，
-        // 无需 match 转换。CoreAuditEvent.result 可能是 Unknown，
-        // server 端保留该语义（不再强制映射为 Failure，避免信息丢失）。
+        // event_type/result 已统一为 core 定义，无需转换；
+        // result=Unknown 保留语义，不强制映射为 Failure（避免信息丢失）。
         let server_event = AuditEvent {
             id: next_audit_event_id(),
             timestamp: event.timestamp,
@@ -1254,28 +1187,28 @@ mod tests {
     #[test]
     fn test_redact_ip_ipv6_loopback() {
         let redacted = AuditEvent::redact_ip("::1");
-        // ::1 parses as IPv6 with all-zero segments except last
+        // ::1 解析为前 7 段全 0 的 IPv6
         assert!(redacted.ends_with(":x:x:x:x"));
         assert!(redacted.starts_with("0:0:0:0"));
     }
 
     #[test]
     fn test_redact_ip_short_non_ip_kept_as_is() {
-        // <= 8 chars non-IP: returned as-is (prefix)
+        // ≤ 8 字符的非 IP 原样返回
         let redacted = AuditEvent::redact_ip("unknown");
         assert_eq!(redacted, "unknown");
     }
 
     #[test]
     fn test_redact_ip_long_non_ip_truncated_with_redacted_suffix() {
-        // > 8 chars non-IP: first 8 chars + "...redacted"
+        // > 8 字符的非 IP：前 8 字符 + "...redacted"
         let redacted = AuditEvent::redact_ip("very-long-hostname.example.com");
         assert_eq!(redacted, "very-lon...redacted");
     }
 
     #[test]
     fn test_redact_ip_empty_string() {
-        // Empty string: not a valid IP, prefix is empty, len <= 8 → empty string
+        // 空串非 IP，前缀为空且 len ≤ 8 → 空字符串
         let redacted = AuditEvent::redact_ip("");
         assert_eq!(redacted, "");
     }
@@ -1388,7 +1321,7 @@ mod tests {
 
     #[test]
     fn test_validate_log_path_absolute_accepted() {
-        // Use a platform-agnostic absolute path check
+        // 用跨平台的条件选择绝对路径
         let path = if cfg!(windows) {
             "C:\\logs\\audit.log"
         } else {
@@ -1430,7 +1363,7 @@ mod tests {
 
         logger.clear().await;
 
-        // clear only empties the events buffer; total_logged counter unchanged
+        // clear 只清空内存缓冲，total_logged 计数不变
         assert_eq!(logger.get_recent_events(100).await.len(), 0);
         assert_eq!(logger.total_logged(), 5);
     }
@@ -1467,7 +1400,7 @@ mod tests {
 
         let recent = logger.get_recent_events(2).await;
         assert_eq!(recent.len(), 2);
-        // Newest first: act-2 was logged last, so it's first in the result
+        // 最新在前：act-2 最后写入，排在首位
         assert_eq!(recent[0].action, "act-2");
         assert_eq!(recent[1].action, "act-1");
     }
@@ -1491,7 +1424,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_events_by_workspace_filters_none_workspace() {
         let logger = AuditLogger::new(10);
-        // Event with no workspace_id
+        // 无 workspace_id 的事件
         let event = AuditEvent::new(
             AuditEventType::IdGeneration,
             None,
@@ -1535,10 +1468,10 @@ mod tests {
 
     #[test]
     fn test_next_audit_event_id_uses_high_44_bits_for_timestamp() {
-        // Low 20 bits are counter; high 44 bits should be >= some recent unix_ms
+        // 低 20 位是计数器，高 44 位是 Unix 毫秒时间戳
         let id = next_audit_event_id();
         let high_44 = id >> 20;
-        // Unix millis for 2024-01-01 is around 1704067200000
+        // 2024-01-01 的 Unix 毫秒约 1704067200000
         assert!(high_44 >= 1704067200000);
     }
 
@@ -1590,7 +1523,6 @@ mod tests {
         assert_eq!(events[0].client_ip.as_deref(), Some("10.0.0.1"));
         assert_eq!(events[0].duration_ms, 25);
         assert!(events[0].error_message.is_none());
-        // Verify details payload
         let details = events[0].details.as_ref().expect("details should be set");
         assert_eq!(details["batch_size"], 100);
         assert_eq!(details["biz_tag"], "tag-1");
@@ -1625,7 +1557,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_log_batch_generation_success_no_error_no_client_ip() {
-        // Covers: success=true branch, error_message=None branch, client_ip=None → unwrap_or_default
+        // 覆盖 success=true、error_message=None、client_ip=None → unwrap_or_default
         let logger = AuditLogger::new(10);
         logger
             .log_batch_generation(
@@ -1740,14 +1672,13 @@ mod tests {
             .get_events_by_type(AuditEventType::DegradationEvent)
             .await;
         assert_eq!(events.len(), 1);
-        // Non-Critical → Partial (per server-side rule; core layer maps Normal→Success,
-        // but server logger only special-cases "Critical")
+        // 非 Critical → Partial（server 端只特判 "Critical"）
         assert_eq!(events[0].result, AuditResult::Partial);
     }
 
     #[tokio::test]
     async fn test_log_degradation_event_normal_state_is_partial() {
-        // Server-side log_degradation_event only checks == "Critical"; everything else → Partial.
+        // server 端只判 == "Critical"，其余一律 Partial。
         let logger = AuditLogger::new(10);
         logger
             .log_degradation_event(
@@ -1817,7 +1748,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_log_id_generation_failure_with_error() {
-        // Covers: success=false branch, error_message=Some branch, client_ip=None branch
+        // 覆盖 success=false、error_message=Some、client_ip=None 分支
         let logger = AuditLogger::new(10);
         logger
             .log_id_generation(
@@ -1875,7 +1806,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_log_workspace_created_without_user_and_ip() {
-        // Covers: user_id=None → unwrap_or_default, client_ip=None → unwrap_or_default
+        // 覆盖 user_id=None、client_ip=None → unwrap_or_default
         let logger = AuditLogger::new(10);
         logger
             .log_workspace_created("ws-2".to_string(), "Empty".to_string(), None, None)
@@ -1976,7 +1907,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].action, "update_group");
         assert_eq!(events[0].resource, "group:grp-1:Engineering Renamed");
-        // None → unwrap_or_default → empty string
+        // None → unwrap_or_default → 空字符串
         assert_eq!(events[0].user_id.as_deref(), Some(""));
         assert_eq!(events[0].client_ip.as_deref(), Some(""));
     }
@@ -2095,7 +2026,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_log_api_key_created_without_workspace() {
-        // Admin keys can have workspace_id = None
+        // Admin key 的 workspace_id 可为 None
         let logger = AuditLogger::new(10);
         logger
             .log_api_key_created(
@@ -2184,7 +2115,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_log_api_key_regenerated_without_user_and_ip() {
-        // Covers: user_id=None, client_ip=None branches
+        // 覆盖 user_id=None、client_ip=None 分支
         let logger = AuditLogger::new(10);
         logger
             .log_api_key_regenerated(
@@ -2208,12 +2139,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_with_file_logging_empty_path_falls_back_to_memory_logger() {
-        // Invalid path → validate_log_path fails → fall back to new(max_events)
+        // 无效路径 → 回退 new(max_events)（无 file_tx），仍可作内存记录器工作。
         let logger = AuditLogger::with_file_logging(100, "".to_string()).await;
-        // Fall-back logger has no file_tx
         assert_eq!(logger.total_logged(), 0);
         assert_eq!(logger.total_errors(), 0);
-        // Verify it still works as a memory logger
         let event = AuditEvent::new(
             AuditEventType::IdGeneration,
             None,
@@ -2228,7 +2157,7 @@ mod tests {
     #[tokio::test]
     async fn test_with_file_logging_traversal_path_falls_back_to_memory_logger() {
         let logger = AuditLogger::with_file_logging(100, "../../etc/passwd".to_string()).await;
-        // Should fall back — no file persistence, but logger still functional
+        // 应回退为纯内存记录器，功能不受影响
         assert_eq!(logger.total_errors(), 0);
         let event = AuditEvent::new(
             AuditEventType::IdGeneration,
@@ -2261,15 +2190,14 @@ mod tests {
 
         logger.log(event).await;
 
-        // Give the writer task time to flush
+        // 等 writer task flush
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        // Read file and verify content
         let content = tokio::fs::read_to_string(&log_path)
             .await
             .expect("file should exist");
         assert!(!content.is_empty());
-        // Each event is one JSON line
+        // 每事件一行 JSON
         let lines: Vec<&str> = content.trim().lines().collect();
         assert_eq!(lines.len(), 1);
 
@@ -2277,9 +2205,8 @@ mod tests {
         assert_eq!(parsed["action"], "generate_id");
         assert_eq!(parsed["workspace_id"], "ws-1");
         assert_eq!(parsed["duration_ms"], 15);
-        // PII redaction: client_ip last octet masked
+        // PII 脱敏：client_ip 末段遮蔽
         assert_eq!(parsed["client_ip"], "192.168.1.x");
-        // user_agent replaced with fixed string
         assert_eq!(parsed["user_agent"], "UA(redacted)");
     }
 
@@ -2308,7 +2235,7 @@ mod tests {
             .expect("file should exist");
         let lines: Vec<&str> = content.trim().lines().collect();
         assert_eq!(lines.len(), 5);
-        // Verify each line is valid JSON
+        // 每行都应是合法 JSON
         for line in &lines {
             let parsed: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
             assert_eq!(parsed["workspace_id"], "ws-batch");
@@ -2319,9 +2246,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_with_file_logging_write_failure_increments_errors() {
-        // Use a path where the parent directory doesn't exist — write_event_to_file
-        // will fail with "No such file or directory", and the writer task increments
-        // total_errors.
+        // 父目录不存在 → writer 打开失败进入 broken 模式，事件逐条计 error。
         let tmp = tempfile::tempdir().expect("create temp dir");
         let nonexistent = tmp.path().join("nonexistent_subdir").join("audit.log");
         let path_str = nonexistent.to_str().expect("path is utf-8").to_string();
@@ -2336,7 +2261,7 @@ mod tests {
         );
         logger.log(event).await;
 
-        // Wait for writer task to attempt and fail
+        // 等 writer task 尝试打开并失败
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         assert_eq!(logger.total_errors(), 1);
     }
@@ -2352,7 +2277,7 @@ mod tests {
             "res".to_string(),
             AuditResult::Success,
         );
-        // Path to a directory that doesn't exist
+        // 指向不存在的目录
         let result = AuditLogger::write_event_to_file(&event, "/nonexistent_dir/audit.log").await;
         assert!(result.is_err());
     }
@@ -2387,7 +2312,7 @@ mod tests {
         assert_eq!(parsed["user_id"], "user-99");
         assert_eq!(parsed["error_message"], "no error");
         assert_eq!(parsed["duration_ms"], 5);
-        // PII redaction
+        // PII 脱敏
         assert_eq!(parsed["client_ip"], "10.20.30.x");
         assert_eq!(parsed["user_agent"], "UA(redacted)");
     }
@@ -2447,7 +2372,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_log_drops_oldest_without_persistence_increments_errors() {
-        // max_events = 1, no file_tx → second log drops first event, increments total_errors
+        // max_events=1 且无 file_tx → 第二条淘汰第一条并计 error
         let logger = AuditLogger::new(1);
         let e1 = AuditEvent::new(
             AuditEventType::IdGeneration,
@@ -2466,11 +2391,11 @@ mod tests {
         logger.log(e1).await;
         logger.log(e2).await;
 
-        // Both events were "logged" (total_logged incremented)
+        // 两条都算 logged（total_logged 递增）
         assert_eq!(logger.total_logged(), 2);
-        // First event was dropped without persistence → error
+        // 第一条无持久化地被淘汰 → error
         assert_eq!(logger.total_errors(), 1);
-        // Only the second event remains in memory
+        // 内存只剩第二条
         let recent = logger.get_recent_events(10).await;
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].action, "second");
@@ -2478,8 +2403,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_log_drops_oldest_with_persistence_no_error() {
-        // max_events = 1, with file_tx → second log drops first event, but it was
-        // already written to file, so no error.
+        // max_events=1 且有 file_tx：旧事件已写文件，淘汰不计 error。
         let tmp = tempfile::tempdir().expect("create temp dir");
         let log_path = tmp.path().join("overflow.log");
         let path_str = log_path.to_str().expect("path is utf-8").to_string();
@@ -2506,13 +2430,13 @@ mod tests {
 
         // Both events logged
         assert_eq!(logger.total_logged(), 2);
-        // No errors because file_tx is Some (dropped events were persisted)
+        // 无 error：file_tx 存在，淘汰的事件已持久化
         assert_eq!(logger.total_errors(), 0);
-        // Only second event in memory
+        // 内存只剩第二条
         let recent = logger.get_recent_events(10).await;
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].action, "second");
-        // Both events in file
+        // 文件含两条
         let content = tokio::fs::read_to_string(&log_path)
             .await
             .expect("file should exist");
@@ -2536,9 +2460,9 @@ mod tests {
         }
 
         assert_eq!(logger.total_logged(), 5);
-        // 3 events dropped without persistence → 3 errors
+        // 3 条无持久化地被淘汰 → 3 个 error
         assert_eq!(logger.total_errors(), 3);
-        // Only last 2 remain in memory
+        // 内存只剩最后 2 条
         let recent = logger.get_recent_events(10).await;
         assert_eq!(recent.len(), 2);
         // Newest first
@@ -2562,15 +2486,14 @@ mod tests {
         )
         .with_details(serde_json::json!({"reason": "circuit_open"}));
 
-        // Use the trait method (not the inherent method)
+        // 用 trait 方法而非 inherent 方法
         use crate::core::algorithm::AuditLogger as CoreAuditLoggerTrait;
         CoreAuditLoggerTrait::log(&logger, core_event).await;
 
         assert_eq!(logger.total_logged(), 1);
         let events = logger.get_recent_events(1).await;
         assert_eq!(events.len(), 1);
-        // Server-side AuditEvent has id (from next_audit_event_id), client_ip=None,
-        // user_agent=None, duration_ms=0, error_message=None
+        // 服务端 AuditEvent：id>0，client_ip/user_agent/error_message 为 None，duration_ms=0
         assert!(events[0].id > 0);
         assert!(events[0].client_ip.is_none());
         assert!(events[0].user_agent.is_none());
@@ -2579,14 +2502,13 @@ mod tests {
         assert_eq!(events[0].workspace_id.as_deref(), Some("ws-core"));
         assert_eq!(events[0].result, AuditResult::Partial);
         assert_eq!(events[0].event_type, AuditEventType::DegradationEvent);
-        // details carried over from core event
+        // details 从 core 事件透传
         assert!(events[0].details.is_some());
     }
 
     #[tokio::test]
     async fn test_core_audit_logger_trait_log_unknown_result_preserved() {
-        // CoreAuditEvent can have result=Unknown; server-side preserves it
-        // (fix: no longer forced to Failure).
+        // core 事件 result=Unknown 时服务端保留语义，不映射为 Failure。
         use crate::core::algorithm::{
             AuditEvent as CoreAuditEvent, AuditLogger as CoreAuditLoggerTrait,
         };
@@ -2612,8 +2534,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_log_with_closed_file_channel_increments_errors() {
-        // Construct a logger manually with a dead sender (receiver dropped).
-        // Tests the `tx.send().is_err()` branch in log().
+        // 手工构造 receiver 已 drop 的 logger，覆盖 log() 的 send().is_err() 分支。
         let (tx, rx) = mpsc::unbounded_channel::<AuditCommand>();
         drop(rx); // Close the channel
 
@@ -2635,9 +2556,9 @@ mod tests {
         );
         logger.log(event).await;
 
-        // Event was still logged to memory
+        // 事件仍写入内存
         assert_eq!(logger.total_logged(), 1);
-        // Channel closed → error incremented
+        // channel 关闭 → error 递增
         assert_eq!(logger.total_errors(), 1);
     }
 
@@ -2645,8 +2566,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_logger_clone_shares_state() {
-        // AuditLogger derives Clone; cloned loggers should share the same
-        // events buffer and counters (Arc-backed).
+        // Clone 共享同一 events 缓冲与计数器（Arc-backed）。
         let logger = AuditLogger::new(10);
         let logger_clone = logger.clone();
 
@@ -2659,7 +2579,7 @@ mod tests {
         );
         logger_clone.log(event).await;
 
-        // Original logger sees the event (shared Arc<Mutex>)
+        // 原 logger 可见该事件（共享 Arc<Mutex>）
         assert_eq!(logger.total_logged(), 1);
         let recent = logger.get_recent_events(10).await;
         assert_eq!(recent.len(), 1);
@@ -2699,10 +2619,8 @@ mod tests {
 
     // ========== AuditConfig 贯通 ==========
 
-    /// AuditConfig 的容量与路径贯通 AuditLogger：以配置值构造文件 logger，
-    /// 写事件后文件存在对应行。内存环形容量 = audit.memory_capacity（第 4 条
-    /// 淘汰最旧），文件持久化不受内存容量影响（4 行全在）——容量语义只在
-    /// 内存回查面，与审计留痕面解耦。
+    /// AuditConfig 容量与路径贯通：内存环形 = `memory_capacity`（第 4 条淘汰最旧），
+    /// 文件持久化不受内存容量影响（容量语义只在内存回查面）。
     #[tokio::test]
     async fn test_audit_config_capacity_and_path_thread_through_logger() {
         let dir = tempfile::TempDir::new().unwrap();

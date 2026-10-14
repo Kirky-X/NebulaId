@@ -1,14 +1,7 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-/*! CORS 配置模块
-
-该模块提供 CORS (跨源资源共享) 配置功能，包括：
-- 生产级 CORS 配置
-- 环境感知的 CORS 策略
-- 安全头暴露
-- 预检缓存配置
-*/
+/*! CORS 配置模块：生产级配置、环境感知策略、安全头暴露与预检缓存。*/
 
 use crate::server::rate_limit::middleware::HEADER_RATE_LIMIT_REMAINING;
 use axum::http::{HeaderName, HeaderValue, Method};
@@ -20,8 +13,7 @@ const CORS_MAX_AGE: Duration = Duration::from_secs(3600);
 
 /// 暴露的响应头。
 ///
-/// 限流相关条目必须引用中间件实际写出的常量 —— header 名连字符敏感，
-/// 拼写不一致会让浏览器静默读不到该响应头。
+/// 限流条目必须引用中间件实际写出的常量：header 名连字符敏感，拼写不一致会被浏览器静默丢弃。
 pub const EXPOSED_HEADERS: [&str; 2] = ["x-request-id", HEADER_RATE_LIMIT_REMAINING];
 
 /// 支持的 HTTP 方法
@@ -35,11 +27,7 @@ const ALLOWED_METHODS: [Method; 5] = [
 
 /// 创建生产级 CORS 配置
 ///
-/// # 参数
-/// * `allowed_origins` - 允许的源列表（如果为空，则拒绝所有请求）
-///
-/// # 返回
-/// 返回配置好的 CorsLayer
+/// `allowed_origins` 为空时拒绝所有请求。
 ///
 /// # 示例
 /// ```ignore
@@ -77,12 +65,7 @@ pub fn create_cors_layer(allowed_origins: Vec<String>) -> CorsLayer {
         )
 }
 
-/// 创建开发环境的 CORS 配置
-///
-/// 允许 localhost 用于开发测试
-///
-/// # 返回
-/// 返回配置宽松的 CorsLayer，仅用于开发环境
+/// 创建开发环境的 CORS 配置：仅允许 localhost，仅供开发测试。
 pub fn create_dev_cors_layer() -> CorsLayer {
     CorsLayer::new()
         .allow_origin(AllowOrigin::list([
@@ -101,18 +84,11 @@ pub fn create_dev_cors_layer() -> CorsLayer {
         )
 }
 
-/// 创建环境感知的 CORS 配置
-///
-/// 从环境变量读取配置：
-/// - `ALLOWED_ORIGINS`: 逗号分隔的允许源列表
-/// - `NEBULA_ENV`: 环境类型（production/development；缺失或无法识别按生产处理）
-///
-/// # 返回
-/// 返回根据环境配置的 CorsLayer
+/// 创建环境感知的 CORS 配置：读 `ALLOWED_ORIGINS`（逗号分隔）；
+/// `NEBULA_ENV` 缺失或无法识别时按生产处理（fail-closed）。
 pub fn create_env_aware_cors_layer() -> CorsLayer {
-    // 环境判定唯一来源：core::config::is_production（含 NEBULA_ENV 缺失/未知
-    // 值反向默认为生产的 fail-closed 语义）。此处原先自读环境变量并回退
-    // "development"，会在缺省环境时绕开生产强校验。
+    // 环境判定唯一来源：core::config::is_production（NEBULA_ENV 缺失/未知
+    // 值 fail-closed 按生产处理），不得自行回退 development 绕开生产校验。
     let is_production = crate::core::config::is_production();
 
     let allowed_origins: Vec<String> = std::env::var("ALLOWED_ORIGINS")
@@ -142,7 +118,7 @@ pub fn create_env_aware_cors_layer() -> CorsLayer {
         }
         create_cors_layer(allowed_origins)
     } else {
-        // 开发环境使用更严格的默认配置
+        // 开发环境缺省时回落 localhost 白名单
         if allowed_origins.is_empty() {
             tracing::warn!(
                 "{}",
@@ -167,7 +143,6 @@ mod tests {
         ];
         let cors = create_cors_layer(origins);
 
-        // Verify that the layer can be created without panicking
         let _ = cors;
     }
 
@@ -175,7 +150,6 @@ mod tests {
     fn test_create_cors_layer_empty_origins() {
         let cors = create_cors_layer(vec![]);
 
-        // Verify that empty origins list is handled
         let _ = cors;
     }
 
@@ -187,7 +161,6 @@ mod tests {
         ];
         let cors = create_cors_layer(origins);
 
-        // Invalid origins should be filtered out
         let _ = cors;
     }
 
@@ -195,7 +168,6 @@ mod tests {
     fn test_create_dev_cors_layer() {
         let cors = create_dev_cors_layer();
 
-        // Verify that dev layer can be created
         let _ = cors;
     }
 

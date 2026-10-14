@@ -1,43 +1,9 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
-//! 认证决策缓存门面 —— 进程内类型化缓存，带 TTL 抖动与回源 single-flight。
-//!
-//! 存储是**类型化**的进程内条目表（`Arc<CachedIdentity>` 直接驻留）。早期版本
-//! 曾借用 garrison `GarrisonDaoOxcache`（oxcache L1 内存后端），但其 `GarrisonDao`
-//! 接口是 `String` 值 KV，每个条目都要 `serde_json` 序列化/反序列化一个往返；
-//! 认证决策只是三元组小结构，类型化直存后命中路径零序列化开销。随之而来的
-//! 两点退化已在门面内补齐：
-//!
-//! * garrison 的 glob 扫描（`keys(pattern)`）被**精确前缀删除**取代 —— 不存在
-//!   通配语义，`key_id` 中的 `*`/`?` 天然按字面量处理（回归钉桩见
-//!   `test_invalidate_does_not_treat_glob_chars_in_key_id_as_pattern`，该测试
-//!   正是因 garrison glob 丢条目而失败的基线项）；
-//! * garrison 的 Moka 容量淘汰被**条目数硬上限**（[`MAX_AUTH_CACHE_ENTRIES`]，
-//!   与 `api_key_auth` 失败表同量级）取代：插入触顶时先清扫已过期条目，仍满
-//!   则逐出最早过期者。
-//!
-//! 目标：消除「每个请求都走 DB + Argon2id」的认证热点。缓存的只是**认证决策
-//! 结果**（workspace_id + role + key 自身过期时间），因此必须解决两个正确性
-//! 问题：
-//!
-//! 1. **凭证绑定**：缓存键包含 `sha256(key_secret)`，密钥错误的凭证永远不
-//!    会命中缓存（否则只要知道 key_id 就能绕过校验）。
-//! 2. **key 生命周期**：缓存条目有效期取 `min(cache_ttl, key 剩余有效期)`，
-//!    且对 `cache_ttl` 施加每条目独立的 ±10% 抖动（防同批 key 同时过期集体
-//!    回源的雪崩），命中时再次校验 `key_expires_at`，避免「key 已过期但缓存
-//!    仍在放行」。
-//!
-//! 此外提供 [`AuthCache::get_or_load`]：miss 回源的 single-flight —— 并发未
-//! 命中同一凭证时只有一个调用方真正回源（DB + Argon2id），其余等待者共享
-//! 同一结果（含回源失败 `None`），完成后清理在途表项。
-//!
-//! 吊销（revoke）只有行 `id` 而无 `key_id`，无法精确定位条目，故走 `clear()`
-//! 全量失效；轮换（rotate）与 `key_id` 已知的路径走 `invalidate(key_id)`。
-//! **失效语义只对本进程即时生效**：缓存是进程内的，多节点部署时其他节点最长
-//! 滞后一个 `cache_ttl` 才会停止放行旧决策（运维口径见 docs/DEPLOYMENT.md）。
-//! 同理，命中缓存的请求不回写 DB，`last_used_at` 最多滞后一个 `cache_ttl`。
-//! 缓存是尽力而为的加速层：读写失败绝不影响认证结论。
+//! 认证决策缓存门面：进程内类型化条目表，TTL 抖动 + 回源 single-flight。
+//! 正确性约束：缓存键含 sha256(key_secret) 防凭证串用；条目 TTL = min(抖动 ttl, key 剩余寿命)；失败不缓存。
+//! 失效仅本进程即时生效（多节点滞后一个 cache_ttl）；读写失败不影响认证结论。
 
 use crate::core::database::ApiKeyRole;
 use parking_lot::Mutex;
@@ -54,13 +20,11 @@ use uuid::Uuid;
 /// 缓存键前缀，隔离于其他进程内键空间。
 const CACHE_KEY_PREFIX: &str = "nebulaid:auth:apikey:";
 
-/// 缓存条目数硬上限。防伪造 key_id 洪泛让条目表无界增长；与 `api_key_auth`
-/// 失败表（`MAX_TRACKED_AUTH_FAILURE_IPS`）同一量级。
+/// 缓存条目数硬上限（防伪造 key_id 洪泛），与 `api_key_auth` 失败表同量级。
 const MAX_AUTH_CACHE_ENTRIES: usize = 10_000;
 
-/// single-flight 在途表容量上限。正常情况下表项随回源完成即清理，只有
-/// 超大规模**并发** distinct-key miss 才可能触顶；触顶时先清理已完成待
-/// 回收的表项，仍满则整表清空（单飞暂时退化为各回源，正确性不受影响）。
+/// single-flight 在途表容量上限；触顶先清理已完成项，仍满则整表清空
+/// （单飞暂时退化为各自回源，正确性不受影响）。
 const MAX_INFLIGHT_LOOKUPS: usize = 10_000;
 
 /// TTL 抖动幅度：±10%。
@@ -85,23 +49,20 @@ impl CachedIdentity {
     }
 }
 
-/// 单个缓存条目。TTL 已在写入时完成 ±10% 抖动并折算成绝对时刻，
-/// 读取侧只需一次 `Instant` 比较。
+/// 单个缓存条目；TTL 已在写入时抖动并折算为绝对时刻，读取侧只需一次 `Instant` 比较。
 #[derive(Debug)]
 struct CacheEntry {
     identity: Arc<CachedIdentity>,
     expires_at: Instant,
 }
 
-/// single-flight 在途表：缓存键 -> 共享初始化单元。并发 miss 同 key 只有一个
-/// 调用方执行回源，其余等待者复用同一 `OnceCell`（含 `None` 结果）。
+/// single-flight 在途表：缓存键 → 共享初始化单元，并发 miss 同 key 只回源一次。
 type InflightCell = Arc<OnceCell<Option<Arc<CachedIdentity>>>>;
 type InflightMap = Arc<Mutex<HashMap<String, InflightCell>>>;
 
 /// 类型化条目表之上的认证缓存门面。
 pub struct AuthCache {
-    /// 条目表：缓存键 -> 条目。`Arc<Mutex<..>>` 与仓储节流表同理 ——
-    /// `AuthCache` 一律以 `Arc<AuthCache>` 共享，包一层为将来克隆语义留余地。
+    /// 条目表：缓存键 -> 条目。`AuthCache` 以 `Arc` 共享，包一层 Mutex 为将来克隆语义留余地。
     entries: Arc<Mutex<HashMap<String, CacheEntry>>>,
     /// 回源 single-flight 在途表。完成后表项即清理。
     inflight: InflightMap,
@@ -110,9 +71,7 @@ pub struct AuthCache {
 
 impl AuthCache {
     /// `ttl_seconds` 通常取 `auth.cache_ttl_seconds`；`0` 表示禁用缓存写入。
-    ///
-    /// 保留 `async` 形态：调用方（main.rs 装配、api_key_auth 测试）已按
-    /// 异步构造使用，门面存储不再依赖异步初始化的后端。
+    /// 保留 `async` 形态以兼容既有异步调用方。
     pub async fn new(ttl_seconds: u64) -> Self {
         Self {
             entries: Arc::new(Mutex::new(HashMap::new())),
@@ -133,9 +92,7 @@ impl AuthCache {
     }
 
     /// 缓存键：`{prefix}{key_id}:{sha256(key_secret)}`。
-    ///
-    /// 用哈希而非原文明文 secret，避免密钥出现在键名里（键名会进入调试输出）；
-    /// 哈希在此处仅作**身份绑定**，不承担口令校验职责。
+    /// 用哈希而非明文避免密钥进入键名；哈希仅作身份绑定，不承担口令校验。
     fn entry_key(key_id: &str, key_secret: &str) -> String {
         let mut hasher = Sha256::default();
         hasher.update(key_secret.as_bytes());
@@ -152,10 +109,7 @@ impl AuthCache {
         format!("{}{}:", CACHE_KEY_PREFIX, key_id)
     }
 
-    /// 缓存 TTL 的 ±10% 抖动（每条目写入时独立抽取）。
-    ///
-    /// 同批发放的 key 若 TTL 一致，会同时过期并在同一瞬间集体回源（缓存
-    /// 雪崩）；抖动把过期时刻摊开到 `[(1-j)T, (1+j)T]`。
+    /// 缓存 TTL 的 ±10% 抖动（每条目写入时独立抽取），把同批 key 的过期时刻摊开以防集体回源雪崩。
     fn jittered_ttl(ttl_seconds: u64) -> u64 {
         if ttl_seconds == 0 {
             return 0;
@@ -164,8 +118,7 @@ impl AuthCache {
         ((ttl_seconds as f64 * factor).round() as u64).max(1)
     }
 
-    /// 读取条目；已过 TTL 的条目视为未命中并顺手清理。命中返回决策的克隆
-    /// （三元组小结构，远廉价于旧实现的 serde_json 反序列化）。
+    /// 读取条目；已过 TTL 的条目视为未命中并顺手清理。
     fn lookup(&self, entry_key: &str) -> Option<CachedIdentity> {
         let mut entries = self.entries.lock();
         if entries
@@ -178,9 +131,8 @@ impl AuthCache {
         entries.get(entry_key).map(|e| (*e.identity).clone())
     }
 
-    /// 写入条目，TTL = `min(±10% 抖动后的 cache_ttl, key 剩余有效期)`；
-    /// 剩余有效期已耗尽或缓存禁用则不写。触顶时先清扫过期条目，仍满则
-    /// 逐出最早过期者（最旧）。
+    /// 写入条目，TTL = `min(±10% 抖动后的 cache_ttl, key 剩余有效期)`；已耗尽或禁用则不写。
+    /// 触顶时先清扫过期条目，仍满则逐出最早过期者。
     fn store(&self, entry_key: &str, identity: Arc<CachedIdentity>) {
         if self.ttl_seconds == 0 {
             return;
@@ -192,8 +144,7 @@ impl AuthCache {
                 if remaining <= 0 {
                     return;
                 }
-                // 抖动只作用于缓存 TTL 自身，再被 key 剩余寿命钳制 ——
-                // 抖动不得延长 key 的绝对有效期。
+                // 抖动只作用于缓存 TTL，再被 key 剩余寿命钳制，不得延长 key 有效期。
                 Self::jittered_ttl(self.ttl_seconds).min(remaining as u64)
             }
             None => Self::jittered_ttl(self.ttl_seconds),
@@ -239,16 +190,9 @@ impl AuthCache {
         );
     }
 
-    /// miss 回源 single-flight：未命中时回源，**并发**未命中同一凭证只执行
-    /// 一次 `load`，其余等待者共享同一结果（含 `None`）；完成后清理在途表项。
+    /// miss 回源 single-flight：并发未命中同一凭证只执行一次 `load`，等待者共享结果。
     ///
-    /// - 缓存命中：直接返回，`load` 不被调用；
-    /// - 回源成功（`Some`）：写入条目（带抖动 TTL），全部等待者收到同一决策；
-    /// - 回源失败（`None`）：不缓存（认证失败不得被钉住），等待者同样收到
-    ///   `None`，后续调用重新回源。
-    ///
-    /// 在途表容量上限 [`MAX_INFLIGHT_LOOKUPS`]：触顶先清理已完成表项，仍满
-    /// 则整表清空 —— 单飞暂时退化为各自回源，正确性不受影响。
+    /// 命中不调用 load；`Some` 写入缓存（抖动 TTL）；`None` 不缓存（失败不得被钉住），后续重新回源。
     pub async fn get_or_load<F, Fut>(
         &self,
         key_id: &str,
@@ -264,8 +208,7 @@ impl AuthCache {
             return Some(hit);
         }
 
-        // 登记/共享在途单元：同 key 的并发 miss 拿到同一个 OnceCell。
-        // 临界区内无 await（parking_lot 短临界区 + 立即释放）。
+        // 登记/共享在途单元：同 key 并发 miss 拿到同一个 OnceCell；临界区内无 await。
         let cell = {
             let mut inflight = self.inflight.lock();
             if inflight.len() >= MAX_INFLIGHT_LOOKUPS {
@@ -307,10 +250,7 @@ impl AuthCache {
     }
 
     /// 失效指定 `key_id` 名下的全部条目（轮换、禁用、删除 key 时调用）。
-    ///
-    /// 类型化表上的失效就是**精确前缀删除**：不存在 glob 通配语义，`key_id`
-    /// 源自客户端提交的凭证，含 `*`/`?` 时按字面量匹配，不可能越界删除他人
-    /// 条目（garrison glob 扫描时代的回归钉桩见对应测试）。
+    /// 精确前缀删除，`key_id` 含 `*`/`?` 时按字面量处理，不会越界删除他人条目。
     pub async fn invalidate(&self, key_id: &str) {
         let prefix = Self::key_id_prefix(key_id);
         self.entries
@@ -369,10 +309,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_typed_entry_is_shared_without_reserialization() {
-        // 钉住「值以 Arc 直存」的改造点：put 之后表内条目的 identity 必须是
-        // Arc 共享（同 put 无第二次克隆产生的新指针语义无从断言，这里断言
-        // 连续两次 get 拿到**相等**决策，且表内确实存在类型化条目 —— 旧
-        // garrison String KV 形态下不存在这一层）。
+        // 钉住「值以 Arc 直存」：旧 garrison String KV 形态不存在类型化条目层。
         let cache = AuthCache::new(300).await;
         cache.put("k1", "s1", &identity(None, None)).await;
         assert!(
@@ -396,7 +333,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_expired_key_entry_is_not_served() {
         let cache = AuthCache::new(300).await;
-        // key 已在过去过期（理论上不会写入，这里直接构造条目验证读取侧防线）
+        // 直接构造已过期条目，验证读取侧防线（store 本不会写入该形态）。
         let key = AuthCache::entry_key("k1", "s1");
         cache.entries.lock().insert(
             key.clone(),
@@ -418,10 +355,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_invalidate_does_not_treat_glob_chars_in_key_id_as_pattern() {
-        // 回归钉桩：key_id 源自客户端凭证串，含 `*`/`?` 时不得被当作 glob 通配，
-        // 否则一次 invalidate 就能清掉他人全部缓存条目（放大为拒绝服务）。
-        // garrison glob 扫描时代该测试为基线失败项（glob 丢含 `*` 的键）；
-        // 类型化表改精确前缀删除后通配语义不复存在。
+        // 回归钉桩：key_id 含 `*`/`?` 不得按 glob 处理，否则一次 invalidate 可清掉他人条目。
         let cache = AuthCache::new(300).await;
         cache.put("*", "s-star", &identity(None, None)).await;
         cache.put("k2", "s2", &identity(None, None)).await;
@@ -487,10 +421,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_stale_entry_is_dropped_not_served() {
-        // 旧 garrison String KV 时代存在「脏 JSON 条目不得下发」防线
-        // （test_malformed_entry_is_dropped_not_served）；类型化直存后该失败
-        // 类消失，读取侧仅剩的腐坏形态是过期时刻被外部改写 —— 直接构造
-        // 过期条目，断言不下发且被清理。
+        // 类型化直存后仅剩「过期时刻被外部改写」这一腐坏形态；构造过期条目断言不下发。
         let cache = AuthCache::new(300).await;
         let key = AuthCache::entry_key("k1", "s1");
         cache.entries.lock().insert(
@@ -507,8 +438,7 @@ mod tests {
 
     #[test]
     fn test_cached_identity_serialization_contains_no_secret_material() {
-        // 缓存值仅含授权决策三要素。字段集合用穷举断言钉死，
-        // 未来给 CachedIdentity 加字段时此测试强制评审是否引入敏感数据。
+        // 缓存值仅含授权决策三要素；穷举字段防未来引入敏感数据。
         let value = serde_json::to_value(identity(Some(Uuid::new_v4()), Some(42))).unwrap();
         let obj = value
             .as_object()
@@ -536,8 +466,7 @@ mod tests {
 
     #[test]
     fn test_ttl_jitter_stays_within_ten_percent() {
-        // ±10% 抖动的取值域钉桩：300s 的抖动结果必须全部落在 [270, 330]，
-        // 且多次抽样产生不止一个值（抖动确实生效，而非常数退化）。
+        // ±10% 抖动取值域：结果必须全部落在 [270, 330] 且存在差异化取值。
         let samples: std::collections::HashSet<u64> =
             (0..200).map(|_| AuthCache::jittered_ttl(300)).collect();
         assert!(
@@ -552,8 +481,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_jitter_spreads_expiry_across_same_batch_entries() {
-        // 同批写入的条目过期时刻不得全等（防同批 key 同时过期的雪崩）。
-        // 24 个条目取自 [270, 330]s 连续区间，全等概率可忽略。
+        // 同批条目过期时刻不得全等（防雪崩）；24 条取自 [270, 330]s，全等概率可忽略。
         let cache = AuthCache::new(300).await;
         for i in 0..24 {
             cache
@@ -580,8 +508,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_jitter_never_outlives_key_expiry() {
-        // 抖动只作用于缓存 TTL，不得延长 key 的绝对有效期：
-        // key 剩余 5s 时，条目过期时刻不得超过 5s（尽管抖动上限是 330s）。
+        // 抖动不得延长 key 绝对有效期：key 剩余 5s 时条目过期不得超过 5s（抖动上限 330s）。
         let cache = AuthCache::new(300).await;
         let now_unix = AuthCache::now_unix();
         cache
@@ -604,9 +531,8 @@ mod tests {
     async fn test_concurrent_miss_loads_source_exactly_once() {
         let cache = Arc::new(AuthCache::new(300).await);
         let loads = Arc::new(AtomicUsize::new(0));
-        // 用 watch 闸门把首个回源者拖在 OnceCell 里，直到全部任务完成登记，
-        // 保证 100 个 miss 真正并发（否则串行到达会各自建新单元）。闸门
-        // 超时后无条件放行：即使 single-flight 失效也不会死锁，只是断言失败。
+        // watch 闸门把首个回源者拖在 OnceCell 里直到全部任务完成登记，保证真正并发；
+        // 闸门超时后无条件放行：single-flight 失效也不会死锁，只是断言失败。
         let (gate_tx, gate_rx) = tokio::sync::watch::channel(false);
 
         let mut handles = Vec::with_capacity(100);
@@ -685,8 +611,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_single_flight_negative_result_is_not_cached() {
-        // 回源失败（None，如凭证错误）不得写入缓存：认证失败被钉住会把
-        // 「稍后修复的凭证」永久挡在门外。并发的同 key miss 仍只回源一次。
+        // 回源失败（None）不得写入缓存，否则「稍后修复的凭证」被永久挡在门外。
         let cache = Arc::new(AuthCache::new(300).await);
         let loads = Arc::new(AtomicUsize::new(0));
         let (gate_tx, gate_rx) = tokio::sync::watch::channel(false);

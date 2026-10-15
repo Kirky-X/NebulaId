@@ -130,7 +130,7 @@ impl AlgorithmHealthState {
     /// 饱和累加：计数器是 `AtomicU8`，调用方在降级后仍持续上报失败。
     /// 裸 `fetch_add` 到 256 次会 panic（panic=abort）或回绕污染指标，故饱和到 `u8::MAX`。
     fn saturating_incr(counter: &AtomicU8) {
-        let _ = counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v: u8| {
+        let _ = counter.try_update(Ordering::SeqCst, Ordering::SeqCst, |v: u8| {
             Some(v.saturating_add(1))
         });
     }

@@ -11,33 +11,19 @@
 # Each entry here is a RustSec advisory ID that cargo-audit will not flag.
 # CRITICAL: review this list on every `cargo update` and quarterly.
 ignore = [
-    # RUSTSEC-2023-0071 — rsa 0.9.10 — Marvin Attack (timing sidechannel, medium)
-    # Root cause: rsa is a transitive dep of sqlx-mysql (sqlx's mysql backend).
-    # nebulaid enables only the postgresql feature of sqlx, never mysql —
-    # sqlx-mysql is in Cargo.lock metadata only, never compiled into the binary
-    # (verified via `cargo tree --all-features --target all -i rsa` → "nothing to print").
-    # Upstream status: "No fixed upgrade is available!" per RustSec.
-    # Re-evaluate: when sqlx releases a version that drops rsa, or when rsa
-    # publishes a fix (watch https://rustsec.org/advisories/RUSTSEC-2023-0071).
-    "RUSTSEC-2023-0071",
-
-    # RUSTSEC-2026-0173 — proc-macro-error2 2.0.1 — unmaintained (warning)
-    # Root cause: transitive dep of dbnexus-macros (dbnexus v0.4.1 → dbnexus-macros
-    # → proc-macro-error2). dbnexus is an external dependency of nebulaid
-    # (used for database operations). Cannot fix without upstream dbnexus release.
-    # Upstream status: proc-macro-error2 marked unmaintained as of 2026-06-07.
-    # Risk: proc-macro crate, runs at compile time only, no runtime exposure.
-    # Re-evaluate: when dbnexus publishes a version dropping proc-macro-error2.
-    "RUSTSEC-2026-0173",
-
-    # RUSTSEC-2025-0134 — rustls-pemfile 2.2.0 — unmaintained (warning)
-    # Root cause: nebulaid directly depends on rustls-pemfile for PEM parsing
-    # in src/server/config/tls.rs (cert/key/CA loading for TLS termination).
-    # Upstream status: marked unmaintained as of 2025-11-28, no maintained
-    # fork or replacement published yet (rustls-pki-tools is not stable).
-    # Risk: PEM parsing is well-bounded input handling; no known exploit.
-    # Re-evaluate: when a maintained replacement is published.
-    "RUSTSEC-2025-0134",
+    # RUSTSEC-2024-0449 — unsafe-libyaml 0.2.11 — unmaintained (warning)
+    # Root cause: transitive chain limiteron v0.3.0-rc.7 → confers v0.6.0-rc.10
+    # (`yaml` feature = `dep:serde_yaml_ng`) → serde_yaml_ng v0.10.0 → unsafe-libyaml.
+    # limiteron enables confers' `yaml` feature; the yaml path is never exercised by
+    # nebulaid (config loading goes through TOML only), but cargo features are a union —
+    # a dependency enabling yaml puts the crate in the graph regardless.
+    # Upstream status: fixed in limiteron/confers local HEAD (YAML backend migrated
+    # serde_yaml_ng → serde-saphyr, pure Rust), not yet published to crates.io.
+    # Cannot be fixed from this repository: no newer published version exists, and
+    # feature pruning on our side cannot remove a feature another dependency enables.
+    # Re-evaluate: when limiteron/confers publish the serde-saphyr migration
+    # (track their CHANGELOGs; drop this entry and re-run `cargo audit`).
+    "RUSTSEC-2024-0449",
 ]
 
 [yanked]

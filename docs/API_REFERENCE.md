@@ -1624,7 +1624,7 @@ Nebula ID crate 的版本号，调用方可据此确认该路由由
 ```json
 {
   "status": "ok",
-  "sdforge_version": "0.3.0-rc.2"
+  "sdforge_version": "0.3.0-rc.3"
 }
 ```
 
@@ -1639,7 +1639,7 @@ Nebula ID crate 的版本号，调用方可据此确认该路由由
 
 ```bash
 curl http://localhost:8080/health/sdforge
-# {"status":"ok","sdforge_version":"0.3.0-rc.2"}
+# {"status":"ok","sdforge_version":"0.3.0-rc.3"}
 ```
 
 **注意：**

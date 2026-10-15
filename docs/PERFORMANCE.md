@@ -186,7 +186,7 @@ lto = true
 
 ### i18n 热路径（`benches/i18n.rs`）
 
-0.3.0-rc.2 起改实测（2026-10-11，同 commit `fbe5c32`+T010 门禁整改、WSL2 release）——实现已从
+0.3.0-rc.3 起改实测（数据采集于 2026-10-11，同 commit `fbe5c32`+T010 门禁整改、WSL2 release）——实现已从
 FluentBundle 双束切换为 sdforge 注册 + OnceLock 快照零锁渲染（selfdev-lib-adoption-r1），
 下表为切换后的一手基线；切换前同机旧值（41.0 / 54.1 / 89.1 ns 一档）仅存于 git 历史，
 不再代表当前实现：

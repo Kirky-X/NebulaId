@@ -11,23 +11,13 @@
 
 ## 📋 目录
 
-- [0.3.0-rc.3 - 2026-10-14](#030-rc3---2026-10-14)
-- [0.3.0-rc.2 - 2026-10-11](#030-rc2---2026-10-11)
+- [0.3.0-rc.3 - 2026-10-15](#030-rc3---2026-10-15)
 - [0.3.0-rc.1 - 2026-09-22](#030-rc1---2026-09-22)
 - [0.2.0 - 2026-07-23](#020---2026-07-23)
 
 ---
 
-## [0.3.0-rc.3] - 2026-10-14
-
-### deps（自研依赖升级至最新 RC 波次）
-
-- **8 个自研 crate 全部升级**：confers `0.6.0-rc.6`→`0.6.0-rc.10`、oxcache `0.5.0-rc.4`→`0.5.0-rc.8`、dbnexus `0.6.0-rc.5`→`0.6.0-rc.9`、sdforge `0.5.0-rc.5`→`0.5.0-rc.8`、inklog `0.3.0-rc.5`→`0.3.0-rc.9`、garrison `0.9.0-rc.2`→`0.9.0-rc.3`、trait-kit `0.5.0-rc.6`→`0.5.0-rc.9`、limiteron `0.3.0-rc.5`→`0.3.0-rc.7`。
-- **utoipa `5.5`→`6.0` 对齐**：sdforge rc.8 内部升级 utoipa 6.0，本 crate 直接依赖同步升级消除双版本类型冲突。
-- **自动收益**：confers YAML 后端迁移 serde-saphyr（消除 RUSTSEC-2024-0449 根源）、strict_booleans 泛型值解析修复；inklog 脱敏引擎缺陷修复（IPv6 压缩形式脱敏、api_key 单标记幂等、目录模式错误明细展开）；sdforge 删除 StructuredLogger 栈收敛 inklog.LoggerManager 公共面（本仓零使用）。
-- **验证**：`cargo check --all-features` 零错误；`cargo test --lib` 1662 通过 / 0 失败。
-
-## [0.3.0-rc.2] - 2026-10-11
+## [0.3.0-rc.3] - 2026-10-15
 
 ### feat（add-uuid-v5-derive：RFC 9562 v5 确定性派生）
 
@@ -84,6 +74,13 @@
 - **防猜测混淆**：新增 `IdFormat::Obfuscated`（4 轮 Feistel u64 双射，`algorithm.obfuscation.key_hex` 16 hex 配置，未配置显性报错；`Id::render` 为渲染入口，内部存储不变）。
 - **动态步长真实接线**：`DbSegmentLoader::with_dynamic_step` 按 CPU 使用率在 `[min_step, max_step]` 内计算步长（此前 CpuMonitor 采样无人消费，README 宣称与实现不符）。
 - **批量 fallback 日志对称**：批量路径 fallback 命中输出 info 日志（与单条路径一致）。
+
+### deps（自研依赖升级至最新 RC 波次）
+
+- **8 个自研 crate 全部升级**：confers `0.6.0-rc.6`→`0.6.0-rc.10`、oxcache `0.5.0-rc.4`→`0.5.0-rc.8`、dbnexus `0.6.0-rc.5`→`0.6.0-rc.9`、sdforge `0.5.0-rc.5`→`0.5.0-rc.8`、inklog `0.3.0-rc.5`→`0.3.0-rc.9`、garrison `0.9.0-rc.2`→`0.9.0-rc.3`、trait-kit `0.5.0-rc.6`→`0.5.0-rc.9`、limiteron `0.3.0-rc.5`→`0.3.0-rc.7`。
+- **utoipa `5.5`→`6.0` 对齐**：sdforge rc.8 内部升级 utoipa 6.0，本 crate 直接依赖同步升级消除双版本类型冲突。
+- **自动收益**：confers YAML 后端迁移 serde-saphyr（消除 RUSTSEC-2024-0449 根源）、strict_booleans 泛型值解析修复；inklog 脱敏引擎缺陷修复（IPv6 压缩形式脱敏、api_key 单标记幂等、目录模式错误明细展开）；sdforge 删除 StructuredLogger 栈收敛 inklog.LoggerManager 公共面（本仓零使用）。
+- **验证**：`cargo check --all-features` 零错误；`cargo test --lib`（default 1692 / all-features 1971）通过 / 0 失败。
 
 ## [0.3.0-rc.1] - 2026-09-22
 

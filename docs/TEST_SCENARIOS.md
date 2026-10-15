@@ -30,10 +30,10 @@
 
 ## 测试分层总览
 
-| 层 | 位置 | 规模（截至 0.3.0-rc.2 工作区） | 运行方式 |
+| 层 | 位置 | 规模（截至 0.3.0-rc.3 工作区） | 运行方式 |
 |----|------|---------------------------|----------|
-| 内联单元测试 | `src/` 各模块 `#[cfg(test)]` | 约 1700 个测试函数 | `cargo test --package nebulaid` |
-| E2E 测试模块 | `src/core/tests/`（11 个测试模块 + `mod.rs`） | 219 个测试函数 | `cargo test --package nebulaid --all-features` |
+| 内联单元测试 | `src/` 各模块 `#[cfg(test)]` | 约 1779 个测试函数 | `cargo test --package nebulaid` |
+| E2E 测试模块 | `src/core/tests/`（11 个测试模块 + `mod.rs`） | 220 个测试函数 | `cargo test --package nebulaid --all-features` |
 | i18n 端到端 | `tests/i18n_e2e.rs` | 1 个文件（middleware → Extension → 翻译响应全链） | 同上 |
 | 审计管道阻塞回归 | `tests/audit_ring_stall_repro.rs` | 1 个测试（灌满 inklog async 通道后断言审计 log() 不阻塞） | 同上 |
 | Shell 端到端 | `tests/*.sh` | 4 个脚本（见下节） | `./scripts/run.sh api-test` 等 |
@@ -51,7 +51,7 @@
 | `infra_e2e_tests.rs` | 21 | 基础设施（数据库连接 / 迁移） |
 | `degradation_tests.rs` | 12 | 降级链 |
 | `remaining_e2e_tests.rs` | 12 | 收尾场景 |
-| `algorithm_e2e_tests.rs` | 11 | 算法端到端 |
+| `algorithm_e2e_tests.rs` | 12 | 算法端到端 |
 | `cache_tests.rs` | 5 | 缓存 |
 | `integration_tests.rs` | 4 | 集成冒烟 |
 | `segment_monitoring_e2e_tests.rs` | 2 | Segment 监控 |
@@ -185,13 +185,13 @@ cargo bench --bench i18n
 
 ## 统计汇总
 
-截至 0.3.0-rc.2 工作区（口径：`grep -rnE '#\[(tokio::)?test\]' --include='*.rs' src tests | wc -l`）：
+截至 0.3.0-rc.3 工作区（口径：`grep -rnE '#\[(tokio::)?test\]' --include='*.rs' src tests | wc -l`）：
 
 | 类别 | 数量 |
 |------|-----:|
-| Rust 测试函数合计 | 约 1943 |
-| ├─ `src/` 内联单元测试 | 约 1717 |
-| ├─ `src/core/tests/` E2E 模块 | 219 |
+| Rust 测试函数合计 | 约 2006 |
+| ├─ `src/` 内联单元测试 | 约 1779 |
+| ├─ `src/core/tests/` E2E 模块 | 220 |
 | └─ `tests/i18n_e2e.rs` | 7（全链 i18n） |
 | Shell 端到端脚本 | 4（另有 1 个共用库） |
 | Criterion 基准组 | 2（i18n：4 函数 / 12 用例；发号热路径：7 函数 / 7 用例） |

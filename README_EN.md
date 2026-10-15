@@ -424,7 +424,7 @@ cargo bench --bench algorithms
 
 ### 📊 Test Scale
 
-As of the 0.3.0-rc.2 workspace: about 1943 Rust test functions (inline in `src/` plus the `src/core/tests/` E2E modules plus `tests/i18n_e2e.rs`), 4 shell end-to-end scripts, and 2 Criterion benchmark groups (i18n hot paths with 4 benchmark functions / 12 cases plus ID-generation / rate-limit / auth-cache hot paths with 7 benchmark functions / 7 cases). The CI coverage gate requires at least 95% line coverage, and the pre-push hook enforces a local 90% gate; actual line coverage at the v0.2.0 release was 89.91%. For per-module counts and methodology, see the [test scenario doc · statistics](docs/TEST_SCENARIOS.md#统计汇总).
+As of the 0.3.0-rc.3 workspace: about 1737 Rust test functions (`cargo test -- --list` measured), 4 shell end-to-end scripts, and 3 benchmark groups (2 Criterion groups: i18n hot paths with 4 benchmark functions / 12 cases plus ID-generation / rate-limit / auth-cache hot paths with 7 benchmark functions / 7 cases; 1 performance gate: auth_cache_adoption, comparing the baseline AuthCache against the candidate oxcache Cache on the auth-hit path in P99 and throughput). The CI coverage gate requires at least 95% line coverage, and the pre-push hook enforces a local 90% gate; actual line coverage at the v0.2.0 release was 89.91%. For per-module counts and methodology, see the [test scenario doc · statistics](docs/TEST_SCENARIOS.md#统计汇总).
 
 ---
 
@@ -512,8 +512,7 @@ For the full version history, see the [📋 Changelog](docs/CHANGELOG.md) (follo
 
 | Version | Date | Highlights |
 |------|------|------|
-| 0.3.0-rc.3 | 2026-10-14 | Self-developed dependencies upgraded to the latest RC wave (8 self-developed crates + utoipa 6.0 alignment) |
-| 0.3.0-rc.2 | 2026-10-11 | RFC 9562 v5 deterministic derivation (`uuid-v5` leaf feature, bit-exact compatible with etyma's 340,566 existing IDs), UUID v4/v7 true algorithms + breaking alias reversal, i18n folded into sdforge (snapshot lock-free rendering), garrison auth brute-force adoption (`BoundedDao` capacity valve + fail-closed), confers hot-reload wiring, pre-release three-way review remediation |
+| 0.3.0-rc.3 | 2026-10-15 | RFC 9562 v5 deterministic derivation (`uuid-v5` leaf feature, bit-exact compatible with etyma's 340,566 existing IDs), UUID v4/v7 true algorithms + ⚠️ breaking alias reversal, i18n folded into sdforge (snapshot lock-free rendering), garrison auth brute-force adoption (`BoundedDao` capacity valve + fail-closed), confers hot-reload wiring, self-developed deps upgraded to the latest RC wave (8 crates + utoipa 6.0 alignment), pre-release security remediation |
 | 0.3.0-rc.1 | 2026-09-22 | Ecosystem fully switched to the crates.io registry (RC-wave alignment), i18n migrated to the Fluent/ICU stack (fluent-bundle, aligned with the unify-rust-i18n baseline), SDK migrated to trait-kit assembly (`NebulaIdKit`), gRPC auth on all RPCs, rate limiting genuinely mounted, TLS fail-fast, config `deny_unknown_fields` + exit code 1, key rotation grace period |
 | 0.2.0 | 2026-07-23 | garrison DAO infrastructure, expanded e2e suite (95% module coverage), dbnexus / sdforge / confers architecture takeover, 3 strix security fixes |
 

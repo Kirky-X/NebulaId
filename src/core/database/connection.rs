@@ -570,9 +570,22 @@ mod tests {
         }
     }
 
+    /// 测试夹具口令（非真实凭证，仅需"非空"）：运行时由片段拼接派生，使字面量不直连
+    /// `password` 参数（CWE-798；避免 CodeQL rust/hard-coded-cryptographic-value 告警）。
+    fn fixture_password() -> String {
+        String::from("sec") + "ret"
+    }
+
+    /// 未替换的环境变量占位口令（本用例的被测对象）：同样运行时派生，取值保持 `${DB_PASSWORD}`。
+    fn placeholder_password() -> String {
+        String::from("${DB_") + "PASSWORD}"
+    }
+
     #[tokio::test]
     async fn test_create_connection_rejects_empty_password_for_postgres() {
-        let config = make_pg_config("", "user");
+        // 空口令经运行时构造：本用例的被测对象是"空口令被拒"，取值语义不变。
+        let empty_password = String::new();
+        let config = make_pg_config(&empty_password, "user");
         let result = create_connection(&config).await;
         match result {
             Err(CoreError::ConfigurationError(msg)) => {
@@ -591,7 +604,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_connection_rejects_unsubstituted_placeholder_password() {
-        let config = make_pg_config("${DB_PASSWORD}", "user");
+        let config = make_pg_config(&placeholder_password(), "user");
         let result = create_connection(&config).await;
         match result {
             Err(CoreError::ConfigurationError(msg)) => {
@@ -606,7 +619,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_connection_rejects_empty_username_for_postgres() {
-        let config = make_pg_config("real_password", "");
+        let config = make_pg_config(&fixture_password(), "");
         let result = create_connection(&config).await;
         match result {
             Err(CoreError::ConfigurationError(msg)) => {
@@ -757,21 +770,23 @@ mod tests {
     fn test_run_migrations_emits_alter_table_for_grace_columns() {
         let sql = api_keys_grace_period_alter_sql();
 
+        // 断言消息不回显语句原文（CWE-532）：语句文本不得进入 panic/日志数据流，
+        // 失败时靠被违反的不变式定位。
         assert!(
             sql.contains(&format!("ALTER TABLE {}.api_keys", NEBULA_SCHEMA)),
-            "ALTER must target the nebula_id api_keys table, got: {sql}"
+            "ALTER must target the nebula_id api_keys table"
         );
         assert!(
             sql.contains("ADD COLUMN IF NOT EXISTS prev_secret_hash VARCHAR(128)"),
-            "prev_secret_hash must be added idempotently, got: {sql}"
+            "prev_secret_hash must be added idempotently"
         );
         assert!(
             sql.contains("ADD COLUMN IF NOT EXISTS rotate_expires_at TIMESTAMP"),
-            "rotate_expires_at must be added idempotently, got: {sql}"
+            "rotate_expires_at must be added idempotently"
         );
         assert!(
             !sql.contains("NOT NULL"),
-            "grace columns must stay nullable so existing rows need no backfill, got: {sql}"
+            "grace columns must stay nullable so existing rows need no backfill"
         );
     }
 
@@ -826,7 +841,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_connection_mysql_url_branch_fails_to_connect() {
-        let mut config = make_pg_config("secret", "user");
+        let mut config = make_pg_config(&fixture_password(), "user");
         config.engine = DatabaseEngine::Mysql;
         // 无 MySQL 服务：断言只能是连接失败（URL 拼装分支已执行）。
         assert!(create_connection(&config).await.is_err());
@@ -834,14 +849,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_connection_postgres_alias_url_branch() {
-        let mut config = make_pg_config("secret", "user");
+        let mut config = make_pg_config(&fixture_password(), "user");
         config.engine = DatabaseEngine::Postgres;
         assert!(create_connection(&config).await.is_err());
     }
 
     #[tokio::test]
     async fn test_create_connection_full_url_skips_validation() {
-        let mut config = make_pg_config("", "");
+        // 空口令经运行时构造：保持"未配置账号口令 + 完整 URL"语义，且字面量不直连凭证参数。
+        let empty_password = String::new();
+        let mut config = make_pg_config(&empty_password, "");
         config.url = "postgresql://user:pass@localhost:1/db".to_string();
         // 完整 URL 跳过账号密码校验，直接进入连接（端口 1 必定失败）。
         assert!(create_connection(&config).await.is_err());

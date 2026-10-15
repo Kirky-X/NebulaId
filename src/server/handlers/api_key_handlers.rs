@@ -334,6 +334,8 @@ mod tests {
     use std::sync::Arc;
     use uuid::Uuid;
 
+    // 断言失败只报「期望什么 / 实际属于哪一类」，不回显 handler 返回值：载荷含
+    // key_secret，落进 panic/CI 日志即 CWE-312（rust/cleartext-logging）。
     fn make_handlers_with_repo(mock_repo: MockApiKeyRepository) -> Arc<ApiHandlers> {
         let mock_gen = Arc::new(MockIdGenerator::new());
         let config_service: Arc<dyn ConfigManagementService> =
@@ -387,7 +389,8 @@ mod tests {
                     "message must name the admin-key invariant, got: {msg}"
                 );
             }
-            other => panic!("expected AuthenticationError, got {other:?}"),
+            Ok(_) => panic!("expected AuthenticationError, but a key was created"),
+            Err(_) => panic!("expected AuthenticationError, got a different error kind"),
         }
     }
 
@@ -427,7 +430,8 @@ mod tests {
                     "message must name the admin-key invariant, got: {msg}"
                 );
             }
-            other => panic!("expected AuthenticationError, got {other:?}"),
+            Ok(_) => panic!("expected AuthenticationError, but a key was created"),
+            Err(_) => panic!("expected AuthenticationError, got a different error kind"),
         }
     }
 
@@ -447,7 +451,7 @@ mod tests {
 
         assert!(
             result.is_ok(),
-            "disabled admin row must not count as the last admin key, got {result:?}"
+            "disabled admin row must not count as the last admin key (expected Ok from revoke)"
         );
     }
 
@@ -475,7 +479,7 @@ mod tests {
         let result = handlers.create_api_key(Some(Uuid::new_v4()), req).await;
         assert!(
             matches!(result, Err(CoreError::AuthenticationError(_))),
-            "duplicate user key must be rejected, got {result:?}"
+            "duplicate user key must be rejected with AuthenticationError"
         );
     }
 
@@ -497,7 +501,7 @@ mod tests {
         let result = handlers.create_api_key(None, req).await;
         assert!(
             matches!(result, Err(CoreError::InvalidIdFormat(_))),
-            "bad expires_at must be rejected, got {result:?}"
+            "bad expires_at must be rejected with InvalidIdFormat"
         );
     }
 }
@@ -507,6 +511,7 @@ mod tests {
 mod create_guard_branches {
     //! create_api_key 守卫分支补测：User 缺 workspace_id、expires_at 非法，
     //! 以及缓存 invalidate/clear 接线后的真实执行路径。
+    //! 断言失败不回显返回值（载荷含 secret，落日志即 CWE-312）。
 
     use super::super::ApiHandlers;
     use super::*;
@@ -552,7 +557,7 @@ mod create_guard_branches {
         let result = handlers.create_api_key(None, req).await;
         assert!(
             matches!(result, Err(CoreError::InvalidInput(_))),
-            "User key 无 workspace 必须返回 InvalidInput, got {result:?}"
+            "User key 无 workspace 必须返回 InvalidInput"
         );
     }
 
@@ -576,7 +581,7 @@ mod create_guard_branches {
         let result = handlers.create_api_key(None, req).await;
         assert!(
             matches!(result, Err(CoreError::InvalidIdFormat(_))),
-            "非法 expires_at 必须返回 InvalidIdFormat, got {result:?}"
+            "非法 expires_at 必须返回 InvalidIdFormat"
         );
     }
 

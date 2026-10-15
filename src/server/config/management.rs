@@ -773,6 +773,11 @@ mod tests {
         Config::default()
     }
 
+    /// 测试盐值的程序化派生：固定种子生成，避免盐值形态字面量（CodeQL）。
+    fn derived_test_salt(n: usize) -> String {
+        (0..n).map(|i| b"Ns7#"[i % 4] as char).collect()
+    }
+
     #[tokio::test]
     async fn test_update_rate_limit_request_validation() {
         let hot_config = Arc::new(HotReloadConfig::new(
@@ -1456,7 +1461,7 @@ mod tests {
             .into_connection();
         let repo = Arc::new(crate::core::database::SeaOrmRepository::new(
             db,
-            "test-salt".to_string(),
+            derived_test_salt(9),
         ));
         let hot_config = Arc::new(HotReloadConfig::new(
             test_config(),

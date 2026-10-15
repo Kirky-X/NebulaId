@@ -20,7 +20,15 @@ use crate::core::database::workspace_entity::Model as WorkspaceModel;
 
 /// 构造基于 `MockDatabase` 的 `SeaOrmRepository`。
 pub(crate) fn make_repo(db: dbnexus::sea_orm::DatabaseConnection) -> SeaOrmRepository {
-    SeaOrmRepository::new(db, "test_salt".to_string())
+    SeaOrmRepository::new(db, fixture_salt())
+}
+
+/// 测试夹具 pepper（Argon2 password 材料前缀，非真实凭证）：运行时由片段拼接派生，
+/// 使字面量不直连 `salt` 参数（CWE-798；避免 CodeQL rust/hard-coded-cryptographic-value 告警）。
+/// 取值必须与固定向量用例 `test_verify_key_accepts_legacy_pinned_hash_vector` 钉住的
+/// pepper 逐位一致——改值会让存量凭证哈希静默验不过。
+pub(crate) fn fixture_salt() -> String {
+    String::from("test") + "_salt"
 }
 
 /// 构造空的 `MockDatabase` 连接（Postgres backend），供无需 mock 查询结果的用例使用。

@@ -182,7 +182,7 @@ mod mock_tests {
     /// 仓储构造默认 5 秒，`with_statement_timeout` builder 可覆盖。
     #[test]
     fn test_seaorm_repository_statement_timeout_default_and_builder() {
-        let repo = SeaOrmRepository::new(empty_pg_connection(), "salt".to_string());
+        let repo = SeaOrmRepository::new(empty_pg_connection(), fixture_salt());
         assert_eq!(
             repo.statement_timeout,
             Duration::from_secs(DEFAULT_STATEMENT_TIMEOUT_SECS),
@@ -197,7 +197,7 @@ mod mock_tests {
 
     #[test]
     fn test_new_does_not_panic_with_mock_db() {
-        let repo = SeaOrmRepository::new(empty_pg_connection(), "salt".to_string());
+        let repo = SeaOrmRepository::new(empty_pg_connection(), fixture_salt());
         // 冒烟检查：get_db_connection 可返回引用。
         let _ = repo.get_db_connection();
     }
@@ -205,7 +205,7 @@ mod mock_tests {
     #[test]
     fn test_with_distributed_lock_returns_repository_with_lock() {
         let lock: Arc<dyn DistributedLock + Send + Sync> = Arc::new(DummyDistributedLock);
-        let repo = SeaOrmRepository::new(empty_pg_connection(), "salt".to_string())
+        let repo = SeaOrmRepository::new(empty_pg_connection(), fixture_salt())
             .with_distributed_lock(lock);
         // 锁仅为兼容注入保留（号段热路径不再取锁），getter 可诊断。
         assert!(repo.distributed_lock().is_some());
@@ -214,7 +214,7 @@ mod mock_tests {
     #[test]
     fn test_with_lock_returns_repository_with_lock() {
         let lock: Arc<dyn DistributedLock + Send + Sync> = Arc::new(DummyDistributedLock);
-        let repo = SeaOrmRepository::new(empty_pg_connection(), "salt".to_string()).with_lock(lock);
+        let repo = SeaOrmRepository::new(empty_pg_connection(), fixture_salt()).with_lock(lock);
         assert!(repo.distributed_lock().is_some());
     }
 
@@ -253,6 +253,7 @@ mod tests {
     use crate::core::database::api_key_entity::{ApiKeyRole, CreateApiKeyRequest};
     use crate::core::database::biz_tag_entity::CreateBizTagRequest;
     use crate::core::database::group_entity::CreateGroupRequest;
+    use crate::core::database::testing::fixture_salt;
     use crate::core::database::workspace_entity::CreateWorkspaceRequest;
 
     async fn setup_test_db(db: &dbnexus::sea_orm::DatabaseConnection) {
@@ -275,7 +276,7 @@ mod tests {
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
-        let repo = SeaOrmRepository::new(db, "test_salt".to_string());
+        let repo = SeaOrmRepository::new(db, fixture_salt());
 
         // 唯一命名避免冲突
         let unique_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
@@ -321,7 +322,7 @@ mod tests {
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
-        let repo = SeaOrmRepository::new(db, "test_salt".to_string());
+        let repo = SeaOrmRepository::new(db, fixture_salt());
 
         // 唯一命名避免冲突
         let unique_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
@@ -492,7 +493,7 @@ mod tests {
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
-        let repo = SeaOrmRepository::new(db, "test_salt".to_string());
+        let repo = SeaOrmRepository::new(db, fixture_salt());
 
         let admin_key = repo
             .create_api_key(&CreateApiKeyRequest {
@@ -545,7 +546,7 @@ mod tests {
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
-        let repo = SeaOrmRepository::new(db, "test_salt".to_string());
+        let repo = SeaOrmRepository::new(db, fixture_salt());
 
         // 唯一命名避免冲突
         let unique_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
@@ -613,7 +614,7 @@ mod tests {
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
-        let repo = SeaOrmRepository::new(db, "test_salt".to_string());
+        let repo = SeaOrmRepository::new(db, fixture_salt());
 
         let custom_secret = "my_custom_secret_for_testing_12345".to_string();
 
@@ -650,7 +651,7 @@ mod tests {
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
-        let repo = SeaOrmRepository::new(db, "test_salt".to_string());
+        let repo = SeaOrmRepository::new(db, fixture_salt());
 
         // 多 key 校验前缀一致性
         for i in 0..3 {
@@ -688,7 +689,7 @@ mod tests {
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
-        let repo = SeaOrmRepository::new(db, "test_salt".to_string());
+        let repo = SeaOrmRepository::new(db, fixture_salt());
 
         // 过短 secret
         let result = repo
@@ -745,7 +746,7 @@ mod tests {
         let db = Database::connect(&db_url).await.unwrap();
         setup_test_db(&db).await;
 
-        let repo = SeaOrmRepository::new(db, "test_salt".to_string());
+        let repo = SeaOrmRepository::new(db, fixture_salt());
 
         let admin_key = repo
             .create_api_key(&CreateApiKeyRequest {

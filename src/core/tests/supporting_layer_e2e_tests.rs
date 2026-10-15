@@ -88,7 +88,9 @@ async fn e2e_config_load_from_file_missing_returns_file_not_found() {
                 msg
             );
         }
-        other => panic!("E2E: expected FileNotFound, got {:?}", other),
+        // 断言消息不打印结果本体：`load_from_file` 的返回被 CodeQL
+        // rust/cleartext-logging 视为含密数据，输出到断言消息即告警。
+        _ => panic!("E2E: expected FileNotFound, got a different result"),
     }
 }
 
@@ -102,8 +104,7 @@ async fn e2e_config_load_from_file_invalid_toml_returns_invalid_value() {
     let result = Config::load_from_file(file_path.to_str().unwrap());
     assert!(
         matches!(result, Err(ConfigError::InvalidValue(_))),
-        "E2E: invalid TOML should return InvalidValue, got {:?}",
-        result
+        "E2E: invalid TOML should return InvalidValue, got a different result"
     );
 }
 

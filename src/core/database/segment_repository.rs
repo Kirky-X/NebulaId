@@ -733,7 +733,7 @@ mod mock_tests {
             .append_query_results(vec![vec![returning_row(1, 101)]])
             .into_connection();
         let lock: Arc<dyn DistributedLock + Send + Sync> = Arc::new(FailingDistributedLock);
-        let repo = SeaOrmRepository::new(db, "salt".to_string()).with_distributed_lock(lock);
+        let repo = SeaOrmRepository::new(db, fixture_salt()).with_distributed_lock(lock);
 
         let seg = repo.allocate_segment("ws1", "t1", 100).await.unwrap();
         assert_eq!(seg.current_id, 1);

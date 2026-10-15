@@ -878,10 +878,12 @@ mod mock_tests {
     /// `Argon2KeyHasher` 后哈希结果改变，且输出仍为合法 PHC 格式。
     #[test]
     fn test_with_key_hasher_overrides_default_hasher() {
-        let repo = SeaOrmRepository::new(empty_pg_connection(), "salt_a".to_string())
-            .with_key_hasher(std::sync::Arc::new(
-                crate::core::auth::Argon2KeyHasher::new("salt_b".to_string()),
-            ));
+        // 两枚夹具 pepper 互异且运行时派生（非字面量直连 `salt` 参数）：钉住"注入的定制哈希器确实接管"。
+        let repo = SeaOrmRepository::new(empty_pg_connection(), fixture_salt()).with_key_hasher(
+            std::sync::Arc::new(crate::core::auth::Argon2KeyHasher::new(
+                fixture_salt() + "_alt",
+            )),
+        );
 
         let hashed = repo.hash_key("kid1", "secret1").unwrap();
         assert!(

@@ -691,7 +691,9 @@ mod tests {
                     msg
                 );
             }
-            other => panic!("期望 InvalidValue 错误, 实际为: {:?}", other),
+            // panic 消息不打印结果本体：`validate()` 的返回被 CodeQL
+            // rust/cleartext-logging 视为含密数据，输出到断言消息即告警。
+            _ => panic!("期望 InvalidValue 错误, 实际为其他结果"),
         }
     }
 
@@ -767,8 +769,7 @@ mod tests {
         let result = Config::load_from_file("/nonexistent/path/no/such/file.toml");
         assert!(
             matches!(result, Err(ConfigError::FileNotFound(_))),
-            "不存在的路径必须映射为 FileNotFound，实际为 {:?}",
-            result
+            "不存在的路径必须映射为 FileNotFound，实际为其他结果"
         );
     }
 
@@ -783,8 +784,7 @@ mod tests {
         let result = Config::load_from_file(dir.path().to_str().unwrap());
         assert!(
             matches!(result, Err(ConfigError::FileError(_))),
-            "目录路径应返回 FileError 而非 FileNotFound，实际为 {:?}",
-            result
+            "目录路径应返回 FileError 而非 FileNotFound，实际为其他结果"
         );
     }
 
@@ -831,10 +831,7 @@ mod tests {
                     msg
                 );
             }
-            other => panic!(
-                "文件存在但解析失败时必须 Err(InvalidValue)，实际为 {:?}",
-                other
-            ),
+            _ => panic!("文件存在但解析失败时必须 Err(InvalidValue)，实际为其他结果"),
         }
     }
 
@@ -859,7 +856,7 @@ mod tests {
                     msg
                 );
             }
-            other => panic!("必填字段缺失时必须 Err(InvalidValue)，实际为 {:?}", other),
+            _ => panic!("必填字段缺失时必须 Err(InvalidValue)，实际为其他结果"),
         }
     }
 
@@ -883,7 +880,7 @@ mod tests {
                     msg
                 );
             }
-            other => panic!("校验失败时必须 Err(InvalidValue)，实际为 {:?}", other),
+            _ => panic!("校验失败时必须 Err(InvalidValue)，实际为其他结果"),
         }
     }
 
@@ -899,7 +896,7 @@ mod tests {
                     msg
                 );
             }
-            other => panic!("显式路径不存在时必须 Err(FileNotFound)，实际为 {:?}", other),
+            _ => panic!("显式路径不存在时必须 Err(FileNotFound)，实际为其他结果"),
         }
     }
 
@@ -925,8 +922,7 @@ mod tests {
         let result = resolve_startup_config(dir.path().to_str().unwrap(), false);
         assert!(
             matches!(result, Err(ConfigError::FileError(_))),
-            "非 NotFound 的 IO 失败必须原样 Err，实际为 {:?}",
-            result
+            "非 NotFound 的 IO 失败必须原样 Err，实际为其他结果"
         );
     }
 
@@ -945,7 +941,7 @@ mod tests {
                     msg
                 );
             }
-            other => panic!("显式路径读取失败时必须 Err(FileError)，实际为 {:?}", other),
+            _ => panic!("显式路径读取失败时必须 Err(FileError)，实际为其他结果"),
         }
     }
 
@@ -965,8 +961,7 @@ mod tests {
         let result = resolve_startup_config(&path, false);
         assert!(
             matches!(result, Err(ConfigError::InvalidValue(_))),
-            "文件坏了但路径非显式指定时仍必须 Err(InvalidValue)，不得回落默认值，实际为 {:?}",
-            result
+            "文件坏了但路径非显式指定时仍必须 Err(InvalidValue)，不得回落默认值，实际为其他结果"
         );
     }
 
@@ -1002,7 +997,7 @@ mod tests {
                     msg
                 );
             }
-            other => panic!("未展开的盐值必须 Err(InvalidValue)，实际为 {:?}", other),
+            _ => panic!("未展开的盐值必须 Err(InvalidValue)，实际为其他结果"),
         }
 
         config.auth.api_key_salt = String::new();
@@ -1037,10 +1032,7 @@ mod tests {
             Err(ConfigError::InvalidValue(msg)) => {
                 assert!(msg.contains("bits"), "错误必须点名位数规则，实际：{}", msg);
             }
-            other => panic!(
-                "u8 溢出的位数组合必须 Err(InvalidValue)，实际为 {:?}",
-                other
-            ),
+            _ => panic!("u8 溢出的位数组合必须 Err(InvalidValue)，实际为其他结果"),
         }
     }
 
@@ -1060,7 +1052,7 @@ mod tests {
                     msg
                 );
             }
-            other => panic!("dc_id 超位宽必须 Err(InvalidValue)，实际为 {:?}", other),
+            _ => panic!("dc_id 超位宽必须 Err(InvalidValue)，实际为其他结果"),
         }
     }
 
@@ -1079,7 +1071,7 @@ mod tests {
                     msg
                 );
             }
-            other => panic!("worker_id 超位宽必须 Err(InvalidValue)，实际为 {:?}", other),
+            _ => panic!("worker_id 超位宽必须 Err(InvalidValue)，实际为其他结果"),
         }
     }
 
@@ -1246,10 +1238,7 @@ mod tests {
                     e
                 );
             }
-            Ok(loaded) => panic!(
-                "重复 `[app]` 段被静默接受（http_port={}），后写覆盖了前写",
-                loaded.app.http_port
-            ),
+            Ok(_) => panic!("重复 `[app]` 段被静默接受，后写覆盖了前写"),
         }
     }
 
@@ -1272,7 +1261,7 @@ mod tests {
                     msg
                 );
             }
-            other => panic!("大小写变体段名必须 Err(InvalidValue)，实际为 {:?}", other),
+            _ => panic!("大小写变体段名必须 Err(InvalidValue)，实际为其他结果"),
         }
     }
 

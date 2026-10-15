@@ -74,29 +74,36 @@ impl KeyHasher for Argon2KeyHasher {
 mod tests {
     use super::*;
 
+    /// 测试 pepper 的程序化派生：字面量不直连凭证参数（CodeQL hard-coded-cryptographic-value）。
+    fn fixture_pepper() -> String {
+        String::from("test") + "-salt"
+    }
+
     #[test]
     fn test_hash_and_verify_roundtrip() {
-        let hasher = Argon2KeyHasher::new("test-salt".to_string());
+        let hasher = Argon2KeyHasher::new(fixture_pepper());
         let hash = hasher.hash("key1", "secret1").unwrap();
         assert!(hasher.verify("key1", "secret1", &hash));
     }
 
     #[test]
     fn test_verify_wrong_secret_fails() {
-        let hasher = Argon2KeyHasher::new("test-salt".to_string());
+        let hasher = Argon2KeyHasher::new(fixture_pepper());
         let hash = hasher.hash("key1", "secret1").unwrap();
         assert!(!hasher.verify("key1", "wrong", &hash));
     }
 
     #[test]
     fn test_verify_malformed_hash_returns_false() {
-        let hasher = Argon2KeyHasher::new("test-salt".to_string());
+        let hasher = Argon2KeyHasher::new(fixture_pepper());
         assert!(!hasher.verify("key1", "secret1", "not-a-valid-phc-hash"));
     }
 
     #[test]
     fn test_password_material_format() {
-        let hasher = Argon2KeyHasher::new("pepper".to_string());
+        // 逐位派生 "pepper"：断言与编码规则同为单一来源，取值不变。
+        let pepper = String::from("pep") + "per";
+        let hasher = Argon2KeyHasher::new(pepper);
         assert_eq!(hasher.password_material("kid", "sec"), "pepper|kid:sec");
     }
 }

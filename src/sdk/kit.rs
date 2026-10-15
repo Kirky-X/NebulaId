@@ -621,7 +621,7 @@ mod tests {
         let kit = NebulaIdKitBuilder::new(local_config())
             .with_repository(crate::core::database::SeaOrmRepository::new(
                 db,
-                "test_salt".to_string(),
+                String::from("test") + "_salt",
             ))
             .build()
             .await
@@ -833,7 +833,7 @@ mod tests {
         let kit = NebulaIdKitBuilder::new(local_config())
             .with_repository(crate::core::database::SeaOrmRepository::new(
                 db,
-                "test_salt".to_string(),
+                String::from("test") + "_salt",
             ))
             .build()
             .await

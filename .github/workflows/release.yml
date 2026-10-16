@@ -107,7 +107,18 @@ jobs:
         # 发布前以最大特性集验证包完整性
         run: cargo check --package nebulaid --all-features
 
+      # 幂等:已发布版本直接跳过,避免重跑时"already exists"报错
+      - name: Check already published
+        id: published
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" -H 'User-Agent: kirky-x-release-verify' \
+            "https://crates.io/api/v1/crates/nebulaid/${VERSION}")
+          echo "nebulaid ${VERSION}: HTTP ${CODE}"
+          echo "exists=$([[ "$CODE" == "200" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+
       - name: Publish to crates.io
+        if: steps.published.outputs.exists == 'false'
         # 发布使用默认特性集：下游按需叠加 etcd/sdk。
         # 与工作区其余仓库一致走 CARGO_REGISTRY_TOKEN（OIDC trusted publishing
         # 需在 crates.io 预先配置,新 crate 首发不适用,曾致 400 静默失败）。
@@ -155,13 +166,24 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
+      # semver 预发布段（-rc.N 等）→ GitHub prerelease 标记；rc 不得抢占 Latest
+      - name: Derive prerelease flag
+        id: meta
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "PRERELEASE=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "PRERELEASE=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create Release (source archives only)
         uses: softprops/action-gh-release@v3
         with:
           name: Release v${{ steps.version.outputs.VERSION }}
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+          prerelease: ${{ steps.meta.outputs.PRERELEASE }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

@@ -117,14 +117,16 @@ jobs:
           echo "nebulaid ${VERSION}: HTTP ${CODE}"
           echo "exists=$([[ "$CODE" == "200" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
 
+      # crates.io trusted publishing（OIDC）：官方 auth-action 以 Actions OIDC 换取短时发布凭证
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18  # v1.0.5
+        id: auth
+
       - name: Publish to crates.io
         if: steps.published.outputs.exists == 'false'
         # 发布使用默认特性集：下游按需叠加 etcd/sdk。
-        # 与工作区其余仓库一致走 CARGO_REGISTRY_TOKEN（OIDC trusted publishing
-        # 需在 crates.io 预先配置,新 crate 首发不适用,曾致 400 静默失败）。
         run: cargo publish -p nebulaid
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
       # 发布成功后必须可在 crates.io 查询到（索引传播有延迟，轮询重试）。
       # crates.io API 强制要求 User-Agent 头，缺失时返回 403。

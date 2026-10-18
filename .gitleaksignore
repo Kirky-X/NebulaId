@@ -1,0 +1,7 @@
+# gitleaks 指纹忽略清单（.gitleaksignore）
+# 格式：{commit}:{file}:{rule-id}:{startline}；逐条为已核实的 src 内联测试夹具/占位（非真实凭据），
+# surgical 逐行忽略，不放行整份文件。目录级噪声由同目录 .gitleaks.toml 处理。
+88a3b60a7638041bb37e1a378879d24d82afd5b9:src/core/database/api_key_repository.rs:generic-api-key:1198
+91e382c1cfd0b9992ea0639f745b291c5198a111:src/core/database/repository.rs:generic-api-key:3122
+bd31accee9a130d4da6d3fc6cf8192c6807ea2b6:config.yaml:generic-api-key:39
+bd31accee9a130d4da6d3fc6cf8192c6807ea2b6:crates/core/src/config/config.rs:generic-api-key:142

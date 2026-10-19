@@ -35,6 +35,9 @@ Double-buffered segments, drift-guarded bit slicing, custom UUID v8 layouts — 
 
 ## 📋 Table of Contents
 
+<details open>
+<summary>📑 目录</summary>
+
 - [✨ Features](#-features)
 - [🎯 Use Cases](#-use-cases)
 - [🚀 Quick Start](#-quick-start)
@@ -54,6 +57,8 @@ Double-buffered segments, drift-guarded bit slicing, custom UUID v8 layouts — 
 - [🙏 Acknowledgments](#-acknowledgments)
 - [📞 Contact & Support](#contact--support)
 - [⭐ Star History](#-star-history)
+
+</details>
 
 ---
 
@@ -96,6 +101,9 @@ Beyond the core capabilities above, engine declarations other than PostgreSQL (t
 
 Ship ID generation as an in-process library with no separate deployment (adapted from [`examples/embedded.rs`](examples/embedded.rs)):
 
+<details>
+<summary>📄 代码 · rust</summary>
+
 ```rust
 use nebulaid::core::Config;
 use nebulaid::sdk::NebulaIdKitBuilder; // feature `sdk`
@@ -123,9 +131,14 @@ async fn main() -> nebulaid::core::Result<()> {
 }
 ```
 
+</details>
+
 ### 🔧 Unique Identifiers for Microservices
 
 `Id` is a zero-cost wrapper around UUID that converts losslessly in both directions — ideal for passing and storing identifiers across services:
+
+<details>
+<summary>📄 代码 · rust</summary>
 
 ```rust
 use nebulaid::core::types::Id;
@@ -139,20 +152,30 @@ let id_string = id.to_string(); // renders as a standard 36-char UUID string
 let uuid = id.to_uuid_v8();
 ```
 
+</details>
+
 ### ⚡ High-Throughput Batch Generation
 
 Segment's double buffering and dynamic step are internal — the step size scales with CPU usage within `[min_step, max_step]` as `step = clamp(base_step × (1 + 2 × cpu), min_step, max_step)` (busier CPU → larger segments → fewer segment fetches); from the outside you just ask for N ids in one call (`IdAlgorithm::batch_generate`):
+
+<details>
+<summary>📄 代码 · rust</summary>
 
 ```rust
 let batch = generator.batch_generate("prod", "core", "order", 1000).await?;
 println!("{} ids via {:?}", batch.len(), batch.algorithm);
 ```
 
+</details>
+
 ---
 
 ## 🚀 Quick Start
 
 ### 📦 Installation
+
+<details>
+<summary>📄 代码 · bash</summary>
 
 ```bash
 # Clone and build (default features: full server stack + all three algorithms + postgresql + garrison-auth)
@@ -163,6 +186,11 @@ cargo build --release
 # Run the server (reads config/config.toml by default; --config overrides the path)
 ./target/release/nebula-id
 ```
+
+</details>
+
+<details>
+<summary>📋 表格</summary>
 
 | Feature | Default | Description |
 |---------|:----:|------|
@@ -179,6 +207,8 @@ cargo build --release
 | `integration-tests` | ➖ | Gates `#[ignore]` tests that need a real database |
 | `alerting` | ➖ | Gates the alerting subsystem and webhook dispatch (`src/core/monitoring`, not compiled into production builds by default) |
 
+</details>
+
 > 💡 `--all-features` **is buildable** (= default + etcd + alerting + sdk + integration-tests + openapi); CI and docs uniformly adopt that switch.
 
 > ✂️ **Library-consumer trimming**: when embedding the algorithms as a library (no service deployment), trim features as needed — e.g. UUID v8 only:
@@ -193,6 +223,9 @@ cargo build --release
 ### 💡 Minimal Example
 
 The example below is adapted from [`examples/embedded.rs`](examples/embedded.rs) and generates IDs with zero DB and zero network:
+
+<details>
+<summary>📄 代码 · rust</summary>
 
 ```rust
 use nebulaid::core::Config;
@@ -219,9 +252,16 @@ async fn main() -> nebulaid::core::Result<()> {
 }
 ```
 
+</details>
+
+<details>
+<summary>📄 代码 · bash</summary>
+
 ```bash
 cargo run --package nebulaid --example embedded --features sdk
 ```
+
+</details>
 
 ### 🧭 Core Concepts
 
@@ -234,6 +274,9 @@ cargo run --package nebulaid --example embedded --features sdk
 ---
 
 ## 📚 Documentation
+
+<details>
+<summary>📋 表格</summary>
 
 | Document | Description |
 |------|------|
@@ -249,11 +292,16 @@ cargo run --package nebulaid --example embedded --features sdk
 | [📋 Changelog](docs/CHANGELOG.md) | Change records for every release |
 | [🤝 Contributing Guide](docs/CONTRIBUTING.md) | How to participate in project development |
 
+</details>
+
 ---
 
 ## 💻 Examples
 
 All examples live in the [`examples/`](examples/) directory and are built only with the `sdk` feature enabled:
+
+<details>
+<summary>📄 代码 · bash</summary>
 
 ```bash
 # Embedded SDK: generate IDs with zero DB and zero network
@@ -262,6 +310,8 @@ cargo run --package nebulaid --example embedded --features sdk
 # SDK server: sdforge #[forge] wrapper + OpenAPI documentation
 cargo run --package nebulaid --example sdk_server --features sdk,http
 ```
+
+</details>
 
 ### 🧩 embedded.rs
 
@@ -286,6 +336,9 @@ For the architecture diagram, module dependencies, external library roles, the `
 `Config` spans the thirteen sections `app`, `database`, `redis`, `etcd`, `auth`, `algorithm`, `monitoring`, `logging`, `rate_limit`, `audit`, `hot_reload`, `tls`, and `batch_generate`; apart from `[redis]`, `[audit]`, and `[hot_reload]` — which carry `serde(default)` and may be omitted entirely — the remaining ten sections are **required**. All 18 config structs carry `#[serde(deny_unknown_fields)]`, so unknown keys and missing required keys alike fail the whole file and abort startup with exit code 1. Environment variables work in two ways: `APP_HOST`, `DATABASE_URL`, `ETCD_ENDPOINTS`, and friends override the file config at startup, while `NEBULA_DATABASE_PASSWORD`, `NEBULA_API_KEY_SALT`, and friends are referenced inside the file as `${VAR}` and expanded before parsing.
 
 The smallest fully parseable config ships as [`config/config.toml`](config/config.toml) and looks like:
+
+<details>
+<summary>📄 代码 · toml</summary>
 
 ```toml
 [app]
@@ -347,6 +400,8 @@ grpc_enabled = false
 max_batch_size = 100        # validate(): 1..=10000
 ```
 
+</details>
+
 > ⚠️ Note: at server startup `Config::merge()` overwrites the `algorithm.segment` / `algorithm.snowflake` / `algorithm.uuid_v8` sub-tables with environment-derived values (only `algorithm.default` survives); do not rely on those sub-tables until that merge is fixed.
 
 **The full options table (type / default / required), the `Config::validate()` rule list, and per-version migration steps live in the [Config Migration Guide](docs/CONFIG_MIGRATION_GUIDE.md).**
@@ -357,10 +412,15 @@ max_batch_size = 100        # validate(): 1..=10000
 
 Since v0.2.0 Nebula ID ships built-in internationalization, now on the Fluent/ICU stack (fluent-bundle + unic-langid + sys-locale, replacing the rust-i18n YAML backend in 0.3.0 and aligned with the unify-rust-i18n baseline) covering runtime translation of error messages and logs:
 
+<details>
+<summary>📋 表格</summary>
+
 | Locale tag | Language | Locales file | Status |
 |------------|----------|--------------|--------|
 | `en` | English (default) | `locales/en/messages.ftl` | ✅ Complete |
 | `zh-CN` | Simplified Chinese | `locales/zh/messages.ftl` | ✅ Complete |
+
+</details>
 
 Negotiation: `locale_middleware` parses the HTTP `Accept-Language` header (RFC 7231 §5.3.5), matches the first supported locale by descending q-value (exact match wins, then prefix match), and falls back to `en` when the header is missing; business handlers read the result via `Extension<Locale>` and translate error responses. `Locale` derives from user input and is forgeable — do **not** use it for authentication, authorization, or any security decision.
 
@@ -372,6 +432,9 @@ For curl examples, header semantics, and the i18n module's place in the architec
 
 Since v0.2.0 all development/deployment scripts are merged into the single entry point `scripts/run.sh` (legacy scripts were renamed to `_*_impl.sh` internals and are no longer invoked directly):
 
+<details>
+<summary>📋 表格</summary>
+
 | Subcommand | Alias | Purpose |
 |--------|------|------|
 | `deploy` | — | Deploy the full stack via docker-compose (PostgreSQL + Redis + Etcd + App) |
@@ -381,10 +444,17 @@ Since v0.2.0 all development/deployment scripts are merged into the single entry
 | `install-hooks` | — | Install git pre-commit hooks |
 | `help` | `--help`, `-h` | Show usage |
 
+</details>
+
+<details>
+<summary>📄 代码 · bash</summary>
+
 ```bash
 ./scripts/run.sh pre-commit            # run before every commit
 ./scripts/run.sh api-test http://localhost:8080
 ```
+
+</details>
 
 CI (`ci.yml` / `release.yml` / `health-check.yml`) does not go through `scripts/run.sh`; it invokes the toolchain directly (`cargo fmt` / `clippy` / `test` / `llvm-cov` / `deny` / `audit`). `scripts/run.sh` is the local development entry point — it shares the same toolchain with CI but the call paths are independent. For the internal implementations and full arguments of each subcommand, see the [Deployment Guide · scripts/run.sh subcommands](docs/DEPLOYMENT.md#8-scriptsrunsh-子命令).
 
@@ -397,6 +467,9 @@ CI (`ci.yml` / `release.yml` / `health-check.yml`) does not go through `scripts/
 Testing is layered: inline unit tests in `src/` (`#[cfg(test)]`), E2E modules under `src/core/tests/` organized by layer (algorithms, auth, cache, degradation, gRPC monitoring, infrastructure, server layer, and more — 11 files), the end-to-end i18n test in `tests/i18n_e2e.rs`, shell end-to-end scripts in `tests/*.sh` (API, degradation, distributed, database concurrency), and Criterion benchmarks (`benches/i18n.rs`, `benches/algorithms.rs`). For the per-domain scenario matrix and file mapping, see the [test scenario doc](docs/TEST_SCENARIOS.md).
 
 ### ▶️ Commands (matching CI)
+
+<details>
+<summary>📄 代码 · bash</summary>
 
 ```bash
 # Full test run (CI matrix runs default / all (--all-features))
@@ -421,6 +494,8 @@ cargo bench --bench algorithms
 # Shell end-to-end scripts
 ./scripts/run.sh api-test
 ```
+
+</details>
 
 ### 📊 Test Scale
 
@@ -452,6 +527,9 @@ Please do not report security vulnerabilities through public issues. Use the pri
 
 ## 🗺️ Roadmap
 
+<details>
+<summary>📋 表格</summary>
+
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">Status</th><th style="text-align:left">Area</th><th style="text-align:left">Items</th></tr>
 <tr><td align="center">✅</td><td>Core algorithms</td><td>Segment double buffering with dynamic step, Snowflake, UUID v8, algorithm router and degradation chain</td></tr>
@@ -462,6 +540,8 @@ Please do not report security vulnerabilities through public issues. Use the pri
 <tr><td align="center">🚧</td><td>Performance engineering</td><td>Batch generation tuning, Segment routing benchmark integration (the ID-generation throughput benchmark harness and release baselines have landed — see the [Performance Guide](docs/PERFORMANCE.md))</td></tr>
 <tr><td align="center">📋</td><td>Cloud native and DR</td><td>Kubernetes operator, multi-datacenter with automatic failover, dynamic algorithm switching</td></tr>
 </table>
+
+</details>
 
 ---
 
@@ -510,11 +590,16 @@ Want to contribute code?<br>
 
 For the full version history, see the [📋 Changelog](docs/CHANGELOG.md) (following the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and semantic versioning).
 
+<details>
+<summary>📋 表格</summary>
+
 | Version | Date | Highlights |
 |------|------|------|
 | 0.3.0-rc.3 | 2026-10-15 | RFC 9562 v5 deterministic derivation (`uuid-v5` leaf feature, bit-exact compatible with etyma's 340,566 existing IDs), UUID v4/v7 true algorithms + ⚠️ breaking alias reversal, i18n folded into sdforge (snapshot lock-free rendering), garrison auth brute-force adoption (`BoundedDao` capacity valve + fail-closed), confers hot-reload wiring, self-developed deps upgraded to the latest RC wave (8 crates + utoipa 6.0 alignment), pre-release security remediation |
 | 0.3.0-rc.1 | 2026-09-22 | Ecosystem fully switched to the crates.io registry (RC-wave alignment), i18n migrated to the Fluent/ICU stack (fluent-bundle, aligned with the unify-rust-i18n baseline), SDK migrated to trait-kit assembly (`NebulaIdKit`), gRPC auth on all RPCs, rate limiting genuinely mounted, TLS fail-fast, config `deny_unknown_fields` + exit code 1, key rotation grace period |
 | 0.2.0 | 2026-07-23 | garrison DAO infrastructure, expanded e2e suite (95% module coverage), dbnexus / sdforge / confers architecture takeover, 3 strix security fixes |
+
+</details>
 
 ---
 
@@ -529,6 +614,9 @@ This project is licensed under Apache-2.0. See [LICENSE](LICENSE).
 ### 🌟 Core Dependencies
 
 Nebula ID stands on the shoulders of these excellent open source projects:
+
+<details>
+<summary>📋 表格</summary>
 
 | Dependency | Purpose |
 |------|------|
@@ -546,6 +634,8 @@ Nebula ID stands on the shoulders of these excellent open source projects:
 | [limiteron](https://crates.io/crates/limiteron) | Rate-limiting primitives (Kirky.X ecosystem) |
 | [oxcache](https://crates.io/crates/oxcache) | Multi-level cache (Kirky.X ecosystem) |
 | [fluent-bundle](https://crates.io/crates/fluent-bundle) | ICU internationalization (unify-rust-i18n baseline) |
+
+</details>
 
 ### 💝 Special Thanks
 

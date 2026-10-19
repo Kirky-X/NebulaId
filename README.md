@@ -35,6 +35,9 @@
 
 ## 📋 目录
 
+<details open>
+<summary>📑 目录</summary>
+
 - [✨ 功能特性](#-功能特性)
 - [🎯 使用场景](#-使用场景)
 - [🚀 快速开始](#-快速开始)
@@ -54,6 +57,8 @@
 - [🙏 致谢](#-致谢)
 - [📞 联系与支持](#-联系与支持)
 - [⭐ Star 历史](#-star-历史)
+
+</details>
 
 ---
 
@@ -96,6 +101,9 @@
 
 把发号能力作为库内嵌，无需独立部署（改编自 [`examples/embedded.rs`](examples/embedded.rs)）：
 
+<details>
+<summary>📄 代码 · rust</summary>
+
 ```rust
 use nebulaid::core::Config;
 use nebulaid::sdk::NebulaIdKitBuilder; // feature `sdk`
@@ -123,9 +131,14 @@ async fn main() -> nebulaid::core::Result<()> {
 }
 ```
 
+</details>
+
 ### 🔧 微服务唯一标识
 
 `Id` 是对 UUID 的零成本包装，可无损互转，适合跨服务传递与存储：
+
+<details>
+<summary>📄 代码 · rust</summary>
 
 ```rust
 use nebulaid::core::types::Id;
@@ -139,22 +152,32 @@ let id_string = id.to_string(); // 输出标准 36 字符 UUID 字符串
 let uuid = id.to_uuid_v8();
 ```
 
+</details>
+
 ### ⚡ 高吞吐批量发号
 
 Segment 的双缓冲与动态步长是内部机制：每次取段步长按 CPU 使用率在
 `[min_step, max_step]` 内动态伸缩——`step = clamp(base_step × (1 + 2 × cpu), min_step, max_step)`，
 CPU 越忙单段越大，取段频次随之下降；对外一次调用申请 N 个 ID（`IdAlgorithm::batch_generate`）：
 
+<details>
+<summary>📄 代码 · rust</summary>
+
 ```rust
 let batch = generator.batch_generate("prod", "core", "order", 1000).await?;
 println!("{} ids via {:?}", batch.len(), batch.algorithm);
 ```
+
+</details>
 
 ---
 
 ## 🚀 快速开始
 
 ### 📦 安装
+
+<details>
+<summary>📄 代码 · bash</summary>
 
 ```bash
 # 克隆仓库并构建（default 特性：server 全栈 + 三算法 + postgresql + garrison-auth）
@@ -165,6 +188,11 @@ cargo build --release
 # 运行服务（默认读取 config/config.toml，--config 可指定路径）
 ./target/release/nebula-id
 ```
+
+</details>
+
+<details>
+<summary>📋 表格</summary>
 
 | feature | 默认 | 说明 |
 |---------|:----:|------|
@@ -181,6 +209,8 @@ cargo build --release
 | `integration-tests` | ➖ | 门控需要真实数据库的 `#[ignore]` 测试 |
 | `alerting` | ➖ | 门控告警子系统与 webhook 分发（`src/core/monitoring`，生产默认不编译） |
 
+</details>
+
 > 💡 `--all-features` **可构建**（= default + etcd + alerting + sdk + integration-tests + openapi），CI 与文档统一采用该口径。
 
 > ✂️ **库消费剪裁**：以 lib 形式内嵌算法（不部署服务）时按需裁剪，例如只用 UUID v8：
@@ -195,6 +225,9 @@ cargo build --release
 ### 💡 最小示例
 
 以下示例改编自 [`examples/embedded.rs`](examples/embedded.rs)，零 DB 零网络即可生成 ID：
+
+<details>
+<summary>📄 代码 · rust</summary>
 
 ```rust
 use nebulaid::core::Config;
@@ -220,9 +253,16 @@ async fn main() -> nebulaid::core::Result<()> {
 }
 ```
 
+</details>
+
+<details>
+<summary>📄 代码 · bash</summary>
+
 ```bash
 cargo run --package nebulaid --example embedded --features sdk
 ```
+
+</details>
 
 ### 🧭 核心概念
 
@@ -235,6 +275,9 @@ cargo run --package nebulaid --example embedded --features sdk
 ---
 
 ## 📚 文档
+
+<details>
+<summary>📋 表格</summary>
 
 | 文档 | 说明 |
 |------|------|
@@ -250,11 +293,16 @@ cargo run --package nebulaid --example embedded --features sdk
 | [📋 更新日志](docs/CHANGELOG.md) | 每个版本的变更记录 |
 | [🤝 贡献指南](docs/CONTRIBUTING.md) | 如何参与项目开发 |
 
+</details>
+
 ---
 
 ## 💻 示例
 
 全部示例位于 [`examples/`](examples/) 目录，仅启用 `sdk` 特性时构建：
+
+<details>
+<summary>📄 代码 · bash</summary>
 
 ```bash
 # 嵌入式 SDK：零 DB 零网络生成 ID
@@ -263,6 +311,8 @@ cargo run --package nebulaid --example embedded --features sdk
 # SDK 服务器：sdforge #[forge] 封装 + OpenAPI 文档
 cargo run --package nebulaid --example sdk_server --features sdk,http
 ```
+
+</details>
 
 ### 🧩 embedded.rs
 
@@ -289,6 +339,9 @@ Nebula ID 采用「server → core → 自研生态」三层设计：`src/server
 能被完整解析的最小配置见 [`config/config.toml`](config/config.toml)，形如：
 
 > 注意：以下 TOML 片段仅为摘要示例，实际配置以 [`config/config.toml`](config/config.toml) 为准。
+
+<details>
+<summary>📄 代码 · toml</summary>
 
 ```toml
 [app]
@@ -350,6 +403,8 @@ grpc_enabled = false
 max_batch_size = 100        # validate(): 1..=10000
 ```
 
+</details>
+
 > ⚠️ 注意：服务端启动时 `Config::merge()` 会用环境派生配置覆盖 `algorithm.segment` / `algorithm.snowflake` / `algorithm.uuid_v8` 三个子表（仅 `algorithm.default` 保留），该合并修正前请勿依赖子表配置。
 
 **全量选项表（类型 / 默认值 / 是否必填）、`Config::validate()` 校验规则清单与各版本迁移操作，见 [🔧 配置迁移指南](docs/CONFIG_MIGRATION_GUIDE.md)。**
@@ -360,10 +415,15 @@ max_batch_size = 100        # validate(): 1..=10000
 
 Nebula ID 自 v0.2.0 起内置国际化，现基于 Fluent/ICU 栈（fluent-bundle + unic-langid + sys-locale，0.3.0 起替换 rust-i18n YAML 后端，对齐 unify-rust-i18n 基线），覆盖错误消息与日志的运行时翻译：
 
+<details>
+<summary>📋 表格</summary>
+
 | Locale 标签 | 语言 | locales 文件 | 状态 |
 |-------------|------|--------------|------|
 | `en` | English（默认） | `locales/en/messages.ftl` | ✅ 完整 |
 | `zh-CN` | 简体中文 | `locales/zh/messages.ftl` | ✅ 完整 |
+
+</details>
 
 协商机制：`locale_middleware` 解析 HTTP `Accept-Language` 头（RFC 7231 §5.3.5），按 q-value 降序匹配首个受支持 locale（精确优先、其次前缀匹配），缺失时回退 `en`；业务 handler 经 `Extension<Locale>` 读取并翻译错误响应。`Locale` 派生自用户输入、可被伪造，**不得**用于认证、授权或任何安全决策。
 
@@ -375,6 +435,9 @@ curl 示例、请求头语义与 i18n 模块在架构中的位置，见 [📘 AP
 
 自 v0.2.0 起所有开发/部署脚本合并为统一入口 `scripts/run.sh`（旧脚本已重命名为 `_*_impl.sh` 内部实现，不再直接调用）：
 
+<details>
+<summary>📋 表格</summary>
+
 | 子命令 | 别名 | 作用 |
 |--------|------|------|
 | `deploy` | — | 通过 docker-compose 部署全栈（PostgreSQL + Redis + Etcd + App） |
@@ -384,10 +447,17 @@ curl 示例、请求头语义与 i18n 模块在架构中的位置，见 [📘 AP
 | `install-hooks` | — | 安装 git pre-commit hooks |
 | `help` | `--help`、`-h` | 显示 Usage |
 
+</details>
+
+<details>
+<summary>📄 代码 · bash</summary>
+
 ```bash
 ./scripts/run.sh pre-commit            # 提交前必跑
 ./scripts/run.sh api-test http://localhost:8080
 ```
+
+</details>
 
 CI（`ci.yml` / `release.yml` / `health-check.yml`）不经过 `scripts/run.sh`，直接执行 `cargo fmt` / `clippy` / `test` / `llvm-cov` / `deny` / `audit` 等工具链命令；`scripts/run.sh` 是本地开发入口，与 CI 使用同一套工具链但调用路径相互独立。各子命令的内部实现与完整参数见 [🚀 部署指南 · scripts/run.sh 子命令](docs/DEPLOYMENT.md#8-scriptsrunsh-子命令)。
 
@@ -400,6 +470,9 @@ CI（`ci.yml` / `release.yml` / `health-check.yml`）不经过 `scripts/run.sh`�
 测试分层覆盖：`src/` 内联单元测试（`#[cfg(test)]`）、`src/core/tests/` 下按层组织的 E2E 模块（算法、认证、缓存、降级、gRPC 监控、基础设施、服务层等 11 个文件）、`tests/i18n_e2e.rs` 端到端 i18n 测试、`tests/*.sh` shell 端到端脚本（API、降级、分布式、数据库并发）与 Criterion 基准（`benches/i18n.rs`、`benches/algorithms.rs`）。逐域场景矩阵与文件映射见 [🧪 测试场景文档](docs/TEST_SCENARIOS.md)。
 
 ### ▶️ 运行命令（与 CI 一致）
+
+<details>
+<summary>📄 代码 · bash</summary>
 
 ```bash
 # 全量测试（CI 矩阵按 default / all（--all-features）两档运行）
@@ -425,6 +498,8 @@ cargo bench --bench auth_cache_adoption --features garrison-auth
 # shell 端到端脚本
 ./scripts/run.sh api-test
 ```
+
+</details>
 
 ### 📊 测试规模
 
@@ -456,6 +531,9 @@ CI 五阶段门禁（fmt + clippy → cargo-deny → cargo-audit `--deny warning
 
 ## 🗺️ 开发路线图
 
+<details>
+<summary>📋 表格</summary>
+
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">状态</th><th style="text-align:left">方向</th><th style="text-align:left">条目</th></tr>
 <tr><td align="center">✅</td><td>核心算法</td><td>Segment 双缓冲与动态步长、Snowflake、UUID v8、算法路由与降级链</td></tr>
@@ -466,6 +544,8 @@ CI 五阶段门禁（fmt + clippy → cargo-deny → cargo-audit `--deny warning
 <tr><td align="center">🚧</td><td>性能工程</td><td>批量生成调优、Segment 路由基准接入（ID 生成吞吐基准框架与发布基线已落地，见 [📈 性能指南](docs/PERFORMANCE.md)）</td></tr>
 <tr><td align="center">📋</td><td>云原生与容灾</td><td>Kubernetes Operator、多数据中心与自动故障转移、动态算法切换</td></tr>
 </table>
+
+</details>
 
 ---
 
@@ -514,11 +594,16 @@ CI 五阶段门禁（fmt + clippy → cargo-deny → cargo-audit `--deny warning
 
 完整版本历史见 [📋 更新日志](docs/CHANGELOG.md)（遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 格式，语义化版本）。
 
+<details>
+<summary>📋 表格</summary>
+
 | 版本 | 日期 | 要点 |
 |------|------|------|
 | 0.3.0-rc.3 | 2026-10-15 | RFC 9562 v5 确定性派生（`uuid-v5` 叶子特性，与 etyma 340,566 存量 ID 数值兼容）、UUID v4/v7 真算法 + ⚠️ 破坏性别名反转、i18n 收编 sdforge（快照零锁渲染）、garrison 接管认证防爆破（`BoundedDao` 容量阀 + fail-closed）、confers 热加载接线、自研依赖升级至最新 RC 波次（8 个自研 crate + utoipa 6.0 对齐）、发布前安全整改 |
 | 0.3.0-rc.1 | 2026-09-22 | 自研生态全面切 crates.io registry（RC 波次对齐）、i18n 迁移 Fluent/ICU 栈（fluent-bundle，对齐 unify-rust-i18n 基线）、SDK 迁移 trait-kit 装配（`NebulaIdKit`）、gRPC 全 RPC 认证、限流真实挂载、TLS fail-fast、配置 `deny_unknown_fields` + 退出码 1、密钥轮换宽限期 |
 | 0.2.0 | 2026-07-23 | garrison DAO 基础设施、e2e 套件扩充（95% 模块覆盖）、dbnexus / sdforge / confers 架构接管、3 项 strix 安全修复 |
+
+</details>
 
 ---
 
@@ -533,6 +618,9 @@ CI 五阶段门禁（fmt + clippy → cargo-deny → cargo-audit `--deny warning
 ### 🌟 核心依赖
 
 Nebula ID 站在以下优秀开源项目的肩膀上：
+
+<details>
+<summary>📋 表格</summary>
 
 | 依赖 | 用途 |
 |------|------|
@@ -550,6 +638,8 @@ Nebula ID 站在以下优秀开源项目的肩膀上：
 | [limiteron](https://crates.io/crates/limiteron) | 限流原语（Kirky.X 自研生态） |
 | [oxcache](https://crates.io/crates/oxcache) | 多级缓存（Kirky.X 自研生态） |
 | [fluent-bundle](https://crates.io/crates/fluent-bundle) | ICU 国际化（unify-rust-i18n 基线） |
+
+</details>
 
 ### 💝 特别感谢
 

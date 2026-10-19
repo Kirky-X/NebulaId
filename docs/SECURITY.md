@@ -95,7 +95,7 @@
 补充事实：
 
 - `--all-features` 可构建（sqlite feature 已删除，dbnexus 的 embedded/server 互斥不再触发），CI 与文档统一采用该口径；`--no-default-features` 另有轻量编译检查（garrison 回退路径等）。
-- `docker/vendor-deps.sh` 向 `.docker-vendor/` 打包依赖副本时排除 `.env*` / `local_settings*`，不把凭据带进镜像上下文。
+- Docker 构建上下文由 `.dockerignore` 排除 `.env` / `.env.*`（保留 `.env.example`）与 `target/`、`.git`；依赖全部来自 crates.io，本机凭据不会进入镜像层。
 - `Cargo.lock` 提交入库，保证 CI 与发布构建的依赖可复现。
 
 ---

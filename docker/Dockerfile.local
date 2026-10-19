@@ -1,11 +1,11 @@
 # ============================================
 # 使用本地已编译二进化的简化Dockerfile
 # ============================================
-FROM debian:bullseye-slim
+FROM debian:bookworm-slim
 
 # 安装运行时依赖
 RUN apt-get update && apt-get install -y \
-    libssl1.1 \
+    libssl3 \
     ca-certificates \
     curl \
     && rm -rf /var/lib/apt/lists/*

@@ -100,8 +100,9 @@ docker run -d \
 ```
 
 > **说明：** `docker/Dockerfile` 已适配单包 `nebulaid` 构建 —— builder 阶段
-> `COPY . .` 后 `cargo build --release --package nebulaid`，runtime 阶段拷贝
-> `target/release/nebula-id` 与 `config/`、`locales/`（已不再引用已移除的
+> `COPY . .` 后 `cargo build --release --package nebulaid --features etcd`（镜像
+> 必须含 etcd feature，compose 注入的 `ETCD_ENDPOINTS` 才能建立协调锁），
+> runtime 阶段拷贝 `target/release/nebula-id` 与 `config/`、`locales/`（已不再引用已移除的
 > `crates/` 目录与 `nebula-server` 包名）。
 
 ## 3. 配置说明
@@ -123,7 +124,7 @@ docker run -d \
 | `[tls]` | `enabled` | 启用 TLS | false |
 | `[auth]` | `enabled` | 启用 API Key 认证 | true |
 | `[rate_limit]` | `enabled` | 启用限流 | true |
-| `[etcd]` | `endpoints` | Etcd 端点列表 | `["http://localhost:2379"]` |
+| `[etcd]` | `endpoints` | Etcd 端点列表 | `[]`（compose 由 `ETCD_ENDPOINTS` 注入；需以 `--features etcd` 构建） |
 
 > ⚠️ **全局限流默认启用**：限流开关是**顶层** `[rate_limit].enabled`
 > （不是 `auth.rate_limit.enabled`），由 `src/main.rs` 读取 `config.rate_limit.enabled`

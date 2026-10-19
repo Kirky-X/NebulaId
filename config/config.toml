@@ -79,6 +79,8 @@ api_keys = []
 key_rotation_grace_period_seconds = 0
 
 [etcd]
-endpoints = ["http://localhost:2379"]
+# 空列表 = 单进程本地锁（默认构建不含 etcd feature）。
+# 多实例部署请以 `--features etcd` 构建，并在此填写端点或用 ETCD_ENDPOINTS 注入。
+endpoints = []
 connect_timeout_ms = 5000
 watch_timeout_ms = 5000

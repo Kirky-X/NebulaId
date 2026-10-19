@@ -56,6 +56,18 @@ test-unit: ## Run unit tests only
 test-integration: ## Run integration tests only (lib tests under src/core/tests)
 	cargo test --package nebulaid --lib --jobs $(BUILD_JOBS) -- --test-threads=4
 
+test-etcd: ## Run real-etcd integration tests (compose etcd + cargo test --ignored)
+	@echo "Starting etcd (docker compose)..."
+	@docker compose -f docker/docker-compose.yml up -d etcd
+	@echo "Waiting for etcd health..."
+	@for i in $$(seq 1 30); do \
+		curl -fsS http://127.0.0.1:2379/health >/dev/null 2>&1 && break; \
+		sleep 1; \
+	done
+	@ETCD_TEST_ENDPOINTS=http://127.0.0.1:2379 cargo test --package nebulaid \
+		--features etcd,integration-tests --lib -- --ignored integration_etcd_; \
+		status=$$?; docker compose -f docker/docker-compose.yml stop etcd; exit $$status
+
 test-quick: ## Quick test (skip slow tests)
 	cargo test --package nebulaid -- --test-threads=4 --skip bench --skip perf
 

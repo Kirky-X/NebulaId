@@ -434,6 +434,7 @@ log-main-tls_insecure_escape_hatch_active = 生产模式下 TLS 未启用；因�
 error-main-tls_required_in_production = 生产环境必须启用 TLS（tls.enabled = false）；设置 NEBULA_ALLOW_INSECURE_TLS=1 可显式豁免（仅限内网评估）
 error-main-invalid_api_key_salt_production = 生产环境 API Key Salt 配置无效（为空/过短/为测试默认值）。请设置环境变量 { $env } 为长度 ≥ 16 的随机字符串
 error-main-etcd_required_but_unavailable = 已配置 etcd endpoints 但 etcd 协调服务不可用：{ $error }。拒绝回退进程内锁（多实例部署必然产生重复 ID），正在关闭...
+error-main-etcd_feature_required = 已配置 etcd 端点（{ $endpoints }），但本二进制未启用 etcd feature。请以 --features etcd 重新构建，或清空 etcd.endpoints / ETCD_ENDPOINTS 以使用单进程锁。正在关闭...
 error-main-worker_id_allocation_failed = 经 etcd 分配 worker_id 失败：{ $error }。多实例部署不得回退静态默认 worker_id（必然重复 ID），正在关闭...
 error-main-worker_lease_renewal_failed = worker 租约连续续期失败：{ $reason }。为避免已被接管的 worker_id 产生重复 ID，快速失败停机，正在关闭...
 log-main-worker_id_allocated_from_etcd = 已从 etcd 分配 worker_id { $worker_id }（lease { $lease_id }），覆盖静态配置
@@ -662,6 +663,7 @@ error-sdk-assembly_config_missing = SDK 装配配置缺失：{ $reason }
 error-sdk-kit_build_failed = trait-kit build 失败：{ $reason }
 error-sdk-repository_required_for_segment = Segment 算法需要数据库仓储；请先调用 NebulaIdKitBuilder::with_repository() 再 build()
 error-sdk-router_module_must_exist_on_ready_kit = RouterModule 能力在 Ready Kit 上必然存在（build 依赖图校验已保证）
+error-sdk-etcd_feature_required = 已配置 etcd 端点（{ $endpoints }），但本构建未启用 etcd feature；请以 --features etcd 重新构建，或清空端点以使用单进程锁
 log-sdk-audit_logger_injection_confirmed = sdk: audit_logger 注入确认
 error-detail-segment_loader_not_configured = Segment 算法未接通数据源，需在装配处注入 DbSegmentLoader（SegmentRepository::allocate_segment）
 

@@ -38,7 +38,8 @@
 | 审计管道阻塞回归 | `tests/audit_ring_stall_repro.rs` | 1 个测试（灌满 inklog async 通道后断言审计 log() 不阻塞） | 同上 |
 | Shell 端到端 | `tests/*.sh` | 4 个脚本（见下节） | `./scripts/run.sh api-test` 等 |
 | Criterion 基准（i18n 热路径） | `benches/i18n.rs` | 1 组（4 基准函数 / 12 用例） | `cargo bench --bench i18n` |
-| Criterion 基准（发号热路径） | `benches/algorithms.rs` | 1 组（7 基准函数 / 7 用例） | `cargo bench --bench algorithms` |
+| Criterion 基准（发号热路径） | `benches/algorithms.rs` | 1 组（8 基准函数 / 10 用例） | `cargo bench --bench algorithms` |
+| Criterion 基准（Segment 热路径） | `benches/segment.rs` | 1 组（4 基准函数 / 7 用例） | `cargo bench --bench segment` |
 
 `src/core/tests/` 内的 E2E 模块按层组织，计数如下（`grep -c` 口径）：
 
@@ -133,7 +134,7 @@
 | 编号 | 场景 | 验证点 | 覆盖位置 |
 |------|------|--------|----------|
 | DST-01 | 降级链兜底 | `[Snowflake, UuidV8]` 去重后按序接管 | `src/core/tests/degradation_tests.rs` |
-| DST-02 | etcd 协调（feature `etcd`） | 工作器分配 / leader 协调；`endpoints=[]` 退回 `LocalDistributedLock` | coordinator 内联测试 + `infra_e2e_tests.rs` |
+| DST-02 | etcd 协调（feature `etcd`） | 工作器分配 / 分布式锁互斥、释放重入、TTL 过期（真实 etcd `#[ignore]`）；`endpoints=[]` 退回 `LocalDistributedLock`；非 etcd 构建配置端点拒绝启动 | coordinator 内联测试 + `make test-etcd` |
 | DST-03 | 停机不泄漏后台任务 | `rate_limit_cleanup` 与降级巡检在全部退出分支被回收 | server 层内联测试 |
 
 ### SDK 与示例（SDK）
@@ -144,6 +145,8 @@
 | SDK-02 | 纯算法零 DB | `Config::default()` + snowflake/uuid_v8 可发号 | `src/sdk` 内联测试 |
 | SDK-03 | 错误不外泄 | `to_api_error` 对外固定概要 + `error_id` | `src/sdk` 内联测试 |
 | SDK-04 | 示例可构建 | `embedded` / `sdk_server` 以 `required-features` 门控编译 | CI test job（`--all-features` leg） |
+| SDK-05 | Segment 仓储接线 | `with_repository(..)` 后生成值来自注入仓储号段（MockDatabase 区间断言） | `src/sdk/kit.rs` 内联测试 |
+| SDK-06 | 非 etcd 端点守卫 | 未启用 etcd feature 但配置端点 → `build()` 返回 `ConfigurationError` | `src/sdk/kit.rs` 内联测试（CI sdk 剪裁腿） |
 
 ---
 
@@ -153,9 +156,9 @@
 |------|-----:|------|----------|
 | `tests/api_test.sh` | 1037 | API 端点回归（认证、发号、管理面） | 服务已启动；`./scripts/run.sh api-test [server_url]` |
 | `tests/degradation_test.sh` | 326 | 依赖故障下的降级行为 | 按脚本头部说明准备依赖 |
-| `tests/distributed_test.sh` | 459 | etcd 分布式协调场景 | etcd 可用 |
+| `tests/distributed_test.sh` | 495 | HTTP 发号并发/时序/批量一致性（不依赖 etcd） | 服务已启动；User key（发号）+ Admin key（算法切换，可选）；workspace 已存在 |
 | `tests/db_concurrency_test.sh` | 302 | 数据库并发正确性 | PostgreSQL 可用 |
-| `tests/lib.sh` | 575 | 上述脚本的共用断言/工具库 | — |
+| `tests/lib.sh` | 591 | 上述脚本的共用断言/工具库 | — |
 
 ---
 
@@ -194,7 +197,7 @@ cargo bench --bench i18n
 | ├─ `src/core/tests/` E2E 模块 | 220 |
 | └─ `tests/i18n_e2e.rs` | 7（全链 i18n） |
 | Shell 端到端脚本 | 4（另有 1 个共用库） |
-| Criterion 基准组 | 2（i18n：4 函数 / 12 用例；发号热路径：7 函数 / 7 用例） |
+| Criterion 基准组 | 3（i18n：4 函数 / 12 用例；发号热路径：8 函数 / 10 用例；Segment：4 函数 / 7 用例） |
 
 覆盖率：CI 门禁为行覆盖率 ≥ 95%（`ci.yml`），pre-push 本地门禁 ≥ 90%（`_coverage_gate.sh`）；v0.2.0 发布时实际行覆盖率 89.91%（门禁值是下限，非当前值）。历史口径：v0.2.0 发布时 e2e 套件曾报 1829 条（见 [CHANGELOG](CHANGELOG.md)），后续演进以上表 grep 口径为准。
 

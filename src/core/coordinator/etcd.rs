@@ -2970,4 +2970,100 @@ mod tests {
         );
         assert!(monitor.is_using_cache());
     }
+
+    // ==================== 真实 etcd：分布式锁语义（integration-tests） ====================
+
+    /// 连接真实 etcd（默认本机 2379）；不可达直接 panic 并指向环境变量。
+    #[cfg(feature = "integration-tests")]
+    async fn integration_etcd_client() -> Arc<dyn EtcdClientOps> {
+        let endpoints = std::env::var("ETCD_TEST_ENDPOINTS")
+            .unwrap_or_else(|_| "http://127.0.0.1:2379".to_string());
+        let wrapper = EtcdClientWrapper::new(vec![endpoints])
+            .await
+            .expect("连接 etcd 失败（请检查 ETCD_TEST_ENDPOINTS）");
+        let client: Arc<dyn EtcdClientOps> = Arc::new(wrapper);
+        client
+            .ping()
+            .await
+            .expect("etcd 必须可达（ETCD_TEST_ENDPOINTS）");
+        client
+    }
+
+    /// 每个用例独立锁前缀：避免并发执行与残留 key 互相干扰。
+    #[cfg(feature = "integration-tests")]
+    fn integration_lock_prefix(tag: &str) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        format!("/nebulaid-it/{tag}-{}-{nanos}/", std::process::id())
+    }
+
+    /// 两客户端同 key 互斥：仅一个拿到锁，另一个重试耗尽后 AcquireFailed。
+    #[cfg(feature = "integration-tests")]
+    #[tokio::test]
+    #[ignore = "需要真实 etcd：设置 ETCD_TEST_ENDPOINTS 后以 --ignored 运行"]
+    async fn integration_etcd_lock_mutual_exclusion() {
+        let client = integration_etcd_client().await;
+        let prefix = integration_lock_prefix("mutex");
+        let lock_a = EtcdDistributedLock::new(client.clone(), prefix.clone())
+            .await
+            .unwrap();
+        let lock_b = EtcdDistributedLock::new(client, prefix).await.unwrap();
+
+        let guard = lock_a
+            .acquire("key", 30)
+            .await
+            .expect("首个客户端必须拿到锁");
+        let err = match lock_b.acquire("key", 30).await {
+            Ok(_) => panic!("第二个客户端必须失败（互斥）"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, LockError::AcquireFailed { .. }),
+            "期望 AcquireFailed，实际: {err:?}"
+        );
+        guard.release().await.expect("释放锁必须成功");
+    }
+
+    /// 显式释放后另一客户端可立即重入（lease revoke 连带删除 key）。
+    #[cfg(feature = "integration-tests")]
+    #[tokio::test]
+    #[ignore = "需要真实 etcd：设置 ETCD_TEST_ENDPOINTS 后以 --ignored 运行"]
+    async fn integration_etcd_lock_release_reacquire() {
+        let client = integration_etcd_client().await;
+        let prefix = integration_lock_prefix("release");
+        let lock_a = EtcdDistributedLock::new(client.clone(), prefix.clone())
+            .await
+            .unwrap();
+        let lock_b = EtcdDistributedLock::new(client, prefix).await.unwrap();
+
+        let guard = lock_a.acquire("key", 30).await.expect("首次获取必须成功");
+        guard.release().await.expect("显式释放必须成功");
+        let guard_b = lock_b.acquire("key", 30).await.expect("释放后必须可重入");
+        guard_b.release().await.expect("二次释放必须成功");
+    }
+
+    /// 短 TTL：lease 过期后 key 自动消失，另一客户端可获取。
+    #[cfg(feature = "integration-tests")]
+    #[tokio::test]
+    #[ignore = "需要真实 etcd：设置 ETCD_TEST_ENDPOINTS 后以 --ignored 运行"]
+    async fn integration_etcd_lock_ttl_expiry() {
+        let client = integration_etcd_client().await;
+        let prefix = integration_lock_prefix("ttl");
+        let lock_a = EtcdDistributedLock::new(client.clone(), prefix.clone())
+            .await
+            .unwrap();
+        let lock_b = EtcdDistributedLock::new(client, prefix).await.unwrap();
+
+        // 持有者保持存活直到过期：验证的是 lease TTL 而非显式 release。
+        let guard = lock_a.acquire("key", 1).await.expect("短 TTL 获取必须成功");
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
+        let guard_b = lock_b
+            .acquire("key", 30)
+            .await
+            .expect("lease 过期后必须可获取");
+        guard_b.release().await.expect("释放必须成功");
+        // 已过期 lease 的 Drop revoke 只记日志，不影响后续。
+        drop(guard);
+    }
 }

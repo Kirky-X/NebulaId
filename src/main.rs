@@ -702,6 +702,15 @@ fn should_warn_default_worker_identity(
     !etcd_endpoints_configured && (worker_id == 0 || dc_id == 0)
 }
 
+/// 非 etcd 构建：配置声明了 etcd 端点时必须显性拒绝启动（纯判定，便于单测）。
+///
+/// 未启用 `etcd` feature 的二进制无法执行 lease/CAS，静默回退进程内锁会让
+/// 多实例部署产生重复 ID；仅当端点为空（含仅空白项）时才允许单机本地锁。
+#[cfg(not(feature = "etcd"))]
+fn should_reject_configured_etcd_without_feature(config: &Config) -> bool {
+    config.etcd.has_configured_endpoints()
+}
+
 /// 进程默认 locale 解析（生产入口），检测链顺序不可调换：`NEBULA_LOCALE`
 /// → `config.app.locale`（用户配置优先于系统语言，serde 缺省=空串 auto，
 /// 显式写入即钉死进程语言）→ `LC_ALL`/`LC_MESSAGES`/`LANG` → `sys-locale`
@@ -980,8 +989,21 @@ async fn init_repository(config: &Config) -> Result<RepositoryStack> {
     // 配置显式含 etcd endpoints 时,etcd 不可用直接拒绝启动(多实例场景
     // 静默回退进程内锁必然重复 ID);未配置 endpoints 才允许单机本地锁。
     #[cfg(not(feature = "etcd"))]
-    let lock: std::sync::Arc<dyn nebulaid::core::coordinator::DistributedLock + Send + Sync> =
-        std::sync::Arc::new(nebulaid::core::coordinator::LocalDistributedLock::new());
+    let lock: std::sync::Arc<dyn nebulaid::core::coordinator::DistributedLock + Send + Sync> = {
+        // fail-closed：本构建无 etcd 能力却声明了端点 —— 回退本地锁必然重复发号。
+        if should_reject_configured_etcd_without_feature(config) {
+            error!(
+                "{}",
+                t!(
+                    "error.main.etcd_feature_required",
+                    endpoints = format!("{:?}", config.etcd.endpoints)
+                )
+            );
+            error!("{}", t!("log.main.shutting_down"));
+            exit_with_flush(1);
+        }
+        std::sync::Arc::new(nebulaid::core::coordinator::LocalDistributedLock::new())
+    };
     #[cfg(feature = "etcd")]
     let coordination = match assemble_coordination(config).await {
         Ok(components) => components,
@@ -2108,6 +2130,27 @@ mod tests {
     fn test_warn_default_worker_identity_skipped_when_explicitly_configured() {
         assert!(!should_warn_default_worker_identity(false, 1, 1));
         assert!(!should_warn_default_worker_identity(false, 255, 31));
+    }
+
+    // ==================== 非 etcd 构建的端点守卫 ====================
+
+    /// 非 etcd 构建：端点为空/仅空白 → 允许单机本地锁。
+    #[cfg(not(feature = "etcd"))]
+    #[test]
+    fn test_should_reject_configured_etcd_without_feature_allows_empty() {
+        let mut config = Config::default();
+        assert!(!should_reject_configured_etcd_without_feature(&config));
+        config.etcd.endpoints = vec!["  ".to_string()];
+        assert!(!should_reject_configured_etcd_without_feature(&config));
+    }
+
+    /// 非 etcd 构建：端点非空 → 必须拒绝启动（静默回退会重复发号）。
+    #[cfg(not(feature = "etcd"))]
+    #[test]
+    fn test_should_reject_configured_etcd_without_feature_rejects_endpoints() {
+        let mut config = Config::default();
+        config.etcd.endpoints = vec!["http://127.0.0.1:2379".to_string()];
+        assert!(should_reject_configured_etcd_without_feature(&config));
     }
 
     // ==================== 默认 locale 配置化 ====================

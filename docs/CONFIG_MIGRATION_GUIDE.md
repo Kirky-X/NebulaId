@@ -858,7 +858,7 @@ key_hex = "0011223344556677"
 | `redis` | 段 | — | ➖ | 整段可省略 |
 | `redis.url` | String | `$REDIS_URL` 或 `redis://localhost:6379` | ✅（写了 `[redis]` 就必填） | Redis 连接 URL |
 | `redis.pool_size` / `key_prefix` / `ttl_seconds` | u32 / String / u64 | `16` / `"nebula:id:"` / `600` | ➖ | 缓存调优 |
-| `etcd.endpoints` | Vec&lt;String&gt; | `[]` | ✅ | 空列表或仅空白项（`ETCD_ENDPOINTS=""`/尾逗号）时退回 `LocalDistributedLock`（单进程，warn）；`config.toml` 默认 `["http://localhost:2379"]`，compose 注入 `etcd:2379` |
+| `etcd.endpoints` | Vec&lt;String&gt; | `[]` | ✅ | 空列表或仅空白项（`ETCD_ENDPOINTS=""`/尾逗号）时退回 `LocalDistributedLock`（单进程，warn）；`config.toml` 默认 `[]`（默认构建不含 etcd feature），compose 注入 `etcd:2379`；非 etcd 构建显式配置端点会拒绝启动（fail-closed） |
 | `etcd.connect_timeout_ms` / `watch_timeout_ms` | u64 | `5000` / `5000` | ✅ | etcd 超时 |
 | `auth.enabled` | bool | `true` | ✅ | API Key 中间件总开关 |
 | `auth.cache_ttl_seconds` | u64 | `300` | ✅ | 认证缓存 TTL |

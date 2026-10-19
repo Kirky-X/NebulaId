@@ -114,13 +114,16 @@ impl_async_auto_builder!(RouterModule, Arc<AlgorithmRouter>, CoreError, |kit| {
                 reason = e
             ))
         })?;
-        // 可选依赖拉取：RepositoryModule 缺席（纯算法零 DB）时 build 必须成功。
-        // trait-kit RC 的 `optional()` 仅对 Ready Kit 可用，build 回调以 `require().ok()`
-        // 实现同语义（模块缺席 → MissingCapability → None）；`database` 关闭时随门控消失。
-        #[cfg(feature = "database")]
-        let _repository = kit.require::<RepositoryModule>().ok();
-
         let router = AlgorithmRouter::new(config, audit_logger);
+        // Segment 号段仓储接线：RepositoryInput 由 build() 在模块构建前写入 TypeMap，
+        // 此处读取无同层构建顺序依赖；不能用 require::<RepositoryModule>()——
+        // trait-kit 对同层模块并发构建，Router/Repository 同层会竞态。
+        // 未注入仓储时保持 Router 原样（生产构建按 config.database 自举）。
+        #[cfg(feature = "segment")]
+        let router = match kit.config::<RepositoryInput>() {
+            Ok(RepositoryInput(repository)) => router.with_segment_repository(Arc::new(repository)),
+            Err(_) => router,
+        };
         #[cfg(feature = "segment")]
         let router = router.with_cpu_monitor(Arc::new(CpuMonitor::new()));
         router.initialize().await.map_err(|e| {
@@ -330,7 +333,11 @@ async fn create_distributed_lock(
             "sdk: etcd endpoints are configured but the client is unavailable (endpoints: {:?}): {e}; refusing to fall back to LocalDistributedLock",
             config.etcd.endpoints
         ))
-    })?;
+    })?
+    // 单次操作超时与主服务同源（EtcdConfig::operation_timeout_secs）。
+    .with_operation_timeout(std::time::Duration::from_secs(
+        config.etcd.operation_timeout_secs,
+    ));
     let client: Arc<dyn EtcdClientOps> = Arc::new(wrapper);
 
     // lazy connect 探活：ping 不通 = etcd 实际不可用，与连接失败同口径 fail-closed。
@@ -361,8 +368,16 @@ async fn create_distributed_lock(
 
 #[cfg(not(feature = "etcd"))]
 async fn create_distributed_lock(
-    _config: &Config,
+    config: &Config,
 ) -> Result<Arc<dyn DistributedLock + Send + Sync>> {
+    // fail-closed：配置声明了 etcd 端点但本构建未启用 etcd feature 时，
+    // 静默回退进程内锁会让多实例部署产生重复 ID；显性拒绝并指向构建选项。
+    if config.etcd.has_configured_endpoints() {
+        return Err(CoreError::ConfigurationError(t!(
+            "error.sdk.etcd_feature_required",
+            endpoints = format!("{:?}", config.etcd.endpoints)
+        )));
+    }
     Ok(Arc::new(LocalDistributedLock::new()))
 }
 
@@ -548,10 +563,17 @@ impl NebulaIdKitBuilder {
             t!("log.sdk.audit_logger_injection_confirmed")
         );
 
-        let ready_kit = kit
-            .build()
-            .await
-            .map_err(|e| CoreError::InternalError(t!("error.sdk.kit_build_failed", reason = e)))?;
+        let ready_kit = kit.build().await.map_err(|e| {
+            // 模块构建失败中的配置类错误保留原类型（如 etcd feature 缺失），
+            // 调用方可直接按 ConfigurationError 分支处理。
+            if let Some(core) = std::error::Error::source(&e)
+                .and_then(|s| s.downcast_ref::<CoreError>())
+                .filter(|c| matches!(c, CoreError::ConfigurationError(_)))
+            {
+                return CoreError::ConfigurationError(core.to_string());
+            }
+            CoreError::InternalError(t!("error.sdk.kit_build_failed", reason = e))
+        })?;
 
         let nebula = NebulaIdKit { kit: ready_kit };
         // 收尾轻校验：Ready Kit 的健康报告可枚举（空图必为空），触及一次可观测性。
@@ -823,13 +845,33 @@ mod tests {
         );
     }
 
-    /// 注入仓储后 Segment 请求通过守卫并可生成（Segment 自带默认 loader，无需真实 DB）。
-    #[cfg(feature = "database")]
+    /// 注入仓储后 Segment 请求通过守卫，且**真实消费注入仓储的号段**。
+    ///
+    /// MockDatabase 固定返回 [9000, 9005)：只有 RouterModule 把仓储接到
+    /// `AlgorithmRouter::with_segment_repository` 时生成值才落入该区间；
+    /// 修复前 `cfg(test)` 走 `TestSegmentLoader`（时间戳造段），本断言必失败。
+    #[cfg(all(feature = "database", feature = "segment"))]
     #[tokio::test]
     async fn test_id_generator_segment_with_repository_succeeds() {
-        use dbnexus::sea_orm::{DatabaseBackend, MockDatabase};
+        use dbnexus::sea_orm::sea_query::Value;
+        use dbnexus::sea_orm::{DatabaseBackend, IntoMockRow, MockDatabase, MockRow};
+        use std::collections::BTreeMap;
 
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let now = chrono::Utc::now().naive_utc();
+        let row: MockRow = BTreeMap::from([
+            ("id".to_string(), Value::BigInt(Some(1))),
+            ("start_id".to_string(), Value::BigInt(Some(9000))),
+            ("max_id".to_string(), Value::BigInt(Some(9005))),
+            ("step".to_string(), Value::Int(Some(100))),
+            ("delta".to_string(), Value::Int(Some(1))),
+            ("created_at".to_string(), Value::ChronoDateTime(Some(now))),
+            ("updated_at".to_string(), Value::ChronoDateTime(Some(now))),
+        ])
+        .into_mock_row();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![row]])
+            .into_connection();
         let kit = NebulaIdKitBuilder::new(local_config())
             .with_repository(crate::core::database::SeaOrmRepository::new(
                 db,
@@ -847,7 +889,11 @@ mod tests {
             .generate("ws", "group", "biz")
             .await
             .expect("注入仓储后 Segment 生成必须成功");
-        assert!(id.as_u128() > 0);
+        let value = id.as_u128() as i64;
+        assert!(
+            (9000..9005).contains(&value),
+            "生成值必须来自注入仓储的号段 [9000, 9005)，实际: {value}"
+        );
     }
 
     /// database 关闭组合下 Segment 请求由 router 显性拒绝（InvalidAlgorithmType）：
@@ -1136,6 +1182,39 @@ mod tests {
             .await
             .expect("本地锁 acquire 必须成功");
         guard.release().await.expect("本地锁 release 必须成功");
+    }
+
+    /// 非 etcd 构建：未配置端点 → 本地锁（单机合法）。
+    #[cfg(all(not(feature = "etcd"), any(feature = "snowflake", feature = "uuid-v8")))]
+    #[tokio::test]
+    async fn test_create_distributed_lock_local_without_etcd_feature() {
+        let config = local_config();
+        let lock = create_distributed_lock(&config)
+            .await
+            .expect("未配置 etcd 时必须放行本地锁");
+        assert!(lock.is_healthy());
+    }
+
+    /// 非 etcd 构建：配置声明了端点 → 显性拒绝（fail-closed），不得静默回退本地锁。
+    #[cfg(all(not(feature = "etcd"), any(feature = "snowflake", feature = "uuid-v8")))]
+    #[tokio::test]
+    async fn test_kit_build_fails_closed_when_endpoints_configured_without_etcd_feature() {
+        let mut config = snowflake_config();
+        config.etcd.endpoints = vec!["http://127.0.0.1:2379".to_string()];
+
+        let result = NebulaIdKitBuilder::new(config).build().await;
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("未启用 etcd feature 但配置了端点时必须 Err（fail-closed）"),
+        };
+        assert!(
+            matches!(err, CoreError::ConfigurationError(_)),
+            "期望 ConfigurationError，实际：{err:?}"
+        );
+        assert!(
+            err.to_string().contains("etcd"),
+            "错误消息必须指向 etcd feature / 端点，实际：{err}"
+        );
     }
 
     /// fail-closed：配置要求 etcd 但端点不可达 → Err（lazy connect 可能 Ok，由 ping 探活

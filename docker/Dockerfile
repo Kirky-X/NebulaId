@@ -3,20 +3,17 @@
 # ============================================
 # Multi-stage build for minimal image size
 #
-# ⚠ RC 期依赖约束：Cargo.toml 的 [patch.crates-io] 把 sdforge / inklog 钉在
-#   本地兄弟目录 ../，构建上下文拿不到。请用 ./docker/build.sh 构建 ——
-#   它先经 vendor-deps.sh 生成瘦身副本，再以 BuildKit 命名上下文注入：
-#     ./docker/build.sh
-#   sdforge / inklog 正式版发布并移除 patch 条目后，可退回普通
-#     docker build -f docker/Dockerfile .
+# 直接构建（依赖已全部走 crates.io，无本地 patch/命名上下文）：
+#   docker build -f docker/Dockerfile .
 #
 # Build arguments:
 #   BUILD_PROFILE=release|dev
-#   RUST_VERSION=1.92.0
+#   RUST_VERSION=1.97.1（confers 0.6.0-rc.10 要求 rustc ≥ 1.97.1 / edition 2024）
 # ============================================
 
 # ---------- Builder Stage ----------
-FROM rust:1.92.0-bullseye AS builder
+ARG RUST_VERSION=1.97.1
+FROM rust:${RUST_VERSION}-bookworm AS builder
 
 # Build arguments
 ARG BUILD_PROFILE=release
@@ -28,6 +25,7 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     ca-certificates \
+    cmake \
     && rm -rf /var/lib/apt/lists/*
 
 # Set build environment
@@ -35,29 +33,28 @@ ENV CARGO_NET_GIT_FETCH_WITH_CLI=false \
     CARGO_INCREMENTAL=1 \
     RUSTFLAGS="${RUSTFLAGS}"
 
-# 本地 RC 依赖（命名构建上下文注入，见文件头说明）。置于根目录，使
-# [patch.crates-io] 相对 /app 的 ../sdforge、../inklog 可解析。
-COPY --from=sdforge / /sdforge
-COPY --from=inklog / /inklog
-
 WORKDIR /app
 
 # Copy source code（.dockerignore 已排除 target/、.git 等）
 COPY . .
 
 # Build the single-package application
+# etcd feature 必须随镜像编入：docker-compose 会注入 ETCD_ENDPOINTS，
+# 未编译该 feature 时服务无法建立协调锁（已由启动 fail-closed 守卫拒绝）。
 RUN cargo build --${BUILD_PROFILE} --locked \
     --package nebulaid \
+    --features etcd \
     --jobs $(nproc)
 
 # ---------- Runtime Stage ----------
-FROM debian:bullseye-slim AS runtime
+# bookworm 与 builder 的 glibc 对齐（bullseye runtime 低于 builder 会报 GLIBC 版本缺失）。
+FROM debian:bookworm-slim AS runtime
 
 ARG BUILD_PROFILE=release
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
-    libssl1.1 \
+    libssl3 \
     ca-certificates \
     curl \
     && rm -rf /var/lib/apt/lists/* \

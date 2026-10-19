@@ -4,7 +4,7 @@
 
 [![GitHub release](https://img.shields.io/github/v/release/Kirky-X/NebulaId)](https://github.com/Kirky-X/NebulaId/releases) [![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/NebulaId/ci.yml?branch=main)](https://github.com/Kirky-X/NebulaId/actions/workflows/ci.yml) [![Security](https://img.shields.io/github/actions/workflow/status/Kirky-X/NebulaId/codeql.yml?branch=main&label=security)](https://github.com/Kirky-X/NebulaId/actions/workflows/codeql.yml)
 
-**[中文](README.md)** | English
+**[Chinese](README.md)** | English
 
 **Enterprise-grade high-performance distributed ID generation system**
 
@@ -52,7 +52,7 @@ Double-buffered segments, drift-guarded bit slicing, custom UUID v8 layouts — 
 - [📋 Changelog](#-changelog)
 - [📄 License](#-license)
 - [🙏 Acknowledgments](#-acknowledgments)
-- [📞 Contact & Support](#-contact--support)
+- [📞 Contact & Support](#contact--support)
 - [⭐ Star History](#-star-history)
 
 ---
@@ -309,7 +309,7 @@ acquire_timeout_seconds = 30
 idle_timeout_seconds = 300
 
 [etcd]
-endpoints = ["http://localhost:2379"]
+endpoints = []          # empty = single-process local lock; fill in for multi-instance etcd
 connect_timeout_ms = 5000
 watch_timeout_ms = 5000
 

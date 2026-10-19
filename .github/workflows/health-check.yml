@@ -120,3 +120,44 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
           verbose: true
+
+  # 真实 etcd 集成：仅 push 执行（PR 跳过以控制时长）。
+  # 断言全部在 Rust #[ignore] 用例内，服务容器只负责提供 etcd。
+  etcd-integration:
+    name: etcd integration
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      etcd:
+        image: bitnami/etcd:3.5
+        env:
+          ALLOW_NONE_AUTHENTICATION: "yes"
+          ETCD_ADVERTISE_CLIENT_URLS: "http://etcd:2379"
+          ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
+        ports:
+          - 2379:2379
+        options: >-
+          --health-cmd "etcdctl endpoint health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "nebula-etcd-integration"
+          cache-targets: false
+
+      - name: Run etcd integration tests
+        env:
+          ETCD_TEST_ENDPOINTS: http://127.0.0.1:2379
+        run: cargo test --package nebulaid --features etcd,integration-tests --lib -- --ignored integration_etcd_

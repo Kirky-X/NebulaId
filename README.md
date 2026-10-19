@@ -312,7 +312,7 @@ acquire_timeout_seconds = 30
 idle_timeout_seconds = 300
 
 [etcd]
-endpoints = ["http://localhost:2379"]
+endpoints = []          # 空 = 单进程本地锁；多实例部署启用 etcd 后填写
 connect_timeout_ms = 5000
 watch_timeout_ms = 5000
 

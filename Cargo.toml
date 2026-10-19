@@ -172,7 +172,12 @@ required-features = ["server"]
 [[bench]]
 name = "algorithms"
 harness = false
-required-features = ["server", "garrison-auth"]
+required-features = ["server", "garrison-auth", "snowflake"]
+
+[[bench]]
+name = "segment"
+harness = false
+required-features = ["segment"]
 
 [[bench]]
 name = "auth_cache_adoption"

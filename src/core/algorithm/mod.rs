@@ -38,9 +38,10 @@ pub use degradation_manager::{CircuitBreakerState, DegradationManager};
 #[cfg(feature = "segment")]
 pub use segment::CpuMonitor;
 
-// Segment 号段装配面：DbSegmentLoader 供生产注入。
+// Segment 号段装配面：DbSegmentLoader 供生产注入；SegmentData 是
+// `SegmentLoader::load_segment` 的返回类型，公开以支持外部基准/宿主实现装载器。
 #[cfg(feature = "segment")]
-pub use segment::{DbSegmentLoader, SegmentAlgorithm, SegmentLoader};
+pub use segment::{DbSegmentLoader, SegmentAlgorithm, SegmentData, SegmentLoader};
 
 // Snowflake 位布局解析的唯一权威类型
 #[cfg(feature = "snowflake")]

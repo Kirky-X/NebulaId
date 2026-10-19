@@ -84,7 +84,7 @@
 ```
 TCP(TLS?) → size_limit(1MiB→413) → request_id(UUIDv7透传/生成) → sdforge context
 → 审计中间件(响应后按状态码记 Success/Failure/Partial) → CORS(ALLOWED_ORIGINS env)
-→ 安全头×6(nosniff/DENY/CSP/HSTS/XSS/Referrer) → 限流[可选](429特例体+x-ratelimit-*)
+→ 安全头×6(nosniff/DENY/CSP/HSTS/XSS/Referrer) → 限流（可选，429 特例体 + x-ratelimit-* 响应头）
 → 路由匹配 ┬ 公开: /health /ready /metrics /api-docs/openapi.json /health/sdforge /swagger-ui /api/v1(info)
            └ /api/v1 → locale(Accept-Language) → api_version(v2→400)
               ├ admin组: auth_middleware → admin_required(非Admin→403)
@@ -635,7 +635,7 @@ cargo bench --bench i18n
 
 | # | 缺口 | 说明 |
 |---|---|---|
-| 14 | docker 构建链断裂：`vendor-deps.sh` 仍找 `../sdforge`、`../inklog` 旧路径（现为 `../base/*` + `../garrison`），`docker/build.sh` 与 compose build 必然失败 | DEPLOYMENT 快速启动不可用；修复后补 L3 compose 冒烟 |
+| 14 | ~~docker 构建链断裂：`vendor-deps.sh` 仍找 `../sdforge`、`../inklog` 旧路径（现为 `../base/*` + `../garrison`），`docker/build.sh` 与 compose build 必然失败~~ **已修复**：依赖全部走 crates.io，移除 vendor 机制；builder 升 `rust:1.97.1-bookworm`（confers edition 2024 要求）、runtime 对齐 bookworm，镜像编入 `--features etcd` | DEPLOYMENT 快速启动可用；`docker build -f docker/Dockerfile .` 已实测 |
 | 15 | metrics 端口三处矛盾（compose 9092 映射 / Dockerfile EXPOSE+死 ENV / 文档"无独立指标端口"） | 清理 compose 与 Dockerfile |
 | 16 | 文档漂移：`to_u128()` 示例（实为 `as_u128`）、DEPLOYMENT §8.5 旧端点清单、FAQ 吞吐数字无基准支撑、漏洞报告渠道两说、dc_id 0-7 vs ≤31、USER_GUIDE 仍列 sqlite/MySQL | 逐项修正并纳入 FAQ 已知问题 |
 | 17 | `api_test.sh` 的 `/api/v1/metrics` 用例与默认生产 URL、workspace 不清理 | 脚本修复 |

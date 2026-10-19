@@ -23,12 +23,13 @@
 
 ## 基准口径与诚实声明
 
-本仓库 `Cargo.toml` 中声明**三项**基准（均为 `harness = false`；第三项为一次性性能门禁，非 Criterion 口径）：
+本仓库 `Cargo.toml` 中声明**四项**基准（均为 `harness = false`；其中一项为一次性性能门禁，非 Criterion 口径）：
 - `[[bench]] name = "i18n"`（`benches/i18n.rs`）：i18n 热路径，钉住性能修复的基线，保证后续 i18n 改动可量化；
 - `[[bench]] name = "algorithms"`（`benches/algorithms.rs`）：发号 / 限流 / 认证缓存热路径，覆盖 Snowflake 单条与批量、路由链路、令牌桶与认证缓存命中。
+- `[[bench]] name = "segment"`（`benches/segment.rs`，`required-features = ["segment"]`）：Segment 稳态单条 / 批量摊销 / 跨段边界 / 路由链路。
 
-- `[[bench]] name = "auth_cache_adoption"`（`benches/auth_cache_adoption.rs`，`required-features = ["server", "garrison-auth"]`）——selfdev-lib-adoption-r1 条目 7 的**认证缓存收编性能门禁**。对比基线 `AuthCache`（类型化直存）与候选 oxcache `Cache` 在认证命中路径（键构造 + 命中读取）的 P99 与吞吐，阈值 P99 增幅 ≤ 10% 且吞吐降幅 ≤ 5%。判定为 reject（P99 +597%、吞吐 −53.8%，根因是 oxcache 的 `V: Serialize + DeserializeOwned` 使每次命中必经一次 JSON 反序列化）；设 `NEBULAID_AUTH_CACHE_GATE=1` 可在门禁否决时硬失败，机器可读结果落盘 `target/auth_cache_adoption-latest.json`。
-**口径边界：前两项为算法 / 中间件层微基准，第三项为一次性收编门禁，不覆盖 HTTP 全链路（认证中间件、TLS、序列化、网络），基线数字亦非 SLA 承诺。** Segment 算法未纳入基准（`SegmentAlgorithm` / `SegmentLoader` 为 `pub(crate)`，外部 bench 无法注入内存 stub 号段装载器）；端到端吞吐请以自身负载实测（见[优化建议](#优化建议)）。
+- `[[bench]] name = "auth_cache_adoption"`（`benches/auth_cache_adoption.rs`，`required-features = ["server", "garrison-auth"]`）——selfdev-lib-adoption-r1 条目 7 的**认证缓存收编性能门禁**。对比基线 `AuthCache`（类型化直存）与候选 oxcache `Cache` 在认证命中路径（键构造 + 命中读取）的 P99 与吞吐，阈值 P99 增幅 ≤ 10% 且吞吐降幅 ≤ 5%。判定为 reject（2026-10-19 复跑：`get` 路径 P99 362ns→2.72µs（+652.2%）、吞吐 328.4 万→143.3 万 ops/s（−56.4%）；`get_or` 路径 P99 +646.4%、吞吐 −57.4%。rc.3 记录的 +597% / +690% 为更早批次的同量级结果，以 `target/auth_cache_adoption-latest.json` 为准。根因是 oxcache 的 `V: Serialize + DeserializeOwned` 使每次命中必经一次 JSON 反序列化）；设 `NEBULAID_AUTH_CACHE_GATE=1` 可在门禁否决时硬失败，机器可读结果落盘 `target/auth_cache_adoption-latest.json`。
+**口径边界：前三项为算法 / 中间件层微基准，第四项为一次性收编门禁，不覆盖 HTTP  全链路（认证中间件、TLS、序列化、网络），基线数字亦非 SLA 承诺。** Segment 基准的号段来源为进程内 stub，**不含真实数据库往返**；端到端吞吐请以自身负载实测（见[优化建议](#优化建议)）。
 
 ---
 
@@ -52,13 +53,14 @@
 
 ## 基准套件（发号热路径）
 
-`benches/algorithms.rs` 定义 7 个基准函数、共 7 个基准用例（每函数注册 1 个用例，含后续补充的 batch_10000）：
+`benches/algorithms.rs` 定义 8 个基准函数、共 10 个基准用例（批量容量函数注册 3 个 `sequence_bits` 变体）：
 
 | 基准函数 | 用例 | 覆盖路径 |
 |----------|------|----------|
 | `bench_snowflake_generate` | `snowflake/generate` | Snowflake 单条生成——经公开 `SnowflakeFactory` 构建的 `Box<dyn IdAlgorithm>`，与生产 `AlgorithmBuilder::build` 完全同一路径 |
 | `bench_snowflake_batch_generate` | `snowflake/batch_generate_100` | 批量生成（单批 100 个 ID） |
-| `bench_snowflake_batch_generate_10000` | `snowflake/batch_generate_10000` | 超大批量（单批 10000 = `[batch_generate].max_batch_size` 上限），单次 `block_on` 摊薄到 10k 个 ID，近似「纯 reserve 路径」下限口径 |
+| `bench_snowflake_batch_generate_10000` | `snowflake/batch_generate_10000` | 超大批量（单批 10000 = 配置校验上限；仓库默认 `max_batch_size` 为 100），单次 `block_on`  摊薄到 10k 个 ID，近似「纯 reserve 路径」下限口径 |
+| `bench_snowflake_batch_capacity` | `snowflake/batch_generate_10000_seq_bits_{10,12,14}` | 位宽容量扫描：`2^bits - 1` 为每毫秒上限，默认 10 位不变，仅作容量规划数据 |
 | `bench_router_generate` | `router/generate_snowflake_primary` | 路由链路：默认算法 snowflake + fallback 链 `[UuidV8]`，含查表、观测面记录与分发的完整开销 |
 | `bench_router_generate_uuid` | `router/generate_with_algorithm_uuid_v8` | 路由直选 UUID v8 |
 | `bench_rate_limiter` | `rate_limiter/check_rate_limit` | 令牌桶命中路径 |
@@ -67,7 +69,20 @@
 说明：
 
 - 每次迭代经 `rt.block_on` 驱动 async 入口（与生产调用形态一致），因此数字含每迭代的异步调度开销，高于纯 CAS 成本属预期。
-- Segment 路由未纳入：`SegmentAlgorithm` / `SegmentLoader` 均为 `pub(crate)`，外部 bench 无法注入内存 stub 号段装载器；待装配处接入 `DbSegmentLoader` 后再评估是否补 Segment 路由基准。
+- Segment 热路径见 `benches/segment.rs`：`SegmentAlgorithm` / `SegmentLoader` / `SegmentData` 均为公开面，stub loader 与 `with_segment_repository` 均可注入；纯算法口径不含数据库往返。
+
+### 基准套件（Segment 热路径）
+
+`benches/segment.rs` 定义 4 个基准函数、共 7 个基准用例：
+
+| 基准函数 | 用例 | 覆盖路径 |
+|----------|------|----------|
+| `bench_segment_generate` | `segment/generate_steady` | 稳态单条：key 构造 + buffers 读锁 + 段内消费 + 指标计数（span=1e6，无跨段） |
+| `bench_segment_batch_generate` | `segment/batch_generate_{10,100,1000,10000}` | 批量摊销曲线（span=1e6） |
+| `bench_segment_boundary` | `segment/generate_boundary_span_1024` | 跨段边界：每 1024 条触发一次 loader 与双缓冲切换 |
+| `bench_router_segment` | `segment_router/generate_via_router` | 路由链路：`with_segment_repository` + `DbSegmentLoader` 适配（生产装配形态） |
+
+说明：号段由进程内 `MonotonicLoader` / `MonotonicRepo` 单调生成，**不含真实 DB 往返**；`segment_router` 用例含路由查表、降级观测与适配器开销。
 
 ---
 
@@ -79,6 +94,9 @@ cargo bench --bench i18n
 
 # 运行发号 / 限流 / 认证缓存基准
 cargo bench --bench algorithms
+
+# 运行 Segment 稳态 / 批量 / 跨段 / 路由基准
+cargo bench --bench segment
 ```
 
 `[profile.bench]` 为 `opt-level = 3`、`lto = true`，与 release 接近，可视为发号热路径的参考编译口径。
@@ -239,6 +257,48 @@ FluentBundle 双束切换为 sdforge 注册 + OnceLock 快照零锁渲染（self
 默认语义与"无路径即无 worker"的事实组合存在隐患，属于 `../base/inklog` 的
 上游设计问题，建议上游将 None 语义改为显式禁用或为无路径情形使用即刻断连
 的哑通道；当前由宿主侧显式配置规避。
+
+### Segment 热路径（`benches/segment.rs`，2026-10-19）
+
+| 条目 | 值 |
+|------|-----|
+| 日期 | 2026-10-19 |
+| commit | 工作区（未提交，基于 `442703a`） |
+| 机器 | AMD Ryzen 9 9950X（16C32T）；WSL2（kernel 6.6.87.2-microsoft-standard-WSL2）分配 16 逻辑 CPU、66 GiB RAM |
+| 工具链 | rustc / cargo 1.97.1 |
+| criterion | 0.8.2，默认口径（100 样本 / 3s 预热 / 5s 测量） |
+| 编译口径 | `[profile.bench]`（opt-level = 3、lto = true），default features（含 `segment`） |
+
+中位数取 criterion `estimates.json` 的 median point estimate；“换算吞吐”为按中位数换算的参考值：
+
+| 基准用例 | 中位数 | 换算吞吐 |
+|----------|-------:|---------:|
+| `segment/generate_steady` | 138.33 ns | ≈ 723 万次/s |
+| `segment/batch_generate_10` | 182.60 ns | ≈ 5477 万 ID/s（≈ 18.3 ns/ID） |
+| `segment/batch_generate_100` | 223.62 ns | ≈ 4.47 亿 ID/s（≈ 2.24 ns/ID） |
+| `segment/batch_generate_1000` | 395.90 ns | ≈ 25.3 亿 ID/s（≈ 0.40 ns/ID） |
+| `segment/batch_generate_10000` | 2.089 µs | ≈ 47.9 亿 ID/s（≈ 0.21 ns/ID） |
+| `segment/generate_boundary_span_1024` | 144.45 ns | ≈ 692 万次/s（含 loader 摊销） |
+| `segment_router/generate_via_router` | 419.48 ns | ≈ 238 万次/s |
+
+解读：
+
+- Segment 稳态单条（138 ns）显著快于 Snowflake（977 ns）：后者受 `1023 ID/ms` 位宽节流，本表是纯内存号段消费。
+- 批量摊销明显：10000 批量下每 ID ≈ 0.21 ns，约为单条的 1/660；吞吐型调用方应优先批量。
+- 跨段边界（span=1024）仅比稳态高约 4%，loader 调用被 1024 条摊销；真实 DB 往返会显著放大该口径，不可据此外推。
+- 路由链路（419 ns）相对直连算法（138 ns）约 3×，增量来自查表 + 降级观测 + `DbSegmentLoader` 适配。
+
+### Snowflake 批量容量 vs `sequence_bits`（2026-10-19）
+
+同机同口径（default features），单批 10000：
+
+| `sequence_bits` | 中位数 | 换算吞吐 | 每毫秒位宽上限 | 时间戳位宽 | epoch（2024-01-01）起可用 |
+|:---------------:|-------:|---------:|:-------------:|:---------:|:-------------------------:|
+| 10（默认） | 9.7747 ms | ≈ 102.3 万 ID/s | 1023 | 43 | ≈ 278 年 |
+| 12 | 2.4418 ms | ≈ 409.5 万 ID/s | 4095 | 41 | ≈ 70 年 |
+| 14 | 610.37 µs | ≈ 1638.3 万 ID/s | 16383 | 39 | ≈ 17 年 |
+
+解读：吞吐严格按 `2^bits` 线性放大（4× / 16×），说明瓶颈就是位宽本身；**默认 10 位保持不变**，提高 `sequence_bits` 是以时间戳可用年限换吞吐的部署级取舍（16 位仅约 4 年，不建议）。
 
 ---
 

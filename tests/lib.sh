@@ -7,7 +7,8 @@
 #
 # @required_env
 #   NEBULA_API_BASE    - API 服务器地址
-#   TEST_AUTH_HEADER   - 认证头
+#   TEST_AUTH_HEADER   - 认证头（generate 等业务面，需 User key）
+#   TEST_ADMIN_AUTH_HEADER - 管理面认证头（可选；未提供时回落 TEST_AUTH_HEADER）
 #   TEST_CONFIG_FILE   - 配置文件路径
 #
 # @usage
@@ -32,6 +33,7 @@ set -euo pipefail
 
 # 全局配置变量
 AUTH_HEADER=""
+ADMIN_AUTH_HEADER=""
 API_BASE="http://localhost:8080"
 REPORT_FILE=""
 
@@ -139,6 +141,18 @@ load_test_config() {
         config_loaded=true
     fi
 
+    # 管理面凭证：generate 需 User key，算法切换等管理面需 Admin key。
+    # 未单独提供时回落 AUTH_HEADER（兼容单凭证脚本）。
+    if [ -n "${TEST_ADMIN_AUTH_HEADER:-}" ]; then
+        ADMIN_AUTH_HEADER="$TEST_ADMIN_AUTH_HEADER"
+        echo "[INFO] 使用环境变量提供的管理面认证头 (TEST_ADMIN_AUTH_HEADER)"
+    elif [ -n "${TEST_ADMIN_KEY_ID:-}" ] && [ -n "${TEST_ADMIN_KEY_SECRET:-}" ]; then
+        ADMIN_AUTH_HEADER="Authorization: Basic $(echo -n "${TEST_ADMIN_KEY_ID}:${TEST_ADMIN_KEY_SECRET}" | base64)"
+        echo "[INFO] 使用 TEST_ADMIN_KEY_ID/TEST_ADMIN_KEY_SECRET 构建管理面认证头"
+    else
+        ADMIN_AUTH_HEADER="$AUTH_HEADER"
+    fi
+
     echo "[INFO] API 地址: $API_BASE"
     echo "[INFO] 配置加载完成"
 }
@@ -187,11 +201,13 @@ check_prerequisites() {
 check_api_health() {
     echo -e "\n${YELLOW}【健康检查】${NC}"
     local health=$(curl -s --retry 3 --retry-connrefused "$(get_api_base)/health")
-    local status=$(echo "$health" | jq -r '.status')
+    # 服务端 HealthStatus 序列化为 PascalCase（"Healthy"/"Degraded"），
+    # 这里统一转小写比较，兼容两种序列化口径。
+    local status=$(echo "$health" | jq -r '.status // empty' | tr '[:upper:]' '[:lower:]')
     echo "系统状态: $status"
 
     if [ "$status" != "healthy" ]; then
-        echo -e "${YELLOW}⚠️  服务未就绪，请确保 nebula-id 服务正在运行${NC}"
+        echo -e "${YELLOW}⚠️  服务未就绪（原始响应: ${health:-<空>}），请确保 nebula-id 服务正在运行${NC}"
         return 1
     fi
     echo -e "${GREEN}✅ 服务健康${NC}"
@@ -231,7 +247,7 @@ switch_algorithm() {
     local algorithm="$2"
     curl -s --retry 3 --retry-connrefused -X POST "$(get_api_base)/api/v1/config/algorithm" \
         -H "Content-Type: application/json" \
-        -H "$AUTH_HEADER" \
+        -H "${ADMIN_AUTH_HEADER:-$AUTH_HEADER}" \
         -d "{\"biz_tag\": \"${biz_tag}\", \"algorithm\": \"${algorithm}\"}"
 }
 

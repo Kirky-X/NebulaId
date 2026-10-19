@@ -473,6 +473,7 @@ error-main-etcd_client_connect_failed = etcd client connect failed for endpoints
 error-main-etcd_ping_failed = etcd ping failed for endpoints { $endpoints }: { $reason }
 error-main-etcd_ping_timed_out = etcd ping timed out after { $timeout_ms }ms for endpoints { $endpoints }
 error-main-etcd_lock_create_failed = failed to create EtcdDistributedLock: { $reason }
+error-main-etcd_feature_required = etcd endpoints are configured ({ $endpoints }) but this binary was built without the etcd feature. Rebuild with --features etcd, or clear etcd.endpoints / ETCD_ENDPOINTS to use the single-process lock. Shutting down...
 error-detail-group_not_found = Group not found: { $id }
 error-detail-biz_tag_not_found = BizTag not found: { $id }
 
@@ -670,6 +671,7 @@ error-sdk-assembly_config_missing = SDK assembly config missing: { $reason }
 error-sdk-kit_build_failed = trait-kit build failed: { $reason }
 error-sdk-repository_required_for_segment = Segment algorithm requires a database repository; call NebulaIdKitBuilder::with_repository() before build()
 error-sdk-router_module_must_exist_on_ready_kit = RouterModule capability must exist on a Ready Kit (guaranteed by build dependency-graph validation)
+error-sdk-etcd_feature_required = etcd endpoints are configured ({ $endpoints }) but this build does not include the etcd feature; rebuild with --features etcd or clear the endpoints to use the single-process lock
 log-sdk-audit_logger_injection_confirmed = sdk: audit_logger injection confirmed
 error-detail-segment_loader_not_configured = Segment algorithm has no data source wired; inject DbSegmentLoader (SegmentRepository::allocate_segment) at the assembly site
 

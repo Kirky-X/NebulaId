@@ -11,9 +11,38 @@
 
 ## 📋 目录
 
+- [Unreleased](#unreleased)
 - [0.3.0-rc.3 - 2026-10-15](#030-rc3---2026-10-15)
 - [0.3.0-rc.1 - 2026-09-22](#030-rc1---2026-09-22)
 - [0.2.0 - 2026-07-23](#020---2026-07-23)
+
+---
+
+## [Unreleased]
+
+### fix（SDK / etcd 生产化收尾）
+
+- **SDK Segment 仓储接线修复（P0）**：`RouterModule` 此前取到注入仓储后丢弃，生产构建下 Segment 落到 `UnconfiguredSegmentLoader`（单测因 `cfg(test)` 注入 `TestSegmentLoader` 而假通过）。现经 TypeMap `RepositoryInput` 接线 `AlgorithmRouter::with_segment_repository`，并顺带消除「已注入仓储仍自举第二个连接池」的浪费；`test_id_generator_segment_with_repository_succeeds` 改为按 MockDatabase 区间断言。
+- **非 etcd 构建 fail-closed**：未启用 `etcd` feature 却配置了端点时，主服务拒绝启动、SDK `build()` 返回 `ConfigurationError`（此前静默回退 `LocalDistributedLock`，多实例部署会重复发号）。
+- **SDK etcd 操作超时接线**：`operation_timeout_secs` 在 SDK 路径生效（与主服务同源）。
+- **镜像与样例配置自洽**：`docker/Dockerfile` 编入 `--features etcd`；`config/config.toml` 的 `etcd.endpoints` 默认改为 `[]`（compose 仍由 `ETCD_ENDPOINTS` 注入）。
+- **Docker 构建链修复**：builder 升 `rust:1.97.1-bookworm`（confers 0.6.0-rc.10 为 edition 2024 / rustc ≥ 1.97.1），runtime 对齐 `bookworm-slim` + `libssl3`；依赖已全部走 crates.io，删除 `vendor-deps.sh` 与 BuildKit 命名上下文，`docker build -f docker/Dockerfile .` 可直接构建。
+
+### test（真实 etcd 与脚本口径）
+
+- 新增 3 个 `#[ignore]` 真实 etcd 锁用例（互斥 / 释放重入 / TTL 过期），`make test-etcd` 一键编排；`health-check.yml` 新增 push 触发的 `etcd-integration` job。
+- `tests/distributed_test.sh` 正名为 HTTP 发号一致性 smoke（不依赖 etcd）：严格模式在 `source lib.sh` 后显式关闭，新增数字 ID 断言、算法切换失败跳过与 `SKIPPED` 统计。
+- **运行期实测修复**：`tests/lib.sh` 健康断言改为大小写不敏感（服务端 `/health` 返回 PascalCase `Healthy`）；新增 `TEST_ADMIN_AUTH_HEADER` / `TEST_ADMIN_KEY_ID`+`TEST_ADMIN_KEY_SECRET`，区分 `generate` 的 User key 与算法切换的 Admin key；`TEST_WORKSPACE` 现在真正传入发号请求；时间戳归一化改用 `sed` 字符集，修复 `tr -d '[:-]'` 被解析为字符范围导致的算术比较告警。
+
+### perf（Segment 基准与批量容量）
+
+- 新增 `benches/segment.rs`（required-features `segment`）：稳态单条、批量 10/100/1000/10000、跨段边界、路由链路共 7 用例；`SegmentData` 公开以支持外部 stub loader。
+- `benches/algorithms.rs` 新增 `snowflake/batch_generate_10000_seq_bits_{10,12,14}` 容量扫描；`required-features` 补 `snowflake`。
+- **errata**：rc.3 条目中认证缓存门禁「P99 +690%」与 PERFORMANCE.md「+597%」存在口径不一致；本次复跑为 `get` 路径 +652.2%、`get_or` 路径 +646.4%（吞吐 −56.4% / −57.4%），PERFORMANCE.md 已按门禁 JSON 的两条路径分别标注（以 `target/auth_cache_adoption-latest.json` 为准）。
+
+### docs
+
+- PERFORMANCE.md：基准总数 3→4、Segment 阻塞理由（`pub(crate)`）更正为已公开可注入、`batch_10000` 上限措辞更正。
 
 ---
 

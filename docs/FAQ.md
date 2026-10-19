@@ -379,12 +379,12 @@ async fn main() -> nebulaid::core::Result<()> {
 **Dockerfile 示例：**
 
 ```dockerfile
-FROM rust:1.92.0-bullseye AS builder
+FROM rust:1.97.1-bookworm AS builder
 WORKDIR /app
 COPY . .
-RUN cargo build --release
+RUN cargo build --release --features etcd
 
-FROM debian:bullseye-slim
+FROM debian:bookworm-slim
 COPY --from=builder /app/target/release/nebula-id /usr/local/bin/
 CMD ["nebula-id"]
 ```
@@ -1605,7 +1605,7 @@ curl http://localhost:8080/metrics
 4. ✅ 添加测试：`cargo test --package nebulaid --features etcd`
 5. 📤 提交 PR
 
-**指南：**[CONTRIBUTING.md](../CONTRIBUTING.md)
+**指南：**[CONTRIBUTING.md](CONTRIBUTING.md)
 
 </details>
 

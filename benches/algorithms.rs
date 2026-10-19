@@ -9,8 +9,8 @@
 //! （默认 snowflake、fallback [UuidV8]）、`RateLimiter::check_rate_limit`、
 //! `AuthCache::get` 命中路径。
 //!
-//! Segment 路由未纳入：`SegmentAlgorithm` / `SegmentLoader` 均为 `pub(crate)`，
-//! 外部 bench 无法注入内存 stub，待接入 `DbSegmentLoader` 后再评估。
+//! Segment 热路径独立在 `benches/segment.rs`（feature `segment`）：`SegmentData`
+//! 与 `SegmentLoader` 已公开，stub loader / `with_segment_repository` 均可注入。
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -85,7 +85,7 @@ fn bench_snowflake_batch_generate(c: &mut Criterion) {
     });
 }
 
-/// Snowflake 超大批量（单批 10000 = `[batch_generate].max_batch_size` 上限）：
+/// Snowflake 超大批量（单批 10000 = 配置校验上限；仓库默认 `max_batch_size` 为 100）：
 /// 单次 block_on 摊薄到 10k 个 ID 上，近似「纯 reserve 路径」的下限口径。
 fn bench_snowflake_batch_generate_10000(c: &mut Criterion) {
     let rt = bench_runtime();
@@ -108,11 +108,45 @@ fn bench_snowflake_batch_generate_10000(c: &mut Criterion) {
     });
 }
 
+/// 批量容量 vs `sequence_bits`：位宽决定每毫秒发号上限（`2^bits - 1`）。
+/// 以相同 10000 批量对比 10/12/14 位——默认 10 位保持不变，本基准只给
+/// 容量规划提供数据（时间跨度 Trade-off 见 PERFORMANCE.md）。
+fn bench_snowflake_batch_capacity(c: &mut Criterion) {
+    let rt = bench_runtime();
+    let ctx = bench_ctx();
+
+    for bits in [10u8, 12, 14] {
+        let mut config = Config::default();
+        config.algorithm.snowflake.sequence_bits = bits;
+        // 基准不落盘守卫状态，避免 ./data 写入干扰测量。
+        config.algorithm.snowflake.state_guard = false;
+        let algo = rt.block_on(async {
+            let builder = AlgorithmBuilder::new(AlgorithmType::Snowflake);
+            SnowflakeFactory
+                .build(&builder, &config)
+                .await
+                .expect("snowflake build must succeed")
+        });
+
+        c.bench_function(
+            &format!("snowflake/batch_generate_10000_seq_bits_{bits}"),
+            |b| {
+                b.iter(|| {
+                    let batch = rt
+                        .block_on(algo.batch_generate(black_box(&ctx), 10_000))
+                        .unwrap();
+                    black_box(batch)
+                })
+            },
+        );
+    }
+}
+
 /// AlgorithmRouter 路由链路：默认算法 snowflake（fallback [UuidV8]），
 /// 覆盖 get_algorithm 查表 + 观测面记录 + 算法分发的完整开销。
 ///
-/// 默认算法设为 snowflake：`SegmentLoader` 无法从外部 crate 注入 stub（见
-/// 模块文档），避免 Segment 构建态影响测量语义。
+/// 默认算法设为 snowflake：Segment 热路径独立在 `benches/segment.rs`，
+/// 避免 Segment 构建态影响本文件的测量语义。
 fn bench_router_generate(c: &mut Criterion) {
     let rt = bench_runtime();
     let mut config = Config::default();
@@ -196,6 +230,7 @@ criterion_group!(
     bench_snowflake_generate,
     bench_snowflake_batch_generate,
     bench_snowflake_batch_generate_10000,
+    bench_snowflake_batch_capacity,
     bench_router_generate,
     bench_router_generate_uuid,
     bench_rate_limiter,

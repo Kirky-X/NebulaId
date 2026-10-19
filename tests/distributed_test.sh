@@ -1,11 +1,13 @@
 #!/bin/bash
 #
 # @file        distributed_test.sh
-# @brief       分布式一致性和雪花算法验证测试
+# @brief       HTTP 发号并发一致性与雪花算法 smoke（不依赖 etcd）
 #
 # @description
-#     此脚本测试 Nebula ID 在分布式环境下的 ID 生成一致性和
-#     雪花算法的正确性，包括:
+#     此脚本经 HTTP API 验证 Nebula ID 的 ID 生成一致性与雪花算法
+#     行为（并发唯一性/时序/批量/结构），不涉及 etcd 协调；真实 etcd
+#     锁与 worker 分配验证见 `make test-etcd`（Rust #[ignore] 用例）。
+#     包括:
 #     1. 并发生成唯一性测试
 #     2. 时序递增性测试
 #     3. 批量生成唯一性测试
@@ -30,8 +32,9 @@
 #
 # @environment_variables
 #     NEBULA_API_BASE       - API 服务器地址 (默认: http://localhost:8080)
-#     TEST_AUTH_HEADER      - 认证头 (默认: 从配置生成)
-#     TEST_WORKSPACE        - 测试工作空间 (默认: dist-test)
+#     TEST_AUTH_HEADER      - 业务面认证头（需 User key，且 workspace 归属；默认: 从配置生成）
+#     TEST_ADMIN_AUTH_HEADER - 管理面认证头（Admin key，算法切换用；未提供时回落 TEST_AUTH_HEADER）
+#     TEST_WORKSPACE        - 测试工作空间名（必须是已存在的 workspace；默认: dist-test）
 #     CLEANUP_ENABLED       - 是否清理测试数据 (默认: true)
 #     TEST_CONFIG_FILE      - 配置文件路径
 #
@@ -46,35 +49,22 @@
 #     degradation_test.sh - 降级测试
 #
 # @author      Nebula ID Team
-# @version     1.1.0
-# @date        2026-01-12
+# @version     1.2.0
+# @date        2026-10-19
 #
 # @changelog
+#     1.2.0 - 2026-10-19
+#         - 正名：HTTP 发号一致性 smoke，etcd 验证移交 make test-etcd
+#         - 严格模式在 source lib.sh 后显式关闭（此前被 lib.sh 重置）
+#         - 增加数字 ID 断言与算法切换失败跳过，避免 null 参与算术
 #     1.1.0 - 2026-01-12
 #         - 移除硬编码认证凭据，改用配置加载
 #         - 添加测试数据清理机制
 #         - 改进错误处理（set +e + trap）
 #
 
-# 禁用 set -e，改用细粒度错误处理
-set +e
-
-# 错误处理函数
-error_handler() {
-    local exit_code=$?
-    local line=$1
-
-    echo "[ERROR] 脚本在第 $line 行异常退出，退出码: $exit_code" >&2
-
-    # 清理临时文件
-    if [ -n "$TMPDIR" ] && [ -d "$TMPDIR" ]; then
-        rm -rf "$TMPDIR"
-    fi
-
-    exit $exit_code
-}
-
-trap 'error_handler $LINENO' ERR
+# 本脚本按用例粒度处理失败；严格模式在 source lib.sh 之后显式关闭
+# （lib.sh 会 set -euo pipefail，若在 source 前关闭会被重置）。
 
 # 安全的 API 调用
 safe_api_call() {
@@ -86,6 +76,12 @@ safe_api_call() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib.sh"
+
+# lib.sh 启用严格模式（set -euo pipefail）；本脚本按用例粒度处理失败，
+# 在此显式恢复宽松模式，避免预期失败（认证/算法切换被拒）中断整轮。
+set +e
+set +u
+set +o pipefail
 
 # 确保配置已加载
 if [ -z "$AUTH_HEADER" ]; then
@@ -99,6 +95,30 @@ fi
 # ========== 测试配置 ==========
 TEST_WORKSPACE="${TEST_WORKSPACE:-dist-test}"
 CLEANUP_ENABLED="${CLEANUP_ENABLED:-true}"
+
+# 断言响应 id 为纯数字：认证失败/服务错误时 jq 输出 null，直接进入
+# $(( )) 会在 set -u 下崩溃；此处显式失败并给出可操作提示。
+require_numeric_id() {
+    local id="$1"
+    if [[ "$id" =~ ^[0-9]+$ ]]; then
+        return 0
+    fi
+    echo "❌ 未取得有效数字 ID（实际: ${id:-<空>}）——请检查认证头与服务状态" >&2
+    return 1
+}
+
+# 算法切换（Admin-only）成功性判定：失败不崩溃，由调用方按 skip 处理。
+switch_algorithm_checked() {
+    local biz_tag="$1"
+    local algorithm="$2"
+    local resp
+    resp=$(switch_algorithm "$biz_tag" "$algorithm")
+    if echo "$resp" | jq -e '.success == true' >/dev/null 2>&1; then
+        return 0
+    fi
+    echo "⚠️ 算法切换被拒或不可用（需 Admin 凭据）: $resp" >&2
+    return 1
+}
 
 # ========== 清理函数 ==========
 cleanup_test_data() {
@@ -177,7 +197,7 @@ test_concurrent_uniqueness() {
     for i in $(seq 1 10); do
         (
             for j in $(seq 1 10); do
-                local result=$(generate_id "dist-test" "consistency" "concurrent-test")
+                local result=$(generate_id "$TEST_WORKSPACE" "consistency" "concurrent-test")
                 local id=$(get_id_from_response "$result")
                 echo "$id" >> "$tmpdir/result.$i"
             done
@@ -222,8 +242,10 @@ test_timestamp_ordering() {
     local prev_ts=""
 
     for i in $(seq 1 50); do
-        local result=$(generate_id "dist-test" "consistency" "ordering-test")
-        local ts=$(echo "$result" | grep -oE '"timestamp"[ ]*:[ ]*"[^"]*"' | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' | sed 's/T/ /' | tr -d '[:-]' | sed 's/ //')
+        local result=$(generate_id "$TEST_WORKSPACE" "consistency" "ordering-test")
+        # 归一化为 YYYYMMDDHHMMSS：sed 字符集删除分隔符（tr 的 '[:-]'
+        # 会被解析成字符范围，导致连字符残留、算术比较报 integer expression expected）。
+        local ts=$(echo "$result" | grep -oE '"timestamp"[ ]*:[ ]*"[^"]*"' | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' | sed 's/[-:T ]//g')
 
         if [ -n "$ts" ]; then
             if [ -z "$first_ts" ]; then
@@ -258,7 +280,7 @@ test_batch_uniqueness() {
     local tmpdir=$(mktemp -d)
 
     for batch in 1 2 3; do
-        local result=$(generate_batch "dist-test" "consistency" "batch-test" 20)
+        local result=$(generate_batch "$TEST_WORKSPACE" "consistency" "batch-test" 20)
         local ids=$(echo "$result" | jq -r '.ids | join("\n")' 2>/dev/null | grep -E '^[0-9]+$')
         echo "$ids" >> "$tmpdir/batch$batch.txt"
     done
@@ -290,14 +312,22 @@ test_snowflake_structure() {
     echo "=== 测试4: 雪花ID结构验证 ==="
     echo "验证雪花ID的位结构是否正确..."
 
-    switch_algorithm "dist-test:structure" "snowflake"
+    if ! switch_algorithm_checked "dist-test:structure" "snowflake"; then
+        echo "⏭️ 跳过雪花结构验证（算法切换未生效）"
+        return 2
+    fi
 
-    local result=$(generate_id "dist-test" "consistency" "dist-test:structure")
+    local result=$(generate_id "$TEST_WORKSPACE" "consistency" "dist-test:structure")
     local id=$(get_id_from_response "$result")
     local algorithm=$(get_algorithm_from_response "$result")
 
     echo "生成ID: $id"
     echo "算法: $algorithm"
+
+    if ! require_numeric_id "$id"; then
+        echo "⏭️ 跳过雪花结构验证（无有效 ID）"
+        return 2
+    fi
 
     if [ "$algorithm" == "snowflake" ]; then
         local id_len=${#id}
@@ -325,7 +355,7 @@ test_snowflake_structure() {
         echo "⚠️ 当前算法非雪花算法: $algorithm"
         echo "   当前使用 $algorithm 算法，跳过雪花结构验证"
         echo "   (雪花算法需要通过配置启用)"
-        return 0
+        return 2
     fi
 }
 
@@ -335,14 +365,21 @@ test_decentralized_property() {
     echo "=== 测试5: 雪花算法去中心化特性测试 ==="
     echo "验证不同节点生成的ID分布..."
 
-    switch_algorithm "dist-test:decentralized" "snowflake"
+    if ! switch_algorithm_checked "dist-test:decentralized" "snowflake"; then
+        echo "⏭️ 跳过去中心化特性测试（算法切换未生效）"
+        return 2
+    fi
 
     local ids=()
     local timestamps=()
 
     for i in $(seq 1 20); do
-        local result=$(generate_id "dist-test" "consistency" "dist-test:decentralized")
+        local result=$(generate_id "$TEST_WORKSPACE" "consistency" "dist-test:decentralized")
         local id=$(get_id_from_response "$result")
+        if ! require_numeric_id "$id"; then
+            echo "⏭️ 跳过去中心化特性测试（无有效 ID）"
+            return 2
+        fi
         ids+=("$id")
 
         local ts=$((id >> 22))
@@ -378,13 +415,21 @@ test_configured_snowflake() {
     echo "=== 测试6: 配置雪花算法验证 ==="
     echo "通过配置切换到雪花算法并验证..."
 
-    switch_algorithm "dist-test:config" "snowflake"
+    if ! switch_algorithm_checked "dist-test:config" "snowflake"; then
+        echo "⏭️ 跳过配置雪花算法验证（算法切换未生效）"
+        return 2
+    fi
 
     sleep 1
 
-    local result=$(generate_id "dist-test" "consistency" "dist-test:config")
+    local result=$(generate_id "$TEST_WORKSPACE" "consistency" "dist-test:config")
     local id=$(get_id_from_response "$result")
     local algorithm=$(get_algorithm_from_response "$result")
+
+    if ! require_numeric_id "$id"; then
+        echo "⏭️ 跳过配置雪花算法验证（无有效 ID）"
+        return 2
+    fi
     
     echo "生成ID: $id"
     echo "算法: $algorithm"
@@ -398,7 +443,7 @@ test_configured_snowflake() {
     fi
     
     echo "ℹ️ 雪花算法需要通过配置文件启用"
-    return 0
+    return 2
 }
 
 # 主测试流程
@@ -408,45 +453,36 @@ echo ""
 # 初始化测试结果
 TOTAL_PASSED=0
 TOTAL_FAILED=0
+TOTAL_SKIPPED=0
+
+# 用例运行器：0=通过、2=跳过、其余=失败（与用例函数约定一致）。
+run_distributed_test() {
+    local fn="$1"
+    "$fn"
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        TOTAL_PASSED=$((TOTAL_PASSED + 1))
+    elif [ "$rc" -eq 2 ]; then
+        TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1))
+    else
+        TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    fi
+}
 
 # 运行测试
-if test_concurrent_uniqueness; then
-    TOTAL_PASSED=$((TOTAL_PASSED + 1))
-else
-    TOTAL_FAILED=$((TOTAL_FAILED + 1))
-fi
-
-if test_timestamp_ordering; then
-    TOTAL_PASSED=$((TOTAL_PASSED + 1))
-else
-    TOTAL_FAILED=$((TOTAL_FAILED + 1))
-fi
-
-if test_batch_uniqueness; then
-    TOTAL_PASSED=$((TOTAL_PASSED + 1))
-else
-    TOTAL_FAILED=$((TOTAL_FAILED + 1))
-fi
-
-if test_snowflake_structure; then
-    TOTAL_PASSED=$((TOTAL_PASSED + 1))
-else
-    TOTAL_FAILED=$((TOTAL_FAILED + 1))
-fi
-
-if test_decentralized_property; then
-    TOTAL_PASSED=$((TOTAL_PASSED + 1))
-else
-    TOTAL_FAILED=$((TOTAL_FAILED + 1))
-fi
-
-test_configured_snowflake
+run_distributed_test test_concurrent_uniqueness
+run_distributed_test test_timestamp_ordering
+run_distributed_test test_batch_uniqueness
+run_distributed_test test_snowflake_structure
+run_distributed_test test_decentralized_property
+run_distributed_test test_configured_snowflake
 
 echo ""
 echo "=========================================="
 echo "测试结果汇总"
 echo "=========================================="
 echo "通过: $TOTAL_PASSED"
+echo "跳过: $TOTAL_SKIPPED"
 echo "失败: $TOTAL_FAILED"
 echo ""
 

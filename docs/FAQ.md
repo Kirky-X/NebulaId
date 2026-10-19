@@ -365,7 +365,7 @@ async fn main() -> nebulaid::core::Result<()> {
 
 **仍有问题？**
 - 📝 查看[故障排查](#-故障排查)
-- 🐛 [提交 issue](../../issues) 并附上错误详情
+- 🐛 [提交 issue](https://github.com/Kirky-X/NebulaId/issues) 并附上错误详情
 
 </details>
 
@@ -1280,7 +1280,7 @@ Authorization: Basic base64(<key_id>:<key_secret>)
 **请负责任地报告安全问题：**
 
 1. **不要**创建公开的 GitHub issue
-2. **使用 GitHub [Security Advisories](https://github.com/Kirky-X/NebulaId/security/advisories/new) 私密披露通道**提交报告（完整政策见 [SECURITY.md](SECURITY.md)）
+2. **使用 GitHub [Security Advisories](https://github.com/Kirky-X/NebulaId/security/policy) 私密披露通道**提交报告（完整政策见 [SECURITY.md](SECURITY.md)）
 3. **内容包括：**
    - 受影响版本
    - 漏洞描述与复现步骤（或概念验证）
@@ -1616,7 +1616,7 @@ curl http://localhost:8080/metrics
 
 **报告之前：**
 
-1. ✅ 查看[现有 issue](../../issues)
+1. ✅ 查看[现有 issue](https://github.com/Kirky-X/NebulaId/issues)
 2. ✅ 尝试最新版本
 3. ✅ 查看[故障排查指南](#-故障排查)
 
@@ -1647,7 +1647,7 @@ curl http://localhost:8080/metrics
 其他任何相关信息
 ```
 
-**提交：**[创建 Issue](../../issues/new)
+**提交：**[创建 Issue](https://github.com/Kirky-X/NebulaId/issues/new)
 
 </details>
 
@@ -1668,7 +1668,7 @@ curl http://localhost:8080/metrics
 
 **🐛 Issues**
 
-[GitHub Issues](../../issues)
+[GitHub Issues](https://github.com/Kirky-X/NebulaId/issues)
 
 缺陷报告与特性请求
 
@@ -1677,7 +1677,7 @@ curl http://localhost:8080/metrics
 
 **💬 Discussions**
 
-[GitHub Discussions](../../discussions)
+[GitHub Discussions](https://github.com/Kirky-X/NebulaId/discussions)
 
 问答与想法交流
 
@@ -1784,6 +1784,6 @@ API 文档与教程
 
 **[📖 用户指南](USER_GUIDE.md)** • **[🔧 API 参考](API_REFERENCE.md)** • **[🏠 主页](../README.md)**
 
-由 Nebula ID 团队用 ❤️ 打造
+由 Kirky.X 用 ❤️ 打造
 
 [⬆ 回到顶部](#-nebula-id-faq)

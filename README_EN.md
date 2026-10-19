@@ -446,7 +446,7 @@ The five-stage CI gate (fmt + clippy → cargo-deny → cargo-audit `--deny warn
 
 ### 🚨 Reporting Security Issues
 
-Please do not report security vulnerabilities through public issues. Use the private GitHub [Security Advisories](https://github.com/Kirky-X/NebulaId/security/advisories/new) disclosure channel instead. See the full policy in [SECURITY.md](docs/SECURITY.md).
+Please do not report security vulnerabilities through public issues. Use the private GitHub [Security Advisories](https://github.com/Kirky-X/NebulaId/security/policy) disclosure channel instead. See the full policy in [SECURITY.md](docs/SECURITY.md).
 
 ---
 

@@ -502,8 +502,8 @@ Closes #123
 
 <div align="center">
 
-**[📖 文档](../USER_GUIDE.md)** • **[🐛 报告问题](../../issues)** • **[💬 讨论](../../discussions)**
+**[📖 文档](USER_GUIDE.md)** • **[🐛 报告问题](https://github.com/Kirky-X/NebulaId/issues)** • **[💬 讨论](https://github.com/Kirky-X/NebulaId/discussions)**
 
-由 Nebula ID Team 用 ❤️ 制作
+由 Kirky.X 用 ❤️ 制作
 
 </div>

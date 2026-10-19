@@ -650,7 +650,7 @@ cargo run --package nebulaid --example sdk_server --features sdk,http
 
 <div align="center">
 
-**💬 仍然需要帮助？** [提交 Issue](../../issues) 或 [访问文档中心](https://github.com/Kirky-X/NebulaId)
+**💬 仍然需要帮助？** [提交 Issue](https://github.com/Kirky-X/NebulaId/issues) 或 [访问文档中心](https://github.com/Kirky-X/NebulaId)
 
 </div>
 
@@ -694,9 +694,9 @@ cargo run --package nebulaid --example sdk_server --features sdk,http
 
 <div align="center">
 
-**[📖 API 文档](https://docs.rs/nebulaid)** • **[❓ 常见问题](FAQ.md)** • **[🐛 报告问题](../../issues)**
+**[📖 API 文档](https://docs.rs/nebulaid)** • **[❓ 常见问题](FAQ.md)** • **[🐛 报告问题](https://github.com/Kirky-X/NebulaId/issues)**
 
-由 Nebula ID Team 用 ❤️ 制作
+由 Kirky.X 用 ❤️ 制作
 
 [⬆ 回到顶部](#-用户指南)
 

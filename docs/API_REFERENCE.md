@@ -1878,8 +1878,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 <div align="center">
 
-**[📖 用户指南](../USER_GUIDE.md)** • **[🏠 首页](../README.md)** • **[🐛 报告问题](../../issues)**
+**[📖 用户指南](USER_GUIDE.md)** • **[🏠 首页](../README.md)** • **[🐛 报告问题](https://github.com/Kirky-X/NebulaId/issues)**
 
-由 Nebula ID 团队用 ❤️ 构建
+由 Kirky.X 用 ❤️ 构建
 
 </div>

@@ -34,7 +34,7 @@
 
 **请勿通过公开 issue 报告安全漏洞。**
 
-请使用 GitHub [Security Advisories](https://github.com/Kirky-X/NebulaId/security/advisories/new) 私密披露通道提交报告，报告中尽量包含：受影响版本、复现步骤或概念验证、影响评估。项目维护者会在确认收到后跟进评估与修复，修复经 [CHANGELOG](CHANGELOG.md) 的 `Security` 小节披露。
+请使用 GitHub [Security Advisories](https://github.com/Kirky-X/NebulaId/security/policy) 私密披露通道提交报告，报告中尽量包含：受影响版本、复现步骤或概念验证、影响评估。Kirky.X 会在确认收到后跟进评估与修复，修复经 [CHANGELOG](CHANGELOG.md) 的 `Security` 小节披露。
 
 对报告者的期望与处理优先级：可被远程未认证利用的问题（认证绕过、注入、DoS）优先处理；需要已认证账户或本地访问的问题次之。
 

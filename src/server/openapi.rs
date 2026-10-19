@@ -64,7 +64,7 @@ use crate::server::models::{
         ),
         contact(
             name = "Kirky.X",
-            email = "support@nebulaid.io",
+            email = "kirky-x@outlook.com",
         ),
         license(
             name = "Apache-2.0",

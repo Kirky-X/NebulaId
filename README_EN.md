@@ -4,7 +4,7 @@
 
 [![Rust 2021](https://img.shields.io/badge/Rust-2021-edded?logo=rust&style=for-the-badge)](https://www.rust-lang.org/) [![release](https://img.shields.io/github/v/release/Kirky-X/NebulaId?style=for-the-badge)](https://github.com/Kirky-X/NebulaId/releases) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/NebulaId/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/Kirky-X/NebulaId/actions/workflows/ci.yml) [![security](https://img.shields.io/github/actions/workflow/status/Kirky-X/NebulaId/codeql.yml?branch=main&label=security&style=for-the-badge)](https://github.com/Kirky-X/NebulaId/actions/workflows/codeql.yml) [![license](https://img.shields.io/github/license/Kirky-X/NebulaId?style=for-the-badge)](./LICENSE)
 
-**[Chinese](README.md)** | English
+**[中文](README.md)** | English
 
 **Enterprise-grade high-performance distributed ID generation system**
 
@@ -36,7 +36,7 @@ Double-buffered segments, drift-guarded bit slicing, custom UUID v8 layouts — 
 ## 📋 Table of Contents
 
 <details open>
-<summary>📑 目录</summary>
+<summary>📑 Table of Contents</summary>
 
 - [✨ Features](#-features)
 - [🎯 Use Cases](#-use-cases)
@@ -102,7 +102,7 @@ Beyond the core capabilities above, engine declarations other than PostgreSQL (t
 Ship ID generation as an in-process library with no separate deployment (adapted from [`examples/embedded.rs`](examples/embedded.rs)):
 
 <details>
-<summary>📄 代码 · rust</summary>
+<summary>📄 Code · rust</summary>
 
 ```rust
 use nebulaid::core::Config;
@@ -138,7 +138,7 @@ async fn main() -> nebulaid::core::Result<()> {
 `Id` is a zero-cost wrapper around UUID that converts losslessly in both directions — ideal for passing and storing identifiers across services:
 
 <details>
-<summary>📄 代码 · rust</summary>
+<summary>📄 Code · rust</summary>
 
 ```rust
 use nebulaid::core::types::Id;
@@ -159,7 +159,7 @@ let uuid = id.to_uuid_v8();
 Segment's double buffering and dynamic step are internal — the step size scales with CPU usage within `[min_step, max_step]` as `step = clamp(base_step × (1 + 2 × cpu), min_step, max_step)` (busier CPU → larger segments → fewer segment fetches); from the outside you just ask for N ids in one call (`IdAlgorithm::batch_generate`):
 
 <details>
-<summary>📄 代码 · rust</summary>
+<summary>📄 Code · rust</summary>
 
 ```rust
 let batch = generator.batch_generate("prod", "core", "order", 1000).await?;
@@ -175,7 +175,7 @@ println!("{} ids via {:?}", batch.len(), batch.algorithm);
 ### 📦 Installation
 
 <details>
-<summary>📄 代码 · bash</summary>
+<summary>📄 Code · bash</summary>
 
 ```bash
 # Clone and build (default features: full server stack + all three algorithms + postgresql + garrison-auth)
@@ -190,7 +190,7 @@ cargo build --release
 </details>
 
 <details>
-<summary>📋 表格</summary>
+<summary>📋 Table</summary>
 
 | Feature | Default | Description |
 |---------|:----:|------|
@@ -225,7 +225,7 @@ cargo build --release
 The example below is adapted from [`examples/embedded.rs`](examples/embedded.rs) and generates IDs with zero DB and zero network:
 
 <details>
-<summary>📄 代码 · rust</summary>
+<summary>📄 Code · rust</summary>
 
 ```rust
 use nebulaid::core::Config;
@@ -255,7 +255,7 @@ async fn main() -> nebulaid::core::Result<()> {
 </details>
 
 <details>
-<summary>📄 代码 · bash</summary>
+<summary>📄 Code · bash</summary>
 
 ```bash
 cargo run --package nebulaid --example embedded --features sdk
@@ -276,7 +276,7 @@ cargo run --package nebulaid --example embedded --features sdk
 ## 📚 Documentation
 
 <details>
-<summary>📋 表格</summary>
+<summary>📋 Table</summary>
 
 | Document | Description |
 |------|------|
@@ -301,7 +301,7 @@ cargo run --package nebulaid --example embedded --features sdk
 All examples live in the [`examples/`](examples/) directory and are built only with the `sdk` feature enabled:
 
 <details>
-<summary>📄 代码 · bash</summary>
+<summary>📄 Code · bash</summary>
 
 ```bash
 # Embedded SDK: generate IDs with zero DB and zero network
@@ -338,7 +338,7 @@ For the architecture diagram, module dependencies, external library roles, the `
 The smallest fully parseable config ships as [`config/config.toml`](config/config.toml) and looks like:
 
 <details>
-<summary>📄 代码 · toml</summary>
+<summary>📄 Code · toml</summary>
 
 ```toml
 [app]
@@ -413,7 +413,7 @@ max_batch_size = 100        # validate(): 1..=10000
 Since v0.2.0 Nebula ID ships built-in internationalization, now on the Fluent/ICU stack (fluent-bundle + unic-langid + sys-locale, replacing the rust-i18n YAML backend in 0.3.0 and aligned with the unify-rust-i18n baseline) covering runtime translation of error messages and logs:
 
 <details>
-<summary>📋 表格</summary>
+<summary>📋 Table</summary>
 
 | Locale tag | Language | Locales file | Status |
 |------------|----------|--------------|--------|
@@ -433,7 +433,7 @@ For curl examples, header semantics, and the i18n module's place in the architec
 Since v0.2.0 all development/deployment scripts are merged into the single entry point `scripts/run.sh` (legacy scripts were renamed to `_*_impl.sh` internals and are no longer invoked directly):
 
 <details>
-<summary>📋 表格</summary>
+<summary>📋 Table</summary>
 
 | Subcommand | Alias | Purpose |
 |--------|------|------|
@@ -447,7 +447,7 @@ Since v0.2.0 all development/deployment scripts are merged into the single entry
 </details>
 
 <details>
-<summary>📄 代码 · bash</summary>
+<summary>📄 Code · bash</summary>
 
 ```bash
 ./scripts/run.sh pre-commit            # run before every commit
@@ -469,7 +469,7 @@ Testing is layered: inline unit tests in `src/` (`#[cfg(test)]`), E2E modules un
 ### ▶️ Commands (matching CI)
 
 <details>
-<summary>📄 代码 · bash</summary>
+<summary>📄 Code · bash</summary>
 
 ```bash
 # Full test run (CI matrix runs default / all (--all-features))
@@ -528,7 +528,7 @@ Please do not report security vulnerabilities through public issues. Use the pri
 ## 🗺️ Roadmap
 
 <details>
-<summary>📋 表格</summary>
+<summary>📋 Table</summary>
 
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">Status</th><th style="text-align:left">Area</th><th style="text-align:left">Items</th></tr>
@@ -591,7 +591,7 @@ Want to contribute code?<br>
 For the full version history, see the [📋 Changelog](docs/CHANGELOG.md) (following the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and semantic versioning).
 
 <details>
-<summary>📋 表格</summary>
+<summary>📋 Table</summary>
 
 | Version | Date | Highlights |
 |------|------|------|
@@ -616,7 +616,7 @@ This project is licensed under Apache-2.0. See [LICENSE](LICENSE).
 Nebula ID stands on the shoulders of these excellent open source projects:
 
 <details>
-<summary>📋 表格</summary>
+<summary>📋 Table</summary>
 
 | Dependency | Purpose |
 |------|------|

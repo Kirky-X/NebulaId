@@ -42,7 +42,7 @@
 #     degradation_test.sh - 降级机制测试
 #     distributed_test.sh - 分布式一致性测试
 #
-# @author      Nebula ID Team
+# @author      Kirky.X
 # @version     1.2.0
 # @date        2026-01-12
 #

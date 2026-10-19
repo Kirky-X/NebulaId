@@ -48,7 +48,7 @@
 #     db_concurrency_test.sh - 并发测试
 #     degradation_test.sh - 降级测试
 #
-# @author      Nebula ID Team
+# @author      Kirky.X
 # @version     1.2.0
 # @date        2026-10-19
 #

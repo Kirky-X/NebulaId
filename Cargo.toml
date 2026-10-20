@@ -67,10 +67,7 @@ unexpected_cfgs = { level = "allow", check-cfg = [
 ] }
 
 [dependencies]
-# 自研生态（Kirky-X）：统一走 crates.io registry，不再使用兄弟仓库路径依赖，本仓库可独立构建、CI 无需 checkout 兄弟目录。
-# confers: 0.6.0-rc.6 起提供 watcher::HotReloader 与 hot-reload-kit（热加载最低依赖版本）。
-# toml 为 `parse_content(Format::Toml)` 的解析后端，缺省组合下仅靠传递依赖偶然启用，
-# 剪裁组合（sdk+uuid-v5 等）会退化为 “Failed to parse TOML: Add toml feature”。
+# 自研生态（Kirky-X）：统一走 crates.io registry，不再使用兄弟仓库路径依赖，本仓库可独立构建、CI 无需 checkout 兄弟目录
 confers = { version = "0.6.0-rc.10", default-features = false, features = ["interpolation", "hot-reload-kit", "json", "toml"] }
 oxcache = { version = "0.5.0-rc.8", optional = true, default-features = false }
 # dbnexus: 不启用 migration（sqlparser 重依赖且零使用）；DDL 走 sea-orm execute_unprepared。

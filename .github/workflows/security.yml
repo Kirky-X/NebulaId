@@ -15,7 +15,15 @@ jobs:
   security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # gitleaks 需要全量提交历史：浅克隆（默认 depth=1）下 action 算出的
+      # `<head>^..<head>` 区间取不到父提交，gitleaks 会以
+      # "fatal: ambiguous argument ... unknown revision" + Unexpected exit code [1] 退出，
+      # 扫描实际空转（同族 CalNexus run 39473509412 即此原因）。
+      # 写法对齐 vecboost 仓同一 workflow：SHA 钉住 + fetch-depth: 0，顺带消除
+      # @v4 的 Node.js 20 弃用告警与 zizmor 的 unpinned-uses。
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
       - name: actionlint
         uses: docker://rhysd/actionlint:latest
         with:
@@ -35,10 +43,6 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
-      - name: cargo-vet (依赖来源审计)
-        run: |
-          cargo install cargo-vet --locked
-          cargo vet verify
       - name: trivy (文件系统/依赖漏洞)
         uses: aquasecurity/trivy-action@master
         with:

@@ -17,7 +17,7 @@ pub fn init_sdforge() -> sdforge::PluginCounts {
 }
 
 /// Merge all inventory-registered sdforge HTTP routes into the supplied base router.
-/// Each `RouteRegistration::create()` yields an `HttpRoute` merged via `Router::route`.
+/// Each `RouteRegistration::create` yields an `HttpRoute` merged via `Router::route`.
 pub fn merge_sdforge_routes(router: Router) -> Router {
     let mut router = router;
     for reg in sdforge::inventory::iter::<sdforge::http::RouteRegistration> {

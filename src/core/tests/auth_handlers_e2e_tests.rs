@@ -32,9 +32,7 @@ use crate::server::middleware::api_key_auth::{
 };
 use crate::server::models::{BatchGenerateRequest, GenerateRequest};
 
-// ============================================================================
 // MockApiKeyRepo —— 参考 api_key_auth.rs 测试中的 mock 实现
-// ============================================================================
 
 /// 内存版 `ApiKeyRepository`：sha256 存密钥（真实仓库为 Argon2id，足以覆盖分支逻辑）。
 #[derive(Clone)]
@@ -90,7 +88,7 @@ impl ApiKeyRepository for MockApiKeyRepo {
                 .ct_eq(incoming_hash.as_bytes())
                 .into()
             {
-                // Admin 密钥无 workspace_id，User 密钥绑定到 Uuid::nil()
+                // Admin 密钥无 workspace_id，User 密钥绑定到 Uuid::nil
                 let workspace_id = if *role == ApiKeyRole::Admin {
                     None
                 } else {
@@ -160,9 +158,7 @@ impl ApiKeyRepository for MockApiKeyRepo {
     }
 }
 
-// ============================================================================
 // 辅助函数
-// ============================================================================
 
 /// 构造一个预置了 user-key 和 admin-key 的 mock 仓库。
 fn make_mock_repo() -> MockApiKeyRepo {
@@ -250,13 +246,9 @@ async fn read_body_to_string(body: Body) -> String {
     String::from_utf8(bytes.to_vec()).expect("response body is not valid UTF-8")
 }
 
-// ============================================================================
 // E2E-AUTH 组：认证中间件 e2e
-// ============================================================================
 
-// ----------------------------------------------------------------------------
 // Basic base64(key_id:key_secret) 头 → 200
-// ----------------------------------------------------------------------------
 
 #[tokio::test]
 async fn e2e_auth_middleware_basic_auth_success() {
@@ -270,9 +262,7 @@ async fn e2e_auth_middleware_basic_auth_success() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-// ----------------------------------------------------------------------------
 // ApiKey key_id:key_secret 头 → 200
-// ----------------------------------------------------------------------------
 
 #[tokio::test]
 async fn e2e_auth_middleware_api_key_auth_success() {
@@ -286,9 +276,7 @@ async fn e2e_auth_middleware_api_key_auth_success() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-// ----------------------------------------------------------------------------
 // 无 Authorization 头 → 401
-// ----------------------------------------------------------------------------
 
 #[tokio::test]
 async fn e2e_auth_middleware_missing_authorization_returns_401() {
@@ -301,9 +289,7 @@ async fn e2e_auth_middleware_missing_authorization_returns_401() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
-// ----------------------------------------------------------------------------
 // 格式错误的 Basic 头（非法 base64）→ 401
-// ----------------------------------------------------------------------------
 
 #[tokio::test]
 async fn e2e_auth_middleware_invalid_base64_returns_401() {
@@ -320,9 +306,7 @@ async fn e2e_auth_middleware_invalid_base64_returns_401() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
-// ----------------------------------------------------------------------------
 // 空 key_id:key_secret → 401
-// ----------------------------------------------------------------------------
 
 #[tokio::test]
 async fn e2e_auth_middleware_empty_credentials_returns_401() {
@@ -337,9 +321,7 @@ async fn e2e_auth_middleware_empty_credentials_returns_401() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
-// ----------------------------------------------------------------------------
 // 错误密钥 → 401
-// ----------------------------------------------------------------------------
 
 #[tokio::test]
 async fn e2e_auth_middleware_wrong_secret_returns_401() {
@@ -353,9 +335,7 @@ async fn e2e_auth_middleware_wrong_secret_returns_401() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
-// ----------------------------------------------------------------------------
 // 认证禁用时注入 Anonymous 角色
-// ----------------------------------------------------------------------------
 
 #[tokio::test]
 async fn e2e_auth_middleware_disabled_injects_anonymous_role() {
@@ -371,9 +351,7 @@ async fn e2e_auth_middleware_disabled_injects_anonymous_role() {
     assert_eq!(body, "Anonymous");
 }
 
-// ----------------------------------------------------------------------------
 // 5 分钟内 10 次失败后 → 429
-// ----------------------------------------------------------------------------
 
 #[tokio::test]
 async fn e2e_auth_failure_rate_blocks_after_10_failures() {
@@ -400,13 +378,11 @@ async fn e2e_auth_failure_rate_blocks_after_10_failures() {
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
 }
 
-// ----------------------------------------------------------------------------
 // 窗口未达阈值时放行（<10 次失败仍允许）
-// ----------------------------------------------------------------------------
 
 #[tokio::test]
 async fn e2e_auth_failure_rate_allows_after_window_expires() {
-    // check_auth_failure_rate 使用 Instant::now() 且无法注入 mock 时间，
+    // check_auth_failure_rate 使用 Instant::now 且无法注入 mock 时间，
     // 故以「<10 次失败仍放行」验证窗口边界：9 次失败后第 10 次仍 401 而非 429。
     let repo = Arc::new(make_mock_repo()) as Arc<dyn ApiKeyRepository>;
     let auth = Arc::new(ApiKeyAuth::new(repo, true));
@@ -453,13 +429,9 @@ async fn e2e_auth_failure_rate_allows_after_window_expires() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-// ============================================================================
 // E2E-ADMIN 组：Admin 权限检查 e2e
-// ============================================================================
 
-// ----------------------------------------------------------------------------
 // Admin 角色放行 → 200
-// ----------------------------------------------------------------------------
 
 #[tokio::test]
 async fn e2e_admin_required_allows_admin_role() {
@@ -473,9 +445,7 @@ async fn e2e_admin_required_allows_admin_role() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-// ----------------------------------------------------------------------------
 // User 角色拒绝 → 403
-// ----------------------------------------------------------------------------
 
 #[tokio::test]
 async fn e2e_admin_required_rejects_user_role() {
@@ -489,9 +459,7 @@ async fn e2e_admin_required_rejects_user_role() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
-// ----------------------------------------------------------------------------
 // 无 ApiKeyRole 扩展 → 403（fail-closed）
-// ----------------------------------------------------------------------------
 
 #[tokio::test]
 async fn e2e_admin_required_rejects_missing_extension() {
@@ -503,13 +471,9 @@ async fn e2e_admin_required_rejects_missing_extension() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
-// ============================================================================
 // E2E-VAL 组：请求验证 e2e
-// ============================================================================
 
-// ----------------------------------------------------------------------------
 // GenerateRequest workspace 65 字符 → 验证失败
-// ----------------------------------------------------------------------------
 
 #[test]
 fn e2e_generate_request_validates_workspace_length_65_fails() {
@@ -529,9 +493,7 @@ fn e2e_generate_request_validates_workspace_length_65_fails() {
     );
 }
 
-// ----------------------------------------------------------------------------
 // GenerateRequest workspace 空 → 验证失败
-// ----------------------------------------------------------------------------
 
 #[test]
 fn e2e_generate_request_validates_workspace_empty_fails() {
@@ -550,9 +512,7 @@ fn e2e_generate_request_validates_workspace_empty_fails() {
     );
 }
 
-// ----------------------------------------------------------------------------
 // GenerateRequest algorithm 21 字符 → 验证失败
-// ----------------------------------------------------------------------------
 
 #[test]
 fn e2e_generate_request_validates_algorithm_length_21_fails() {
@@ -572,9 +532,7 @@ fn e2e_generate_request_validates_algorithm_length_21_fails() {
     );
 }
 
-// ----------------------------------------------------------------------------
 // BatchGenerateRequest size=0 → 验证失败
-// ----------------------------------------------------------------------------
 
 #[test]
 fn e2e_batch_generate_request_validates_size_zero_fails() {
@@ -591,9 +549,7 @@ fn e2e_batch_generate_request_validates_size_zero_fails() {
     assert!(result.is_err(), "size=0 应低于 min=1 下限，验证必须失败");
 }
 
-// ----------------------------------------------------------------------------
 // BatchGenerateRequest 上限迁移
-// ----------------------------------------------------------------------------
 
 #[test]
 fn e2e_batch_generate_request_validates_size_101_passes_struct_validation() {
@@ -614,9 +570,7 @@ fn e2e_batch_generate_request_validates_size_101_passes_struct_validation() {
     );
 }
 
-// ----------------------------------------------------------------------------
 // BatchGenerateRequest size=1 和 size=100 → 验证通过
-// ----------------------------------------------------------------------------
 
 #[test]
 fn e2e_batch_generate_request_validates_size_boundary_1_and_100_pass() {
@@ -643,12 +597,10 @@ fn e2e_batch_generate_request_validates_size_boundary_1_and_100_pass() {
     assert!(result_max.is_ok(), "size=100 是合法上限边界，验证应通过");
 }
 
-// ============================================================================
 // GET /api/v1/biz-tags 租户隔离（CWE-639 / IDOR）
 //
 // 过滤键必须来自认证身份或显式参数；None 透传会回退 nil UUID 过滤（功能失效 + 越权泄露）。
 // 走真实 create_router 全栈（认证 + Anonymous 拦截 + 限流 + 审计）。
-// ============================================================================
 
 mod biz_tag_tenant_isolation {
     use super::*;
@@ -836,10 +788,8 @@ mod biz_tag_tenant_isolation {
     }
 }
 
-// ============================================================================
 // biz-tags 端点对 Anonymous 身份一律 401
 // 契约：Anonymous 无 biz-tags 业务权限（路由中间件 + handler verify_user_role 双防线）。
-// ============================================================================
 
 mod biz_tag_anonymous_guard {
     use super::biz_tag_tenant_isolation::build_app_with;
@@ -941,9 +891,7 @@ mod biz_tag_anonymous_guard {
     }
 }
 
-// ============================================================================
 // garrison cache-memory 认证缓存接线
-// ============================================================================
 
 #[cfg(feature = "garrison-auth")]
 mod auth_cache_wiring {
@@ -1294,9 +1242,7 @@ mod auth_cache_wiring {
     }
 }
 
-// ============================================================================
 // admin key 吊销守卫 e2e
-// ============================================================================
 
 /// 有状态内存仓储：完整建模 key 行，使 `find_api_key_by_row_id` / `count_admin_keys`
 /// 能像真实 SQL 一样回答，从而在 handler 集成层（而非仓储单测）钉住守卫缺陷。

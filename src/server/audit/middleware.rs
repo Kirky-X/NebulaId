@@ -164,7 +164,7 @@ mod tests {
         assert!(ip.is_none());
     }
 
-    // ========== Helpers for audit_middleware tests ==========
+    // Helpers for audit_middleware tests
     // 提取到模块级，供多个测试共享。
 
     use axum::http::StatusCode;
@@ -208,7 +208,7 @@ mod tests {
             .unwrap()
     }
 
-    // ========== audit_middleware result branch tests ==========
+    // audit_middleware result branch tests
 
     #[tokio::test]
     async fn test_audit_middleware_2xx_response_logs_success_result() {
@@ -267,7 +267,7 @@ mod tests {
         assert_eq!(events[0].result, AuditResult::Partial);
     }
 
-    // ========== audit_middleware request enrichment tests ==========
+    // audit_middleware request enrichment tests
 
     #[tokio::test]
     async fn test_audit_middleware_details_carry_request_context_when_ambient() {
@@ -323,7 +323,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_audit_middleware_without_user_agent_records_empty_string() {
-        // unwrap_or_default() 在 None 时返回空字符串
+        // unwrap_or_default 在 None 时返回空字符串
         let (mid, logger) = make_audit_middleware();
         let router = build_ok_router(mid);
         let _resp = router

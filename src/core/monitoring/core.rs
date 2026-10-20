@@ -679,7 +679,6 @@ impl AlertNotificationSender {
             return true;
         }
 
-        // 尝试解析为 IP 地址
         if let Ok(ip) = host.parse::<std::net::IpAddr>() {
             return Self::is_blocked_ip(&ip);
         }
@@ -1243,9 +1242,7 @@ mod tests {
         assert!(!result.0);
     }
 
-    // =========================================================================
     // Display impls, Default impls, AlertError, Alert::is_firing
-    // =========================================================================
 
     #[test]
     fn test_alert_severity_display_all_variants() {
@@ -1357,7 +1354,7 @@ mod tests {
             None,
         );
         let original_starts = alert.starts_at;
-        // Sleep slightly so chrono::Utc::now() advances measurably.
+        // Sleep slightly so chrono::Utc::now advances measurably.
         std::thread::sleep(std::time::Duration::from_millis(10));
         alert.fire();
         assert_eq!(alert.status, AlertStatus::Firing);
@@ -1608,9 +1605,7 @@ mod tests {
         assert_eq!(restored.global_labels, cfg.global_labels);
     }
 
-    // =========================================================================
     // DefaultEvaluator::evaluate all branches + parse_threshold
-    // =========================================================================
 
     #[test]
     fn test_parse_threshold_returns_some_when_pattern_matches_and_both_parse() {
@@ -1813,7 +1808,6 @@ mod tests {
     fn test_evaluate_clock_backward_does_not_fire_when_nothing_recorded() {
         let evaluator = DefaultEvaluator;
         let metrics = GlobalMetrics::new();
-        // 注册算法但未记录任何回拨事件
         let _ = metrics.get_or_create_metrics(crate::core::types::AlgorithmType::Segment);
 
         let rule = AlertRule::new("clock", "clock_backward", AlertSeverity::Critical);
@@ -1907,9 +1901,7 @@ mod tests {
         assert_eq!(value.as_deref(), Some("stub_value"));
     }
 
-    // =========================================================================
     // AlertNotificationSender: send / channel dispatch / webhook / URL 校验
-    // =========================================================================
 
     fn make_alert(severity: AlertSeverity) -> Alert {
         let mut alert = Alert::new(
@@ -2129,8 +2121,8 @@ mod tests {
 
     #[test]
     fn test_validate_webhook_url_returns_ok_for_empty_host_documenting_actual_behavior() {
-        // url::Url 对 "http:///path" 给出 host_str()=Some("")，is_blocked_host("") 返回 false，
-        // 故校验通过（记录实际行为）；host_str()==None 分支仅非 http(s) scheme 可达，已被排除。
+        // url::Url 对 "http:///path" 给出 host_str=Some("")，is_blocked_host("") 返回 false，
+        // 故校验通过（记录实际行为）；host_str==None 分支仅非 http(s) scheme 可达，已被排除。
         let result = AlertNotificationSender::validate_webhook_url("http:///path");
         assert_eq!(result, Ok(()));
     }
@@ -2182,7 +2174,7 @@ mod tests {
 
     #[test]
     fn test_validate_webhook_url_returns_ok_for_ipv6_with_brackets_due_to_url_host_str_format() {
-        // 已知限制：url::Url 的 host_str() 带方括号（"[::1]"），IpAddr 解析失败 → 校验放行；
+        // 已知限制：url::Url 的 host_str 带方括号（"[::1]"），IpAddr 解析失败 → 校验放行；
         // IPv6 阻断逻辑由 is_blocked_host/is_blocked_ip 直接测试覆盖。
         let result = AlertNotificationSender::validate_webhook_url("http://[::1]/hook");
         assert_eq!(result, Ok(()));
@@ -2397,12 +2389,10 @@ mod tests {
         let sender = AlertNotificationSender::new(channels);
         let alert = make_alert(AlertSeverity::Critical);
         sender.send(&alert).await;
-        // All channel-type branches exercised in a single send() call.
+        // All channel-type branches exercised in a single send call.
     }
 
-    // =========================================================================
     // AlertManager public API + private helpers + default_alerting_config
-    // =========================================================================
 
     fn make_test_manager_with_config(
         config: AlertingConfig,
@@ -2445,7 +2435,7 @@ mod tests {
         }
     }
 
-    // --- default_alerting_config ---
+    // default_alerting_config
 
     #[test]
     fn test_default_alerting_config_returns_enabled_config() {
@@ -2478,7 +2468,7 @@ mod tests {
         );
     }
 
-    // --- AlertManager::new ---
+    // AlertManager::new
 
     #[test]
     fn test_alert_manager_new_initializes_states_for_all_rules_in_config() {
@@ -2506,14 +2496,14 @@ mod tests {
         assert_eq!(manager.get_all_states().len(), 0);
     }
 
-    // --- start() ---
+    // start
 
     #[tokio::test]
     async fn test_alert_manager_start_returns_immediately_when_already_running() {
         let (mut manager, _rx) = make_test_manager();
-        // Simulate that start() was already called.
+        // Simulate that start was already called.
         manager.running.store(true, Ordering::SeqCst);
-        // start() should return immediately without entering the evaluation loop.
+        // start should return immediately without entering the evaluation loop.
         let result = tokio::time::timeout(Duration::from_millis(500), manager.start()).await;
         assert!(
             result.is_ok(),
@@ -2524,7 +2514,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_alert_manager_start_returns_because_shutdown_sender_already_dropped() {
-        // eval_interval 设 1 小时使 tick 不触发；循环经 shutdown_rx.recv() 返回 None 退出（sender 已丢弃）。
+        // eval_interval 设 1 小时使 tick 不触发；循环经 shutdown_rx.recv 返回 None 退出（sender 已丢弃）。
         let config = AlertingConfig {
             enabled: true,
             evaluation_interval_ms: 3_600_000, // 1 hour
@@ -2536,11 +2526,11 @@ mod tests {
 
         let result = tokio::time::timeout(Duration::from_secs(2), manager.start()).await;
         assert!(result.is_ok(), "start() should return within 2 seconds");
-        // 循环经 shutdown_rx None 退出而非 shutdown()，故 running 保持 true。
+        // 循环经 shutdown_rx None 退出而非 shutdown，故 running 保持 true。
         assert!(manager.running.load(Ordering::SeqCst));
     }
 
-    // --- evaluate_rule (private async method, accessible via same module) ---
+    // evaluate_rule (private async method, accessible via same module)
 
     #[tokio::test]
     async fn test_evaluate_rule_fires_when_condition_met_and_for_duration_zero() {
@@ -2560,7 +2550,7 @@ mod tests {
         assert!(state.last_fired.is_some());
         assert_eq!(state.consecutive_promotions, 1);
 
-        // Alert should be in history with Firing status (after alert.fire()).
+        // Alert should be in history with Firing status (after alert.fire).
         assert_eq!(manager.get_alert_count(), 1);
         let alerts = manager.get_alerts();
         assert_eq!(alerts[0].status, AlertStatus::Firing);
@@ -2679,7 +2669,7 @@ mod tests {
 
         manager.evaluate_rule(&rule).await;
 
-        // State should be created via or_default() and Pending (for_duration=60).
+        // State should be created via or_default and Pending (for_duration=60).
         let state = manager
             .get_state("unknown_rule")
             .expect("state should be created");
@@ -2687,7 +2677,7 @@ mod tests {
         assert_eq!(state.consecutive_promotions, 1);
     }
 
-    // --- evaluate_all_rules ---
+    // evaluate_all_rules
 
     #[tokio::test]
     async fn test_evaluate_all_rules_skips_when_config_disabled() {
@@ -2757,7 +2747,7 @@ mod tests {
         assert_eq!(manager.get_alert_count(), 2);
     }
 
-    // --- format_message ---
+    // format_message
 
     #[test]
     fn test_format_message_with_summary_and_current_value() {
@@ -2789,7 +2779,7 @@ mod tests {
         assert_eq!(msg, "Alert rule 'my_rule' triggered: id_generation_failed");
     }
 
-    // --- merge_labels ---
+    // merge_labels
 
     #[test]
     fn test_merge_labels_rule_overrides_global() {
@@ -2831,7 +2821,7 @@ mod tests {
         assert_eq!(merged.get("x"), Some(&"10".to_string()));
     }
 
-    // --- store_alert_to_history ---
+    // store_alert_to_history
 
     #[test]
     fn test_store_alert_to_history_appends_alert() {
@@ -2883,7 +2873,7 @@ mod tests {
         assert_eq!(alerts[1].rule_name, "r3");
     }
 
-    // --- update_config ---
+    // update_config
 
     #[test]
     fn test_update_config_replaces_config_and_updates_eval_interval() {
@@ -2905,7 +2895,7 @@ mod tests {
         assert_eq!(config.rules[0].name, "new_rule");
     }
 
-    // --- get_state ---
+    // get_state
 
     #[test]
     fn test_get_state_returns_none_for_unknown_rule() {
@@ -2913,7 +2903,7 @@ mod tests {
         assert!(manager.get_state("nonexistent").is_none());
     }
 
-    // --- get_alerts / filters ---
+    // get_alerts / filters
 
     #[test]
     fn test_get_alerts_returns_all_history() {
@@ -3090,7 +3080,7 @@ mod tests {
         assert_eq!(manager.get_alert_count(), 0);
     }
 
-    // --- shutdown (running branch) ---
+    // shutdown (running branch)
 
     #[tokio::test]
     async fn test_alert_manager_shutdown_when_running_resets_flag() {
@@ -3100,7 +3090,7 @@ mod tests {
         assert!(!manager.running.load(Ordering::SeqCst));
     }
 
-    // --- add_rule / remove_rule edge cases ---
+    // add_rule / remove_rule edge cases
 
     #[test]
     fn test_add_rule_with_existing_name_does_not_replace_state() {

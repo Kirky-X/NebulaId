@@ -14,7 +14,7 @@ impl super::ApiHandlers {
     pub async fn generate(&self, req: GenerateRequest) -> Result<GenerateResponse> {
         let start = std::time::Instant::now();
 
-        // 服务端日志只用结构化字段，不用 t!()：t!() 依赖进程级全局 locale，
+        // 服务端日志只用结构化字段，不用 t!：t! 依赖进程级全局 locale，
         // 与并发请求的 Accept-Language 竞争会导致日志语言混杂。
         tracing::debug!(
             event = "generate_request",
@@ -212,7 +212,7 @@ impl super::ApiHandlers {
     // snowflake 特性关闭时无法解析位布局（SnowflakeLayoutInfo 随特性门控）。
     #[cfg(feature = "snowflake")]
     fn extract_snowflake_metadata(&self, id: Id) -> IdMetadataResponse {
-        // 位布局解析下沉 core；运行时取当前配置，取不到回退 standard()。
+        // 位布局解析下沉 core；运行时取当前配置，取不到回退 standard。
         let layout = self
             .id_generator
             .snowflake_layout()
@@ -275,7 +275,7 @@ impl super::ApiHandlers {
     }
 }
 
-// ========== OpenAPI path 注解 ==========
+// OpenAPI path 注解
 // axum handler 在 router.rs；载体函数仅承载 #[utoipa::path] 供 openapi.rs 注册，
 // 不参与运行时路由；错误响应统一引用 ErrorResponse（信封）。
 

@@ -143,7 +143,7 @@ impl super::ApiHandlers {
     }
 }
 
-// ========== axum handler 在 router.rs；以下为载体 #[utoipa::path] 的注解函数 ==========
+// axum handler 在 router.rs；以下为载体 #[utoipa::path] 的注解函数
 
 /// OpenAPI 注解载体：`POST /api/v1/workspaces`（实际 handler：`router::handle_create_workspace`，Admin-only）。
 #[sdforge::utoipa::path(
@@ -362,7 +362,7 @@ mod tests {
         }
     }
 
-    // ===== create_workspace =====
+    // create_workspace
 
     #[tokio::test]
     async fn test_create_workspace_happy_path() {
@@ -478,7 +478,7 @@ mod tests {
         }
     }
 
-    // ===== regenerate_user_api_key =====
+    // regenerate_user_api_key
 
     #[tokio::test]
     async fn test_regenerate_user_api_key_happy_path() {
@@ -652,7 +652,7 @@ mod tests {
         assert!(matches!(result.unwrap_err(), CoreError::DatabaseError(..)));
     }
 
-    // ===== list_workspaces =====
+    // list_workspaces
 
     #[tokio::test]
     async fn test_list_workspaces_happy_path() {
@@ -706,7 +706,7 @@ mod tests {
         assert!(matches!(result.unwrap_err(), CoreError::InternalError(_)));
     }
 
-    // ===== get_workspace =====
+    // get_workspace
 
     #[tokio::test]
     async fn test_get_workspace_happy_path() {
@@ -749,7 +749,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ===== create_group =====
+    // create_group
 
     #[tokio::test]
     async fn test_create_group_happy_path() {
@@ -804,7 +804,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ===== list_groups =====
+    // list_groups
 
     #[tokio::test]
     async fn test_list_groups_happy_path() {

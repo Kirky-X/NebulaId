@@ -212,7 +212,7 @@ impl ApiKeyAuth {
         if failures_map.len() > MAX_TRACKED_AUTH_FAILURE_IPS {
             failures_map.retain(|_, v| !v.is_empty());
             if failures_map.len() > MAX_TRACKED_AUTH_FAILURE_IPS {
-                // 仍超上限时按「每 IP 最早失败时间」淘汰最旧条目，替代 clear()：
+                // 仍超上限时按「每 IP 最早失败时间」淘汰最旧条目，替代 clear：
                 // 清空会抹掉活跃攻击者的失败计数，等于立即给攻击者全新 10 次预算。
                 let excess = failures_map.len() - MAX_TRACKED_AUTH_FAILURE_IPS;
                 let mut oldest_per_ip: Vec<(String, Instant)> = failures_map
@@ -395,7 +395,6 @@ impl ApiKeyAuth {
             return next.run(req).await;
         }
 
-        // 检查认证失败速率
         if !self.check_auth_failure_rate(&client_ip).await {
             return self.too_many_requests_response();
         }
@@ -780,7 +779,7 @@ mod tests {
         assert!(result.is_none());
     }
 
-    // ========== Helper functions for middleware tests ==========
+    // Helper functions for middleware tests
 
     fn make_mock_repo() -> MockApiKeyRepo {
         let mut mock_keys = std::collections::HashMap::new();
@@ -822,7 +821,7 @@ mod tests {
         builder.body(Body::empty()).unwrap()
     }
 
-    // ========== Constructor tests ==========
+    // Constructor tests
 
     #[test]
     fn test_api_key_auth_new_enabled() {
@@ -846,7 +845,7 @@ mod tests {
         assert!(auth.enabled);
     }
 
-    // ========== auth_middleware tests ==========
+    // auth_middleware tests
 
     #[tokio::test]
     async fn test_auth_middleware_disabled_calls_next() {
@@ -1002,7 +1001,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
-    // ========== admin_required_middleware tests ==========
+    // admin_required_middleware tests
 
     fn build_admin_router() -> Router {
         // 仅挂 admin_required；角色 extension 由测试手动注入以隔离 admin 检查。
@@ -1054,7 +1053,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
-    // ========== Role extension injection tests ==========
+    // Role extension injection tests
 
     fn build_role_check_router(auth: Arc<ApiKeyAuth>) -> Router {
         // 路由回显注入的 role，便于断言 auth_middleware 注入了哪个角色。
@@ -1127,7 +1126,7 @@ mod tests {
         assert_eq!(body, "User");
     }
 
-    // ========== validate_key tests ==========
+    // validate_key tests
 
     #[tokio::test]
     async fn test_validate_key_empty_key_id_returns_none() {
@@ -1165,12 +1164,12 @@ mod tests {
         assert!(result.is_some());
         let auth = result.unwrap();
         assert_eq!(auth.role, ApiKeyRole::User);
-        // User key 绑定 workspace（mock 返回 Some(Uuid::nil())）
+        // User key 绑定 workspace（mock 返回 Some(Uuid::nil)）
         assert!(auth.workspace_id.is_some());
         assert_eq!(auth.workspace_id.unwrap(), Uuid::nil());
     }
 
-    // ===== 解析唯一实现 =====
+    // 解析唯一实现
 
     #[test]
     fn parse_detailed_accepts_both_schemes_and_classifies_every_failure() {
@@ -1269,7 +1268,7 @@ mod tests {
             "不得因其他 IP 的灌注重置活跃攻击者的失败预算"
         );
 
-        // 失败次数未达阈值的其他 IP 不受影响（每条目各计各的）。
+        // 失败次数未达阈值的其他 IP 不受影响（每条目各计各）。
         assert!(auth.check_auth_failure_rate("10.9.0.1").await);
     }
 

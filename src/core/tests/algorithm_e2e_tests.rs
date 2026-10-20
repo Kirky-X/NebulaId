@@ -19,9 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-// =============================================================================
 // 测试辅助：捕获审计事件的内存 AuditLogger
-// =============================================================================
 
 /// 内存审计记录器：捕获所有 log 调用，供端到端测试断言事件顺序与内容。
 struct CapturingAuditLogger {
@@ -60,9 +58,7 @@ fn make_ctx(biz_tag: &str) -> GenerateContext {
     }
 }
 
-// =============================================================================
 // 测试辅助：本地 MockIdAlgorithm
-// =============================================================================
 //
 // degradation_tests.rs 的 MockIdAlgorithm 为模块私有，此处定义本地副本，实现保持一致。
 
@@ -142,9 +138,7 @@ impl IdAlgorithm for MockIdAlgorithm {
     }
 }
 
-// =============================================================================
 // Snowflake 端到端
-// =============================================================================
 
 /// Snowflake 经 AlgorithmBuilder 构建的完整生命周期
 /// （build → generate → batch → metrics → health → shutdown）。
@@ -237,13 +231,11 @@ async fn e2e_snowflake_batch_generate_zero_size_returns_empty_batch() {
     assert_eq!(batch.algorithm, AlgorithmType::Snowflake);
 }
 
-// =============================================================================
 // 跨算法端到端
-// =============================================================================
 
 /// 3 种算法均经 AlgorithmBuilder 构建并生成跨算法唯一的 ID。
 ///
-/// 验证工厂注册表（`algorithm_factories()`）中每个 Factory 都能构建并通过 trait 接口生成。
+/// 验证工厂注册表（`algorithm_factories`）中每个 Factory 都能构建并通过 trait 接口生成。
 #[tokio::test]
 #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
 async fn e2e_all_algorithm_types_built_via_builder_generate_unique_ids() {
@@ -296,9 +288,7 @@ async fn e2e_all_algorithm_types_built_via_builder_generate_unique_ids() {
     assert_eq!(all_ids.len(), 3 + 3 * 5);
 }
 
-// =============================================================================
 // AlgorithmRouter 端到端
-// =============================================================================
 
 /// Router.initialize 应注册本构建特性集内的全部算法（路由前置条件：主算法 + fallback 就绪）。
 #[tokio::test]
@@ -517,9 +507,7 @@ async fn e2e_router_accepts_audit_logger_without_panic_and_does_not_log() {
     );
 }
 
-// =============================================================================
 // DegradationManager 端到端
-// =============================================================================
 
 /// DegradationManager 完整降级-恢复周期：主算法失败 → Degraded(fallback) → 恢复 → Normal。
 ///
@@ -620,9 +608,7 @@ async fn e2e_degradation_manager_all_algorithms_fail_enters_critical() {
     );
 }
 
-// =============================================================================
 // 跨模块协同端到端
-// =============================================================================
 
 /// Router + AlgorithmBuilder + 真实算法完整集成路径（main.rs 启动后用户请求的调用链）。
 ///

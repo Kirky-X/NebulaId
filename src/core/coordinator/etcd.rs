@@ -118,7 +118,7 @@ impl EtcdClientWrapper {
     /// 接线单次操作超时（来自 `EtcdConfig::operation_timeout_secs`）。
     ///
     /// ```ignore
-    /// EtcdClientWrapper::new(config.etcd.endpoints.clone())
+    /// EtcdClientWrapper::new(config.etcd.endpoints.clone)
     ///     .await?
     ///     .with_operation_timeout(Duration::from_secs(config.etcd.operation_timeout_secs))
     /// ```
@@ -1147,7 +1147,7 @@ mod tests {
     use crate::core::config::EtcdConfig;
     use tempfile::NamedTempFile;
 
-    // ============== 操作超时 ==============
+    // 操作超时
 
     /// 慢 future 超时 → 映射为消息含 "timed out" 的 `EtcdError::Network`。
     #[tokio::test]
@@ -1997,7 +1997,7 @@ mod tests {
         // mock 期望 lease_revoke 调用 0 次，若被调用会 panic
     }
 
-    /// load_local_cache 文件不存在时应返回 Ok(())（打印 info 后早返回）。
+    /// load_local_cache 文件不存在时应返回 Ok()（打印 info 后早返回）。
     #[tokio::test]
     async fn test_load_local_cache_file_not_found_returns_ok() {
         let config = EtcdConfig::default();
@@ -2018,7 +2018,6 @@ mod tests {
         let config = EtcdConfig::default();
         let cache_file = NamedTempFile::new().expect("Failed to create temp file");
         let cache_path = cache_file.path().to_string_lossy().to_string();
-        // 写入无效 JSON
         std::fs::write(cache_file.path(), "this is not valid json [[[").unwrap();
 
         let monitor = EtcdClusterHealthMonitor::new(config, cache_path);
@@ -2225,7 +2224,6 @@ mod tests {
         assert!(kv_get_result.is_ok());
         assert!(kv_get_result.unwrap().is_none());
 
-        // kv_delete → Ok(())
         let kv_delete_result = client.kv_delete("any_key").await;
         assert!(kv_delete_result.is_ok());
 
@@ -2234,7 +2232,6 @@ mod tests {
         assert!(lease_grant_result.is_ok());
         assert_eq!(lease_grant_result.unwrap(), 0);
 
-        // lease_revoke → Ok(())
         let lease_revoke_result = client.lease_revoke(123).await;
         assert!(lease_revoke_result.is_ok());
 
@@ -2618,7 +2615,7 @@ mod tests {
         );
     }
 
-    // ==================== worker 归属校验与 lease keepalive ====================
+    // worker 归属校验与 lease keepalive
 
     /// 有状态 KV mock：txn 写入对 kv_get 可见，kv_delete 真删除；返回 (mock, store)。
     type StatefulStoreMock = (
@@ -2906,7 +2903,7 @@ mod tests {
         assert_eq!(allocator.get_allocated_id(), None);
     }
 
-    // ==================== Clone 状态共享与巡检接线 ====================
+    // Clone 状态共享与巡检接线
 
     /// clone 后两句柄状态互通：降级/恢复立即互相可见（防巡检任务 clone self 后状态隔离）。
     #[tokio::test]
@@ -2971,7 +2968,7 @@ mod tests {
         assert!(monitor.is_using_cache());
     }
 
-    // ==================== 真实 etcd：分布式锁语义（integration-tests） ====================
+    // 真实 etcd：分布式锁语义（integration-tests）
 
     /// 连接真实 etcd（默认本机 2379）；不可达直接 panic 并指向环境变量。
     #[cfg(feature = "integration-tests")]

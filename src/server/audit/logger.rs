@@ -413,7 +413,7 @@ impl AuditLogger {
         let line = Self::serialize_event_line(event)?;
         file.write_all(&line)?;
         // 不在此处 sync_all：每事件 fsync 在高 QPS 下是 I/O 瓶颈；
-        // 持久化由调用方 `flush()` 触发（writer task 执行 sync_all）。
+        // 持久化由调用方 `flush` 触发（writer task 执行 sync_all）。
         Ok(())
     }
 
@@ -1164,7 +1164,7 @@ mod tests {
         );
     }
 
-    // ========== redact_ip branch coverage ==========
+    // redact_ip branch coverage
 
     #[test]
     fn test_redact_ip_ipv4_masks_last_octet() {
@@ -1213,7 +1213,7 @@ mod tests {
         assert_eq!(redacted, "");
     }
 
-    // ========== Builder methods coverage ==========
+    // Builder methods coverage
 
     #[test]
     fn test_with_user_agent_sets_user_agent() {
@@ -1283,7 +1283,7 @@ mod tests {
         assert!(event.details.is_some());
     }
 
-    // ========== validate_log_path branch coverage ==========
+    // validate_log_path branch coverage
 
     #[test]
     fn test_validate_log_path_empty_rejected() {
@@ -1337,7 +1337,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // ========== Utility methods coverage ==========
+    // Utility methods coverage
 
     #[tokio::test]
     async fn test_total_errors_starts_at_zero() {
@@ -1494,7 +1494,7 @@ mod tests {
         assert!(event.error_message.is_none());
     }
 
-    // ========== log_batch_generation coverage ==========
+    // log_batch_generation coverage
 
     #[tokio::test]
     async fn test_log_batch_generation_success_with_client_ip() {
@@ -1579,7 +1579,7 @@ mod tests {
         assert!(events[0].error_message.is_none());
     }
 
-    // ========== log_config_change coverage ==========
+    // log_config_change coverage
 
     #[tokio::test]
     async fn test_log_config_change_with_workspace() {
@@ -1626,7 +1626,7 @@ mod tests {
         assert_eq!(events[0].resource, "config:system");
     }
 
-    // ========== log_degradation_event coverage ==========
+    // log_degradation_event coverage
 
     #[tokio::test]
     async fn test_log_degradation_event_critical_state_is_failure() {
@@ -1697,7 +1697,7 @@ mod tests {
         assert_eq!(events[0].result, AuditResult::Partial);
     }
 
-    // ========== log_rate_limit_exceeded coverage ==========
+    // log_rate_limit_exceeded coverage
 
     #[tokio::test]
     async fn test_log_rate_limit_exceeded_with_workspace() {
@@ -1744,7 +1744,7 @@ mod tests {
         assert!(events[0].workspace_id.is_none());
     }
 
-    // ========== log_id_generation additional branches ==========
+    // log_id_generation additional branches
 
     #[tokio::test]
     async fn test_log_id_generation_failure_with_error() {
@@ -1778,7 +1778,7 @@ mod tests {
         assert_eq!(details["algorithm"], "segment");
     }
 
-    // ========== log_workspace_* coverage ==========
+    // log_workspace_* coverage
 
     #[tokio::test]
     async fn test_log_workspace_created_with_user_and_ip() {
@@ -1862,7 +1862,7 @@ mod tests {
         assert_eq!(events[0].result, AuditResult::Success);
     }
 
-    // ========== log_group_* coverage ==========
+    // log_group_* coverage
 
     #[tokio::test]
     async fn test_log_group_created() {
@@ -1933,7 +1933,7 @@ mod tests {
         assert_eq!(events[0].resource, "group:grp-del:Removed");
     }
 
-    // ========== log_biz_tag_* coverage ==========
+    // log_biz_tag_* coverage
 
     #[tokio::test]
     async fn test_log_biz_tag_created() {
@@ -1999,7 +1999,7 @@ mod tests {
         assert_eq!(events[0].resource, "biz_tag:tag-del:Removed");
     }
 
-    // ========== log_api_key_* coverage ==========
+    // log_api_key_* coverage
 
     #[tokio::test]
     async fn test_log_api_key_created_with_workspace() {
@@ -2135,7 +2135,7 @@ mod tests {
         assert_eq!(events[0].client_ip.as_deref(), Some(""));
     }
 
-    // ========== with_file_logging coverage ==========
+    // with_file_logging coverage
 
     #[tokio::test]
     async fn test_with_file_logging_empty_path_falls_back_to_memory_logger() {
@@ -2266,7 +2266,7 @@ mod tests {
         assert_eq!(logger.total_errors(), 1);
     }
 
-    // ========== write_event_to_file direct tests ==========
+    // write_event_to_file direct tests
 
     #[tokio::test]
     async fn test_write_event_to_file_invalid_path_returns_err() {
@@ -2368,7 +2368,7 @@ mod tests {
         assert!(ip.ends_with(":x:x:x:x"));
     }
 
-    // ========== VecDeque overflow coverage ==========
+    // VecDeque overflow coverage
 
     #[tokio::test]
     async fn test_log_drops_oldest_without_persistence_increments_errors() {
@@ -2470,7 +2470,7 @@ mod tests {
         assert_eq!(recent[1].action, "act-3");
     }
 
-    // ========== CoreAuditLoggerTrait impl coverage ==========
+    // CoreAuditLoggerTrait impl coverage
 
     #[tokio::test]
     async fn test_core_audit_logger_trait_log_converts_and_logs() {
@@ -2530,11 +2530,11 @@ mod tests {
         assert_eq!(events[0].result, AuditResult::Unknown);
     }
 
-    // ========== log with closed file channel ==========
+    // log with closed file channel
 
     #[tokio::test]
     async fn test_log_with_closed_file_channel_increments_errors() {
-        // 手工构造 receiver 已 drop 的 logger，覆盖 log() 的 send().is_err() 分支。
+        // 手工构造 receiver 已 drop 的 logger，覆盖 log 的 send.is_err 分支。
         let (tx, rx) = mpsc::unbounded_channel::<AuditCommand>();
         drop(rx); // Close the channel
 
@@ -2562,7 +2562,7 @@ mod tests {
         assert_eq!(logger.total_errors(), 1);
     }
 
-    // ========== Clone semantics ==========
+    // Clone semantics
 
     #[tokio::test]
     async fn test_logger_clone_shares_state() {
@@ -2617,7 +2617,7 @@ mod tests {
         assert_eq!(logger.total_logged(), 1);
     }
 
-    // ========== AuditConfig 贯通 ==========
+    // AuditConfig 贯通
 
     /// AuditConfig 容量与路径贯通：内存环形 = `memory_capacity`（第 4 条淘汰最旧），
     /// 文件持久化不受内存容量影响（容量语义只在内存回查面）。

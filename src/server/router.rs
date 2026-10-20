@@ -49,7 +49,7 @@ pub struct NebulaIdState {
     pub prometheus: Arc<PrometheusMetricsBridge>,
 }
 
-// ========== Prometheus /metrics 桥接 ==========
+// Prometheus /metrics 桥接
 
 /// `nebula_id_generate_latency_seconds` 直方图桶（秒）：微秒到毫秒密度，
 /// 延伸到秒级长尾。
@@ -62,7 +62,7 @@ const PROMETHEUS_LATENCY_BUCKETS_SECONDS: &[f64] = &[
 const PROMETHEUS_METADATA: Metadata =
     Metadata::new(module_path!(), metrics::Level::INFO, Some(module_path!()));
 
-/// 把 `ApiHandlers::metrics()` 快照（原子计数 + 观测环分位数 + 降级/熔断
+/// 把 `ApiHandlers::metrics` 快照（原子计数 + 观测环分位数 + 降级/熔断
 /// 状态）渲染成 Prometheus 文本的桥。
 ///
 /// 仅在 `/metrics` 被抓取时读取快照灌入 exporter 私有 registry（counter 用
@@ -323,7 +323,7 @@ pub async fn create_router_with_rate_limit(
         prometheus: Arc::new(PrometheusMetricsBridge::new()),
     };
 
-    // ========== V1 API Routes ==========
+    // V1 API Routes
     // Admin-only endpoints (require admin API key)
     let v1_admin_routes = Router::new()
         // API Key management endpoints (admin only)
@@ -378,7 +378,7 @@ pub async fn create_router_with_rate_limit(
                 .put(handle_update_biz_tag)
                 .delete(handle_delete_biz_tag),
         )
-        // （CWE-1188）axum 0.8 中后 `.layer()` 者先执行：先 layer
+        // （CWE-1188）axum 0.8 中后 `.layer` 者先执行：先 layer
         // `anonymous_block_middleware`（inner），再 layer `auth_middleware_fn`
         // （outer）以先注入 `ApiKeyRole`，否则匿名拒绝会失效。
         .layer(axum::middleware::from_fn(anonymous_block_middleware))
@@ -393,7 +393,7 @@ pub async fn create_router_with_rate_limit(
         .merge(v1_authenticated_routes)
         .merge(v1_admin_routes);
 
-    // ========== API Versioning ==========
+    // API Versioning
     // Nest V1 routes under /api/v1/
     let api_v1_routes = Router::new()
         .nest(&format!("/api/{}", API_V1), v1_public_routes)
@@ -403,7 +403,7 @@ pub async fn create_router_with_rate_limit(
         // /health、/ready、/metrics、openapi.json 不消费 Locale，无需承担解析开销。
         .layer(axum::middleware::from_fn(locale_middleware));
 
-    // ========== Root Routes ==========
+    // Root Routes
     // Public router (no authentication) - includes health check and metrics
     let routes = Router::new()
         .route("/health", get(handle_health))
@@ -420,7 +420,7 @@ pub async fn create_router_with_rate_limit(
         .merge(sdforge::docs::swagger_ui_router_with_spec(
             "/api-docs/openapi.json",
         ));
-    // 限流层必须位于 CORS 内侧（axum 先 `.layer()` 者为内层）：挂外侧会使 429
+    // 限流层必须位于 CORS 内侧（axum 先 `.layer` 者为内层）：挂外侧会使 429
     // 缺 CORS 头且 OPTIONS 预检消耗配额；`rate_limit_enabled=false` 时不挂载。
 
     let routes = if rate_limit_enabled {
@@ -479,7 +479,7 @@ pub async fn create_router_with_rate_limit(
         ))
 }
 
-// ========== Helper Functions ==========
+// Helper Functions
 
 /// （CWE-1188）v1_authenticated_routes 的全局 Anonymous 拒绝中间件。
 ///
@@ -487,8 +487,8 @@ pub async fn create_router_with_rate_limit(
 /// `POST /config/algorithm`、`DELETE /biz-tags/{id}` 等破坏性操作）会对
 /// Anonymous 开放；本层统一拒绝，无需逐 handler 校验。
 ///
-/// layer 顺序：本中间件必须为 inner（先 `.layer()`），`auth_middleware_fn`
-/// 为 outer（后 `.layer()`）以保证先注入 `ApiKeyRole`。
+/// layer 顺序：本中间件必须为 inner（先 `.layer`），`auth_middleware_fn`
+/// 为 outer（后 `.layer`）以保证先注入 `ApiKeyRole`。
 ///
 /// `ApiKeyRole` 扩展缺失时 fail-closed 401 + warn，避免静默放行。
 pub async fn anonymous_block_middleware(

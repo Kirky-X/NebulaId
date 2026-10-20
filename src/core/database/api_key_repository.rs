@@ -54,7 +54,7 @@ pub trait ApiKeyRepository: Send + Sync {
     async fn revoke_api_key(&self, id: Uuid) -> Result<()>;
     /// 标记 key 已被使用（单语句 UPDATE 写 `last_used_at`/`updated_at`）。
     ///
-    /// key 行不存在时静默返回 `Ok(())`；本方法不节流（调用即写），
+    /// key 行不存在时静默返回 `Ok()`；本方法不节流（调用即写），
     /// 认证冷路径的 60 秒节流在 [`Self::validate_api_key`] 调用点完成。
     async fn update_last_used(&self, id: Uuid) -> Result<()>;
     async fn get_admin_api_key(&self, workspace_id: Uuid) -> Result<Option<ApiKeyInfo>>;
@@ -489,7 +489,7 @@ impl ApiKeyRepository for SeaOrmRepository {
 
     /// 更新 last_used_at（单语句 UPDATE）。
     ///
-    /// `update_many().set(..)` 一条语句完成；无行命中（key 已删）时返回 `Ok(())`。
+    /// `update_many.set(..)` 一条语句完成；无行命中（key 已删）时返回 `Ok()`。
     ///
     /// 本方法不节流（handler 直接调用语义为"调用即写"）；认证冷路径的节流在
     /// [`Self::should_touch_last_used`] 与 `validate_api_key` 调用点完成。
@@ -734,9 +734,9 @@ mod mock_tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    // ============== Pure-logic functions (no DB) ==============
+    // Pure-logic functions (no DB)
 
-    // --- generate_secret ---
+    // generate_secret
 
     #[test]
     fn test_generate_secret_returns_32_chars() {
@@ -772,7 +772,7 @@ mod mock_tests {
         assert_ne!(s1, s3, "two non-consecutive calls must differ");
     }
 
-    // --- hash_key / verify_key ---
+    // hash_key / verify_key
 
     #[test]
     fn test_hash_key_returns_argon2_phc_format() {
@@ -893,7 +893,7 @@ mod mock_tests {
         );
     }
 
-    // ============== ApiKeyRepository tests ==============
+    // ApiKeyRepository tests
 
     #[tokio::test]
     async fn test_api_key_create_rejects_anonymous_role() {
@@ -1384,7 +1384,7 @@ mod mock_tests {
         assert_eq!(candidates[0], (model.key_secret_hash.clone(), false));
     }
 
-    // --- validate_api_key 冷路径往返数与 last_used 写节流 ---
+    // validate_api_key 冷路径往返数与 last_used 写节流
 
     /// 造一行当代凭证可通过 Argon2 校验的 key（哈希由同一 salt 推导）。
     fn authenticatable_model(
@@ -1685,7 +1685,6 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_api_key_update_last_used_succeeds_when_key_missing() {
-        // key 不存在时 update_last_used 仍返回 Ok(())（单语句 UPDATE 命中 0 行），
         // 本用例钉住该已记录行为。
         let id = fixed_uuid(87);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -2133,7 +2132,7 @@ mod mock_tests {
         assert_eq!(keys[0].id, id);
     }
 
-    // ----- ApiKey error paths -----
+    // ApiKey error paths
 
     #[tokio::test]
     async fn test_api_key_create_propagates_insert_db_error() {
@@ -2398,7 +2397,7 @@ mod mock_tests {
         );
     }
 
-    // ----- prefix_tests: 覆盖 Anonymous 默认分支 -----
+    // prefix_tests: 覆盖 Anonymous 默认分支
     // 既有 prefix_tests 只走 Admin/User；此处补测 `_ => "nianon_"` 分支
     // （生产代码拒绝 Anonymous，但测试的 match 需覆盖完整）。
 

@@ -16,7 +16,7 @@ use crate::core::database::repository::SeaOrmRepository;
 use crate::core::database::segment_entity::Model as SegmentModel;
 use crate::core::database::workspace_entity::Model as WorkspaceModel;
 
-// ----- Helpers -----
+// Helpers
 
 /// 构造基于 `MockDatabase` 的 `SeaOrmRepository`。
 pub(crate) fn make_repo(db: dbnexus::sea_orm::DatabaseConnection) -> SeaOrmRepository {

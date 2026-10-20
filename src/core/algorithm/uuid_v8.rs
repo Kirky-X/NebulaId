@@ -223,7 +223,7 @@ impl IdAlgorithm for UuidV8Impl {
     fn metrics(&self) -> AlgorithmMetricsSnapshot {
         AlgorithmMetricsSnapshot {
             // 延迟分位数与时钟回拨计数由路由层观测后在
-            // AlgorithmRouter::metrics() 合并填充。
+            // AlgorithmRouter::metrics 合并填充。
             ..Default::default()
         }
     }
@@ -237,7 +237,7 @@ impl IdAlgorithm for UuidV8Impl {
     }
 }
 
-/// UUID v8 算法工厂，注册在 `algorithm_factories()`。
+/// UUID v8 算法工厂，注册在 `algorithm_factories`。
 
 #[async_trait]
 impl AlgorithmFactory for UuidV8Factory {
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_uuid_v8_counter_seed_is_random() {
-        // 随机起点必须生效：new() 的计数器初值应为 21 位随机非零（8 次全零概率可忽略）。
+        // 随机起点必须生效：new 的计数器初值应为 21 位随机非零（8 次全零概率可忽略）。
         for _ in 0..8 {
             let algo = UuidV8Impl::new(0, 0, 1000);
             if algo.counter.load(Ordering::Relaxed) != 0 {

@@ -178,7 +178,7 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
 
     // 创建 schema（仅 PostgreSQL）
     let create_schema_sql = format!(r#"CREATE SCHEMA IF NOT EXISTS {}"#, NEBULA_SCHEMA);
-    // sea-orm 2.0：原始 SQL 须用 execute_unprepared（execute() 要求 StatementBuilder）
+    // sea-orm 2.0：原始 SQL 须用 execute_unprepared（execute 要求 StatementBuilder）
     match db.execute_unprepared(&create_schema_sql).await {
         Ok(_) => info!(
             "{}",
@@ -359,7 +359,7 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), CoreError> {
     ];
 
     for sql in tables {
-        // sea-orm 2.0：原始 SQL 须用 execute_unprepared（execute() 要求 StatementBuilder）
+        // sea-orm 2.0：原始 SQL 须用 execute_unprepared（execute 要求 StatementBuilder）
         match db.execute_unprepared(&sql).await {
             Ok(_) => {
                 let table_name = sql.split_whitespace().nth(4).unwrap_or("").replace('(', "");
@@ -487,7 +487,7 @@ mod tests {
     use crate::core::config::{DatabaseConfig, DatabaseEngine};
     use dbnexus::sea_orm::{DatabaseBackend, DbErr, MockDatabase, MockExecResult, RuntimeErr};
 
-    // ===== redact_db_url (private helper) =====
+    // redact_db_url (private helper)
 
     #[test]
     fn test_redact_db_url_masks_password_with_stars() {
@@ -528,7 +528,7 @@ mod tests {
         );
     }
 
-    // ===== From<DbErr> for CoreError =====
+    // From<DbErr> for CoreError
 
     #[test]
     fn test_from_dberr_produces_database_error_with_original_message() {
@@ -540,7 +540,7 @@ mod tests {
                     msg.contains("query blew up"),
                     "DatabaseError should embed original DbErr text, got: {msg}"
                 );
-                // 底层 DbErr 必须经 source() 保链(错误链仅进服务端日志)
+                // 底层 DbErr 必须经 source 保链(错误链仅进服务端日志)
                 let source = source.expect("From<DbErr> must preserve the source error");
                 assert!(
                     source.to_string().contains("query blew up"),
@@ -551,7 +551,7 @@ mod tests {
         }
     }
 
-    // ===== create_connection validation paths =====
+    // create_connection validation paths
 
     fn make_pg_config(password: &str, username: &str) -> DatabaseConfig {
         DatabaseConfig {
@@ -660,7 +660,7 @@ mod tests {
         }
     }
 
-    // ===== run_migrations with MockDatabase =====
+    // run_migrations with MockDatabase
 
     /// n 个"执行成功"桩结果（每个 execute 消费一个）。
     fn ok_exec_results(n: usize) -> Vec<MockExecResult> {
@@ -681,7 +681,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_migrations_succeeds_when_all_executes_succeed() {
         // 1 schema + 4 enum types（2 CREATE + 2 ADD VALUE）+ 2 upgrade ALTERs
-        //   + 5 tables + 1 constraint backfill + 1 grace-column ALTER = 14 次成功 execute。
+        // + 5 tables + 1 constraint backfill + 1 grace-column ALTER = 14 次成功 execute。
         let db = mock_db_with_n_ok(14);
         let result = run_migrations(&db).await;
         assert!(

@@ -90,7 +90,7 @@ impl_async_auto_builder!(RepositoryModule, Arc<SeaOrmRepository>, CoreError, |ki
     })
 });
 
-/// 路由模块（能力：`Arc<AlgorithmRouter>`，已 `initialize()`）。
+/// 路由模块（能力：`Arc<AlgorithmRouter>`，已 `initialize`）。
 ///
 /// 依赖锁模块（硬链）、对仓储可选；注册 lifecycle（on_ready 启动降级后台任务 /
 /// on_shutdown 停止）与健康检查。
@@ -115,8 +115,8 @@ impl_async_auto_builder!(RouterModule, Arc<AlgorithmRouter>, CoreError, |kit| {
             ))
         })?;
         let router = AlgorithmRouter::new(config, audit_logger);
-        // Segment 号段仓储接线：RepositoryInput 由 build() 在模块构建前写入 TypeMap，
-        // 此处读取无同层构建顺序依赖；不能用 require::<RepositoryModule>()——
+        // Segment 号段仓储接线：RepositoryInput 由 build 在模块构建前写入 TypeMap，
+        // 此处读取无同层构建顺序依赖；不能用 require::<RepositoryModule>——
         // trait-kit 对同层模块并发构建，Router/Repository 同层会竞态。
         // 未注入仓储时保持 Router 原样（生产构建按 config.database 自举）。
         #[cfg(feature = "segment")]
@@ -138,7 +138,7 @@ impl_async_auto_builder!(RouterModule, Arc<AlgorithmRouter>, CoreError, |kit| {
 });
 
 impl AsyncLifecycle for RouterModule {
-    /// `on_ready`：build() 完成后按注册顺序触发，启动降级后台任务。
+    /// `on_ready`：build 完成后按注册顺序触发，启动降级后台任务。
     fn on_ready<'a>(
         kit: &'a AsyncKit<AsyncReady>,
     ) -> Pin<Box<dyn Future<Output = std::result::Result<(), Self::Error>> + Send + 'a>> {
@@ -155,7 +155,7 @@ impl AsyncLifecycle for RouterModule {
         })
     }
 
-    /// `on_shutdown`：停止降级后台任务（`shutdown_async()` 按逆拓扑序 drain 本钩子）。
+    /// `on_shutdown`：停止降级后台任务（`shutdown_async` 按逆拓扑序 drain 本钩子）。
     fn on_shutdown<'a>(cap: &'a Self::Capability) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             cap.get_degradation_manager().stop_background_check().await;
@@ -399,7 +399,7 @@ impl NebulaIdKit {
         &self.kit
     }
 
-    /// 取用 ID 生成能力（`require::<IdGenModule>()` 薄封装）。
+    /// 取用 ID 生成能力（`require::<IdGenModule>` 薄封装）。
     /// `require` 的读锁成本只在分发瞬间；此后 generate 直调内部 Arc，热路径零锁。
     pub fn id_generator(&self) -> Result<IdGenerator> {
         self.kit.require::<IdGenModule>().map_err(|e| {
@@ -469,7 +469,7 @@ impl NebulaIdKit {
         })
     }
 
-    /// 停机：await `shutdown_async()`，trait-kit 按逆拓扑序执行各模块 `on_shutdown`
+    /// 停机：await `shutdown_async`，trait-kit 按逆拓扑序执行各模块 `on_shutdown`
     /// （RouterModule 停止降级后台任务；二次调用 no-op）。
     pub async fn shutdown(self) {
         self.kit.shutdown_async().await;
@@ -482,7 +482,7 @@ impl NebulaIdKit {
     }
 }
 
-/// 嵌入式 SDK Kit 构建器：最小用法 `NebulaIdKitBuilder::new(config).build().await`（零 DB）；
+/// 嵌入式 SDK Kit 构建器：最小用法 `NebulaIdKitBuilder::new(config).build.await`（零 DB）；
 /// 需要 Segment 时 `.with_repository(repo)` 注入（随 `database` 编译）。
 pub struct NebulaIdKitBuilder {
     config: Config,
@@ -509,14 +509,14 @@ impl NebulaIdKitBuilder {
     }
 
     /// 注入数据库仓储（可选，owned；仅随 `database` 特性编译）。
-    /// `build()` 会把分布式锁注入该仓储（etcd 失败时 fail-closed，不回退）。
+    /// `build` 会把分布式锁注入该仓储（etcd 失败时 fail-closed，不回退）。
     #[cfg(feature = "database")]
     pub fn with_repository(mut self, repository: SeaOrmRepository) -> Self {
         self.repository = Some(repository);
         self
     }
 
-    /// 组装 Kit：TypeMap 注入 → 模块注册 → `AsyncKit::build()` 依赖图校验（缺依赖/环检测 + 拓扑序）。
+    /// 组装 Kit：TypeMap 注入 → 模块注册 → `AsyncKit::build` 依赖图校验（缺依赖/环检测 + 拓扑序）。
     pub async fn build(self) -> Result<NebulaIdKit> {
         let mut kit = AsyncKit::new();
 
@@ -524,7 +524,7 @@ impl NebulaIdKitBuilder {
         kit.set_config(self.config.clone());
         kit.set_config(AuditLoggerInput(self.audit_logger));
 
-        // 模块注册（依赖图由 trait-kit 在 build() 校验）
+        // 模块注册（依赖图由 trait-kit 在 build 校验）
         kit.register::<DistributedLockModule>().map_err(|e| {
             CoreError::InternalError(t!("error.sdk.module_register_failed", reason = e))
         })?;
@@ -548,7 +548,7 @@ impl NebulaIdKitBuilder {
             CoreError::InternalError(t!("error.sdk.module_register_failed", reason = e))
         })?;
 
-        // 生命周期与健康检查接线（on_ready 在 build() 完成后触发）
+        // 生命周期与健康检查接线（on_ready 在 build 完成后触发）
         kit.register_lifecycle::<RouterModule>();
         kit.register_health_check::<RouterModule>();
 
@@ -588,7 +588,7 @@ mod tests {
     use crate::core::algorithm::GenerateContext;
     use crate::core::config::Config;
 
-    /// 默认 Config 下 build() 成功返回 Ready Kit，TypeMap 已注入 Config 与 audit_logger。
+    /// 默认 Config 下 build 成功返回 Ready Kit，TypeMap 已注入 Config 与 audit_logger。
     #[cfg(any(feature = "snowflake", feature = "uuid-v8"))]
     #[tokio::test]
     async fn test_kit_builder_builds_empty_ready_kit() {
@@ -606,7 +606,7 @@ mod tests {
         assert!(audit.0.is_none(), "未注入审计日志器时应为 None");
     }
 
-    /// DistributedLockModule 注册后 build 成功；锁可 acquire/release 且 is_healthy() 为 true。
+    /// DistributedLockModule 注册后 build 成功；锁可 acquire/release 且 is_healthy 为 true。
     #[cfg(any(feature = "snowflake", feature = "uuid-v8"))]
     #[tokio::test]
     async fn test_kit_builds_distributed_lock_module() {
@@ -660,7 +660,7 @@ mod tests {
         let _ = repository.get_db_connection();
     }
 
-    /// 未注入仓储时 RepositoryModule 缺席且 build() 不失败（register_if 语义）。
+    /// 未注入仓储时 RepositoryModule 缺席且 build 不失败（register_if 语义）。
     #[cfg(feature = "database")]
     #[tokio::test]
     async fn test_repository_module_absent_without_injection() {
@@ -679,7 +679,7 @@ mod tests {
     }
 
     /// 测试共享：单机配置（etcd endpoints 置空白 → 走 LocalDistributedLock，零外部依赖）。
-    /// 注意 `Config::default()` 的 endpoints 为空列表，但显式写入编排内网地址时
+    /// 注意 `Config::default` 的 endpoints 为空列表，但显式写入编排内网地址时
     /// 未配置可达 etcd 会显性失败（fail-closed）。
     fn local_config() -> Config {
         let mut config = Config::default();
@@ -729,7 +729,7 @@ mod tests {
     }
 
     /// `on_ready` 启动降级后台任务：等待 ≥1 个 check_interval tick 后，
-    /// 经 `get_algorithm_metrics()` 观测 snowflake 连续成功计数被刷新。
+    /// 经 `get_algorithm_metrics` 观测 snowflake 连续成功计数被刷新。
     #[cfg(feature = "snowflake")]
     #[tokio::test]
     async fn test_router_lifecycle_on_ready_starts_degradation() {
@@ -755,7 +755,7 @@ mod tests {
         );
     }
 
-    /// `health_report()`（同步）返回包含 `router` 模块的报告。
+    /// `health_report`（同步）返回包含 `router` 模块的报告。
     // kit build 要求 ≥1 个路由算法在场（空注册表 initialize 报错）；v5 不是路由算法，
     // 不计数（与 ci.yml「uuid-v8 only」同款门控）。
     #[cfg(any(feature = "snowflake", feature = "uuid-v8"))]
@@ -820,7 +820,7 @@ mod tests {
     #[cfg(feature = "database")]
     #[tokio::test]
     async fn test_id_generator_segment_without_repository_returns_configuration_error() {
-        // local_config()（同 Config::default()）默认算法为 segment
+        // local_config（同 Config::default）默认算法为 segment
         let kit = NebulaIdKitBuilder::new(local_config())
             .build()
             .await
@@ -959,7 +959,7 @@ mod tests {
         assert!(!kit.inner().contains::<RepositoryModule>());
     }
 
-    /// 门面 `id_generator()` 取用的 handle 可 generate 与 batch_generate。
+    /// 门面 `id_generator` 取用的 handle 可 generate 与 batch_generate。
     #[cfg(feature = "snowflake")]
     #[tokio::test]
     async fn test_kit_id_generator_generates_and_batches() {
@@ -1001,7 +1001,7 @@ mod tests {
 
     /// SDK 薄包装契约：kit 的 `derive_uuid_v5` 与 core 直调逐位一致；锚点值钉死跨仓兼容（etyma 存量 ID）。
     ///
-    /// `snowflake` 门控：kit `build()` 要求 ≥1 个路由算法在场；纯委托的覆盖由 uuid_v5.rs 承载。
+    /// `snowflake` 门控：kit `build` 要求 ≥1 个路由算法在场；纯委托的覆盖由 uuid_v5.rs 承载。
     #[cfg(all(feature = "uuid-v5", feature = "snowflake"))]
     #[tokio::test]
     async fn test_kit_derive_uuid_v5_wrapper_matches_core() {
@@ -1024,7 +1024,7 @@ mod tests {
         );
     }
 
-    /// `health_check()` 保留算法级快照语义（`Vec<(AlgorithmType, HealthStatus)>`，与旧 API 一致）。
+    /// `health_check` 保留算法级快照语义（`Vec<(AlgorithmType, HealthStatus)>`，与旧 API 一致）。
     #[cfg(feature = "snowflake")]
     #[tokio::test]
     async fn test_kit_health_check_returns_algorithm_snapshot() {
@@ -1041,8 +1041,8 @@ mod tests {
         );
     }
 
-    /// 门面 `shutdown()` 后降级后台任务停止：先证明任务在运行，再等待一个完整
-    /// interval 断言计数不再增长（经 `get_algorithm_metrics()` 观测）。
+    /// 门面 `shutdown` 后降级后台任务停止：先证明任务在运行，再等待一个完整
+    /// interval 断言计数不再增长（经 `get_algorithm_metrics` 观测）。
     #[cfg(feature = "snowflake")]
     #[tokio::test]
     async fn test_kit_shutdown_stops_background_check() {
@@ -1072,7 +1072,7 @@ mod tests {
         );
     }
 
-    /// 依赖图校验核心价值：裸 `AsyncKit` 只注册 `IdGenModule` 时 `build()` 必须 Err（缺依赖检测）。
+    /// 依赖图校验核心价值：裸 `AsyncKit` 只注册 `IdGenModule` 时 `build` 必须 Err（缺依赖检测）。
     #[tokio::test]
     async fn test_kit_build_fails_on_missing_dependency() {
         let mut kit = trait_kit::AsyncKit::new();
@@ -1166,7 +1166,7 @@ mod tests {
         assert_eq!(batch.ids.len(), 10);
     }
 
-    // ==================== 分布式锁 fail-closed 与号段装配契约 ====================
+    // 分布式锁 fail-closed 与号段装配契约
 
     /// 未配置 endpoints → 本地锁（单机合法，构建不依赖外部 etcd）。
     #[cfg(feature = "etcd")]
@@ -1237,7 +1237,7 @@ mod tests {
         );
     }
 
-    /// fail-closed 完整 kit build：etcd 不可达时锁模块失败必须让 build() 显性失败。
+    /// fail-closed 完整 kit build：etcd 不可达时锁模块失败必须让 build 显性失败。
     #[cfg(feature = "etcd")]
     #[tokio::test]
     async fn test_kit_build_fails_when_etcd_required_but_unreachable() {

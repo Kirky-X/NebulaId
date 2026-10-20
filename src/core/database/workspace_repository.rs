@@ -577,7 +577,7 @@ mod mock_tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    // ============== WorkspaceRepository tests ==============
+    // WorkspaceRepository tests
 
     #[tokio::test]
     async fn test_workspace_create_returns_workspace_with_default_limits() {
@@ -851,7 +851,7 @@ mod mock_tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             // 第 1 次查询：WorkspaceEntity::find_by_id。
             .append_query_results(vec![vec![sample_workspace_model(ws_id, "ws_groups")]])
-            // 第 2 次查询：GroupEntity::find().filter(workspace_id)。
+            // 第 2 次查询：GroupEntity::find.filter(workspace_id)。
             .append_query_results(vec![vec![
                 sample_group_model(g1_id, ws_id, "g1"),
                 sample_group_model(g2_id, ws_id, "g2"),
@@ -886,7 +886,7 @@ mod mock_tests {
         assert!(result.is_none());
     }
 
-    // ============== GroupRepository tests ==============
+    // GroupRepository tests
 
     #[tokio::test]
     async fn test_group_create_returns_not_found_when_workspace_missing() {
@@ -1118,7 +1118,7 @@ mod mock_tests {
         assert_eq!(tags.len(), 1);
     }
 
-    // ----- Workspace error paths -----
+    // Workspace error paths
 
     #[tokio::test]
     async fn test_workspace_update_propagates_find_db_error() {
@@ -1327,7 +1327,7 @@ mod mock_tests {
         assert!(groups.is_empty(), "no groups → empty vec");
     }
 
-    // ----- Group error paths -----
+    // Group error paths
 
     #[tokio::test]
     async fn test_group_create_propagates_workspace_find_error() {
@@ -1443,7 +1443,7 @@ mod mock_tests {
         );
     }
 
-    // ----- delete_group_with_biz_tags full coverage -----
+    // delete_group_with_biz_tags full coverage
 
     #[tokio::test]
     async fn test_delete_group_with_biz_tags_succeeds_with_no_biz_tags() {
@@ -1568,7 +1568,7 @@ mod mock_tests {
         );
     }
 
-    // ----- Workspace error paths (additional) -----
+    // Workspace error paths (additional)
 
     #[tokio::test]
     async fn test_workspace_get_by_name_propagates_db_error() {
@@ -1629,7 +1629,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_workspace_update_applies_status_when_provided() {
-        // 覆盖 status 的 `.map(|s| s.into())` 闭包（仅 status = Some 时触发）。
+        // 覆盖 status 的 `.map(|s| s.into)` 闭包（仅 status = Some 时触发）。
         let id = fixed_uuid(111);
         let updated_model = workspace_entity::Model {
             status: "active".to_string(),
@@ -1658,7 +1658,7 @@ mod mock_tests {
         assert_eq!(updated.id, id);
     }
 
-    // ----- Group error paths (additional) -----
+    // Group error paths (additional)
 
     #[tokio::test]
     async fn test_group_get_propagates_db_error() {

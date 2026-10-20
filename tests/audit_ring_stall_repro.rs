@@ -49,7 +49,7 @@ async fn audit_logging_stays_fast_after_ring_and_channel_saturation() {
         audit.log(ev(i)).await;
     }
 
-    // 容量饱和后的 log() 必须仍然快：单次上限 20ms（远宽于修复后的微秒级、
+    // 容量饱和后的 log 必须仍然快：单次上限 20ms（远宽于修复后的微秒级、
     // 远紧于回归时的 ~100ms 阻塞）；llvm-cov 插桩（CI default leg 即插桩运行
     // 本测试）会把绝对时长整体拖高数倍，检测到 LLVM_PROFILE_FILE（llvm-cov
     // 注入）时放宽到 80ms——仍在回归信号（~100ms 阻塞）之下，保持区分度。

@@ -1101,7 +1101,7 @@ mod tests {
         assert_eq!(entry.unwrap(), AlgorithmType::Snowflake);
     }
 
-    // ============== 测试辅助 Mock 与工具函数 ==============
+    // 测试辅助 Mock 与工具函数
 
     /// 健康 Mock：所有方法均成功
     struct MockHealthyAlgorithm {
@@ -1320,7 +1320,7 @@ mod tests {
         }
     }
 
-    // ============== 路由层观测 ==============
+    // 路由层观测
 
     #[tokio::test]
     #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
@@ -1345,7 +1345,7 @@ mod tests {
         assert_eq!(seg.total_generated, 3);
         assert_eq!(seg.total_failed, 0);
 
-        // 分位数经 router.metrics() 合并到对外快照（2ms 睡眠 → ≥1000µs）
+        // 分位数经 router.metrics 合并到对外快照（2ms 睡眠 → ≥1000µs）
         let snapshots = router.metrics().await;
         let (_, snapshot) = snapshots
             .iter()
@@ -1434,7 +1434,7 @@ mod tests {
         );
     }
 
-    // ============== IdGenerator trait impl 测试 ==============
+    // IdGenerator trait impl 测试
 
     #[tokio::test]
     #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
@@ -1647,7 +1647,7 @@ mod tests {
         assert_eq!(ids.len(), 3);
     }
 
-    // ============== AlgorithmRouter::new 与 builder 测试 ==============
+    // AlgorithmRouter::new 与 builder 测试
 
     #[tokio::test]
     #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
@@ -1685,7 +1685,7 @@ mod tests {
         assert!(router.cpu_monitor.is_some());
     }
 
-    // ============== generate_with_algorithm (inherent) 测试 ==============
+    // generate_with_algorithm (inherent) 测试
 
     #[tokio::test]
     #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
@@ -1741,7 +1741,7 @@ mod tests {
         }
     }
 
-    // ============== batch_generate_with_algorithm (inherent) 测试 ==============
+    // batch_generate_with_algorithm (inherent) 测试
 
     #[tokio::test]
     #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
@@ -1797,7 +1797,7 @@ mod tests {
         }
     }
 
-    // ============== generate_with_algorithm_internal fallback 路径测试 ==============
+    // generate_with_algorithm_internal fallback 路径测试
 
     #[tokio::test]
     #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
@@ -1998,7 +1998,7 @@ mod tests {
         assert_eq!(id.as_u128(), 42);
     }
 
-    // ============== batch_generate_with_algorithm_internal fallback 路径测试 ==============
+    // batch_generate_with_algorithm_internal fallback 路径测试
 
     #[tokio::test]
     #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
@@ -2104,7 +2104,7 @@ mod tests {
         }
     }
 
-    // ============== health_check (inherent) 测试 ==============
+    // health_check (inherent) 测试
 
     #[tokio::test]
     async fn test_health_check_inherent_empty_returns_empty_vec() {
@@ -2145,7 +2145,7 @@ mod tests {
         assert!(matches!(uuid_v8_status, Some(HealthStatus::Degraded(_))));
     }
 
-    // ============== metrics (inherent) 测试 ==============
+    // metrics (inherent) 测试
 
     #[tokio::test]
     async fn test_metrics_inherent_empty_returns_empty_vec() {
@@ -2178,7 +2178,7 @@ mod tests {
         assert!(algorithm_types.contains(&AlgorithmType::UuidV8));
     }
 
-    // ============== get_degradation_manager (inherent) 测试 ==============
+    // get_degradation_manager (inherent) 测试
 
     #[tokio::test]
     async fn test_get_degradation_manager_inherent_returns_reference() {
@@ -2187,7 +2187,7 @@ mod tests {
         assert!(Arc::strong_count(dm_ref) >= 1);
     }
 
-    // ============== check_health_and_update_degradation 测试 ==============
+    // check_health_and_update_degradation 测试
 
     #[tokio::test]
     async fn test_check_health_and_update_degradation_does_not_panic_with_no_algorithms() {
@@ -2213,7 +2213,7 @@ mod tests {
                 ..Default::default()
             });
 
-        // `check_all_health` 读 manager 自己的注册表（生产由 `initialize()` 同时写入）。
+        // `check_all_health` 读 manager 自己的注册表（生产由 `initialize` 同时写入）。
         let dm = router.get_degradation_manager();
         let primary = Arc::new(MockFlippableHealthAlgorithm::new(AlgorithmType::Segment));
         primary.force_unhealthy();
@@ -2239,7 +2239,7 @@ mod tests {
                 .clone()
         };
 
-        // --- 阶段 1：失败未达阈值 → 仍 Closed ---
+        // 阶段 1：失败未达阈值 → 仍 Closed
         router.check_health_and_update_degradation().await;
         assert_eq!(
             circuit_state(AlgorithmType::Segment),
@@ -2247,7 +2247,7 @@ mod tests {
             "失败 1 次未达 failure_threshold(2)，期望熔断仍为 Closed"
         );
 
-        // --- 阶段 2：失败达阈值 → Open + 降级到链中下一算法 ---
+        // 阶段 2：失败达阈值 → Open + 降级到链中下一算法
         router.check_health_and_update_degradation().await;
         assert_eq!(
             circuit_state(AlgorithmType::Segment),
@@ -2266,7 +2266,7 @@ mod tests {
             "期望主算法 Segment 被标记为已降级"
         );
 
-        // --- 阶段 3：主算法恢复 + 探测窗口到期 → HalfOpen ---
+        // 阶段 3：主算法恢复 + 探测窗口到期 → HalfOpen
         primary.recover();
         router.check_health_and_update_degradation().await;
         assert_eq!(
@@ -2275,7 +2275,7 @@ mod tests {
             "Open 且 circuit_breaker_timeout 已到期，期望本轮切换到 HalfOpen"
         );
 
-        // --- 阶段 4：HalfOpen 探测成功未达阈值 → 保持 HalfOpen 并累计 ---
+        // 阶段 4：HalfOpen 探测成功未达阈值 → 保持 HalfOpen 并累计
         router.check_health_and_update_degradation().await;
         assert_eq!(
             circuit_state(AlgorithmType::Segment),
@@ -2289,7 +2289,7 @@ mod tests {
             "探测成功累计到阈值当轮仍按「已达标则关闭」在下一轮生效，期望仍为 HalfOpen"
         );
 
-        // --- 阶段 5：探测成功达阈值 → Closed + 恢复 Normal ---
+        // 阶段 5：探测成功达阈值 → Closed + 恢复 Normal
         router.check_health_and_update_degradation().await;
         assert_eq!(
             circuit_state(AlgorithmType::Segment),
@@ -2314,7 +2314,7 @@ mod tests {
         );
     }
 
-    // ============== shutdown 测试 ==============
+    // shutdown 测试
 
     #[tokio::test]
     async fn test_shutdown_empty_does_not_panic() {
@@ -2379,7 +2379,7 @@ mod tests {
         router.shutdown().await;
     }
 
-    // ============== 装配契约测试 ==============
+    // 装配契约测试
 
     /// 最小 SegmentRepository mock：`allocate_segment` 顺序发号并记录步长，其余方法返回空/缺省。
     #[cfg(feature = "segment")]

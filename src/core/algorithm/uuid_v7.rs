@@ -118,7 +118,7 @@ mod tests {
         assert_eq!((v >> 62) & 0x3, 0b10, "variant must be 0b10");
     }
 
-    /// 独占能力 1：标准布局时间戳可被 `get_timestamp()` 直取，且与墙钟一致。
+    /// 独占能力 1：标准布局时间戳可被 `get_timestamp` 直取，且与墙钟一致。
     #[tokio::test]
     async fn test_uuid_v7_standard_timestamp_extractable() {
         let algo = UuidV7Impl;
@@ -143,7 +143,7 @@ mod tests {
         );
     }
 
-    /// 独占能力 2：零配置零自持状态——`new()` 不消费任何配置（对比 v8 从 Config.app 取 dc/worker）。
+    /// 独占能力 2：零配置零自持状态——`new` 不消费任何配置（对比 v8 从 Config.app 取 dc/worker）。
     #[test]
     fn test_uuid_v7_zero_config_zero_state() {
         let algo = UuidV7Impl::new();

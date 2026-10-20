@@ -33,8 +33,8 @@ const ALLOWED_METHODS: [Method; 5] = [
 /// ```ignore
 /// use nebulaid::server::config::cors::create_cors_layer;
 /// let origins = vec![
-///     "https://example.com".to_string(),
-///     "https://app.example.com".to_string(),
+///     "https://example.com".to_string,
+///     "https://app.example.com".to_string,
 /// ];
 /// let cors = create_cors_layer(origins);
 /// ```

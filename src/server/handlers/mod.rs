@@ -187,7 +187,7 @@ pub(crate) mod mock_tests {
         }
     }
 
-    // ========== Helpers ==========
+    // Helpers
 
     fn create_mock_handlers(mock_config: MockConfigManagementService) -> Arc<ApiHandlers> {
         let mock_gen = Arc::new(MockIdGenerator::new());
@@ -312,7 +312,7 @@ pub(crate) mod mock_tests {
         }
     }
 
-    // ========== ID Generation Tests (15) ==========
+    // ID Generation Tests (15)
 
     #[tokio::test]
     async fn mock_test_generate_happy_path() {
@@ -578,7 +578,7 @@ pub(crate) mod mock_tests {
         assert_eq!(response.algorithm, "segment");
     }
 
-    // ========== System Tests (9) ==========
+    // System Tests (9)
 
     #[tokio::test]
     async fn mock_test_health_healthy() {
@@ -715,7 +715,7 @@ pub(crate) mod mock_tests {
         assert_eq!(response.cache.status, HealthStatus::Healthy);
     }
 
-    // ========== BizTag CRUD Tests (12) ==========
+    // BizTag CRUD Tests (12)
 
     #[tokio::test]
     async fn mock_test_create_biz_tag_happy_path() {
@@ -978,7 +978,7 @@ pub(crate) mod mock_tests {
         assert!(result.is_ok());
     }
 
-    // ========== Workspace/Group Tests (12) ==========
+    // Workspace/Group Tests (12)
 
     #[tokio::test]
     async fn mock_test_create_workspace_no_api_key_repo() {
@@ -1206,7 +1206,7 @@ pub(crate) mod mock_tests {
         assert!(result.is_ok());
     }
 
-    // ========== API Key Tests (12) ==========
+    // API Key Tests (12)
 
     #[tokio::test]
     async fn mock_test_create_api_key_no_repo() {
@@ -1454,7 +1454,7 @@ pub(crate) mod mock_tests {
         );
     }
 
-    // ========== Key Rotation + Shutdown Tests (2) ==========
+    // Key Rotation + Shutdown Tests (2)
 
     #[tokio::test]
     async fn mock_test_start_key_rotation_task_no_repo() {

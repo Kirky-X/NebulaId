@@ -27,7 +27,7 @@ const STATE_PERSIST_INTERVAL_SECS: u64 = 30;
 /// clock drift 衰减阈值：持续无新回拨事件达该毫秒数后清零 drift、恢复 Healthy。
 const DEFAULT_DRIFT_DECAY_AFTER_MS: u64 = 60_000;
 
-/// 进程级单调锚点：`monotonic_millis()` 返回自首次调用起的毫秒数（0 保留为
+/// 进程级单调锚点：`monotonic_millis` 返回自首次调用起的毫秒数（0 保留为
 /// 「尚无事件」哨兵），给 drift 事件打时间戳，不受系统时钟回拨影响。
 fn monotonic_millis() -> u64 {
     static ANCHOR: OnceLock<SystemTime> = OnceLock::new();
@@ -119,7 +119,7 @@ pub struct SnowflakeAlgorithm {
     rotation_count: AtomicU8,
     metrics: Arc<SnowflakeMetrics>,
     clock_drift_ms: AtomicU64,
-    /// 最近一次时钟回拨事件的单调时刻（`monotonic_millis()` 毫秒；0 = 尚无事件），
+    /// 最近一次时钟回拨事件的单调时刻（`monotonic_millis` 毫秒；0 = 尚无事件），
     /// 供 drift 衰减判定。
     last_drift_at_ms: AtomicU64,
     /// drift 衰减阈值（毫秒）。默认 60_000；测试可改小以模拟时间推进。
@@ -220,7 +220,7 @@ impl SnowflakeAlgorithm {
 
         // 位宽二次校验：SDK 直构 Config 可能绕过 Config::validate；超界 dc/worker
         // 会在 construct_id 的 OR 组装中污染高位时间戳位造成碰撞，必须 fail-closed。
-        // 位宽合计 ≥ 64 时 timestamp_bits() 下溢、construct_id 高位移位回绕。
+        // 位宽合计 ≥ 64 时 timestamp_bits 下溢、construct_id 高位移位回绕。
         let total_bits = u32::from(self.config.datacenter_id_bits)
             + u32::from(self.config.worker_id_bits)
             + u32::from(self.config.sequence_bits);
@@ -518,7 +518,7 @@ impl IdAlgorithm for SnowflakeAlgorithm {
 
     async fn batch_generate(&self, _ctx: &GenerateContext, size: usize) -> Result<IdBatch> {
         // size=0 边界：直接返回空批次，不进入重试循环
-        // （否则 `ids.is_empty()` 判定会误报 "Failed to generate IDs"）
+        // （否则 `ids.is_empty` 判定会误报 "Failed to generate IDs"）
         if size == 0 {
             return Ok(IdBatch::new(
                 Vec::new(),
@@ -587,7 +587,7 @@ impl IdAlgorithm for SnowflakeAlgorithm {
             // Snowflake/UUID 算法无缓存概念，返回 None。
             cache_hit_rate: None,
             // 延迟分位数与时钟回拨计数由路由层观测后在
-            // AlgorithmRouter::metrics() 合并填充。
+            // AlgorithmRouter::metrics 合并填充。
             ..Default::default()
         }
     }
@@ -612,9 +612,7 @@ impl IdAlgorithm for SnowflakeAlgorithm {
     }
 }
 
-// ============================================================================
 // SnowflakeFactory impl 位于本文件（具体类型所属文件）。
-// ============================================================================
 #[async_trait]
 impl crate::core::algorithm::AlgorithmFactory for crate::core::algorithm::SnowflakeFactory {
     async fn build(
@@ -785,9 +783,7 @@ mod tests {
         assert_ne!(id1.as_u128(), id2.as_u128(), "IDs must be unique");
     }
 
-    // ========================================================================
     // 时钟回拨路径
-    // ========================================================================
 
     /// 时钟回拨超过阈值时，generate_id 应返回 ClockMovedBackward 错误，
     /// 且 clock_drift_ms 应被记录、health_check 应反映 Unhealthy 状态。
@@ -875,9 +871,7 @@ mod tests {
         );
     }
 
-    // ========================================================================
     // wait_for_next_ms
-    // ========================================================================
 
     /// wait_for_next_ms 应返回比输入 last_ts 更大的时间戳（循环体至少执行一次）。
     #[tokio::test]
@@ -893,9 +887,7 @@ mod tests {
         );
     }
 
-    // ========================================================================
     // batch_generate
-    // ========================================================================
 
     /// batch_generate 正常路径应返回指定数量的唯一 ID，且 algorithm 字段为 Snowflake。
     #[tokio::test]
@@ -959,9 +951,7 @@ mod tests {
         assert_eq!(batch.ids.len(), 3);
     }
 
-    // ========================================================================
     // health_check
-    // ========================================================================
 
     /// health_check 在无时钟漂移时应返回 Healthy。
     #[test]
@@ -998,9 +988,7 @@ mod tests {
         assert!(matches!(algo.health_check(), HealthStatus::Healthy));
     }
 
-    // ========================================================================
     // clock drift 衰减
-    // ========================================================================
 
     /// 回拨事件必须同时记录 last_drift_at_ms（衰减判定的时钟基准）。
     #[tokio::test]
@@ -1086,9 +1074,7 @@ mod tests {
         assert!(matches!(algo.health_check(), HealthStatus::Unhealthy(_)));
     }
 
-    // ========================================================================
     // metrics / algorithm_type / initialize / shutdown
-    // ========================================================================
 
     /// metrics 在生成 ID 后应反映正确的 total_generated 计数。
     #[tokio::test]
@@ -1242,7 +1228,7 @@ mod tests {
         }
     }
 
-    /// 位宽合计 ≥ 64 时拒绝（timestamp_bits() 下溢、construct_id 高位移位回绕的兜底）。
+    /// 位宽合计 ≥ 64 时拒绝（timestamp_bits 下溢、construct_id 高位移位回绕的兜底）。
     #[tokio::test]
     async fn test_initialize_rejects_total_bits_overflow() {
         let mut algo = SnowflakeAlgorithm::new(0, 0);
@@ -1277,7 +1263,7 @@ mod tests {
         }
     }
 
-    /// shutdown 应返回 Ok(())。
+    /// shutdown 应返回 Ok()。
     #[tokio::test]
     async fn test_shutdown_returns_ok() {
         let algo = SnowflakeAlgorithm::new(0, 0);

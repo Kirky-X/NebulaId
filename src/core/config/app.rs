@@ -220,7 +220,7 @@ pub(crate) fn redact_optional_url(url: &str) -> String {
 impl Default for DatabaseConfig {
     fn default() -> Self {
         // DATABASE_URL 存在时口令内嵌于 URL，无需单独 password；用 `if let Ok(url)`
-        // 只读取一次 env，避免原 `.is_ok()`+`.unwrap()` 之间的 TOCTOU race。
+        // 只读取一次 env，避免原 `.is_ok`+`.unwrap` 之间的 TOCTOU race。
         if let Ok(url) = std::env::var("DATABASE_URL") {
             return Self {
                 engine: DatabaseEngine::Postgresql,
@@ -270,7 +270,7 @@ impl Default for DatabaseConfig {
 
         Self {
             engine: DatabaseEngine::Postgresql,
-            // url 必须留空：merge() 把非默认字段当环境覆盖回写，预填 localhost:5432 URL
+            // url 必须留空：merge 把非默认字段当环境覆盖回写，预填 localhost:5432 URL
             // 会静默覆盖配置文件的 host/port 分离写法的端口；留空时 create_connection
             // 按 host/port/username/password 拼 URL（显式 DATABASE_URL 走上分支）。
             url: String::new(),
@@ -345,7 +345,7 @@ impl Default for EtcdConfig {
 mod tests {
     use super::*;
 
-    // ----- DatabaseEngine Display -----
+    // DatabaseEngine Display
 
     #[test]
     fn test_database_engine_display_postgresql() {
@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(DatabaseEngine::Sqlite.to_string(), "sqlite");
     }
 
-    // ----- DatabaseEngine From<&str> -----
+    // DatabaseEngine From<&str>
 
     #[test]
     fn test_database_engine_from_str_postgresql() {
@@ -411,7 +411,7 @@ mod tests {
         assert_eq!(e, DatabaseEngine::Sqlite);
     }
 
-    // ----- DatabaseEngine From<String> -----
+    // DatabaseEngine From<String>
 
     #[test]
     fn test_database_engine_from_string_postgresql() {
@@ -431,7 +431,7 @@ mod tests {
         assert_eq!(e, DatabaseEngine::Postgresql);
     }
 
-    // ----- NebulaIdConfig Default + http_addr / grpc_addr -----
+    // NebulaIdConfig Default + http_addr / grpc_addr
 
     #[test]
     fn test_app_config_default_values() {
@@ -518,7 +518,7 @@ mod tests {
         assert_eq!(addr.ip().to_string(), "127.0.0.1");
     }
 
-    // ----- EtcdConfig Default -----
+    // EtcdConfig Default
 
     #[test]
     fn test_etcd_config_default_values() {
@@ -558,7 +558,7 @@ mod tests {
         );
     }
 
-    // ----- NebulaIdConfig.locale -----
+    // NebulaIdConfig.locale
 
     #[test]
     fn test_app_config_locale_default_is_auto_empty() {
@@ -603,7 +603,7 @@ locale = "zh-CN"
         assert_eq!(cfg.locale, "zh-CN");
     }
 
-    // ----- DatabaseConfig::default 在测试模式下应进入 sqlite 分支 -----
+    // DatabaseConfig::default 在测试模式下应进入 sqlite 分支
 
     #[test]
     fn test_database_config_default_in_test_mode_uses_sqlite() {

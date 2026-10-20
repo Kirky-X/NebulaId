@@ -3,7 +3,7 @@
 
 //! Request ID 中间件：合法 UUID 透传原值，缺失/非 UTF-8/非法则生成 UUID v7。
 //! 结果写入请求头 / extensions / 任务局部上下文 / tracing span，并回显响应头；
-//! 挂载须在 `sdforge::context::context_middleware` 外侧（最后 `.layer()`）。
+//! 挂载须在 `sdforge::context::context_middleware` 外侧（最后 `.layer`）。
 
 use axum::extract::Request;
 use axum::middleware::Next;
@@ -37,7 +37,7 @@ fn resolve_request_id(header_value: Option<&str>) -> String {
 
 /// HTTP 中间件：解析/生成 request ID 并贯穿请求-响应全链路。
 ///
-/// 必须位于 `sdforge::context::context_middleware` 外侧（后 `.layer()`）。
+/// 必须位于 `sdforge::context::context_middleware` 外侧（后 `.layer`）。
 pub async fn request_id_middleware(mut req: Request, next: Next) -> axum::response::Response {
     let incoming = req
         .headers()
@@ -76,7 +76,7 @@ mod tests {
     // oneshot 来自 tower::ServiceExt（sdforge re-export，与 router 测试同源）。
     use sdforge::tower::ServiceExt;
 
-    // ---- resolve_request_id ----
+    // resolve_request_id
 
     #[test]
     fn test_resolve_request_id_passes_through_valid_uuid_unchanged() {
@@ -116,7 +116,7 @@ mod tests {
         assert_ne!(a, b, "两次生成的 request_id 必须不同");
     }
 
-    // ---- 中间件端到端（mini axum app）----
+    // 中间件端到端（mini axum app）
 
     async fn echo_app_request_id(
         axum::Extension(request_id): axum::Extension<RequestId>,

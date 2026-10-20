@@ -260,7 +260,7 @@ impl HotReloadConfig {
                 &mut reported_dropped,
                 &self.config_path,
             );
-            // recv() 返回 None = 事件通道关闭（stop() 或系统级错误）：重建监视器。
+            // recv 返回 None = 事件通道关闭（stop 或系统级错误）：重建监视器。
             warn!("config file watcher closed; re-establishing");
         }
     }
@@ -610,7 +610,7 @@ max_batch_size = 100
         assert_eq!(retrieved.app.name, "new-name");
     }
 
-    // ========== with_audit_logger / add_reload_callback ==========
+    // with_audit_logger / add_reload_callback
 
     /// with_audit_logger 不得改变底层配置（audit_logger 默认为 None）。
     #[tokio::test]
@@ -666,7 +666,7 @@ max_batch_size = 100
         );
     }
 
-    // ========== reload_from_file error paths ==========
+    // reload_from_file error paths
 
     /// 路径不存在时返回 `Ok(false)` 而非 `Err`（读取错误内部吞掉并记录）。
     #[tokio::test]
@@ -708,7 +708,7 @@ max_batch_size = 100
         );
     }
 
-    // ========== detect_config_changes (via update_config + audit logger) ==========
+    // detect_config_changes (via update_config + audit logger)
     // detect_config_changes 为私有：经 update_config / reload_from_file 间接覆盖。
 
     /// 多字段变更时 update_config 不得 panic 且字段须更新。
@@ -737,7 +737,7 @@ max_batch_size = 100
         );
     }
 
-    // ========== set_algorithm / get_algorithm ==========
+    // set_algorithm / get_algorithm
 
     /// `set_algorithm` then `get_algorithm` must return the same value.
     #[tokio::test]
@@ -794,8 +794,8 @@ max_batch_size = 100
         assert!(hot_config.get_algorithm("never-set").is_none());
     }
 
-    // ========== watch (background loop) ==========
-    // watch() 为无限循环：spawn 后立即 abort，仅验证可启动且不 panic。
+    // watch (background loop)
+    // watch 为无限循环：spawn 后立即 abort，仅验证可启动且不 panic。
 
     /// watch 可作为后台任务 spawn，启动阶段不 panic。
     #[tokio::test]
@@ -811,7 +811,7 @@ max_batch_size = 100
         // If we reach here without panic, the test passes.
     }
 
-    // ========== HotReloadConfig::new edge cases ==========
+    // HotReloadConfig::new edge cases
 
     /// 空路径仍产出可用配置（路径仅影响 reload_from_file / watch）。
     #[tokio::test]
@@ -857,9 +857,9 @@ max_batch_size = 100
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
-    // ===== 补充覆盖（Phase 2 P0）=====
+    // 补充覆盖（Phase 2 P0）
 
-    // ----- Helper: write a complete valid TOML config with overrides -----
+    // Helper: write a complete valid TOML config with overrides
 
     /// 写完整合法 TOML（字段可覆盖），避免各测试重复约 80 行样板。
     fn write_test_config_file(
@@ -952,7 +952,7 @@ max_batch_size = 100
         std::fs::write(path, content).unwrap();
     }
 
-    // ----- with_audit_logger builder -----
+    // with_audit_logger builder
 
     /// with_audit_logger 后 config/callbacks/algorithm map 须保持可用。
     #[tokio::test]
@@ -979,7 +979,7 @@ max_batch_size = 100
         );
     }
 
-    // ----- update_config + audit_logger -----
+    // update_config + audit_logger
 
     /// update_config 附审计日志且字段变化：须走 detect_config_changes 并构造
     /// 审计事件；此处 future 不 await（let_underscore_future），total_logged 不增。
@@ -1018,7 +1018,7 @@ max_batch_size = 100
         // 审计 future 被丢弃，仅验证不 panic。
     }
 
-    // ----- reload_from_file + audit_logger -----
+    // reload_from_file + audit_logger
 
     /// reload_from_file 附审计日志且文件真实变更：await 审计 future 并令
     /// total_logged +1（与 update_config 的 fire-and-forget 不同）。
@@ -1051,7 +1051,7 @@ max_batch_size = 100
         );
     }
 
-    // ----- watch: 文件变更检测 -----
+    // watch: 文件变更检测
 
     /// watch 检测文件修改并触发 reload_config：短间隔 spawn，改文件后验证
     /// 内存配置更新，随后 abort。
@@ -1084,7 +1084,6 @@ max_batch_size = 100
         tokio::time::sleep(Duration::from_millis(50)).await;
         write_test_config_file(&config_path, "after-watch", 8080, 10000, 100, "info");
 
-        // 等待事件触发 reload。
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         handle.abort();
@@ -1124,7 +1123,7 @@ max_batch_size = 100
         );
     }
 
-    // ----- reload_callbacks 锁中毒路径：实践中不可达（已知覆盖缺口）-----
+    // reload_callbacks 锁中毒路径：实践中不可达（已知覆盖缺口）
     // RwLock 仅写锁守护期间 panic 才中毒；reload_callbacks/biz_algorithm_map 的
     // 写锁体（push/insert）不会 panic，读锁不中毒，故这些错误分支无法在测试触发。
 

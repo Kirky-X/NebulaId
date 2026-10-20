@@ -415,7 +415,7 @@ mod tests {
         );
     }
 
-    // ===== IdFormat Display 全部分支 =====
+    // IdFormat Display 全部分支
 
     #[test]
     fn test_id_format_display_numeric() {
@@ -437,7 +437,7 @@ mod tests {
         assert_eq!(IdFormat::default(), IdFormat::Numeric);
     }
 
-    // ===== IdFormat FromStr 错误路径 =====
+    // IdFormat FromStr 错误路径
 
     #[test]
     fn test_id_format_from_str_invalid_returns_error() {
@@ -456,7 +456,7 @@ mod tests {
         assert_eq!(IdFormat::from_str("UUID").unwrap(), IdFormat::Uuid);
     }
 
-    // ===== Id::from_i64 / as_i64 =====
+    // Id::from_i64 / as_i64
 
     #[test]
     fn test_id_from_i64_positive() {
@@ -479,7 +479,7 @@ mod tests {
         assert_eq!(id.as_u128(), u128::MAX);
     }
 
-    // ===== Id::from_string（UUID 路径 + 错误路径） =====
+    // Id::from_string（UUID 路径 + 错误路径）
 
     #[test]
     fn test_id_from_string_valid_uuid() {
@@ -533,7 +533,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ===== Id::from_uuid_v8 / to_uuid_v8 roundtrip =====
+    // Id::from_uuid_v8 / to_uuid_v8 roundtrip
 
     #[test]
     fn test_id_from_uuid_v8_roundtrip() {
@@ -548,7 +548,7 @@ mod tests {
         assert_eq!(back.get_version(), Some(uuid::Version::Custom));
     }
 
-    // ===== Id::to_hex =====
+    // Id::to_hex
 
     #[test]
     fn test_id_to_hex_zero() {
@@ -575,7 +575,7 @@ mod tests {
         assert_eq!(hex.len(), 32);
     }
 
-    // ===== Id::to_base36 zero 路径 =====
+    // Id::to_base36 zero 路径
 
     #[test]
     fn test_id_to_base36_zero() {
@@ -618,7 +618,7 @@ mod tests {
         }
     }
 
-    // ===== Id::Display（UUID 格式 vs 数值格式） =====
+    // Id::Display（UUID 格式 vs 数值格式）
 
     #[test]
     fn test_id_display_numeric_for_small_value() {
@@ -643,7 +643,7 @@ mod tests {
         assert_eq!(id.to_string().len(), 36);
     }
 
-    // ===== IdBatch::from_u64s / is_empty / len =====
+    // IdBatch::from_u64s / is_empty / len
 
     #[test]
     fn test_id_batch_from_u64s() {
@@ -682,7 +682,7 @@ mod tests {
         );
     }
 
-    // ===== AlgorithmType Display 全部分支 =====
+    // AlgorithmType Display 全部分支
 
     #[test]
     fn test_algorithm_type_display_segment() {
@@ -704,7 +704,7 @@ mod tests {
         assert_eq!(AlgorithmType::default(), AlgorithmType::Segment);
     }
 
-    // ===== AlgorithmType FromStr 全部分支（别名 + 错误） =====
+    // AlgorithmType FromStr 全部分支（别名 + 错误）
 
     /// `uuid_v4`/`uuid_v7` 解析为真算法（破坏性反转，见 CHANGELOG）。
     #[test]
@@ -790,7 +790,7 @@ mod tests {
         }
     }
 
-    // ===== IdMetadata =====
+    // IdMetadata
 
     #[test]
     fn test_id_metadata_for_segment() {
@@ -825,7 +825,7 @@ mod tests {
         assert_eq!(metadata.biz_tag, "");
     }
 
-    // ===== Id::to_prefixed 边界 =====
+    // Id::to_prefixed 边界
 
     #[test]
     fn test_id_to_prefixed_empty_prefix() {
@@ -845,7 +845,7 @@ mod tests {
         assert_eq!(id.to_prefixed("max_"), format!("max_{}", u128::MAX));
     }
 
-    // ===== Id as_u128 / from_u128 边界 =====
+    // Id as_u128 / from_u128 边界
 
     #[test]
     fn test_id_as_u128_max() {
@@ -859,7 +859,7 @@ mod tests {
         assert_eq!(id.as_u128(), 0);
     }
 
-    // ===== IdBatch len() / is_empty() 互斥 =====
+    // IdBatch len / is_empty 互斥
 
     #[test]
     fn test_id_batch_len_zero_iff_empty() {

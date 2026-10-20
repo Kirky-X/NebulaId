@@ -50,8 +50,8 @@ impl super::ApiHandlers {
         if role == ApiKeyRole::Admin {
             // 拒绝创建第二个 admin key（与 SQL CHECK「admin key 的 workspace_id 必须
             // 为 NULL」共同构成单一全局 admin 不变量）；旧实现仅告警，可留后门。
-            // 根因：旧守卫 `list_api_keys(Uuid::nil(), ..)` 因 NULL != nil_uuid 恒空，
-            // 改用 `count_admin_keys()`（SQL 侧按 role + enabled 计数，无分页上界）。
+            // 根因：旧守卫 `list_api_keys(Uuid::nil, ..)` 因 NULL != nil_uuid 恒空，
+            // 改用 `count_admin_keys`（SQL 侧按 role + enabled 计数，无分页上界）。
             let admin_count = repo.count_admin_keys().await.map_err(map_db_error)?;
 
             if admin_count > 0 {
@@ -188,7 +188,7 @@ impl super::ApiHandlers {
 
         // 旧实现两处缺陷（同一根因）：按行 UUID 调 `get_api_key_by_id`（其按
         // key_id 字符串过滤）恒 None 跳过整块守卫；admin 计数用
-        // `list_api_keys(Uuid::nil(), ..)` 因 NULL != nil_uuid 恒空。
+        // `list_api_keys(Uuid::nil, ..)` 因 NULL != nil_uuid 恒空。
         // 现改用 `find_api_key_by_row_id` + `count_admin_keys`。
         let key_info = repo
             .find_api_key_by_row_id(id)
@@ -258,7 +258,7 @@ impl super::ApiHandlers {
     }
 }
 
-// ========== OpenAPI path 注解 ==========
+// OpenAPI path 注解
 // axum handler 在 router.rs；载体函数仅承载 #[utoipa::path] 供 openapi.rs 注册，
 // 不参与运行时路由；错误响应统一引用 ErrorResponse（信封），三端点均 Admin-only。
 
@@ -395,7 +395,7 @@ mod tests {
     }
 
     /// 已存在 admin key 时第二个必须被拒（即便同库有 1000 条 user key）。
-    /// 旧实现 `list_api_keys(Uuid::nil(), ..)` 因 NULL != nil_uuid 恒空，守卫从未生效。
+    /// 旧实现 `list_api_keys(Uuid::nil, ..)` 因 NULL != nil_uuid 恒空，守卫从未生效。
     /// 桩故意返回 1000 条 **user** 行：若实现退回内存扫描，回归会立刻暴露。
     #[tokio::test]
     async fn test_create_second_admin_key_is_rejected_even_with_thousand_user_keys() {

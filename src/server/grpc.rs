@@ -656,7 +656,7 @@ mod tests {
         GrpcServer::new(handlers)
     }
 
-    // ===== GrpcServer::new =====
+    // GrpcServer::new
 
     #[test]
     fn test_grpc_server_new() {
@@ -664,7 +664,7 @@ mod tests {
         let _ = server;
     }
 
-    // ===== generate =====
+    // generate
 
     #[tokio::test]
     async fn test_generate_success() {
@@ -712,7 +712,7 @@ mod tests {
         assert!(!resp.id.is_empty());
     }
 
-    // ===== batch_generate =====
+    // batch_generate
 
     #[tokio::test]
     async fn test_batch_generate_success() {
@@ -833,7 +833,7 @@ mod tests {
         }
     }
 
-    // ===== parse =====
+    // parse
 
     #[tokio::test]
     async fn test_parse_valid_numeric_id() {
@@ -867,11 +867,11 @@ mod tests {
         assert_eq!(err.code(), sdforge::tonic::Code::InvalidArgument);
     }
 
-    // ===== health_check =====
+    // health_check
 
     #[tokio::test]
     async fn test_health_check_returns_serving() {
-        // MockIdGenerator.health_check() 返回 Healthy ⇒ 上报 Serving。
+        // MockIdGenerator.health_check 返回 Healthy ⇒ 上报 Serving。
         let server = create_test_grpc_server();
         let req = Request::new(HealthCheckRequest {
             service: String::new(),
@@ -883,7 +883,7 @@ mod tests {
         );
     }
 
-    // ===== peer_ip（认证失败按直连 IP 归因的前置能力）=====
+    // peer_ip（认证失败按直连 IP 归因的前置能力）
 
     #[test]
     fn test_peer_ip_reads_connect_info_injected_by_tonic_transport() {
@@ -912,7 +912,7 @@ mod tests {
         assert_eq!(peer_ip(&req), "unknown");
     }
 
-    // ===== 认证路径：authenticate / reject / classify_miss =====
+    // 认证路径：authenticate / reject / classify_miss
 
     use crate::core::database::{
         ApiKey, ApiKeyInfo, ApiKeyRepository, ApiKeyRole as DbRole, AuthenticatedKey,
@@ -1166,7 +1166,7 @@ mod tests {
         assert_eq!(err.code(), sdforge::tonic::Code::Unauthenticated);
     }
 
-    // ===== 资源级授权：authorize_namespace（经 generate 入口） =====
+    // 资源级授权：authorize_namespace（经 generate 入口）
 
     /// Admin key 调 generate 类接口 → permission_denied（仅面向 User）。
     #[tokio::test]

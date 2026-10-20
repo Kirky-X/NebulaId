@@ -25,7 +25,6 @@ use crate::server::middleware::utils::get_client_ip;
 use crate::server::rate_limit::limiter::RateLimiter;
 
 // 安全头注入端到端组
-// ============================================================================
 
 /// 构造带 6 个安全头 `SetResponseHeaderLayer` 的最小 Router（复刻 router.rs 的安全头注入配置）。
 fn build_security_headers_router() -> Router {
@@ -170,9 +169,7 @@ async fn e2e_security_header_hsts_max_age() {
     );
 }
 
-// ============================================================================
 // E2E-IP 组：IP 提取端到端
-// ============================================================================
 
 /// 构造带指定 peer / XFF / X-Real-IP 的 Request（复刻 middleware/utils.rs 测试的 make_request）。
 fn make_request(peer: Option<SocketAddr>, xff: Option<&str>, xri: Option<&str>) -> Request<Body> {
@@ -254,9 +251,7 @@ async fn e2e_get_client_ip_returns_none_when_no_headers() {
     );
 }
 
-// ============================================================================
 // 限流桶清理端到端组
-// ============================================================================
 
 /// start_cleanup 后台任务应移除超过 max_idle 的空闲桶。
 #[tokio::test]
@@ -317,7 +312,6 @@ async fn e2e_rate_limiter_cleanup_keeps_active_buckets() {
 }
 
 // E2E-DB 组：数据库连接端到端
-// ============================================================================
 
 /// run_migrations 在全部 execute 成功时返回 Ok（建 schema/表并补宽限期列）。
 #[tokio::test]
@@ -372,9 +366,7 @@ async fn e2e_database_password_with_env_var_rejected() {
     }
 }
 
-// ============================================================================
 // E2E-TLS 组：TLS 初始化端到端
-// ============================================================================
 
 /// 生成 rcgen 自签证书与密钥 PEM 临时文件（复刻 tls.rs 测试的 generate_test_cert_files）。
 fn generate_test_cert_files() -> (NamedTempFile, NamedTempFile) {
@@ -486,9 +478,7 @@ async fn e2e_tls_initialize_with_valid_cert_succeeds() {
     assert!(!manager.is_grpc_enabled(), "grpc 未启用");
 }
 
-// ============================================================================
 // DualListener 真实 TLS 握手（HTTP 端口）：实现 axum::serve::Listener 使 HTTPS 生效。
-// ============================================================================
 
 /// 构造信任 rcgen 自签证书的 tokio-rustls 客户端连接器（TLS e2e 共用）。
 fn build_test_rustls_connector(cert_file: &NamedTempFile) -> tokio_rustls::TlsConnector {

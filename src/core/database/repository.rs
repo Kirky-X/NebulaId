@@ -155,7 +155,7 @@ mod mock_tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    // ============== 语句超时 ==============
+    // 语句超时
 
     /// 慢 future 超时 → 必须映射为可匹配的 `CoreError::TimeoutError`。
     #[tokio::test]
@@ -193,7 +193,7 @@ mod mock_tests {
         assert_eq!(repo.statement_timeout, Duration::from_secs(2));
     }
 
-    // --- SeaOrmRepository 构造 helper ---
+    // SeaOrmRepository 构造 helper
 
     #[test]
     fn test_new_does_not_panic_with_mock_db() {
@@ -218,9 +218,9 @@ mod mock_tests {
         assert!(repo.distributed_lock().is_some());
     }
 
-    // ===== 补充 error-path 覆盖：强制注入 DbErr，断言以 DatabaseError 传播 =====
+    // 补充 error-path 覆盖：强制注入 DbErr，断言以 DatabaseError 传播
 
-    // ----- DistributedLock::is_healthy 覆盖 -----
+    // DistributedLock::is_healthy 覆盖
 
     #[test]
     fn test_dummy_distributed_lock_is_healthy_returns_true() {

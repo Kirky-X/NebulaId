@@ -199,7 +199,7 @@ impl super::ApiHandlers {
     }
 }
 
-// ========== OpenAPI path 注解 ==========
+// OpenAPI path 注解
 // axum handler 在 router.rs；载体函数仅承载 #[utoipa::path] 供 openapi.rs 注册，
 // 不参与运行时路由；错误响应统一引用 ErrorResponse（信封）。
 
@@ -372,7 +372,7 @@ mod tests {
         (Arc::new(handlers), mock_gen)
     }
 
-    /// 自定义 IdGenerator 的 ApiHandlers，用于 health() 非 Healthy 状态。
+    /// 自定义 IdGenerator 的 ApiHandlers，用于 health 非 Healthy 状态。
     fn create_handlers_with_generator(
         gen: Arc<dyn CoreIdGenerator>,
     ) -> Arc<super::super::ApiHandlers> {
@@ -559,7 +559,7 @@ mod tests {
         }
     }
 
-    // ===== health() =====
+    // health
 
     #[tokio::test]
     async fn test_handle_metrics() {
@@ -627,7 +627,7 @@ mod tests {
         assert_eq!(response.status, HealthStatus::Degraded);
     }
 
-    // ===== ready() =====
+    // ready
 
     #[tokio::test]
     async fn test_ready_returns_false_when_db_not_configured() {
@@ -718,7 +718,7 @@ mod tests {
         assert!(!response.cache);
     }
 
-    // ===== metrics() =====
+    // metrics
 
     #[tokio::test]
     async fn test_metrics_returns_zero_counters_initially() {
@@ -735,7 +735,7 @@ mod tests {
     async fn test_metrics_uptime_non_negative() {
         let (handlers, _) = create_test_api_handlers();
         let response = handlers.metrics().await;
-        // uptime = Instant::now() - start_time，快机器上通常为 0
+        // uptime = Instant::now - start_time，快机器上通常为 0
         assert!(response.uptime_seconds < u64::MAX);
     }
 
@@ -843,7 +843,7 @@ mod tests {
         assert_eq!(alg.clock_backwards, 2);
     }
 
-    // ===== start_key_rotation_task() =====
+    // start_key_rotation_task
 
     #[tokio::test]
     async fn test_start_key_rotation_task_returns_none_without_repo() {

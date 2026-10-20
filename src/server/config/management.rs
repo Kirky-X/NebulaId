@@ -393,7 +393,7 @@ impl ConfigManagementService for ConfigManager {
         }
     }
 
-    // ========== BizTag CRUD Methods ==========
+    // BizTag CRUD Methods
 
     async fn create_biz_tag(
         &self,
@@ -476,7 +476,7 @@ impl ConfigManagementService for ConfigManager {
         }
     }
 
-    // ========== Workspace CRUD Methods ==========
+    // Workspace CRUD Methods
 
     async fn create_workspace(
         &self,
@@ -558,7 +558,7 @@ impl ConfigManagementService for ConfigManager {
         }
     }
 
-    // ========== Group CRUD Methods ==========
+    // Group CRUD Methods
 
     async fn create_group(&self, req: CreateGroupRequest) -> crate::core::Result<GroupResponse> {
         if let Some(ref workspace_repo) = self.workspace_repository {
@@ -903,7 +903,7 @@ mod tests {
         }
     }
 
-    // ========== get_config / get_secure_config / get_batch_max_size ==========
+    // get_config / get_secure_config / get_batch_max_size
 
     /// `get_config` returns a response with all sections populated.
     #[tokio::test]
@@ -953,7 +953,7 @@ mod tests {
         assert_eq!(max_size, 100);
     }
 
-    // ========== update_rate_limit / update_logging success paths ==========
+    // update_rate_limit / update_logging success paths
 
     /// `update_rate_limit` with valid request must succeed and update config.
     #[tokio::test]
@@ -1037,7 +1037,7 @@ mod tests {
     }
 
     /// `update_rate_limit` with `None` for both fields is valid (no-op update)
-    /// — `validate()` accepts empty updates, just doesn't change anything.
+    /// — `validate` accepts empty updates, just doesn't change anything.
     #[tokio::test]
     async fn test_update_rate_limit_no_changes() {
         let hot_config = Arc::new(HotReloadConfig::new(
@@ -1094,7 +1094,7 @@ mod tests {
         assert!(response.success);
     }
 
-    // ========== reload_config ==========
+    // reload_config
 
     /// `reload_config` on a non-existent path returns success=false
     /// (reload_from_file returns Ok(false), which is treated as success).
@@ -1113,7 +1113,7 @@ mod tests {
         assert!(response.config.is_some());
     }
 
-    // ========== get_rate_limit_override ==========
+    // get_rate_limit_override
 
     /// `get_rate_limit_override` returns None before any update_rate_limit call.
     #[tokio::test]
@@ -1129,7 +1129,7 @@ mod tests {
         assert!(override_val.is_none());
     }
 
-    // ========== set_algorithm: all valid algorithms ==========
+    // set_algorithm: all valid algorithms
 
     #[tokio::test]
     async fn test_set_algorithm_segment() {
@@ -1187,7 +1187,7 @@ mod tests {
         assert_eq!(response.algorithm, "SNOWFLAKE");
     }
 
-    // ========== BizTag CRUD: no repository configured ==========
+    // BizTag CRUD: no repository configured
 
     async fn service_no_repo() -> ConfigManager {
         let hot_config = Arc::new(HotReloadConfig::new(
@@ -1288,7 +1288,7 @@ mod tests {
         ));
     }
 
-    // ========== Workspace CRUD: no repository configured ==========
+    // Workspace CRUD: no repository configured
 
     #[tokio::test]
     async fn test_create_workspace_no_repo_returns_internal_error() {
@@ -1329,7 +1329,7 @@ mod tests {
         ));
     }
 
-    // ========== Group CRUD: no repository configured ==========
+    // Group CRUD: no repository configured
 
     #[tokio::test]
     async fn test_create_group_no_repo_returns_internal_error() {
@@ -1359,7 +1359,7 @@ mod tests {
         ));
     }
 
-    // ========== get_database_metrics / get_cache_metrics / get_algorithm_metrics ==========
+    // get_database_metrics / get_cache_metrics / get_algorithm_metrics
 
     /// `get_database_metrics` with no repository returns Unhealthy status.
     #[tokio::test]
@@ -1395,7 +1395,7 @@ mod tests {
         let _ = metrics.len();
     }
 
-    // ========== secure_config_to_response (indirect via get_secure_config) ==========
+    // secure_config_to_response (indirect via get_secure_config)
 
     /// `get_secure_config` must not include TLS info (SecureConfigResponse
     /// has no `tls` field).
@@ -1414,7 +1414,7 @@ mod tests {
         assert!(!response.logging.level.is_empty());
     }
 
-    // ========== with_repository constructor (indirect) ==========
+    // with_repository constructor (indirect)
     // 需要真实仓储实例，此处仅以类型引用验证签名存在。
 
     /// 仅以类型检查验证 with_repository 签名存在。

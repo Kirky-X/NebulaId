@@ -381,7 +381,7 @@ impl GlobalMetrics {
     }
 
     pub fn get_or_create_metrics(&self, algorithm: AlgorithmType) -> Arc<AlgorithmMetrics> {
-        // 快路径先读锁：算法集合 initialize() 后即固定；写锁会串行化每请求的观测路径。
+        // 快路径先读锁：算法集合 initialize 后即固定；写锁会串行化每请求的观测路径。
         if let Some(metrics) = self.algorithms.read().get(&algorithm) {
             return metrics.clone();
         }
@@ -427,7 +427,7 @@ mod tests {
     use crate::core::types::AlgorithmType;
     use std::sync::atomic::Ordering;
 
-    // ---- AlgorithmMetrics ----
+    // AlgorithmMetrics
 
     #[test]
     fn test_algorithm_metrics_default_has_segment_and_zeroes() {
@@ -451,7 +451,7 @@ mod tests {
         ] {
             let m = AlgorithmMetrics::new(alg);
             assert_eq!(m.algorithm, alg);
-            // new() should delegate to Default::default() for the counters
+            // new should delegate to Default::default for the counters
             assert_eq!(m.get_generated(), 0);
             assert_eq!(m.get_qps(), 0);
         }
@@ -578,7 +578,7 @@ mod tests {
         assert_eq!(m.get_p999_latency_ms(), 7.5);
     }
 
-    // ---- 环形缓冲真实分位数 ----
+    // 环形缓冲真实分位数
 
     #[test]
     fn test_percentiles_reflect_distribution_with_long_tail() {
@@ -692,7 +692,7 @@ mod tests {
         assert_eq!((snap.p50_latency_ms, snap.p99_latency_ms), (0.0, 0.0));
     }
 
-    // ---- QpsWindow ----
+    // QpsWindow
 
     #[test]
     fn test_qps_window_new_initializes_zero_counts_and_returns_window_size() {
@@ -725,7 +725,7 @@ mod tests {
 
     #[test]
     fn test_qps_window_record_swaps_counters_when_second_advances() {
-        // 把存储秒改成过去，使 record() 进入秒切换分支并交换两个计数器。
+        // 把存储秒改成过去，使 record 进入秒切换分支并交换两个计数器。
         let w = QpsWindow::new(10);
         w.record();
         w.record();
@@ -786,7 +786,7 @@ mod tests {
         assert_eq!(w_clone.get_qps(), 0);
     }
 
-    // ---- MetricsSnapshot ----
+    // MetricsSnapshot
 
     #[test]
     fn test_metrics_snapshot_from_algorithm_metrics_copies_all_fields() {
@@ -877,7 +877,7 @@ mod tests {
         assert_eq!(restored.clock_backwards, 1);
     }
 
-    // ---- GlobalMetrics ----
+    // GlobalMetrics
 
     #[test]
     fn test_global_metrics_default_starts_zeroed() {

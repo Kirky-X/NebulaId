@@ -17,7 +17,7 @@ const LANG_ZH: u8 = 1;
 
 /// Initialize the i18n system with the given locale.
 ///
-/// 启动期调用一次，须先于依赖非默认 locale 的 `t!()` 查询；接受 "en"/"zh-CN"
+/// 启动期调用一次，须先于依赖非默认 locale 的 `t!` 查询；接受 "en"/"zh-CN"
 /// （大小写不敏感，"zh*" 归一 zh），未知取值回退 "en"。
 ///
 /// # Example
@@ -87,7 +87,7 @@ pub fn translate_with_locale(locale: &str, key: &str) -> String {
 
 /// Zero-copy-flavored translation lookup returning `Cow<'static, str>`.
 ///
-/// 输出恒为 `Cow::Owned`（每次渲染新分配）；调用方可用 `as_ref()` 或 `into_owned()`。
+/// 输出恒为 `Cow::Owned`（每次渲染新分配）；调用方可用 `as_ref` 或 `into_owned`。
 pub fn translate_with_locale_cow(locale: &str, key: &str) -> Cow<'static, str> {
     let pairs: Vec<(&str, String)> = Vec::new();
     Cow::Owned(lookup(lang_of(locale), key, &pairs))
@@ -134,9 +134,7 @@ pub fn translate_if_present(locale: &str, ftl_id: &str) -> Option<String> {
     Some(forge_translate(lang, ftl_id, empty))
 }
 
-// ============================================================================
 // 键集注册（注册进 sdforge register_translation）
-// ============================================================================
 
 /// 已注册 FTL 消息标识集合：sdforge `translate_for` 未命中会回退键本身，
 /// 用本集合区分「命中/未命中」；双语键集一致，等价于「任一束存在」。

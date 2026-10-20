@@ -31,9 +31,7 @@ use crate::server::proto::nebula::id::v1::{
     HealthCheckRequest, ParseRequest as GrpcParseRequest,
 };
 
-// =============================================================================
 // 测试辅助：构造 GrpcServer
-// =============================================================================
 
 /// 构造连接 MockIdGenerator + ConfigManager 的 GrpcServer（复用 grpc.rs 测试构造模式）。
 fn create_test_grpc_server() -> GrpcServer {
@@ -147,9 +145,7 @@ max_batch_size = 100
     std::fs::write(path, content).unwrap();
 }
 
-// =============================================================================
 // E2E-GRPC 组：gRPC 服务端到端测试
-// =============================================================================
 
 #[tokio::test]
 async fn e2e_grpc_generate_returns_valid_id() {
@@ -259,9 +255,7 @@ async fn e2e_grpc_health_check_returns_serving() {
     );
 }
 
-// =============================================================================
 // E2E-QPS 组：QPS 滑动窗口端到端测试
-// =============================================================================
 
 #[test]
 fn e2e_qps_window_initial_zero() {
@@ -310,9 +304,7 @@ async fn e2e_qps_window_weighted_average() {
     // 加权平均 (current*7 + last*3)/10 = 0.7 + 3.0 = 3.7 → 整数除法 = 3
 }
 
-// =============================================================================
 // E2E-ALERT 组：告警端到端测试
-// =============================================================================
 
 #[test]
 fn e2e_alert_evaluator_matching_expression_fires() {
@@ -411,9 +403,7 @@ async fn e2e_alert_manager_records_state_transitions() {
     manager.shutdown();
 }
 
-// =============================================================================
 // E2E-RELOAD 组：热重载端到端测试
-// =============================================================================
 
 #[tokio::test]
 async fn e2e_hot_reload_config_detects_file_change() {
@@ -430,7 +420,6 @@ async fn e2e_hot_reload_config_detects_file_change() {
         config_path.to_str().unwrap().to_string(),
     );
 
-    // 验证初始配置
     assert_eq!(hot_config.get_config().app.name, "initial");
 
     // 注册回调，验证回调被触发
@@ -449,14 +438,12 @@ async fn e2e_hot_reload_config_detects_file_change() {
     assert!(result.is_ok(), "reload_from_file 应返回 Ok");
     assert!(result.unwrap(), "reload_from_file 应返回 true（成功）");
 
-    // 验证配置已更新
     let config = hot_config.get_config();
     assert_eq!(config.app.name, "updated");
     assert_eq!(config.app.http_port, 9090);
     assert_eq!(config.rate_limit.default_rps, 5000);
     assert_eq!(config.rate_limit.burst_size, 50);
 
-    // 验证回调被触发
     assert!(*callback_triggered.lock().unwrap(), "重载回调应被触发");
 }
 
@@ -467,7 +454,6 @@ async fn e2e_hot_reload_config_reload_failure_handled() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let config_path = temp_dir.path().join("bad_config_e2e.toml");
 
-    // 写入初始有效配置
     write_test_config_file(&config_path, "before-failure", 8080, 10000, 100, "info");
 
     let hot_config = HotReloadConfig::new(
@@ -499,9 +485,7 @@ async fn e2e_hot_reload_config_reload_failure_handled() {
     );
 }
 
-// =============================================================================
 // gRPC 认证 —— 全 RPC（含双向流）凭证校验
-// =============================================================================
 
 mod grpc_auth {
     use super::*;
@@ -714,7 +698,7 @@ mod grpc_auth {
         assert_eq!(err.code(), Code::Unauthenticated);
     }
 
-    // ===== 失败判因（禁用/过期 vs 凭证无效）=====
+    // 失败判因（禁用/过期 vs 凭证无效）
 
     /// 按 key 状态建模的仓储：`validate_api_key` 复刻真实仓储语义（禁用/过期一律返回 None）。
     ///
@@ -1117,7 +1101,7 @@ mod grpc_auth {
         jh.abort();
     }
 
-    // ===== 补充覆盖：ApiKey 格式 / 禁用放行 / 5 RPC 全覆盖 =====
+    // 补充覆盖：ApiKey 格式 / 禁用放行 / 5 RPC 全覆盖
 
     #[tokio::test]
     async fn api_key_format_credentials_are_accepted() {
@@ -1413,9 +1397,7 @@ mod grpc_auth {
     }
 }
 
-// =============================================================================
 // gRPC 资源级授权 —— generate 系接口跨租户隔离（HTTP 语义对齐）
-// =============================================================================
 
 mod grpc_authz {
     use super::*;

@@ -227,9 +227,7 @@ impl LockGuard for LocalLockGuard {
     }
 }
 
-// ============================================================================
 // Tests
-// ============================================================================
 // 两种 feature 下都编译的类型，其单测确保 `--features etcd` 下也跑；
 // stub 类型测试沿用 not(etcd) gate。
 
@@ -237,7 +235,7 @@ impl LockGuard for LocalLockGuard {
 mod tests {
     use super::{DistributedLock, LocalCacheEntry, LocalDistributedLock, LockError};
 
-    /// `LocalDistributedLock::new()` 返回一个健康的锁实例。
+    /// `LocalDistributedLock::new` 返回一个健康的锁实例。
     #[tokio::test]
     async fn test_local_distributed_lock_acquire_release() {
         let lock = LocalDistributedLock::new();
@@ -255,7 +253,7 @@ mod tests {
 
         let result = lock.acquire("shared-key", 30).await;
         assert!(result.is_err(), "second acquire must fail");
-        // `Box<dyn LockGuard>` 无 Debug，不能用 unwrap_err()；用 if let 解构错误变体。
+        // `Box<dyn LockGuard>` 无 Debug，不能用 unwrap_err；用 if let 解构错误变体。
         if let Err(LockError::AcquireFailed { key, reason }) = result {
             assert_eq!(key, "shared-key");
             assert!(reason.contains("Lock already held"));
@@ -286,7 +284,7 @@ mod tests {
         guard_b.release().await.unwrap();
     }
 
-    /// `Default::default()` 等价于 `new()`。
+    /// `Default::default` 等价于 `new`。
     #[test]
     fn test_local_distributed_lock_default() {
         let lock = LocalDistributedLock::default();
@@ -309,7 +307,7 @@ mod tests {
         );
     }
 
-    /// `is_healthy()` 恒为 `true`（本地降级实现总是"健康"）。
+    /// `is_healthy` 恒为 `true`（本地降级实现总是"健康"）。
     #[test]
     fn test_local_distributed_lock_is_healthy_always_true() {
         let lock = LocalDistributedLock::new();
@@ -375,7 +373,7 @@ mod no_etcd_tests {
     use crate::core::config::EtcdConfig;
     use std::time::Duration;
 
-    // ===== LocalWorkerAllocator =====
+    // LocalWorkerAllocator
 
     #[tokio::test]
     async fn test_local_worker_allocator() {
@@ -413,7 +411,7 @@ mod no_etcd_tests {
         assert_eq!(allocator.get_allocated_id(), Some(1));
     }
 
-    /// `allocate()` 多次调用返回相同 id（stateless allocator）。
+    /// `allocate` 多次调用返回相同 id（stateless allocator）。
     #[tokio::test]
     async fn test_local_worker_allocator_allocate_idempotent() {
         let allocator = LocalWorkerAllocator::new(2, 42);
@@ -439,14 +437,14 @@ mod no_etcd_tests {
         assert_eq!(id1, 7);
     }
 
-    /// `is_healthy()` 恒为 `true`（本地降级实现总是"健康"）。
+    /// `is_healthy` 恒为 `true`（本地降级实现总是"健康"）。
     #[test]
     fn test_local_worker_allocator_is_healthy_always_true() {
         let allocator = LocalWorkerAllocator::new(0, 1);
         assert!(allocator.is_healthy());
     }
 
-    // ===== EtcdClusterHealthMonitor (no-etcd stub) =====
+    // EtcdClusterHealthMonitor (no-etcd stub)
 
     /// no-etcd stub 恒返回 `Failed` 且 `is_using_cache = true`（降级模式）。
     #[tokio::test]
@@ -483,7 +481,7 @@ mod no_etcd_tests {
         monitor.record_failure();
     }
 
-    /// `load_local_cache` / `save_local_cache` 返回 `Ok(())`（stub）。
+    /// `load_local_cache` / `save_local_cache` 返回 `Ok()`（stub）。
     #[tokio::test]
     async fn test_etcd_cluster_health_monitor_stub_cache_io() {
         let config = EtcdConfig::default();

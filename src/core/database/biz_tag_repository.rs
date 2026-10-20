@@ -346,7 +346,7 @@ mod mock_tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    // ============== BizTagRepository tests ==============
+    // BizTagRepository tests
 
     #[tokio::test]
     async fn test_biz_tag_create_returns_not_found_when_workspace_missing() {
@@ -626,7 +626,7 @@ mod mock_tests {
         repo.health_check().await.unwrap();
     }
 
-    // ----- BizTag error paths -----
+    // BizTag error paths
 
     #[tokio::test]
     async fn test_biz_tag_create_propagates_workspace_find_error() {
@@ -808,7 +808,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_biz_tag_count_by_group_propagates_db_error() {
-        // sea-orm count() 查询返回单列 num_items。
+        // sea-orm count 查询返回单列 num_items。
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_errors(vec![DbErr::Query(RuntimeErr::Internal(
                 "count boom".to_string(),
@@ -845,7 +845,7 @@ mod mock_tests {
         );
     }
 
-    // ----- BizTag error paths (additional) -----
+    // BizTag error paths (additional)
 
     #[tokio::test]
     async fn test_biz_tag_get_propagates_db_error() {
@@ -908,7 +908,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn test_biz_tag_update_applies_datacenter_ids_when_provided() {
-        // 覆盖 format 的 `.map(|f| f.into())` 与 datacenter_ids 序列化闭包
+        // 覆盖 format 的 `.map(|f| f.into)` 与 datacenter_ids 序列化闭包
         // （仅 datacenter_ids = Some 时触发；其余 update 用例均为 None）。
         let id = fixed_uuid(134);
         let updated_model = sample_biz_tag_model(id, fixed_uuid(135), fixed_uuid(136), "t_updated");
@@ -943,7 +943,7 @@ mod mock_tests {
         assert_eq!(updated.id, id);
     }
 
-    // ----- create_biz_tag: datacenter_ids 序列化 map_err 分支 -----
+    // create_biz_tag: datacenter_ids 序列化 map_err 分支
     // Vec<i32> 的 serde_json::to_value 实际不可失败，该闭包为不可达的防御性
     // 错误处理；作为已知覆盖缺口记录，不加 dead_code/LCOV_EXCL 标记。
 }

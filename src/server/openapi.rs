@@ -73,35 +73,35 @@ use crate::server::models::{
     ),
     paths(
         crate::server::openapi::openapi_json_handler,
-        // ===== system（公开探针 + api-info，注解载体见 handlers/system_handlers.rs）=====
+        // system（公开探针 + api-info，注解载体见 handlers/system_handlers.rs）
         crate::server::handlers::system_handlers::health_docs,
         crate::server::handlers::system_handlers::ready_docs,
         crate::server::handlers::system_handlers::metrics_docs,
         crate::server::handlers::system_handlers::api_info_docs,
-        // ===== ids（注解载体见 handlers/id_handlers.rs）=====
+        // ids（注解载体见 handlers/id_handlers.rs）
         crate::server::handlers::id_handlers::generate_docs,
         crate::server::handlers::id_handlers::batch_generate_docs,
         crate::server::handlers::id_handlers::parse_docs,
-        // ===== config（注解载体见 handlers/system_handlers.rs）=====
+        // config（注解载体见 handlers/system_handlers.rs）
         crate::server::handlers::system_handlers::get_config_docs,
         crate::server::handlers::system_handlers::update_rate_limit_docs,
         crate::server::handlers::system_handlers::update_logging_docs,
         crate::server::handlers::system_handlers::reload_config_docs,
         crate::server::handlers::system_handlers::set_algorithm_docs,
-        // ===== workspaces / groups（注解载体见 handlers/workspace_handlers.rs）=====
+        // workspaces / groups（注解载体见 handlers/workspace_handlers.rs）
         crate::server::handlers::workspace_handlers::create_workspace_docs,
         crate::server::handlers::workspace_handlers::list_workspaces_docs,
         crate::server::handlers::workspace_handlers::get_workspace_docs,
         crate::server::handlers::workspace_handlers::regenerate_user_key_docs,
         crate::server::handlers::workspace_handlers::create_group_docs,
         crate::server::handlers::workspace_handlers::list_groups_docs,
-        // ===== biz-tags（注解载体见 handlers/biz_tag_handlers.rs）=====
+        // biz-tags（注解载体见 handlers/biz_tag_handlers.rs）
         crate::server::handlers::biz_tag_handlers::create_biz_tag_docs,
         crate::server::handlers::biz_tag_handlers::list_biz_tags_docs,
         crate::server::handlers::biz_tag_handlers::get_biz_tag_docs,
         crate::server::handlers::biz_tag_handlers::update_biz_tag_docs,
         crate::server::handlers::biz_tag_handlers::delete_biz_tag_docs,
-        // ===== api-keys（注解载体见 handlers/api_key_handlers.rs）=====
+        // api-keys（注解载体见 handlers/api_key_handlers.rs）
         crate::server::handlers::api_key_handlers::create_api_key_docs,
         crate::server::handlers::api_key_handlers::list_api_keys_docs,
         crate::server::handlers::api_key_handlers::revoke_api_key_docs,
@@ -162,9 +162,7 @@ pub fn create_swagger_router() -> Router {
     Router::new()
 }
 
-// ============================================================================
 // OpenAPI 运行时本地化（unify-rust-i18n）
-// ============================================================================
 
 /// 由 spec 路径生成 operation 键的 path-slug 段：去首尾 `/`，段间 `/` → `-`，
 /// 剥离路径参数花括号（`/api/v1/biz-tags/{id}` → `api-v1-biz-tags-id`）。
@@ -287,14 +285,14 @@ mod tests {
         let _router = create_swagger_router();
     }
 
-    // ========== —— paths 守卫 ==========
+    // —— paths 守卫
 
     /// `/api/v1` 路由清单：openapi paths 与 `router.rs` 注册的一一对应表
     /// （`{}` 为 OpenAPI 参数语法，根路径呈现为 `/api/v1/`）。守卫不变量：
     /// 表内路径+方法必须出现在 openapi（漏注解失败）；openapi 的 `/api/`
     /// 路径不得超出本表（漂移失败）；paths 总数 ≥ 表长。新增路由时守卫先
     /// 失败，需同步本表与 router.rs（不遍历运行时 Router：axum 0.8 的
-    /// `Router::routes()` 不展开 `nest()` 子路由，且完整装配需全套 mock）。
+    /// `Router::routes` 不展开 `nest` 子路由，且完整装配需全套 mock）。
     const EXPECTED_V1_PATHS: &[(&str, &[&str])] = &[
         ("/api/v1/", &["get"]),
         ("/api/v1/generate", &["post"]),
@@ -415,7 +413,7 @@ mod tests {
         assert_eq!(tag, "order", "示例值须与文档口径一致(biz_tag=order)");
     }
 
-    // ========== —— OpenAPI 运行时本地化守卫 ==========
+    // —— OpenAPI 运行时本地化守卫
 
     /// operation_slug 单元测试：剥花括号、`/` → `-`、首尾 `/` 归零。
     #[test]

@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Display 文案存于 `locales/{en,zh}/messages.ftl` 的 `error.<variant_snake>` 键
-// (Fluent/FTL),thiserror 属性经 `t!()` 运行时查表;默认 locale 为 en
+// (Fluent/FTL),thiserror 属性经 `t!` 运行时查表;默认 locale 为 en
 // (main.rs `init_i18n("en")`)。
 //
 // DatabaseError / EtcdError / IoError 另以 `#[source] Option<ErrorSource>`
-// 保链:`.0` 为第一层消毒文案,`source()` 非空,完整错误链只进服务端日志,
+// 保链:`.0` 为第一层消毒文案,`source` 非空,完整错误链只进服务端日志,
 // 不改变任何对外文案。
 
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,7 @@ use thiserror::Error;
 
 /// 底层错误源的类型擦除保链容器。
 ///
-/// `CoreError` 需保持 `Clone`(id_handlers 指标路径 `e.clone()`),而
+/// `CoreError` 需保持 `Clone`(id_handlers 指标路径 `e.clone`),而
 /// `std::io::Error` 等不实现 `Clone`,故以 `Arc<dyn Error + Send + Sync>`
 /// 携带真实错误;etcd 侧以 [`ErrorSource::text`] 做 Display 文本保链。
 #[derive(Debug, Clone)]
@@ -31,7 +31,7 @@ impl ErrorSource {
         }
     }
 
-    /// 文本退路:以 Display 文本构造保链源(链路文字可见,但无内层 `source()`)。
+    /// 文本退路:以 Display 文本构造保链源(链路文字可见,但无内层 `source`)。
     pub fn text(message: impl Into<String>) -> Self {
         Self {
             inner: Arc::new(TextError(message.into())),
@@ -297,7 +297,7 @@ impl CoreError {
     /// 第一层人类可读文案(不含 source 链),即 `i18n_args` 插值所用的同源文本。
     ///
     /// String 载荷变体与 DatabaseError/EtcdError/IoError 取 `.0`(与 `.1` 源链
-    /// 分离,源链仅经 source() 与服务端日志暴露),数值载荷取数值文本,无载荷
+    /// 分离,源链仅经 source 与服务端日志暴露),数值载荷取数值文本,无载荷
     /// 变体为空串。本方法不进入任何对外响应体(5xx 对外仅出固定文案)。
     pub fn top_level_message(&self) -> String {
         match self {
@@ -330,7 +330,7 @@ impl CoreError {
 
     /// Return the localized Display string for this error under the given locale.
     ///
-    /// 与 `to_string()`(依赖全局 locale)不同,本方法按参数逐次翻译,可安全用于
+    /// 与 `to_string`(依赖全局 locale)不同,本方法按参数逐次翻译,可安全用于
     /// 并发请求;HTTP handler 依据 locale_middleware 协商的 Locale 调用。
     pub fn to_localized_string(&self, locale: &str) -> String {
         let key = self.i18n_key();
@@ -344,19 +344,19 @@ mod tests {
     use super::*;
     use crate::core::i18n::{current_locale, init_i18n};
 
-    /// 串行化改写进程默认 locale 的测试,避免并行竞态污染 `to_string()`。
+    /// 串行化改写进程默认 locale 的测试,避免并行竞态污染 `to_string`。
     fn locale_lock() -> std::sync::MutexGuard<'static, ()> {
         crate::core::i18n::test_support::lock()
     }
 
-    /// Verify CoreError Display impl delegates to `t!()` lookups.
+    /// Verify CoreError Display impl delegates to `t!` lookups.
     /// Covers all 24 variants under "en" (default), plus a subset under "zh-CN".
     ///
     /// 两个 locale 在同一测试内执行,避免并行 `set_locale` 竞态。
     #[test]
     fn test_core_error_display_i18n() {
         let _locale_lock = locale_lock();
-        // --- English locale (default) ---
+        // English locale (default)
         init_i18n("en");
 
         // Positional-arg variants
@@ -452,7 +452,7 @@ mod tests {
         assert_eq!(CoreError::TimeoutError.to_string(), "Timeout error");
         assert_eq!(CoreError::Unknown.to_string(), "Unknown error");
 
-        // --- Chinese (zh-CN) locale — representative subset ---
+        // Chinese (zh-CN) locale — representative subset
         init_i18n("zh-CN");
         assert_eq!(
             CoreError::InvalidIdFormat("test".to_string()).to_string(),
@@ -738,9 +738,9 @@ mod tests {
         assert_eq!(detailed.details, Some(serde_json::json!({"retry": false})));
     }
 
-    // ==================== 错误链保留 ====================
+    // 错误链保留
 
-    /// `From<std::io::Error>` 保留底层错误:`source()` 非空,第一层文案即 Display 面。
+    /// `From<std::io::Error>` 保留底层错误:`source` 非空,第一层文案即 Display 面。
     #[test]
     fn test_io_error_preserves_source_chain() {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "config file missing");
@@ -752,7 +752,7 @@ mod tests {
         assert_eq!(err.to_string(), "I/O error: config file missing");
     }
 
-    /// DatabaseError 构造点保链:`source()` 非空且第一层文案不含源链
+    /// DatabaseError 构造点保链:`source` 非空且第一层文案不含源链
     /// (HTTP 出口消毒面);`From<DbErr>` 路径由 connection.rs
     /// test_from_dberr 钉住。
     #[cfg(feature = "database")]
@@ -776,7 +776,7 @@ mod tests {
     }
 
     /// EtcdError 以 [`ErrorSource::text`] 文本保链(core::types 不依赖
-    /// etcd-client):`source()` 非空、文案可读。
+    /// etcd-client):`source` 非空、文案可读。
     #[test]
     fn test_etcd_error_preserves_source_chain_via_text() {
         let err = CoreError::EtcdError(

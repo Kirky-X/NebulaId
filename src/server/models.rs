@@ -603,7 +603,7 @@ pub struct ApiInfoResponse {
     pub endpoints: Vec<String>,
 }
 
-// ========== BizTag Models ==========
+// BizTag Models
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
@@ -733,7 +733,7 @@ pub fn datetime_to_rfc3339(dt: chrono::DateTime<chrono::FixedOffset>) -> String 
     dt.to_rfc3339()
 }
 
-// ========== API Key Models ==========
+// API Key Models
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 #[validate(crate = "::sdforge::validator")]
@@ -843,7 +843,7 @@ pub struct RevokeApiKeyResponse {
     pub message: String,
 }
 
-// ========== Workspace Models ==========
+// Workspace Models
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 #[validate(crate = "::sdforge::validator")]
@@ -886,7 +886,7 @@ pub struct WorkspaceListResponse {
     pub total: u64,
 }
 
-// ========== Group Models ==========
+// Group Models
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 #[validate(crate = "::sdforge::validator")]
@@ -956,7 +956,7 @@ mod tests {
         assert!(err.to_string().contains("Anonymous"));
     }
 
-    // ========== HealthStatus::Display ==========
+    // HealthStatus::Display
 
     #[test]
     fn test_health_status_display_healthy() {
@@ -973,7 +973,7 @@ mod tests {
         assert_eq!(HealthStatus::Unhealthy.to_string(), "unhealthy");
     }
 
-    // ========== HealthStatus::From<&str> ==========
+    // HealthStatus::From<&str>
 
     #[test]
     fn test_health_status_from_str_known_values() {
@@ -991,7 +991,7 @@ mod tests {
         assert_eq!(HealthStatus::from("HEALTHY"), HealthStatus::Unhealthy);
     }
 
-    // ========== HealthStatus::From<String> ==========
+    // HealthStatus::From<String>
 
     #[test]
     fn test_health_status_from_string_delegates_to_str() {
@@ -1013,7 +1013,7 @@ mod tests {
         );
     }
 
-    // ========== HealthStatus serde round-trip ==========
+    // HealthStatus serde round-trip
 
     #[test]
     fn test_health_status_serde_roundtrip_preserves_variants() {
@@ -1028,7 +1028,7 @@ mod tests {
         }
     }
 
-    // ========== ErrorResponse（统一错误信封）==========
+    // ErrorResponse（统一错误信封）
 
     #[test]
     fn test_error_response_new_omits_details() {
@@ -1096,7 +1096,7 @@ mod tests {
         assert_eq!(parsed.get_version_num(), 4, "request_id must be a UUID v4");
     }
 
-    // ========== ApiErrorCode::Display ==========
+    // ApiErrorCode::Display
 
     #[test]
     fn test_api_error_code_display_all_variants() {
@@ -1120,10 +1120,10 @@ mod tests {
         assert_eq!(ApiErrorCode::ServiceUnavailable.to_string(), "5004");
     }
 
-    // ========== —— ApiErrorResponse 双格式已移除 ==========
+    // —— ApiErrorResponse 双格式已移除
     // 业务码映射的钉桩改由 helpers 的 `core_error_classification` 单表测试承接。
 
-    // ========== ErrorMessage::message ==========
+    // ErrorMessage::message
 
     #[test]
     fn test_error_message_returns_user_friendly_strings() {
@@ -1178,7 +1178,7 @@ mod tests {
         );
     }
 
-    // ========== ErrorMessage::with_context (context-appending branch) ==========
+    // ErrorMessage::with_context (context-appending branch)
 
     #[test]
     fn test_error_message_with_context_invalid_input_appends_context() {
@@ -1269,7 +1269,7 @@ mod tests {
         );
     }
 
-    // ========== PaginationParams / GroupListParams serde defaults ==========
+    // PaginationParams / GroupListParams serde defaults
 
     #[test]
     fn test_pagination_params_uses_defaults_when_empty() {
@@ -1297,7 +1297,7 @@ mod tests {
         assert_eq!(params.page_size, 20);
     }
 
-    // ========== datetime_to_rfc3339 ==========
+    // datetime_to_rfc3339
 
     #[test]
     fn test_datetime_to_rfc3339_preserves_offset() {
@@ -1313,7 +1313,7 @@ mod tests {
         assert_eq!(rfc, "2026-01-15T08:00:00+00:00");
     }
 
-    // ========== naive_to_rfc3339 (additional robustness) ==========
+    // naive_to_rfc3339 (additional robustness)
 
     #[test]
     fn test_naive_to_rfc3339_returns_valid_rfc3339_with_utc_offset() {
@@ -1325,13 +1325,13 @@ mod tests {
         let parsed = chrono::DateTime::parse_from_rfc3339(&rfc).unwrap();
         assert_eq!(parsed.timestamp(), dt.and_utc().timestamp());
         // NaiveDateTime is interpreted as UTC, so offset must be +00:00.
-        // `local_minus_utc()` is an inherent method on `FixedOffset`;
-        // the redundant `.fix()` call was removed (chrono 0.4.45 dropped
+        // `local_minus_utc` is an inherent method on `FixedOffset`;
+        // the redundant `.fix` call was removed (chrono 0.4.45 dropped
         // the `Offset::fix` method that required the `Offset` trait import).
         assert_eq!(parsed.offset().local_minus_utc(), 0);
     }
 
-    // ========== Request struct validation (Validate derive) ==========
+    // Request struct validation (Validate derive)
 
     #[test]
     fn test_generate_request_validation_accepts_valid_input() {

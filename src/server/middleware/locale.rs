@@ -197,7 +197,7 @@ mod tests {
         negotiate_locale(Some(&HeaderValue::try_from(s).unwrap()))
     }
 
-    // ========== Locale::from_tag tests ==========
+    // Locale::from_tag tests
 
     #[test]
     fn test_from_tag_exact_en() {
@@ -234,7 +234,7 @@ mod tests {
         assert_eq!(Locale::from_tag(""), None);
     }
 
-    // ========== Locale::as_str / Display / Default ==========
+    // Locale::as_str / Display / Default
 
     #[test]
     fn test_locale_as_str() {
@@ -254,7 +254,7 @@ mod tests {
         assert_eq!(Locale::DEFAULT, Locale::En);
     }
 
-    // ========== negotiate_locale_str tests (RFC 7231 §5.3.5) ==========
+    // negotiate_locale_str tests (RFC 7231 §5.3.5)
 
     #[test]
     fn test_negotiate_exact_zh_cn() {
@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(negotiate(&huge), Locale::En);
     }
 
-    // ========== parse_accept_language / parse_entry unit tests ==========
+    // parse_accept_language / parse_entry unit tests
 
     /// 验证 `parse_accept_language` 返回借用输入的 `Candidate<'a>`（不逐条分配）：
     /// 若 `Candidate` 改为 own `String`，下方 `_accept_borrowed` 将无法编译。
@@ -434,7 +434,7 @@ mod tests {
         assert!(parse_entry(";q=0.5").is_none());
     }
 
-    // ========== End-to-end middleware test ==========
+    // End-to-end middleware test
 
     #[tokio::test]
     async fn test_locale_middleware_injects_extension() {

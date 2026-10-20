@@ -13,13 +13,11 @@ use std::sync::Mutex;
 use tempfile::tempdir;
 use uuid::Uuid;
 
-// =============================================================================
 // Config 端到端
-// =============================================================================
 
 /// Config::load_from_file 完整链路：TOML 解析 + `${VAR}` 环境变量展开 + validate。
 ///
-/// 用 `Config::default()` 改字段后 `toml::to_string` 生成完整 TOML，避免手写遗漏必填字段。
+/// 用 `Config::default` 改字段后 `toml::to_string` 生成完整 TOML，避免手写遗漏必填字段。
 #[tokio::test]
 async fn e2e_config_load_from_file_with_env_expansion_and_validation() {
     let dir = tempdir().expect("E2E: tempdir should succeed");
@@ -260,9 +258,7 @@ fn e2e_config_merge_default_value_does_not_override() {
     );
 }
 
-// =============================================================================
 // Id 类型跨格式端到端
-// =============================================================================
 
 /// 真实 Snowflake 生成的 ID 往返多种格式：to_string / to_hex / to_base36 / to_prefixed。
 #[tokio::test]
@@ -361,9 +357,7 @@ fn e2e_id_batch_from_u64s_and_new_consistent() {
     }
 }
 
-// =============================================================================
 // AlgorithmType 别名解析端到端
-// =============================================================================
 
 /// AlgorithmType::from_str 接受所有名称与大小写变体（大小写不敏感）。
 ///
@@ -475,9 +469,7 @@ fn e2e_algorithm_config_get_default_algorithm_invalid_falls_back_to_segment() {
     assert_eq!(cfg.get_default_algorithm(), AlgorithmType::Segment);
 }
 
-// =============================================================================
 // CoreError i18n 端到端
-// =============================================================================
 
 /// 串行化相邻的环境变量/locale 敏感测试(与 core::i18n::test_support 同一意图),避免并行竞态。
 static E2E_LOCALE_LOCK: Mutex<()> = Mutex::new(());
@@ -574,7 +566,7 @@ fn e2e_core_error_unsupported_locale_falls_back_to_en() {
     );
 }
 
-/// E2E-I18N-004: i18n_key() 与 i18n_args() 一致性——key 返回非空，args 与变体匹配。
+/// E2E-I18N-004: i18n_key 与 i18n_args 一致性——key 返回非空，args 与变体匹配。
 #[test]
 fn e2e_core_error_i18n_key_and_args_consistency() {
     let err = CoreError::ClockMovedBackward { last_timestamp: 42 };

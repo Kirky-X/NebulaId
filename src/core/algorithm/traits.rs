@@ -232,7 +232,7 @@ impl AlgorithmBuilder {
     }
 
     pub async fn build(&self, config: &Config) -> Result<Box<dyn IdAlgorithm>> {
-        // 经工厂注册表分发：新增算法只需在 algorithm_factories() 注册，无需修改 build。
+        // 经工厂注册表分发：新增算法只需在 algorithm_factories 注册，无需修改 build。
         let factories = algorithm_factories();
         let factory = factories.get(&self.algorithm_type).ok_or_else(|| {
             CoreError::InternalError(format!(
@@ -244,13 +244,11 @@ impl AlgorithmBuilder {
     }
 }
 
-// ============================================================================
 // AlgorithmFactory + 工厂注册表：build 查表分发，新增算法只需注册新工厂。
-// ============================================================================
 
 /// 算法工厂 trait：每种算法类型对应一个实现。
 ///
-/// 新增算法：实现本 trait 并在 `algorithm_factories()` 注册，无需修改 build。
+/// 新增算法：实现本 trait 并在 `algorithm_factories` 注册，无需修改 build。
 #[async_trait]
 pub trait AlgorithmFactory: Send + Sync {
     async fn build(

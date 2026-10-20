@@ -437,7 +437,7 @@ impl ConcurrencyLimiter {
     }
 }
 
-// ============================== Unit Tests ==============================
+// Unit Tests
 
 #[cfg(test)]
 mod tests {

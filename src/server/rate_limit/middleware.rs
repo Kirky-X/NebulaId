@@ -109,7 +109,7 @@ pub async fn rate_limit_middleware_fn(
     middleware.rate_limit_middleware(req, next).await
 }
 
-// ============================== Unit Tests ==============================
+// Unit Tests
 
 #[cfg(test)]
 mod tests {
@@ -225,7 +225,7 @@ mod tests {
         assert_eq!(ip, Some("127.0.0.1".to_string()));
     }
 
-    // ============ rate_limit_middleware 端到端测试（Router + oneshot） ============
+    // rate_limit_middleware 端到端测试（Router + oneshot）
 
     /// 把 `&self` 实例方法包装为 `from_fn_with_state` 兼容 handler（axum 0.8 要求自由函数）。
     async fn rate_limit_handler(

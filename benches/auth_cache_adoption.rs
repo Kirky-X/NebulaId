@@ -29,7 +29,7 @@ use oxcache::Cache;
 const KEY_COUNT: usize = 1_024;
 /// 每实现采样次数（单线程逐次计时，支撑 P99 分位数）。
 const SAMPLES: usize = 40_000;
-/// 吞吐批次：每批连续命中数，批次计时摊掉单次 `Instant::now()` 开销。
+/// 吞吐批次：每批连续命中数，批次计时摊掉单次 `Instant::now` 开销。
 const BATCH: usize = 2_000;
 const BATCHES: usize = 40;
 /// 预热次数：不计入统计，令 `HashMap`/后端与分支预测进入稳态。
@@ -57,7 +57,7 @@ fn key_pair(i: usize) -> (String, String) {
 }
 
 /// 单次计时的延迟样本（纳秒）：整段循环跑在同一 `block_on` 内，逐次只付
-/// 一次 `Instant::now()`——否则两侧被加同一常量，稀释真实百分比差。
+/// 一次 `Instant::now`——否则两侧被加同一常量，稀释真实百分比差。
 async fn sample_p99<F, Fut>(mut f: F) -> (Duration, Duration, Duration)
 where
     F: FnMut(usize) -> Fut,

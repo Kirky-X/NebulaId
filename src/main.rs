@@ -38,7 +38,7 @@ const DEFAULT_CONFIG_PATH: &str = "config/config.toml";
 
 /// 服务器配置
 ///
-/// 端口默认值唯一归属 `core::config::NebulaIdConfig::default()`，禁止本地再引入端口常量。
+/// 端口默认值唯一归属 `core::config::NebulaIdConfig::default`，禁止本地再引入端口常量。
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     /// HTTP 服务端口
@@ -396,7 +396,7 @@ async fn start_http_server(
         }
     });
 
-    // 绑定地址由调用方从 config.app.http_addr() 解析传入
+    // 绑定地址由调用方从 config.app.http_addr 解析传入
     info!("{}", t!("log.main.starting_http_server", addr = bind_addr));
     let listener = DualListener::bind(bind_addr, tls_acceptor).await?;
 
@@ -552,7 +552,7 @@ struct WorkerLeaseGuard {
 
 /// worker_id 运行时分配（Snowflake 构造前调用）。
 ///
-/// 经 `EtcdWorkerAllocator::allocate()` 从 etcd 抢占 worker key（key value =
+/// 经 `EtcdWorkerAllocator::allocate` 从 etcd 抢占 worker key（key value =
 /// 本实例 instance_id，lease 30s 绑定存活），成功后 spawn lease keepalive
 /// 任务（interval = lease_ttl/3）。任一步失败返回 `Err`，调用方拒绝启动 ——
 /// 多实例部署回退静态默认 0 必然产生重复 worker_id（数据正确性事故）。
@@ -894,7 +894,7 @@ fn load_config(config_path: &str, explicit_path: bool) -> Result<Config> {
     // config.app.locale > LC_ALL/LC_MESSAGES/LANG > sys-locale > "en"
     //(用户显式配置优先于系统语言;config.app.locale serde 默认空串 = auto,
     // 显式 "en"/"zh-CN" 钉死进程语言)。非法值告警并继续走链。此后所有
-    // t!() 输出按生效 locale 渲染。
+    // t! 输出按生效 locale 渲染。
     let nebula_locale_env = env::var("NEBULA_LOCALE").ok();
     let (locale, invalid_locale) = resolve_locale(nebula_locale_env.as_deref(), &config.app.locale);
     if invalid_locale {
@@ -928,7 +928,7 @@ fn load_config(config_path: &str, explicit_path: bool) -> Result<Config> {
         );
     }
 
-    // 生产环境强制 TLS(fail-fast)。环境判定经 Environment::from_env()
+    // 生产环境强制 TLS(fail-fast)。环境判定经 Environment::from_env
     //(含 反向默认:NEBULA_ENV 缺失/未知值按生产执行,缺失时此处顺带
     // 触发唯一一次 warn)。校验失败打印本地化 error 并以非零码退出;
     // NEBULA_ALLOW_INSECURE_TLS=1 显式放行(函数内 warn)。
@@ -1239,7 +1239,7 @@ fn build_handlers_and_config_service(
 /// TLS 管理器装配。
 ///
 /// TLS 配置错误 fail-fast —— enabled=true 且证书缺失/解析失败时拒绝启动
-/// (不再静默降级明文)。enabled=false 时 initialize() 直接返回 Ok,明文
+/// (不再静默降级明文)。enabled=false 时 initialize 直接返回 Ok,明文
 /// 部署不受影响。未启用任何 TLS 端口时返回 None。
 async fn init_tls_manager(config: &Config) -> Result<Option<Arc<TlsManager>>> {
     let mut tls_manager = TlsManager::new(config.tls.clone());
@@ -1265,7 +1265,7 @@ struct EtcdRuntimeComponents {
     health_monitor: Arc<EtcdClusterHealthMonitor>,
     worker_lease: Option<WorkerLeaseGuard>,
     /// worker 租约续期失败上报通道;仅在实际分配到 worker_id 时为 Some
-    /// (未分配时 select 臂的 future 恒 pending,与原 `worker_lease.is_some()`
+    /// (未分配时 select 臂的 future 恒 pending,与原 `worker_lease.is_some`
     /// 守卫等价)。
     lease_failure_rx: Option<tokio::sync::oneshot::Receiver<String>>,
 }
@@ -1591,7 +1591,6 @@ async fn main() -> Result<()> {
         t!("log.main.sdforge_plugins_initialized")
     );
 
-    // Parse command line arguments
     let args: Vec<String> = env::args().collect();
     let (config_path, explicit_path) = parse_config_path(&args);
 
@@ -1995,7 +1994,7 @@ mod tests {
         server.abort();
     }
 
-    // ==================== 生产环境 TLS 强制校验 ====================
+    // 生产环境 TLS 强制校验
 
     #[test]
     fn test_validate_tls_production_tls_disabled_no_escape_hatch_errors() {
@@ -2035,7 +2034,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ==================== 分布式锁装配 fail-closed ====================
+    // 分布式锁装配 fail-closed
 
     /// 配置显式含 etcd endpoints + 不可达端点 → 装配必须失败（fail-closed）。
     ///
@@ -2108,7 +2107,7 @@ mod tests {
         let _loader = nebulaid::core::algorithm::DbSegmentLoader::new(repo);
     }
 
-    // ==================== 无 etcd 默认 worker 标识告警 ====================
+    // 无 etcd 默认 worker 标识告警
 
     /// 未配置 etcd + worker_id/dc_id 默认 0 → 必须告警。
     #[test]
@@ -2132,7 +2131,7 @@ mod tests {
         assert!(!should_warn_default_worker_identity(false, 255, 31));
     }
 
-    // ==================== 非 etcd 构建的端点守卫 ====================
+    // 非 etcd 构建的端点守卫
 
     /// 非 etcd 构建：端点为空/仅空白 → 允许单机本地锁。
     #[cfg(not(feature = "etcd"))]
@@ -2153,7 +2152,7 @@ mod tests {
         assert!(should_reject_configured_etcd_without_feature(&config));
     }
 
-    // ==================== 默认 locale 配置化 ====================
+    // 默认 locale 配置化
 
     /// 环境变量 NEBULA_LOCALE 优先于配置值。
     #[test]
@@ -2202,7 +2201,7 @@ mod tests {
         assert!(invalid);
     }
 
-    // ==================== (unify-rust-i18n): 检测链扩展 ====================
+    // (unify-rust-i18n): 检测链扩展
 
     /// POSIX 名归一化:`zh_CN.UTF-8` → zh-CN、`zh_TW` → zh-CN、
     /// `en_US` → en、C/POSIX/未知语言 → None(回退链继续)。
@@ -2338,7 +2337,7 @@ mod tests {
         assert!(invalid);
     }
 
-    // ==================== 组合根装配缝（bin 侧可达性） ====================
+    // 组合根装配缝（bin 侧可达性）
 
     /// 组合根装配测试专用最小 stub 仓储：读写一律空值。
     #[derive(Clone)]
@@ -2488,7 +2487,7 @@ mod tests {
         let _ = handlers;
     }
 
-    /// `init_tls_manager`：TLS 关闭时 `initialize()` 直接 Ok 且返回 None。
+    /// `init_tls_manager`：TLS 关闭时 `initialize` 直接 Ok 且返回 None。
     #[tokio::test]
     async fn test_init_tls_manager_disabled_returns_none() {
         let mut config = Config::default();

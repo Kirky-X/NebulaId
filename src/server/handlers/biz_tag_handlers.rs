@@ -228,7 +228,7 @@ impl super::ApiHandlers {
     }
 }
 
-// ========== axum handler 在 router.rs；以下为载体 #[utoipa::path] 的注解函数 ==========
+// axum handler 在 router.rs；以下为载体 #[utoipa::path] 的注解函数
 
 /// OpenAPI 注解载体：`POST /api/v1/biz-tags`（实际 handler：`router::handle_create_biz_tag`，User-only）。
 #[sdforge::utoipa::path(
@@ -389,7 +389,7 @@ mod tests {
         }
     }
 
-    // ===== create_biz_tag =====
+    // create_biz_tag
 
     #[tokio::test]
     async fn test_create_biz_tag_happy_path() {
@@ -474,7 +474,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // ===== update_biz_tag =====
+    // update_biz_tag
 
     #[tokio::test]
     async fn test_update_biz_tag_happy_path() {
@@ -592,7 +592,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // ===== get_biz_tag =====
+    // get_biz_tag
 
     #[tokio::test]
     async fn test_get_biz_tag_happy_path() {
@@ -637,7 +637,7 @@ mod tests {
         assert!(matches!(result.unwrap_err(), CoreError::InternalError(_)));
     }
 
-    // ===== list_biz_tags =====
+    // list_biz_tags
 
     #[tokio::test]
     async fn test_list_biz_tags_happy_path() {
@@ -713,7 +713,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ===== list_biz_tags_with_pagination =====
+    // list_biz_tags_with_pagination
 
     #[tokio::test]
     async fn test_list_biz_tags_with_pagination_happy_path() {
@@ -799,7 +799,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ===== delete_biz_tag =====
+    // delete_biz_tag
 
     #[tokio::test]
     async fn test_delete_biz_tag_happy_path() {

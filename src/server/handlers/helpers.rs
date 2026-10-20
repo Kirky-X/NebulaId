@@ -214,14 +214,14 @@ pub fn core_error_to_response(e: &CoreError, locale: Locale) -> (StatusCode, Jso
     (status, Json(error))
 }
 
-// ========== 共享授权 ==========
+// 共享授权
 
 /// 共享的 workspace 资源级授权决策（HTTP 与 gRPC 同源）：User 仅可访问自身
 /// workspace，Admin 跨租户放行，Anonymous 一律拒绝；调用方负责按名反查 UUID 等传输步骤。
 ///
 /// 拒绝类别载体：User 跨 workspace → `WorkspaceDisabled`（唯一 403/FORBIDDEN
 /// 载体，HTTP 侧重映射为 workspace mismatch，gRPC 映射 `permission_denied`）；
-/// Anonymous → `AuthenticationError`（401 载体）；放行返回 `Ok(())`。
+/// Anonymous → `AuthenticationError`（401 载体）；放行返回 `Ok()`。
 pub(crate) async fn authorize_workspace_access(
     role: &ApiKeyRole,
     key_workspace_id: uuid::Uuid,
@@ -243,7 +243,7 @@ pub(crate) async fn authorize_workspace_access(
     }
 }
 
-// ========== gRPC 错误消毒 ==========
+// gRPC 错误消毒
 
 /// gRPC 侧「变体 → Code」映射，与 `core_error_status_code` 同源：4xx 逐一对应
 /// 同语义 Code，5xx 收敛 `Code::Internal`；不预造无变体的 `AlreadyExists`。
@@ -292,7 +292,7 @@ pub fn invalid_uuid_response(locale: Locale) -> (StatusCode, Json<ErrorResponse>
     )
 }
 
-/// `ValidationErrors` → 400（本地化文案）：用 `field_errors()` 提取 (field, rule)，
+/// `ValidationErrors` → 400（本地化文案）：用 `field_errors` 提取 (field, rule)，
 /// 不 stringify 整个 `ValidationErrors`，避免泄露 length/range 的 min/max 参数。
 /// 多条以 `"; "` 连接，经 `sanitize_for_production` 截断以限制响应大小。
 pub(crate) fn validation_error_response(
@@ -570,7 +570,7 @@ mod tests {
         assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    // ========== —— 统一错误信封 business_code ==========
+    // —— 统一错误信封 business_code
 
     /// 单表分类全变体矩阵：`core_error_classification` 的 (状态码, business_code)
     /// 必须与既有映射逐行一致（一张映射表两用的钉桩）。
@@ -1033,7 +1033,7 @@ mod tests {
         assert!(prefix_end <= MAX_CLIENT_MESSAGE_LEN);
     }
 
-    // ========== authorize_workspace_access（共享授权）==========
+    // authorize_workspace_access（共享授权）
 
     /// User 访问自身 workspace → 放行。
     #[tokio::test]
@@ -1087,7 +1087,7 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
-    // ========== core_error_to_grpc_status（gRPC 错误消毒）==========
+    // core_error_to_grpc_status（gRPC 错误消毒）
 
     /// 5xx 必须消毒：Code 固定 Internal、message 固定 "internal error"，
     /// 不得携带 Display 明文或内层敏感串（与 HTTP 侧 5xx 泛化承诺对齐）。

@@ -910,7 +910,7 @@ mod tests {
         assert!(config.auto_recovery);
     }
 
-    // ===== AlgorithmHealthState 扩展测试 =====
+    // AlgorithmHealthState 扩展测试
 
     #[test]
     fn test_health_state_record_request_success_updates_counters() {
@@ -1050,7 +1050,7 @@ mod tests {
         let state = AlgorithmHealthState::new(AlgorithmType::Segment);
         state.open_circuit_breaker();
 
-        // timeout=0：elapsed() >= 0 恒真，代码用 `<` 比较必然返回 false
+        // timeout=0：elapsed >= 0 恒真，代码用 `<` 比较必然返回 false
         assert!(!state.is_circuit_open(0));
     }
 
@@ -1119,7 +1119,7 @@ mod tests {
         assert!(state.circuit_breaker_opened_at.read().is_none());
     }
 
-    // ===== DegradationManager 扩展测试 =====
+    // DegradationManager 扩展测试
 
     #[test]
     fn test_circuit_breaker_transitions_and_timeout() {

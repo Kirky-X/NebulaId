@@ -108,10 +108,10 @@ pub enum StartupConfig {
 ///
 /// - 文件存在但解析/校验失败 → 原样 `Err`（消息含缺失或未知字段名）→ 启动失败
 /// - 文件不存在且 `explicit_path` → `Err(FileNotFound)`：运维指定的文件必须存在
-/// - 文件不存在且非 `explicit_path` → `Ok((Config::default(), DefaultsBecauseMissing))`
+/// - 文件不存在且非 `explicit_path` → `Ok((Config::default, DefaultsBecauseMissing))`
 /// - 权限/IO 类失败（非 `NotFound`）→ 原样 `Err(FileError)`，不得降级为默认值
 ///
-/// 环境变量覆盖由 `Config::load_from_env()` 单独承担（其消息已含变量名），不在本函数职责内。
+/// 环境变量覆盖由 `Config::load_from_env` 单独承担（其消息已含变量名），不在本函数职责内。
 ///
 /// # Errors
 ///
@@ -464,7 +464,7 @@ impl Config {
 
     /// `${VAR}` / `${VAR:default}` 环境变量展开（confers `interpolation` 引擎）。
     /// `allow_unresolved` 保持既有设计：缺失变量保留 `${VAR}` 字面量，由
-    /// `validate()` 对 auth 凭证字段显性报错。
+    /// `validate` 对 auth 凭证字段显性报错。
     fn expand_env_vars(content: &str) -> String {
         static CONFIG: std::sync::OnceLock<confers::interpolation::InterpolationConfig> =
             std::sync::OnceLock::new();
@@ -480,7 +480,7 @@ impl Config {
         )
         .unwrap_or_else(|e| {
             // 展开引擎报错（如病态嵌套）时保留原文并告警，与 allow_unresolved 口径
-            // 一致，残留 `${` 由 validate() 兜底显性化。
+            // 一致，残留 `${` 由 validate 兜底显性化。
             tracing::warn!(error = ?e, "config interpolation failed; keeping raw content");
             content.to_string()
         })
@@ -579,7 +579,7 @@ impl Config {
             self.database.max_connections = other.database.max_connections;
         }
 
-        // 以「是否等于内置默认值」判定显式覆盖：`other` 来自 `Config::load_from_env()`
+        // 以「是否等于内置默认值」判定显式覆盖：`other` 来自 `Config::load_from_env`
         // 时未设 `ETCD_ENDPOINTS` 的字段等于默认值（空列表），不得反向覆盖文件里已写的
         // endpoints。显式单进程形态经 `ETCD_ENDPOINTS=""` 解析为空白项（≠ 默认值）→
         // 覆盖成立，由 `EtcdConfig::has_configured_endpoints` 判定为未配置。
@@ -691,13 +691,13 @@ mod tests {
                     msg
                 );
             }
-            // panic 消息不打印结果本体：`validate()` 的返回被 CodeQL
+            // panic 消息不打印结果本体：`validate` 的返回被 CodeQL
             // rust/cleartext-logging 视为含密数据，输出到断言消息即告警。
             _ => panic!("期望 InvalidValue 错误, 实际为其他结果"),
         }
     }
 
-    // ==================== load_from_file 测试 ====================
+    // load_from_file 测试
 
     /// shutdown_timeout_seconds 往返：TOML 显式值保留；字段缺省时 serde default 兜底 30；
     /// merge 仅在非默认值时覆盖（回归钉）
@@ -716,7 +716,7 @@ mod tests {
         assert!(loaded.validate().is_ok());
 
         // 2) 字段从 TOML 缺省 → serde default 兜底 30
-        //    （必须整行删除而不是改名：之后未知键会直接报错，改名不再等价于"字段缺省"）
+        // （必须整行删除而不是改名：之后未知键会直接报错，改名不再等价于"字段缺省"）
         let without_field = toml_content.replace("shutdown_timeout_seconds = 45\n", "");
         assert!(
             !without_field.contains("shutdown_timeout"),

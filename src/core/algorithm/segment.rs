@@ -328,7 +328,7 @@ impl DoubleBuffer {
 
     pub fn need_switch(&self) -> bool {
         let current = self.current.load_full();
-        // 合并两次锁为一次，减少锁开销（原实现 remaining() 和 total 各锁一次）
+        // 合并两次锁为一次，减少锁开销（原实现 remaining 和 total 各锁一次）
         let segment = current.inner.lock();
         let current_id = segment.current_id.load(Ordering::Relaxed);
         let max_id = segment.max_id.load(Ordering::Relaxed);
@@ -476,7 +476,7 @@ impl SegmentAlgorithm {
     /// 注入自定义号段装载器（pub 化：装配处注入入口）。
     ///
     /// 生产装配方经 mod.rs re-export 拿到 `SegmentAlgorithm` 与
-    /// `DbSegmentLoader` 后，用本方法替换 `new()` 的默认装载器。
+    /// `DbSegmentLoader` 后，用本方法替换 `new` 的默认装载器。
     pub fn with_segment_loader(mut self, loader: Arc<dyn SegmentLoader + Send + Sync>) -> Self {
         self.segment_loader = loader;
         self
@@ -492,7 +492,6 @@ impl SegmentAlgorithm {
     pub async fn initialize(&mut self, config: &Config) -> Result<()> {
         self.config = config.algorithm.segment.clone();
 
-        // Start CPU monitoring if available
         if let Some(ref cpu_monitor) = self.cpu_monitor {
             info!(
                 "{}",
@@ -644,8 +643,8 @@ impl IdAlgorithm for SegmentAlgorithm {
         const MAX_BATCH_STALE_ROUNDS: u32 = 8;
         let mut stale_rounds: u32 = 0;
 
-        // 批量硬不变量：返回 Ok 时 ids.len() == size，不静默返回短批
-        // （调用方不检查 ids.len() 会误以为拿满）。
+        // 批量硬不变量：返回 Ok 时 ids.len == size，不静默返回短批
+        // （调用方不检查 ids.len 会误以为拿满）。
         while ids.len() < size {
             let current = buffer.get_current();
             let remaining_needed = (size - ids.len()) as u64;
@@ -728,7 +727,7 @@ impl IdAlgorithm for SegmentAlgorithm {
             // Segment 算法有段缓存，返回真实命中率。
             cache_hit_rate: Some(hit_rate),
             // 延迟分位数与时钟回拨计数由路由层观测后在
-            // AlgorithmRouter::metrics() 合并填充。
+            // AlgorithmRouter::metrics 合并填充。
             ..Default::default()
         }
     }
@@ -800,7 +799,7 @@ struct DynamicStepPolicy {
 }
 
 impl<R: SegmentRepository> DbSegmentLoader<R> {
-    /// 默认分配步长：与 `SegmentAlgorithmConfig::default().base_step`（1000）对齐。
+    /// 默认分配步长：与 `SegmentAlgorithmConfig::default.base_step`（1000）对齐。
     pub const DEFAULT_STEP: i32 = 1000;
 
     /// 以默认步长构建装载器。
@@ -894,9 +893,7 @@ impl SegmentLoader for TestSegmentLoader {
     }
 }
 
-// ============================================================================
 // SegmentFactory impl 位于本文件（具体类型所属文件）。
-// ============================================================================
 #[async_trait]
 impl crate::core::algorithm::AlgorithmFactory for crate::core::algorithm::SegmentFactory {
     async fn build(
@@ -1282,7 +1279,7 @@ mod tests {
         assert!(matches!(status, HealthStatus::Healthy));
     }
 
-    // ===== health_check 反映最近号段加载结果=====
+    // health_check 反映最近号段加载结果
 
     /// 恒失败装载器：注入 load 错误以驱动 health_check 降级路径。
     struct FailingSegmentLoader;
@@ -1536,7 +1533,7 @@ mod tests {
         );
     }
 
-    // ===== DbSegmentLoader=====
+    // DbSegmentLoader
 
     use crate::core::types::SegmentInfo;
 

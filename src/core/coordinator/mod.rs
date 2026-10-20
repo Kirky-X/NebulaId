@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 
 pub mod etcd;
+pub mod failover;
 pub mod local;
 
 pub use local::LocalCacheEntry;
@@ -94,3 +95,7 @@ pub use etcd::{
 pub use local::{EtcdClusterHealthMonitor, LocalWorkerAllocator};
 
 pub use local::{LocalDistributedLock, LocalLockGuard};
+
+// 跨 DC 故障转移判据：不依赖 etcd feature（输入是 EtcdClusterStatus 三态而非客户端），
+// 因此两种组合下均导出，保证 --no-default-features 轻量目标的 API 面一致。
+pub use failover::{DcFailoverController, DcHealthView, DcId, DcProbe, FailoverDecision};

@@ -273,6 +273,9 @@ log-core-coordinator-etcd-lease_keepalive_fail_stop = Etcd lease keep-alive fail
 log-core-coordinator-etcd-lease_keepalive_stopped = Etcd lease keep-alive stopped (graceful shutdown)
 log-core-coordinator-etcd-release_refused_key_owned_by_other = Refusing to release worker key { $path }: value belongs to another instance ({ $value })
 
+# src/core/coordinator/failover.rs
+log-core-coordinator-failover-dc_switched = Active datacenter switched from DC { $from } to DC { $to } after the primary was marked failed
+
 # src/core/monitoring/core.rs
 log-core-monitoring-core-unknown_alert_expression = Unknown alert expression: { $expression }
 log-core-monitoring-core-alert_critical = { $rule_name }: { $severity } - { $message }

@@ -269,6 +269,9 @@ log-core-coordinator-etcd-lease_keepalive_fail_stop = Etcd 租约已连续 { $co
 log-core-coordinator-etcd-lease_keepalive_stopped = Etcd 租约续期任务已停止（优雅停机）
 log-core-coordinator-etcd-release_refused_key_owned_by_other = 拒绝释放 worker key { $path }：value 已归属其他实例（{ $value }）
 
+# src/core/coordinator/failover.rs
+log-core-coordinator-failover-dc_switched = 主 DC 被判失败后，活动数据中心已由 DC { $from } 切换至 DC { $to }
+
 # src/core/monitoring/core.rs
 log-core-monitoring-core-unknown_alert_expression = 未知的告警表达式：{ $expression }
 log-core-monitoring-core-alert_critical = { $rule_name }：{ $severity } - { $message }

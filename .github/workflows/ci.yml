@@ -66,6 +66,13 @@ jobs:
         # --tests 一并钉住测试面的门控（防 lib 面干净而 test 面漏网的半门控）。
         run: cargo check --package ${{ env.PKG }} --no-default-features --lib --bins --tests
 
+      - name: Check no-default-features across all targets
+        # etcd 进 default 后的轻量目标总钉：--all-targets 把 benches/ 与全部集成测试
+        # 一并纳入零 etcd 组合的编译面（上方 --lib --bins --tests 腿漏掉的 bench 目标
+        # 曾让 criterion 基准在裁剪组合下静默腐烂）。同时反向证明 etcd.rs 整模块
+        # 确实未进编译面：tests/etcd_default_feature.rs 在此组合只编译 not(etcd) 臂。
+        run: cargo check --package ${{ env.PKG }} --no-default-features --all-targets
+
       - name: Check feature trim (uuid-v8 only)
         # 剪裁钉：纯算法嵌入场景的最小组合（core/algorithm 仅 uuid_v8，
         # 依赖树 196 crates vs default 526）。防止越界 use（如 lib 面引用
@@ -182,6 +189,26 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+      # etcd：etcd 进 default 后协调路径属于默认产物（不再是“只在全特性腿跑”）。
+      # 本 job 的用途：真实启动腿注入 ETCD_ENDPOINTS 后，main.rs 的 etcd 装配臂
+      # （assemble_coordination / EtcdWorkerAllocator / 健康监控）与 EtcdClientWrapper 的
+      # 真实 I/O（connect/ping/kv/lease grant/revoke）才会被执行并计入覆盖率；
+      # 缺服务时 fail-closed 会直接拒绝启动，组合根覆盖率会掉回单机臂。
+      # 镜像用 bitnamilegacy/etcd：bitnami 于 2025-08 收缩 Docker Hub 免费位，
+      # bitnami/etcd:3.5 已返 404（health-check.yml 的 etcd job 因此连续红）。
+      etcd:
+        image: bitnamilegacy/etcd:3.5
+        env:
+          ALLOW_NONE_AUTHENTICATION: "yes"
+          ETCD_ADVERTISE_CLIENT_URLS: "http://etcd:2379"
+          ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
+        ports:
+          - 2379:2379
+        options: >-
+          --health-cmd "etcdctl endpoint health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v7
 
@@ -237,8 +264,17 @@ jobs:
           set -uo pipefail
           # (1) 测试覆盖（累积 profraw，先不出报告）；测试失败即终止
           cargo llvm-cov --no-report --package ${{ env.PKG }} || { echo "::error::单元/集成测试未通过"; exit 1; }
-          # (2) 真实启动二进制覆盖组合根，健康就绪后优雅停机
-          cargo llvm-cov --no-report run --bin nebula-id -- --config config/config.toml &
+          # 【为何不把 --ignored 的真实 etcd 腿接进本门禁】——实测结论：
+          # cargo-llvm-cov 多轮 --no-report 合并时取的是“所有已落盘测试二进制”的区域并集，
+          # 跟腿的执行顺序无关。只要任一腿带 `--features integration-tests`，那轮编译就会多出
+          # 623 行永不执行的 #[ignore] 用例体（仅 database/repository.rs 就从 103 行 LF 涨到 517 行），
+          # 分母被稀释使行覆盖率从 94.56% 跌到 93.64%（实测三份 lcov 对比）。真实集群的
+          # 功能回归仍由 health-check.yml 的 etcd-integration job 跑（不进门禁口径），
+          # 而 etcd 包装器与 main.rs 装配臂的覆盖由下面 (2) 的真实启动腿拿。
+          # (2) 真实启动二进制覆盖组合根（注入 ETCD_ENDPOINTS：默认产物含 etcd 后，
+          # 启动必须走 etcd 协调臂而不是单机本地锁臂，同时把 EtcdClientWrapper 的
+          # connect/ping/kv/lease grant/keepalive/revoke 真实 I/O 臂计入覆盖）
+          ETCD_ENDPOINTS=http://127.0.0.1:2379 cargo llvm-cov --no-report run --bin nebula-id -- --config config/config.toml &
           SERVER_PID=$!
           healthy=0
           for i in $(seq 1 60); do

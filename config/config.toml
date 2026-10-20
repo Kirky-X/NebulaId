@@ -79,8 +79,10 @@ api_keys = []
 key_rotation_grace_period_seconds = 0
 
 [etcd]
-# 空列表 = 单进程本地锁（默认构建不含 etcd feature）。
-# 多实例部署请以 `--features etcd` 构建，并在此填写端点或用 ETCD_ENDPOINTS 注入。
+# 空列表 = 单进程本地锁（仅适用于单实例部署）。
+# 默认构建已含 etcd feature（`default = [..., "etcd"]`），多实例部署直接在此填端点
+# 或用 ETCD_ENDPOINTS 注入即可；配了端点而 etcd 不可达时启动 fail-closed 拒绝拉起。
+# 只有显式 --no-default-features 裁剪掉 etcd 的轻量构建配了端点才会被守卫拦住。
 endpoints = []
 connect_timeout_ms = 5000
 watch_timeout_ms = 5000

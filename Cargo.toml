@@ -34,8 +34,12 @@ required-features = ["server"]
 
 [features]
 # 特性模型（模块级门控）：--all-features 可构建；--no-default-features 为有效轻量目标（未启用模块经 cfg 门控排除）。
-default = ["server", "segment", "snowflake", "uuid-v8", "uuid-v5", "uuid-v4", "uuid-v7", "postgresql", "garrison-auth"]
+# etcd 进 default：多实例部署的 worker_id 分配与号段分布式锁只有 etcd 实现具备
+# lease + CAS 语义，默认产物必须携带该路径（etcd-client 0.21 与主 tonic 0.14 同版本共存，
+# 默认化不引入 gRPC 栈冲突）。裁剪承诺由 ci.yml 的 --no-default-features 腿钉住。
+default = ["server", "segment", "snowflake", "uuid-v8", "uuid-v5", "uuid-v4", "uuid-v7", "postgresql", "garrison-auth", "etcd"]
 postgresql = ["dbnexus/postgres"]
+# etcd: 默认启用；--no-default-features 即零 etcd 轻量目标（etcd.rs 整模块不进编译面）。
 etcd = ["dep:etcd-client"]
 # database 为仓储层开关（segment 蕴含 database）；snowflake/uuid-v* 为零 DB 叶子算法；server 为整层开关。
 database = ["dep:dbnexus", "dep:sea-orm", "dep:argon2", "dep:subtle"]

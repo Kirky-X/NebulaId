@@ -16,16 +16,20 @@
 
 <div align="center">
 
-### 🎯 One Service, Three ID Algorithms
+### 🎯 One Service, Five ID Algorithms
 
-Double-buffered segments, drift-guarded bit slicing, custom UUID v8 layouts — served over HTTP and gRPC alike:
+Double-buffered segments, drift-guarded bit slicing, and the full UUID v4/v7/v8 family — served over HTTP and gRPC alike:
 
 <table style="width:100%; border-collapse: collapse">
 <tr>
-<td align="center" width="25%">🧮<br><b>Segment</b><br><span style="color:#64748B">Double buffer · dynamic step</span></td>
-<td align="center" width="25%">❄️<br><b>Snowflake</b><br><span style="color:#64748B">Bit slicing · clock-drift guard</span></td>
-<td align="center" width="25%">🧬<br><b>UUID v8</b><br><span style="color:#64748B">Custom layout · trend-ordered</span></td>
-<td align="center" width="25%">🔐<br><b>API Security</b><br><span style="color:#64748B">Key auth · rate limit · audit</span></td>
+<td align="center" width="33%">🧮<br><b>Segment</b><br><span style="color:#64748B">Double buffer · dynamic step</span></td>
+<td align="center" width="33%">❄️<br><b>Snowflake</b><br><span style="color:#64748B">Bit slicing · clock-drift guard</span></td>
+<td align="center" width="33%">🧬<br><b>UUID v8</b><br><span style="color:#64748B">Custom layout · trend-ordered</span></td>
+</tr>
+<tr>
+<td align="center" width="33%">🕒<br><b>UUID v7</b><br><span style="color:#64748B">RFC 9562 time-ordered</span></td>
+<td align="center" width="33%">🎲<br><b>UUID v4</b><br><span style="color:#64748B">Random · zero metadata</span></td>
+<td align="center" width="33%">🔐<br><b>API Security</b><br><span style="color:#64748B">Key auth · rate limit · audit</span></td>
 </tr>
 </table>
 

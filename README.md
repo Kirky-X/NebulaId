@@ -18,14 +18,18 @@
 
 ### 🎯 一套服务，五种发号算法
 
-号段双缓冲、位切片防回拨、UUID v8 自定义布局，HTTP 与 gRPC 同源直达：
+号段双缓冲、位切片防回拨、UUID v4/v7/v8 全系布局，HTTP 与 gRPC 同源直达：
 
 <table style="width:100%; border-collapse: collapse">
 <tr>
-<td align="center" width="25%">🧮<br><b>Segment 号段</b><br><span style="color:#64748B">双缓冲 · 动态步长</span></td>
-<td align="center" width="25%">❄️<br><b>Snowflake</b><br><span style="color:#64748B">位切片 · 抗时钟回拨</span></td>
-<td align="center" width="25%">🧬<br><b>UUID v8</b><br><span style="color:#64748B">自定义位布局 · 趋势有序</span></td>
-<td align="center" width="25%">🔐<br><b>API 安全</b><br><span style="color:#64748B">密钥认证 · 限流审计</span></td>
+<td align="center" width="33%">🧮<br><b>Segment 号段</b><br><span style="color:#64748B">双缓冲 · 动态步长</span></td>
+<td align="center" width="33%">❄️<br><b>Snowflake</b><br><span style="color:#64748B">位切片 · 抗时钟回拨</span></td>
+<td align="center" width="33%">🧬<br><b>UUID v8</b><br><span style="color:#64748B">自定义位布局 · 趋势有序</span></td>
+</tr>
+<tr>
+<td align="center" width="33%">🕒<br><b>UUID v7</b><br><span style="color:#64748B">RFC 9562 时间有序</span></td>
+<td align="center" width="33%">🎲<br><b>UUID v4</b><br><span style="color:#64748B">随机生成 · 零元数据</span></td>
+<td align="center" width="33%">🔐<br><b>API 安全</b><br><span style="color:#64748B">密钥认证 · 限流审计</span></td>
 </tr>
 </table>
 

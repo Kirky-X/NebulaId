@@ -803,8 +803,17 @@ mod tests {
             other => panic!("expected ClockMovedBackward, got {:?}", other),
         }
 
-        // 验证 clock_drift_ms 已被记录为 2000
-        assert_eq!(algo.clock_drift_ms.load(Ordering::Relaxed), 2000);
+        // 验证 drift 已记录并仍判为超阈：drift 是 generate_id 内部读时算出的
+        // `future_ts - now()`，与本用例先一步捕获的 `current` 之间可能恰好跨过毫秒边界
+        // （CI 插桩 + 并发下实测过 1999/2000 拖动），因此断写“落在
+        // (threshold, 2000] 区间”而不是硬等于 2000：阈值判定与 Unhealthy 结论
+        // 不受这个窗口影响，旧写法是时间依赖的飘红源头。
+        let drift = algo.clock_drift_ms.load(Ordering::Relaxed);
+        let threshold = algo.config.clock_drift_threshold_ms;
+        assert!(
+            drift <= 2000 && drift > threshold,
+            "drift 应落在 ({threshold}, 2000] 区间，实际 {drift}"
+        );
         // 验证 health_check 反映不健康状态
         assert!(matches!(algo.health_check(), HealthStatus::Unhealthy(_)));
     }

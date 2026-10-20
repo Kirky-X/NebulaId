@@ -27,3 +27,12 @@ paths = [
     '''\.md$''',
     '''(^|/)target/''',
 ]
+# 值锚定的内联测试夹具放行（与目录级放行、指纹清单互补的第三层）。
+# 缘由：`.gitleaksignore` 的 key 是 {commit}:{file}:{rule}:{line}，一旦上方删除注释使夹具
+# 行号平移（已发生：提交 1f8fc73 把 src/core/database/api_key_repository.rs 的
+# generic-api-key 从 1198 行推到 1118 行，旧条目立即失效），以及浅克隆下归因 commit
+# 漂移到 HEAD，都需要补新指纹。改按「已知伪造值」本身放行：跨 commit/跨行号稳定，
+# 仍不放宽该文件对真实凭据的检出能力（只豁免这个字面量）。
+regexes = [
+    '''this_is_a_valid_secret_12345''',
+]

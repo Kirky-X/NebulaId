@@ -130,7 +130,11 @@ jobs:
     timeout-minutes: 20
     services:
       etcd:
-        image: bitnami/etcd:3.5
+        # 镜像来源变更（非选型偏好）：Bitnami 于 2025-08 收缩 Docker Hub 免费位，
+        # `bitnami/etcd:3.5` 已被删 tag——registry 返 404（`hub.docker.com/v2/repositories/bitnami/etcd/tags/3.5`），
+        # 导致本 job 从 2026-10-19 起固定报 "Docker pull failed with exit code 1"。
+        # 同版本镜像在 `bitnamilegacy/etcd:3.5` 仍在维护位（registry 返 200）。
+        image: bitnamilegacy/etcd:3.5
         env:
           ALLOW_NONE_AUTHENTICATION: "yes"
           ETCD_ADVERTISE_CLIENT_URLS: "http://etcd:2379"
@@ -160,4 +164,7 @@ jobs:
       - name: Run etcd integration tests
         env:
           ETCD_TEST_ENDPOINTS: http://127.0.0.1:2379
-        run: cargo test --package nebulaid --features etcd,integration-tests --lib -- --ignored integration_etcd_
+        # 过滤式取 `integration_`而非 `integration_etcd_`：后者漏掉
+        # `integration_worker_allocator_allocate_keepalive_release_real_etcd`（真实 etcd 上的
+        # lease grant → 分配 → keepalive → release 链路，Phase 2 的核心回归）。
+        run: cargo test --package nebulaid --features etcd,integration-tests --lib -- --ignored integration_ --test-threads=1

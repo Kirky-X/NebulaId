@@ -3063,4 +3063,163 @@ mod tests {
         // 已过期 lease 的 Drop revoke 只记日志，不影响后续。
         drop(guard);
     }
+
+    // 健康状态机阈值（Phase 3 的跨 DC failover 判定直接消费这三态，边界必须钉住）
+
+    /// 连续失败升级阈值必须精确：2 次仍 Healthy、3 次 Degraded、5 次 Failed 且启用本地缓存降级。
+    #[test]
+    fn record_failure_thresholds_are_exactly_three_and_five() {
+        let cache_file = NamedTempFile::new().expect("temp cache file");
+        let monitor = EtcdClusterHealthMonitor::new(
+            EtcdConfig::default(),
+            cache_file.path().to_string_lossy().to_string(),
+        );
+
+        monitor.record_failure();
+        monitor.record_failure();
+        assert_eq!(
+            monitor.get_status(),
+            EtcdClusterStatus::Healthy,
+            "2 次失败不应升级"
+        );
+        assert!(!monitor.is_using_cache());
+
+        monitor.record_failure();
+        assert_eq!(
+            monitor.get_status(),
+            EtcdClusterStatus::Degraded,
+            "3 次连续失败必须转 Degraded"
+        );
+        assert!(
+            !monitor.is_using_cache(),
+            "Degraded 仍在 etcd 面上，不得跳缓存"
+        );
+
+        monitor.record_failure();
+        monitor.record_failure();
+        assert_eq!(
+            monitor.get_status(),
+            EtcdClusterStatus::Failed,
+            "5 次连续失败必须判 Failed"
+        );
+        assert!(monitor.is_using_cache(), "Failed 必须切本地缓存降级");
+    }
+
+    /// `record_success` 必须复位连击计数、把状态从 Failed 拉回 Healthy 并退出缓存降级。
+    #[tokio::test]
+    async fn record_success_resets_streak_and_leaves_cache_mode() {
+        let cache_file = NamedTempFile::new().expect("temp cache file");
+        let monitor = EtcdClusterHealthMonitor::new(
+            EtcdConfig::default(),
+            cache_file.path().to_string_lossy().to_string(),
+        );
+
+        for _ in 0..5 {
+            monitor.record_failure();
+        }
+        assert_eq!(monitor.get_status(), EtcdClusterStatus::Failed);
+        assert!(monitor.is_using_cache());
+
+        monitor.record_success().await;
+        assert_eq!(
+            monitor.get_status(),
+            EtcdClusterStatus::Healthy,
+            "恢复后必须回 Healthy"
+        );
+        assert!(!monitor.is_using_cache(), "恢复后必须退出缓存降级");
+
+        // 计数复位验证：恢复后单次失败不应直接回到 Degraded
+        monitor.record_failure();
+        assert_eq!(
+            monitor.get_status(),
+            EtcdClusterStatus::Healthy,
+            "record_success 必须把连击计数归零"
+        );
+    }
+
+    /// keepalive 周期 = lease_ttl/3 且为正：周期为 0 会让续期循环忙轮询，
+    /// 周期 ≥ TTL 则单次抖动就会丢 lease（fail-stop 假阳性停机）。
+    #[test]
+    fn keepalive_interval_is_third_of_lease_ttl_and_positive() {
+        let interval = EtcdWorkerAllocator::keepalive_interval();
+        assert_eq!(
+            interval,
+            Duration::from_secs((EtcdWorkerAllocator::LEASE_TTL_SECS / 3) as u64)
+        );
+        assert!(!interval.is_zero(), "续期周期不得为 0");
+        assert!(
+            interval < Duration::from_secs(EtcdWorkerAllocator::LEASE_TTL_SECS as u64),
+            "续期必须早于 lease 到期"
+        );
+    }
+
+    // 本地缓存持久化（Failed 态的降级数据来源）
+
+    /// save → load 往返保留 value/version；缺失文件视为空缓存而非错误。
+    #[tokio::test]
+    async fn local_cache_roundtrip_and_missing_file_is_not_an_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cache.json").to_string_lossy().to_string();
+        let monitor = EtcdClusterHealthMonitor::new(EtcdConfig::default(), path.clone());
+
+        // 文件不存在：首次部署无缓存属正常态，必须 Ok
+        monitor
+            .load_local_cache()
+            .await
+            .expect("缺失缓存文件不得报错");
+
+        monitor.put_to_cache("k1".to_string(), "v1".to_string(), 3);
+        monitor.save_local_cache().await.expect("save 必须成功");
+
+        let reloaded = EtcdClusterHealthMonitor::new(EtcdConfig::default(), path);
+        reloaded.load_local_cache().await.expect("load 必须成功");
+        let entry = reloaded
+            .get_from_cache("k1")
+            .expect("往返后 k1 必须在缓存中");
+        assert_eq!(entry.value, "v1");
+        assert_eq!(entry.version, 3);
+
+        // 删除后不得残留
+        monitor.delete_from_cache("k1");
+        assert!(monitor.get_from_cache("k1").is_none());
+    }
+
+    /// 缓存文件内容非法 → 显性 Err，不得静默返回空缓存掩盖数据损坏。
+    #[tokio::test]
+    async fn load_local_cache_rejects_corrupt_file() {
+        let file = NamedTempFile::new().expect("temp file");
+        std::fs::write(file.path(), "{ not json").expect("write corrupt payload");
+        let monitor = EtcdClusterHealthMonitor::new(
+            EtcdConfig::default(),
+            file.path().to_string_lossy().to_string(),
+        );
+
+        let err = monitor
+            .load_local_cache()
+            .await
+            .expect_err("损坏缓存必须显性失败");
+        assert!(
+            format!("{err:?}").contains("Failed to parse cache file"),
+            "错误应点名解析失败，实际：{err:?}"
+        );
+    }
+
+    /// 写入不可达路径 → 显性 Err，降级数据不得静默丢失。
+    #[tokio::test]
+    async fn save_local_cache_reports_write_failure() {
+        let monitor = EtcdClusterHealthMonitor::new(
+            EtcdConfig::default(),
+            "/definitely/not/a/writable/dir/cache.json".to_string(),
+        );
+        monitor.put_to_cache("k".to_string(), "v".to_string(), 1);
+
+        let err = monitor
+            .save_local_cache()
+            .await
+            .expect_err("不可写路径必须报错");
+        assert!(
+            format!("{err:?}").contains("Failed to write cache file"),
+            "错误应点名写入失败，实际：{err:?}"
+        );
+    }
 }

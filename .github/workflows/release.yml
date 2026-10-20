@@ -75,13 +75,14 @@ jobs:
           command: check
           log-level: warn
 
-  # 发布到 crates.io（仅在 CARGO_REGISTRY_TOKEN 存在时执行，无 secret 跳过不报错）
+  # 发布到 crates.io：凭证走 OIDC trusted publishing（rust-lang/crates-io-auth-action），
+  # 不依赖 CARGO_REGISTRY_TOKEN。此前用 has_cargo_token 门控会在 secret 缺失时
+  # 静默 skip 发布（tag 打了但 crates.io 没动），故取消门控让失败显性暴露。
   publish-cargo:
     name: Publish to crates.io
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [check-secrets, pre-release-audit]
-    if: needs.check-secrets.outputs.has_cargo_token == 'true'
+    needs: [pre-release-audit]
     permissions:
       id-token: write
       contents: read
@@ -135,13 +136,18 @@ jobs:
           VERSION="${GITHUB_REF#refs/tags/v}"
           ok=""
           CODE="000"
-          for i in 1 2 3 4 5; do
-            sleep 20
+          # 索引传播有延迟：403（要求 UA/未就绪）与 404（索引尚未刷新）都必须继续轮询，
+          # 只有 200 视为成功；其余状态码视为真实失败立即退出。
+          for i in $(seq 1 40); do
+            sleep 30
             CODE=$(curl -s -o /dev/null -w "%{http_code}" -H 'User-Agent: kirky-x-release-verify' \
               "https://crates.io/api/v1/crates/nebulaid/${VERSION}")
             echo "try$i: HTTP ${CODE}"
             if [ "$CODE" = "200" ]; then ok=1; break; fi
-            if [ "$CODE" != "403" ]; then break; fi
+            case "$CODE" in
+              403|404) continue ;;
+              *) break ;;
+            esac
           done
           if [ -z "$ok" ]; then
             echo "::error::nebulaid ${VERSION} 未出现在 crates.io（HTTP ${CODE}）"

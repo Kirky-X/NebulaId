@@ -76,19 +76,9 @@ skip = [
 # 只保留"当前依赖图里确实命中"的条目：失效的忽略项既会触发 cargo-deny 的
 # advisory-not-detected 警告，也会让注释描述与现状不符（若将来重新引入
 # 受影响版本，宁可让门禁红起来再显式评估）。
-ignore = [
-    # unsafe-libyaml 0.2.11 is unmaintained (machine translation of libyaml's C code).
-    # Transitive chain: limiteron v0.3.0-rc.7 → confers v0.6.0-rc.10
-    # (`yaml` feature = `dep:serde_yaml_ng`) → serde_yaml_ng v0.10.0 → unsafe-libyaml 0.2.11.
-    # limiteron enables confers' `yaml` feature; nebulaid itself loads TOML only, so the
-    # YAML path is dead weight here, but cargo features are a union — one dependency
-    # enabling yaml puts the crate in the graph regardless of our own feature set.
-    # Upstream status: fixed in limiteron/confers local HEAD (YAML backend migrated
-    # serde_yaml_ng → serde-saphyr, pure Rust), not yet published to crates.io.
-    # No safe upgrade available on our side. Re-evaluate: when limiteron/confers
-    # publish the serde-saphyr migration — drop this entry and re-run cargo deny.
-    "RUSTSEC-2024-0449",
-]
+# 历史条目 RUSTSEC-2024-0449（unsafe-libyaml 维护停滞）已随 limiteron 0.3.0-rc.8 /
+# confers 0.6.0-rc.11 的 serde-saphyr 迁移退图，故整条移除而非留空注释。
+ignore = []
 
 [sources]
 unknown-registry = "warn"

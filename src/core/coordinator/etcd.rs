@@ -2868,10 +2868,9 @@ mod tests {
         );
     }
 
-    /// 真实 etcd 路径（integration-tests 门控 + #[ignore]）：分配 → 续期一次 → release 全链路。
-    /// 运行：`ETCD_TEST_ENDPOINTS=http://127.0.0.1:2379 cargo test
-    ///  --features etcd,integration-tests -- --ignored`
-    #[cfg(feature = "integration-tests")]
+    /// 真实 etcd 路径（`etcd` 门控 + #[ignore]）：分配 → 续期一次 → release 全链路。
+    /// 运行：`ETCD_TEST_ENDPOINTS=http://127.0.0.1:2379 cargo test --lib -- --ignored integration_`
+    #[cfg(feature = "etcd")]
     #[tokio::test]
     #[ignore = "需要真实 etcd：设置 ETCD_TEST_ENDPOINTS 后以 --ignored 运行"]
     async fn integration_worker_allocator_allocate_keepalive_release_real_etcd() {
@@ -2968,10 +2967,19 @@ mod tests {
         assert!(monitor.is_using_cache());
     }
 
-    // 真实 etcd：分布式锁语义（integration-tests）
+    // 真实 etcd：分布式锁语义
+    //
+    // 这组用例的门控从 `integration-tests` 改为 `etcd`（即本文件的模块级门控，
+    // 顶部 `#![cfg(feature = "etcd")]`）：它们只依赖真实 etcd 集群，不依赖数据库。
+    // 搭 `integration-tests` 的车会把 `database/repository.rs` 里同一个 feature 门控的
+    // 414 行 `#[ignore]` DB 用例体一并拉进覆盖率分母（实测使行覆盖率 94.56% → 93.64%，
+    // 且 cargo-llvm-cov 多轮 --no-report 取的是已落盘二进制的区域并集，跟腿序无关），
+    // 而那些用例在只有 postgres/redis/etcd 服务的门禁腿里永不执行。
+    // 运行方式不变：需真实集群，仍带 `#[ignore]`，由 ci.yml default 腿与
+    // health-check.yml 的 etcd-integration job 显式以 `-- --ignored integration_` 拉起。
 
     /// 连接真实 etcd（默认本机 2379）；不可达直接 panic 并指向环境变量。
-    #[cfg(feature = "integration-tests")]
+    #[cfg(feature = "etcd")]
     async fn integration_etcd_client() -> Arc<dyn EtcdClientOps> {
         let endpoints = std::env::var("ETCD_TEST_ENDPOINTS")
             .unwrap_or_else(|_| "http://127.0.0.1:2379".to_string());
@@ -2987,7 +2995,7 @@ mod tests {
     }
 
     /// 每个用例独立锁前缀：避免并发执行与残留 key 互相干扰。
-    #[cfg(feature = "integration-tests")]
+    #[cfg(feature = "etcd")]
     fn integration_lock_prefix(tag: &str) -> String {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2996,7 +3004,7 @@ mod tests {
     }
 
     /// 两客户端同 key 互斥：仅一个拿到锁，另一个重试耗尽后 AcquireFailed。
-    #[cfg(feature = "integration-tests")]
+    #[cfg(feature = "etcd")]
     #[tokio::test]
     #[ignore = "需要真实 etcd：设置 ETCD_TEST_ENDPOINTS 后以 --ignored 运行"]
     async fn integration_etcd_lock_mutual_exclusion() {
@@ -3023,7 +3031,7 @@ mod tests {
     }
 
     /// 显式释放后另一客户端可立即重入（lease revoke 连带删除 key）。
-    #[cfg(feature = "integration-tests")]
+    #[cfg(feature = "etcd")]
     #[tokio::test]
     #[ignore = "需要真实 etcd：设置 ETCD_TEST_ENDPOINTS 后以 --ignored 运行"]
     async fn integration_etcd_lock_release_reacquire() {
@@ -3041,7 +3049,7 @@ mod tests {
     }
 
     /// 短 TTL：lease 过期后 key 自动消失，另一客户端可获取。
-    #[cfg(feature = "integration-tests")]
+    #[cfg(feature = "etcd")]
     #[tokio::test]
     #[ignore = "需要真实 etcd：设置 ETCD_TEST_ENDPOINTS 后以 --ignored 运行"]
     async fn integration_etcd_lock_ttl_expiry() {

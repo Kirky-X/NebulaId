@@ -262,16 +262,19 @@ jobs:
           NEBULA_ADMIN_API_KEY_SECRET: ci-admin-secret-0123456789
         run: |
           set -uo pipefail
+          ETCD_TEST_ENDPOINTS=http://127.0.0.1:2379
+          export ETCD_TEST_ENDPOINTS
           # (1) 测试覆盖（累积 profraw，先不出报告）；测试失败即终止
           cargo llvm-cov --no-report --package ${{ env.PKG }} || { echo "::error::单元/集成测试未通过"; exit 1; }
-          # 【为何不把 --ignored 的真实 etcd 腿接进本门禁】——实测结论：
-          # cargo-llvm-cov 多轮 --no-report 合并时取的是“所有已落盘测试二进制”的区域并集，
-          # 跟腿的执行顺序无关。只要任一腿带 `--features integration-tests`，那轮编译就会多出
-          # 623 行永不执行的 #[ignore] 用例体（仅 database/repository.rs 就从 103 行 LF 涨到 517 行），
-          # 分母被稀释使行覆盖率从 94.56% 跌到 93.64%（实测三份 lcov 对比）。真实集群的
-          # 功能回归仍由 health-check.yml 的 etcd-integration job 跑（不进门禁口径），
-          # 而 etcd 包装器与 main.rs 装配臂的覆盖由下面 (2) 的真实启动腿拿。
-          # (2) 真实启动二进制覆盖组合根（注入 ETCD_ENDPOINTS：默认产物含 etcd 后，
+          # (2) 真实 etcd 上的协调回归（lease grant → keep_alive → release/revoke + 锁互斥）：
+          # 这些用例的 etcd.rs 真实 I/O 在 mock 面不可达，只能走真集群；按 §4
+          # “不降门槛、只补测”的原则用本 job 的 etcd 服务补齐，而不是加豁免。
+          # 关键：不开 `--features integration-tests`——那会多编译 414 行永不执行的
+          # DB 用例体入分母（实测 94.56% → 93.64%）；改用与 (1) 完全相同的默认特性。
+          cargo llvm-cov --no-report --package ${{ env.PKG }} --lib -- \
+            --ignored integration_ --test-threads=1 \
+            || { echo "::error::真实 etcd 集成用例未通过"; exit 1; }
+          # (3) 真实启动二进制覆盖组合根（注入 ETCD_ENDPOINTS：默认产物含 etcd 后，
           # 启动必须走 etcd 协调臂而不是单机本地锁臂，同时把 EtcdClientWrapper 的
           # connect/ping/kv/lease grant/keepalive/revoke 真实 I/O 臂计入覆盖）
           ETCD_ENDPOINTS=http://127.0.0.1:2379 cargo llvm-cov --no-report run --bin nebula-id -- --config config/config.toml &
@@ -288,10 +291,12 @@ jobs:
           fi
           pkill -TERM -f 'config/config.toml' || true
           wait "$SERVER_PID" 2>/dev/null || true
-          # (3) 合并两轮 profraw 出 lcov 并强制 95% 行覆盖率门禁
+          # (4) 合并三轮 profraw 出 lcov 并强制 95% 行覆盖率门禁。
+          # 加 --summary-only：使百分比在 job 日志里可直接审计（原先只写 lcov 不落屏幕，
+          # 腿红掉时看不到真实数字，只能盲猜差多少行）；阈值与口径不变。
           cargo llvm-cov report --package ${{ env.PKG }} \
             --ignore-filename-regex "server/proto/" \
-            --fail-under-lines 95 --lcov --output-path lcov.info
+            --fail-under-lines 95 --summary-only --lcov --output-path lcov.info
 
       - name: Upload Coverage Report
         if: always() && matrix.feature == 'default'

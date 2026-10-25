@@ -1593,9 +1593,9 @@ dependencies = [
 
 [[package]]
 name = "etcd-client"
-version = "0.21.0"
+version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3034352d0da33f5ae45de4f4c631857edde3f7f145af6416e50646e7f6b36fac"
+checksum = "c46b85f82f5189ce66d901425833ee2d94440a571e8071252db5776cc66dea63"
 dependencies = [
  "http",
  "prost",
@@ -5465,7 +5465,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

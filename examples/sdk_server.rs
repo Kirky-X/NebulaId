@@ -147,7 +147,7 @@ async fn sdk_batch_generate(
 /// GET /api-docs/openapi.json —— `#[forge]` 注册路由自动收集的 OpenAPI 文档。
 ///
 /// 不用 `sdforge::swagger_ui_router`（依赖 nebulaid 未启用的 `docs` 特性），
-/// 直接以 axum 路由提供 `sdforge::openapi::generate_openapi_spec` 的 spec。
+/// 直接以 axum 路由提供 `sdforge::openapi::generate_openapi_spec()` 的 spec。
 async fn serve_openapi_json() -> impl IntoResponse {
     Json(sdforge::openapi::generate_openapi_spec())
 }

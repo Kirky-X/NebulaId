@@ -14,7 +14,7 @@ use nebulaid::sdk::NebulaIdKitBuilder;
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
-    // 默认算法须为 snowflake：Config::default 的 segment 需数据库，未注入会被拒绝。
+    // 默认算法须为 snowflake：Config::default() 的 segment 需数据库，未注入会被拒绝。
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
 

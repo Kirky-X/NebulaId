@@ -119,9 +119,22 @@ impl_async_auto_builder!(RouterModule, Arc<AlgorithmRouter>, CoreError, |kit| {
         // 此处读取无同层构建顺序依赖；不能用 require::<RepositoryModule>——
         // trait-kit 对同层模块并发构建，Router/Repository 同层会竞态。
         // 未注入仓储时保持 Router 原样（生产构建按 config.database 自举）。
+        // 裸仓储必须就地富集锁（与 RepositoryModule 同款）：allocate_segment
+        // 在未注入锁时 fail-closed 拒绝，直接透传会让 SDK 路径的号段分配必败；
+        // RouterModule 硬依赖 DistributedLockModule，require 无竞态。
         #[cfg(feature = "segment")]
         let router = match kit.config::<RepositoryInput>() {
-            Ok(RepositoryInput(repository)) => router.with_segment_repository(Arc::new(repository)),
+            Ok(RepositoryInput(repository)) => {
+                let lock = kit.require::<DistributedLockModule>().map_err(|e| {
+                    CoreError::InternalError(t!(
+                        "error.sdk.module_dependency_missing",
+                        module = "router",
+                        dependency = "distributed-lock",
+                        reason = e
+                    ))
+                })?;
+                router.with_segment_repository(Arc::new(repository.with_distributed_lock(lock)))
+            }
             Err(_) => router,
         };
         #[cfg(feature = "segment")]
@@ -314,6 +327,22 @@ impl IdGenerator {
     }
 }
 
+/// 端点脱敏：错误消息里的 endpoint 列表剥离 URL userinfo
+/// （`scheme://user:pass@host:port` → `scheme://host:port`），避免配置中
+/// 携带的凭据随 ConfigurationError 外泄到日志/API 响应。
+fn redact_endpoints(endpoints: &[String]) -> Vec<String> {
+    endpoints
+        .iter()
+        .map(|endpoint| match endpoint.split_once("://") {
+            Some((scheme, rest)) => match rest.rsplit_once('@') {
+                Some((_, host_port)) => format!("{scheme}://{host_port}"),
+                None => endpoint.clone(),
+            },
+            None => endpoint.clone(),
+        })
+        .collect()
+}
+
 /// 分布式锁创建（fail-closed）：etcd 且 endpoints 已配置 → `EtcdDistributedLock`（ping 探活）；
 /// 任一步失败返回 `Err`，**不再静默回退**进程内锁（多实例部署静默回退必然重复 ID）。
 /// 未配置 endpoints（含仅空白项）→ `LocalDistributedLock`（单机合法）并 warn。
@@ -328,10 +357,31 @@ async fn create_distributed_lock(
         return Ok(Arc::new(LocalDistributedLock::new()));
     }
 
-    let wrapper = EtcdClientWrapper::new(config.etcd.configured_endpoints()).await.map_err(|e| {
+    // 零操作超时会令每次 etcd 操作立即失败，配置层未拦此处兜底拒绝。
+    if config.etcd.operation_timeout_secs == 0 {
+        return Err(CoreError::ConfigurationError(format!(
+            "sdk: etcd operation_timeout_secs must be > 0 (got {}); refusing to build a zero-length operation timeout",
+            config.etcd.operation_timeout_secs
+        )));
+    }
+    // 连接期同样受 connect_timeout 约束：EtcdClientWrapper::new 内部即发起
+    // Client::connect（真实网络 I/O），不包裹则构建可在预算外挂起。
+    let connect_timeout = std::time::Duration::from_millis(config.etcd.connect_timeout_ms.max(1));
+    let wrapper = tokio::time::timeout(
+        connect_timeout,
+        EtcdClientWrapper::new(config.etcd.configured_endpoints()),
+    )
+    .await
+    .map_err(|_| {
+        CoreError::ConfigurationError(format!(
+            "sdk: etcd connect timed out after {}ms; refusing to fall back to LocalDistributedLock",
+            config.etcd.connect_timeout_ms.max(1)
+        ))
+    })?
+    .map_err(|e| {
         CoreError::ConfigurationError(format!(
             "sdk: etcd endpoints are configured but the client is unavailable (endpoints: {:?}): {e}; refusing to fall back to LocalDistributedLock",
-            config.etcd.endpoints
+            redact_endpoints(&config.etcd.endpoints)
         ))
     })?
     // 单次操作超时与主服务同源（EtcdConfig::operation_timeout_secs）。
@@ -347,13 +397,13 @@ async fn create_distributed_lock(
         Ok(Err(e)) => {
             return Err(CoreError::ConfigurationError(format!(
                 "sdk: etcd ping failed (endpoints: {:?}): {e}; refusing to fall back to LocalDistributedLock",
-                config.etcd.endpoints
+                redact_endpoints(&config.etcd.endpoints)
             )));
         }
         Err(_) => {
             return Err(CoreError::ConfigurationError(format!(
                 "sdk: etcd ping timed out after {}ms (endpoints: {:?}); refusing to fall back to LocalDistributedLock",
-                config.etcd.connect_timeout_ms, config.etcd.endpoints
+                config.etcd.connect_timeout_ms, redact_endpoints(&config.etcd.endpoints)
             )));
         }
     }
@@ -375,7 +425,7 @@ async fn create_distributed_lock(
     if config.etcd.has_configured_endpoints() {
         return Err(CoreError::ConfigurationError(t!(
             "error.sdk.etcd_feature_required",
-            endpoints = format!("{:?}", config.etcd.endpoints)
+            endpoints = format!("{:?}", redact_endpoints(&config.etcd.endpoints))
         )));
     }
     Ok(Arc::new(LocalDistributedLock::new()))
@@ -482,7 +532,7 @@ impl NebulaIdKit {
     }
 }
 
-/// 嵌入式 SDK Kit 构建器：最小用法 `NebulaIdKitBuilder::new(config).build.await`（零 DB）；
+/// 嵌入式 SDK Kit 构建器：最小用法 `NebulaIdKitBuilder::new(config).build().await`（零 DB）；
 /// 需要 Segment 时 `.with_repository(repo)` 注入（随 `database` 编译）。
 pub struct NebulaIdKitBuilder {
     config: Config,
@@ -565,12 +615,17 @@ impl NebulaIdKitBuilder {
 
         let ready_kit = kit.build().await.map_err(|e| {
             // 模块构建失败中的配置类错误保留原类型（如 etcd feature 缺失），
-            // 调用方可直接按 ConfigurationError 分支处理。
-            if let Some(core) = std::error::Error::source(&e)
-                .and_then(|s| s.downcast_ref::<CoreError>())
-                .filter(|c| matches!(c, CoreError::ConfigurationError(_)))
-            {
-                return CoreError::ConfigurationError(core.to_string());
+            // 调用方可直接按 ConfigurationError 分支处理。沿完整 source 链
+            // 下钻：trait-kit 若把模块错误多包一层，只看直接 source 会把
+            // ConfigurationError 误降级成 InternalError。
+            let mut source = std::error::Error::source(&e);
+            while let Some(current) = source {
+                if let Some(core) = current.downcast_ref::<CoreError>() {
+                    if matches!(core, CoreError::ConfigurationError(_)) {
+                        return CoreError::ConfigurationError(core.to_string());
+                    }
+                }
+                source = current.source();
             }
             CoreError::InternalError(t!("error.sdk.kit_build_failed", reason = e))
         })?;

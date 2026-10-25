@@ -114,7 +114,7 @@ tonic = { version = "0.14", optional = true, default-features = false, features 
 etcd-client = { version = "0.21", optional = true, default-features = false, features = ["tls"] }
 
 # 缓存与存储
-parking_lot = { version = "0.12", default-features = false }
+parking_lot = { version = "0.13", default-features = false }
 
 # 日志追踪（tracing-subscriber 由 inklog 间接引入，日志初始化通过 inklog 接管）
 tracing = { version = "0.1", default-features = false, features = ["std"] }

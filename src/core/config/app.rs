@@ -217,6 +217,13 @@ pub(crate) fn redact_optional_url(url: &str) -> String {
     }
 }
 
+/// endpoint 列表脱敏：逐项经 `redact_db_url` 剥离 userinfo。
+/// etcd 端点可携带 `scheme://user:pass@host:port`，错误消息/日志直接打印
+/// 会把凭据外泄；调用方（SDK 构建、主服务启动）统一走此入口。
+pub(crate) fn redact_endpoints(endpoints: &[String]) -> Vec<String> {
+    endpoints.iter().map(|e| redact_db_url(e)).collect()
+}
+
 impl Default for DatabaseConfig {
     fn default() -> Self {
         // DATABASE_URL 存在时口令内嵌于 URL，无需单独 password；用 `if let Ok(url)`

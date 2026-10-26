@@ -996,7 +996,10 @@ async fn init_repository(config: &Config) -> Result<RepositoryStack> {
                 "{}",
                 t!(
                     "error.main.etcd_feature_required",
-                    endpoints = format!("{:?}", config.etcd.endpoints)
+                    endpoints = format!(
+                        "{:?}",
+                        nebulaid::core::config::app::redact_endpoints(&config.etcd.endpoints)
+                    )
                 )
             );
             error!("{}", t!("log.main.shutting_down"));

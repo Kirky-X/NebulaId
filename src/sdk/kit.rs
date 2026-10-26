@@ -327,21 +327,10 @@ impl IdGenerator {
     }
 }
 
-/// 端点脱敏：错误消息里的 endpoint 列表剥离 URL userinfo
-/// （`scheme://user:pass@host:port` → `scheme://host:port`），避免配置中
-/// 携带的凭据随 ConfigurationError 外泄到日志/API 响应。
-fn redact_endpoints(endpoints: &[String]) -> Vec<String> {
-    endpoints
-        .iter()
-        .map(|endpoint| match endpoint.split_once("://") {
-            Some((scheme, rest)) => match rest.rsplit_once('@') {
-                Some((_, host_port)) => format!("{scheme}://{host_port}"),
-                None => endpoint.clone(),
-            },
-            None => endpoint.clone(),
-        })
-        .collect()
-}
+/// 端点脱敏复用 `core::config::app::redact_endpoints`（单实现，避免两处漂移）：
+/// 错误消息里的 endpoint 列表剥离 URL userinfo，凭据不随 ConfigurationError
+/// 外泄到日志/API 响应。
+use crate::core::config::app::redact_endpoints;
 
 /// 分布式锁创建（fail-closed）：etcd 且 endpoints 已配置 → `EtcdDistributedLock`（ping 探活）；
 /// 任一步失败返回 `Err`，**不再静默回退**进程内锁（多实例部署静默回退必然重复 ID）。

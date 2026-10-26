@@ -25,7 +25,8 @@ jobs:
         with:
           fetch-depth: 0
       - name: actionlint
-        uses: docker://rhysd/actionlint:latest
+        # 第三方 docker action 钉具体版本：latest 可变，上游可静默换镜像。
+        uses: docker://rhysd/actionlint:v1.7.7
         with:
           # shellcheck 子检查降到 error 级：YAML 语法/表达式错误仍阻断，
           # 风格级（SC2086/SC2034 等）不阻断，避免打断既有流水线。
@@ -40,11 +41,13 @@ jobs:
         # Unable to resolve action 而红；改为 SHA 钉住 v0.7.1，与本工作区 vecboost 仓已采用的写法一致。
         uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
       - name: gitleaks 密钥扫描
-        uses: gitleaks/gitleaks-action@v2
+        # 第三方 action 钉 SHA：可变 tag（@v2）可被上游重指，与本文件其余 action 一致。
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
       - name: trivy (文件系统/依赖漏洞)
-        uses: aquasecurity/trivy-action@master
+        # 同上：@master 是可变分支，钉 v0.36.0。
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .

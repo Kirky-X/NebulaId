@@ -22,6 +22,7 @@ async fn test_full_id_generation_workflow() {
         biz_tag: "test-tag".to_string(),
         format: IdFormat::Numeric,
         prefix: None,
+        dc: 0,
     };
 
     let id = algorithm
@@ -68,6 +69,7 @@ async fn test_batch_size_validation() {
         biz_tag: "test-tag".to_string(),
         format: IdFormat::Numeric,
         prefix: None,
+        dc: 0,
     };
 
     // Test valid batch size
@@ -99,6 +101,7 @@ async fn test_algorithm_metrics() {
         biz_tag: "test-tag".to_string(),
         format: IdFormat::Numeric,
         prefix: None,
+        dc: 0,
     };
 
     for _ in 0..10 {

@@ -311,6 +311,7 @@ impl IdGenerator {
             biz_tag: biz_tag.to_string(),
             format: IdFormat::Numeric,
             prefix: None,
+            dc: 0,
         }
     }
 
@@ -745,6 +746,7 @@ mod tests {
             biz_tag: "biz".to_string(),
             format: crate::core::types::IdFormat::Numeric,
             prefix: None,
+            dc: 0,
         }
     }
 

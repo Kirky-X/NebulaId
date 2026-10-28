@@ -39,6 +39,7 @@ fn bench_ctx() -> GenerateContext {
         biz_tag: "bench".to_string(),
         format: nebulaid::core::types::IdFormat::Numeric,
         prefix: None,
+        dc: 0,
     }
 }
 

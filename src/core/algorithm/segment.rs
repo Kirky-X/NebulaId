@@ -523,6 +523,29 @@ impl SegmentAlgorithm {
         self
     }
 
+    /// 号段 dc 位前缀宽度：DcId 值域 u8 → 高 8 位为 dc 前缀，局部空间 2^56；
+    /// dc=0 时前缀为 0，ID 值与既有单 DC 部署恒等（向后兼容）。
+    const DC_PREFIX_SHIFT: u32 = 56;
+
+    /// 把 loader 返回的局部号段区间映射进 `dc` 的命名空间带：
+    /// `[start, max) + (dc << 56)`。跨 DC 命名空间经位前缀天然不重叠，
+    /// 无需数据复制即保证 ID 不冲突。局部区间越出带界（DB 序列本地值 ≥ 2^56）
+    /// 显性报错，不静默回绕污染相邻 DC 的 ID 带。
+    fn partition_segment_to_dc_band(dc: u8, seg: SegmentData) -> Result<SegmentData> {
+        if seg.max_id > (1u64 << Self::DC_PREFIX_SHIFT) {
+            return Err(CoreError::ConfigurationError(format!(
+                "segment local range max {max} exceeds the per-dc band capacity 2^{shift};                  id namespace would leak across datacenter bands",
+                max = seg.max_id,
+                shift = Self::DC_PREFIX_SHIFT
+            )));
+        }
+        let base = (dc as u64) << Self::DC_PREFIX_SHIFT;
+        Ok(SegmentData {
+            start_id: base.saturating_add(seg.start_id),
+            max_id: base.saturating_add(seg.max_id),
+        })
+    }
+
     fn get_or_create_buffer(&self, key: &str) -> Arc<DoubleBuffer> {
         // 快路径：读锁查找已有 buffer（读多写少场景优化，避免每次获取写锁）
         {
@@ -576,7 +599,7 @@ impl SegmentAlgorithm {
             };
             let load_result = self.segment_loader.load_segment(ctx, 0).await;
             self.record_load_result(&load_result);
-            let new_seg = load_result?;
+            let new_seg = Self::partition_segment_to_dc_band(ctx.dc, load_result?)?;
             buffer.set_next(Arc::new(AtomicSegment::new(
                 new_seg.start_id,
                 new_seg.max_id,
@@ -598,7 +621,7 @@ impl SegmentAlgorithm {
 #[async_trait]
 impl IdAlgorithm for SegmentAlgorithm {
     async fn generate(&self, ctx: &GenerateContext) -> Result<Id> {
-        let key = format!("{}:{}", ctx.workspace_id, ctx.biz_tag);
+        let key = format!("{}:{}:{}", ctx.dc, ctx.workspace_id, ctx.biz_tag);
         let buffer = self.get_or_create_buffer(&key);
 
         for _ in 0..3 {
@@ -633,7 +656,7 @@ impl IdAlgorithm for SegmentAlgorithm {
         }
 
         let mut ids = Vec::with_capacity(size);
-        let key = format!("{}:{}", ctx.workspace_id, ctx.biz_tag);
+        let key = format!("{}:{}:{}", ctx.dc, ctx.workspace_id, ctx.biz_tag);
         let buffer = self.get_or_create_buffer(&key);
 
         // 连续无进展轮次：try_consume 仅在段耗尽（left==0）时失败，正常
@@ -998,6 +1021,7 @@ mod tests {
             biz_tag: "test".to_string(),
             format: crate::core::types::IdFormat::Numeric,
             prefix: None,
+            dc: 0,
         };
 
         let id = algo.generate(&ctx).await.unwrap();
@@ -1499,6 +1523,7 @@ mod tests {
             biz_tag: "tag".to_string(),
             format: crate::core::types::IdFormat::Numeric,
             prefix: None,
+            dc: 0,
         }
     }
 
@@ -1746,5 +1771,106 @@ mod tests {
             }
             other => panic!("expected ConfigurationError, got {other:?}"),
         }
+    }
+
+    // 跨 DC 号段命名空间分区（active_dc 切换随动）
+
+    /// 记录每次加载的 (dc, worker_id) 并返回推进的局部区间 [n*1000, n*1000+1000)。
+    struct DcRecordingLoader {
+        loads: Mutex<Vec<(u8, u8)>>,
+        next_start: AtomicU64,
+    }
+
+    impl DcRecordingLoader {
+        fn new() -> Self {
+            Self {
+                loads: Mutex::new(Vec::new()),
+                next_start: AtomicU64::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl SegmentLoader for DcRecordingLoader {
+        async fn load_segment(&self, ctx: &GenerateContext, worker_id: u8) -> Result<SegmentData> {
+            let start = self.next_start.fetch_add(1000, Ordering::SeqCst);
+            self.loads.lock().push((ctx.dc, worker_id));
+            Ok(SegmentData {
+                start_id: start,
+                max_id: start + 1000,
+            })
+        }
+    }
+
+    /// active_dc 切换后，SegmentLoader 生成的号段其 dc 位前缀与 worker 命名空间必须
+    /// 随 active_dc() 改变（dc 位分区）：dc=1 与 dc=2 的号段带不同 dc 前缀、
+    /// 号段区间不交叠，切换前后生成的 ID 集合无重复。
+    #[tokio::test]
+    async fn segment_namespace_follows_active_dc_partition() {
+        use crate::core::coordinator::{DcFailoverController, EtcdClusterStatus, FailoverDecision};
+
+        let loader = Arc::new(DcRecordingLoader::new());
+        let algo = SegmentAlgorithm::new(0).with_segment_loader(loader.clone());
+        let ctl = Arc::new(DcFailoverController::new(1, vec![2]));
+
+        let mut ctx = GenerateContext {
+            workspace_id: "ws".to_string(),
+            group_id: "g".to_string(),
+            biz_tag: "order".to_string(),
+            format: crate::core::types::IdFormat::Numeric,
+            prefix: None,
+            dc: ctl.active_dc(),
+        };
+
+        // dc=1：号段 ID 全部落进 dc=1 前缀带。
+        let mut dc1_ids = Vec::new();
+        for _ in 0..10 {
+            dc1_ids.push(algo.generate(&ctx).await.unwrap().as_u128() as u64);
+        }
+        assert!(
+            dc1_ids.iter().all(|id| (id >> 56) == 1),
+            "dc=1 生成的号段 ID 必须带 dc=1 前缀位"
+        );
+        {
+            let loads = loader.loads.lock();
+            assert!(
+                loads.iter().all(|(dc, _)| *dc == 1),
+                "loader 收到的命名空间必须为 dc=1"
+            );
+        }
+
+        // 切换：primary(dc=1) 判死，standby(dc=2) 健康。
+        ctl.observe(1, EtcdClusterStatus::Failed).await;
+        ctl.observe(2, EtcdClusterStatus::Healthy).await;
+        assert_eq!(ctl.evaluate().await, FailoverDecision::SwitchTo(2));
+        ctx.dc = ctl.active_dc();
+
+        // dc=2：号段 ID 全部落进 dc=2 前缀带；buffer 命名空间换名必须触发新加载。
+        let mut dc2_ids = Vec::new();
+        for _ in 0..10 {
+            dc2_ids.push(algo.generate(&ctx).await.unwrap().as_u128() as u64);
+        }
+        assert!(
+            dc2_ids.iter().all(|id| (id >> 56) == 2),
+            "dc=2 生成的号段 ID 必须带 dc=2 前缀位"
+        );
+        {
+            let loads = loader.loads.lock();
+            assert!(
+                loads.iter().any(|(dc, _)| *dc == 2),
+                "切换后 loader 必须以 dc=2 命名空间重新加载号段"
+            );
+        }
+
+        // 跨 DC 不重叠：两带 ID 集合并集无重复（无需数据复制即不冲突）。
+        let mut all = dc1_ids.clone();
+        all.extend_from_slice(&dc2_ids);
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(
+            all.len(),
+            dc1_ids.len() + dc2_ids.len(),
+            "切换前后生成的 ID 集合无重复"
+        );
     }
 }

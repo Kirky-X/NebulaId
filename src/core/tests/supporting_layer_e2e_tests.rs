@@ -275,6 +275,7 @@ async fn e2e_id_format_conversion_roundtrip_from_real_algorithm() {
         biz_tag: "bt-e2e".to_string(),
         format: IdFormat::Numeric,
         prefix: None,
+        dc: 0,
     };
 
     let id = algorithm

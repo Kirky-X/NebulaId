@@ -6,6 +6,7 @@ use crate::core::algorithm::{
     GenerateContext, HealthStatus, IdAlgorithm, IdGenerator,
 };
 use crate::core::config::Config;
+use crate::core::coordinator::DcFailoverController;
 #[cfg(feature = "etcd")]
 use crate::core::coordinator::EtcdClusterHealthMonitor;
 #[cfg(feature = "segment")]
@@ -28,6 +29,7 @@ impl IdGenerator for AlgorithmRouter {
             biz_tag: biz_tag.to_string(),
             format: crate::core::types::IdFormat::Numeric,
             prefix: None,
+            dc: 0,
         };
         AlgorithmRouter::generate(self, &ctx).await
     }
@@ -45,6 +47,7 @@ impl IdGenerator for AlgorithmRouter {
             biz_tag: biz_tag.to_string(),
             format: crate::core::types::IdFormat::Numeric,
             prefix: None,
+            dc: 0,
         };
         let batch = AlgorithmRouter::batch_generate(self, &ctx, size).await?;
         Ok(batch.ids)
@@ -205,6 +208,9 @@ pub struct AlgorithmRouter {
     cpu_monitor: Option<Arc<crate::core::algorithm::segment::CpuMonitor>>,
     #[cfg(feature = "etcd")]
     etcd_health_monitor: Option<Arc<EtcdClusterHealthMonitor>>,
+    /// 跨 DC 故障转移控制器（可选装配）：`Some` 时 generate/batch 以 `active_dc()`
+    /// 作为请求的 dc 维度（切换经原子 primary 生效，set_algorithm 同款热替换语义）。
+    dc_failover: Option<Arc<DcFailoverController>>,
     /// Segment 号段仓储句柄（可选）：`Some` 时经 `DbSegmentLoader` 注入工厂；
     /// `None` 时生产构建按 `config.database` 自举，测试构建走内存造段器默认值。
     #[cfg(feature = "segment")]
@@ -320,6 +326,7 @@ impl AlgorithmRouter {
             cpu_monitor: None,
             #[cfg(feature = "etcd")]
             etcd_health_monitor: None,
+            dc_failover: None,
             #[cfg(feature = "segment")]
             segment_repository: None,
         }
@@ -340,6 +347,29 @@ impl AlgorithmRouter {
     ) -> Self {
         self.cpu_monitor = Some(monitor);
         self
+    }
+
+    /// 装配跨 DC 故障转移控制器：装配后所有发号入口以 `active_dc()` 填充
+    /// `GenerateContext.dc`，号段算法据此切换 dc 位前缀命名空间。
+    pub fn with_dc_failover_controller(mut self, controller: Arc<DcFailoverController>) -> Self {
+        self.dc_failover = Some(controller);
+        self
+    }
+
+    /// 请求上下文的 dc 维度解析：装配控制器时以 `active_dc()` 覆盖，未装配保留原值。
+    /// 只读借用为缺省路径，避免未装配时热路径多一次 clone。
+    fn ctx_with_active_dc<'a>(
+        &'a self,
+        ctx: &'a GenerateContext,
+    ) -> std::borrow::Cow<'a, GenerateContext> {
+        match &self.dc_failover {
+            Some(controller) => {
+                let mut owned = ctx.clone();
+                owned.dc = controller.active_dc();
+                std::borrow::Cow::Owned(owned)
+            }
+            None => std::borrow::Cow::Borrowed(ctx),
+        }
     }
 
     #[cfg(feature = "etcd")]
@@ -561,6 +591,7 @@ impl AlgorithmRouter {
             biz_tag: biz_tag.to_string(),
             format: crate::core::types::IdFormat::Numeric,
             prefix: None,
+            dc: 0,
         };
         let algorithm = match algorithm {
             Some(algorithm) => algorithm,
@@ -585,6 +616,7 @@ impl AlgorithmRouter {
             biz_tag: biz_tag.to_string(),
             format: crate::core::types::IdFormat::Numeric,
             prefix: None,
+            dc: 0,
         };
         let algorithm = match algorithm {
             Some(algorithm) => algorithm,
@@ -632,6 +664,7 @@ impl AlgorithmRouter {
             biz_tag: biz_tag.to_string(),
             format: crate::core::types::IdFormat::Numeric,
             prefix: None,
+            dc: 0,
         };
         self.generate_detailed_internal(algorithm, &ctx)
             .await
@@ -652,6 +685,7 @@ impl AlgorithmRouter {
             biz_tag: biz_tag.to_string(),
             format: crate::core::types::IdFormat::Numeric,
             prefix: None,
+            dc: 0,
         };
         self.batch_generate_with_algorithm_internal(algorithm, &ctx, size)
             .await
@@ -743,6 +777,7 @@ impl AlgorithmRouter {
         algorithm: AlgorithmType,
         ctx: &GenerateContext,
     ) -> Result<(Id, AlgorithmType)> {
+        let ctx = &*self.ctx_with_active_dc(ctx);
         // 未启用算法显式报错（确定性逻辑）：不 panic、不回退到其他算法。
         #[cfg(not(feature = "segment"))]
         if algorithm == AlgorithmType::Segment {
@@ -865,6 +900,7 @@ impl AlgorithmRouter {
         ctx: &GenerateContext,
         size: usize,
     ) -> Result<IdBatch> {
+        let ctx = &*self.ctx_with_active_dc(ctx);
         #[cfg(not(feature = "segment"))]
         if algorithm == AlgorithmType::Segment {
             return Err(CoreError::InvalidAlgorithmType("segment".to_string()));
@@ -1054,6 +1090,7 @@ mod tests {
             biz_tag: "test".to_string(),
             format: crate::core::types::IdFormat::Numeric,
             prefix: None,
+            dc: 0,
         };
 
         let id = router.generate(&ctx).await.unwrap();
@@ -1076,6 +1113,7 @@ mod tests {
             biz_tag: "test".to_string(),
             format: crate::core::types::IdFormat::Numeric,
             prefix: None,
+            dc: 0,
         };
 
         let mut ids_generated = 0;
@@ -1317,7 +1355,154 @@ mod tests {
             biz_tag: biz_tag.to_string(),
             format: crate::core::types::IdFormat::Numeric,
             prefix: None,
+            dc: 0,
         }
+    }
+
+    // 跨 DC：generate 的 dc 维度经装配的 DcFailoverController 填充
+
+    /// 记录每次收到的 dc 并按 (dc << 56) | seq 返回 ID：ID 值自带 dc 前缀带，
+    /// 使「切换前后生成的 ID 集合无重复」可直接对 ID 集合断言。
+    struct DcEchoAlgorithm {
+        alg_type: AlgorithmType,
+        seen: std::sync::Mutex<Vec<u8>>,
+        seq: std::sync::atomic::AtomicU64,
+    }
+
+    impl DcEchoAlgorithm {
+        fn new() -> Self {
+            Self {
+                alg_type: AlgorithmType::Segment,
+                seen: std::sync::Mutex::new(Vec::new()),
+                seq: std::sync::atomic::AtomicU64::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl IdAlgorithm for DcEchoAlgorithm {
+        async fn generate(&self, ctx: &GenerateContext) -> Result<Id> {
+            self.seen.lock().unwrap().push(ctx.dc);
+            let n = self.seq.fetch_add(1, Ordering::SeqCst);
+            Ok(Id::from_u128(((ctx.dc as u128) << 56) | n as u128))
+        }
+
+        async fn batch_generate(&self, _ctx: &GenerateContext, size: usize) -> Result<IdBatch> {
+            let start = self.seq.fetch_add(size as u64, Ordering::SeqCst);
+            Ok(IdBatch {
+                ids: (start..start + size as u64)
+                    .map(|n| Id::from_u128(n as u128))
+                    .collect(),
+                algorithm: self.alg_type,
+                biz_tag: String::new(),
+                generated_at: chrono::Utc::now(),
+            })
+        }
+
+        fn health_check(&self) -> HealthStatus {
+            HealthStatus::Healthy
+        }
+        fn metrics(&self) -> AlgorithmMetricsSnapshot {
+            AlgorithmMetricsSnapshot::default()
+        }
+        fn algorithm_type(&self) -> AlgorithmType {
+            self.alg_type
+        }
+        async fn shutdown(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 装配控制器后，router.generate 必须以 `active_dc()` 填充 GenerateContext.dc：
+    /// 切换前请求落在 dc=1，evaluate 切换后下一个请求即落在 dc=2（热替换语义）。
+    #[tokio::test]
+    #[cfg(feature = "segment")]
+    async fn router_generate_fills_dc_from_wired_failover_controller() {
+        use crate::core::coordinator::{DcFailoverController, EtcdClusterStatus, FailoverDecision};
+
+        let ctl = Arc::new(DcFailoverController::new(1, vec![2]));
+        let router =
+            AlgorithmRouter::new(Config::default(), None).with_dc_failover_controller(ctl.clone());
+        let echo = Arc::new(DcEchoAlgorithm::new());
+        insert_mock(&router, AlgorithmType::Segment, echo.clone());
+
+        let id1 = router.generate(&make_ctx("order")).await.unwrap();
+        assert_eq!(
+            (id1.as_u128() >> 56) as u64,
+            1,
+            "未切换时 dc 维度必须为 active_dc=1"
+        );
+
+        ctl.observe(1, EtcdClusterStatus::Failed).await;
+        ctl.observe(2, EtcdClusterStatus::Healthy).await;
+        assert_eq!(ctl.evaluate().await, FailoverDecision::SwitchTo(2));
+
+        let id2 = router.generate(&make_ctx("order")).await.unwrap();
+        assert_eq!(
+            (id2.as_u128() >> 56) as u64,
+            2,
+            "切换后 generate 必须以 active_dc=2 填充 dc 维度"
+        );
+        assert_eq!(echo.seen.lock().unwrap().as_slice(), [1, 2]);
+    }
+
+    /// 切换与并发 generate 交错：ID 全局无重复（dc 位分区保证），切换仅发生一次。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[cfg(feature = "segment")]
+    async fn concurrent_generate_across_dc_switch_produces_no_duplicate_ids() {
+        use crate::core::coordinator::{DcFailoverController, EtcdClusterStatus, FailoverDecision};
+
+        let ctl = Arc::new(DcFailoverController::new(1, vec![2]));
+        let router = Arc::new(
+            AlgorithmRouter::new(Config::default(), None).with_dc_failover_controller(ctl.clone()),
+        );
+        let echo = Arc::new(DcEchoAlgorithm::new());
+        insert_mock(&router, AlgorithmType::Segment, echo.clone());
+
+        ctl.observe(1, EtcdClusterStatus::Failed).await;
+        ctl.observe(2, EtcdClusterStatus::Healthy).await;
+
+        // 先起切换器，再起 16 线程 generate：与切换并发交错。
+        let switcher = {
+            let ctl = ctl.clone();
+            tokio::spawn(async move { ctl.evaluate().await })
+        };
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let router = router.clone();
+            handles.push(tokio::spawn(async move {
+                let mut ids = Vec::new();
+                for _ in 0..8 {
+                    ids.push(router.generate(&make_ctx("order")).await.unwrap().as_u128());
+                }
+                ids
+            }));
+        }
+
+        let mut all = Vec::new();
+        for handle in handles {
+            all.extend(handle.await.expect("generate 任务不得 panic"));
+        }
+        let decision = switcher.await.expect("切换任务不得 panic");
+
+        all.sort_unstable();
+        let before_dedup = all.len();
+        all.dedup();
+        assert_eq!(
+            all.len(),
+            before_dedup,
+            "切换前后生成的 ID 集合无重复（dc 位分区）"
+        );
+        assert!(matches!(decision, FailoverDecision::SwitchTo(2)));
+        assert_eq!(ctl.switch_count(), 1, "并发下切换只允许发生一次");
+        assert!(
+            echo.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|dc| *dc == 1 || *dc == 2),
+            "请求的 dc 维度只能是切换前后的两个 DC"
+        );
     }
 
     // 路由层观测

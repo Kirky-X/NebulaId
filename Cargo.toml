@@ -32,6 +32,13 @@ name = "audit_ring_stall_repro"
 path = "tests/audit_ring_stall_repro.rs"
 required-features = ["server"]
 
+# 跨 DC 故障转移真实双 etcd 用例：需 etcd-a/etcd-b 两个集群与 kill 机制，
+# 仅在 etcd-integration job（health-check.yml）以 --ignored 显式触发。
+[[test]]
+name = "etcd_failover"
+path = "tests/etcd_failover.rs"
+required-features = ["etcd", "server"]
+
 [features]
 # 特性模型（模块级门控）：--all-features 可构建；--no-default-features 为有效轻量目标（未启用模块经 cfg 门控排除）。
 # etcd 进 default：多实例部署的 worker_id 分配与号段分布式锁只有 etcd 实现具备

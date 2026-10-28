@@ -129,7 +129,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
-      etcd:
+      etcd-a:
         # 镜像来源变更（非选型偏好）：Bitnami 于 2025-08 收缩 Docker Hub 免费位，
         # `bitnami/etcd:3.5` 已被删 tag——registry 返 404（`hub.docker.com/v2/repositories/bitnami/etcd/tags/3.5`），
         # 导致本 job 从 2026-10-19 起固定报 "Docker pull failed with exit code 1"。
@@ -137,10 +137,24 @@ jobs:
         image: bitnamilegacy/etcd:3.5
         env:
           ALLOW_NONE_AUTHENTICATION: "yes"
-          ETCD_ADVERTISE_CLIENT_URLS: "http://etcd:2379"
+          ETCD_ADVERTISE_CLIENT_URLS: "http://etcd-a:2379"
           ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
         ports:
           - 2379:2379
+        options: >-
+          --health-cmd "etcdctl endpoint health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      etcd-b:
+        # 跨 DC 故障转移用例的 standby 集群（dc=2）；主机端口 2380 映射容器 2379。
+        image: bitnamilegacy/etcd:3.5
+        env:
+          ALLOW_NONE_AUTHENTICATION: "yes"
+          ETCD_ADVERTISE_CLIENT_URLS: "http://etcd-b:2379"
+          ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
+        ports:
+          - 2380:2379
         options: >-
           --health-cmd "etcdctl endpoint health"
           --health-interval 10s
@@ -168,3 +182,11 @@ jobs:
         # `integration_worker_allocator_allocate_keepalive_release_real_etcd`（真实 etcd 上的
         # lease grant → 分配 → keepalive → release 链路，Phase 2 的核心回归）。
         run: cargo test --package nebulaid --features etcd,integration-tests --lib -- --ignored integration_ --test-threads=1
+
+      - name: Run dual-cluster failover test
+        env:
+          ETCD_DC_A_ENDPOINTS: http://127.0.0.1:2379
+          ETCD_DC_B_ENDPOINTS: http://127.0.0.1:2380
+        # kill 机制：runner 与 service 容器同 docker daemon，测试内默认命令
+        # `docker ps -q --filter name=etcd-a | xargs -r docker kill` 直接定位容器。
+        run: cargo test --package nebulaid --features etcd,server --test etcd_failover -- --ignored --test-threads=1

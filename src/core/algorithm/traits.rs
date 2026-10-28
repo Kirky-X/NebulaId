@@ -114,6 +114,9 @@ pub struct GenerateContext {
     pub biz_tag: String,
     pub format: crate::core::types::IdFormat,
     pub prefix: Option<String>,
+    /// 请求的 dc 维度（DcId 值域 u8）：装配 `DcFailoverController` 的路由以
+    /// `active_dc()` 填充，号段算法据其做 dc 位前缀分区；0 为单 DC 缺省（既有部署 ID 值不变）。
+    pub dc: u8,
 }
 
 impl Default for GenerateContext {
@@ -124,6 +127,7 @@ impl Default for GenerateContext {
             biz_tag: String::new(),
             format: crate::core::types::IdFormat::Numeric,
             prefix: None,
+            dc: 0,
         }
     }
 }

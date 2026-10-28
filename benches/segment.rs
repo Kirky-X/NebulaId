@@ -37,6 +37,7 @@ fn bench_ctx() -> GenerateContext {
         biz_tag: "bench".to_string(),
         format: IdFormat::Numeric,
         prefix: None,
+        dc: 0,
     }
 }
 

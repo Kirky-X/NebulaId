@@ -16,6 +16,7 @@ fn make_ctx() -> GenerateContext {
         biz_tag: "tag-e2e".to_string(),
         format: IdFormat::Numeric,
         prefix: None,
+        dc: 0,
     }
 }
 

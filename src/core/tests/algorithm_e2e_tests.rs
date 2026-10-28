@@ -55,6 +55,7 @@ fn make_ctx(biz_tag: &str) -> GenerateContext {
         biz_tag: biz_tag.to_string(),
         format: IdFormat::Numeric,
         prefix: None,
+        dc: 0,
     }
 }
 

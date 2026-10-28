@@ -40,7 +40,8 @@ required-features = ["server"]
 default = ["server", "segment", "snowflake", "uuid-v8", "uuid-v5", "uuid-v4", "uuid-v7", "postgresql", "garrison-auth", "etcd"]
 postgresql = ["dbnexus/postgres"]
 # etcd: 默认启用；--no-default-features 即零 etcd 轻量目标（etcd.rs 整模块不进编译面）。
-etcd = ["dep:etcd-client"]
+# 蕴含 dep:garrison：集群健康三态经 garrison HealthCheck 委托 HealthRegistry（开 etcd 即得，不另设门控）。
+etcd = ["dep:etcd-client", "dep:garrison"]
 # database 为仓储层开关（segment 蕴含 database）；snowflake/uuid-v* 为零 DB 叶子算法；server 为整层开关。
 database = ["dep:dbnexus", "dep:sea-orm", "dep:argon2", "dep:subtle"]
 segment = ["database"]

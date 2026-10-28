@@ -85,8 +85,9 @@ pub enum LockError {
 
 #[cfg(feature = "etcd")]
 pub use etcd::{
-    EtcdClientOps, EtcdClientWrapper, EtcdClusterHealthMonitor, EtcdDistributedLock, EtcdError,
-    EtcdLockGuard, EtcdWorkerAllocator,
+    ClusterEvent, EtcdClientOps, EtcdClientWrapper, EtcdClusterHealthCheck,
+    EtcdClusterHealthMonitor, EtcdDistributedLock, EtcdError, EtcdLockGuard, EtcdWorkerAllocator,
+    WorkerKeyEvent,
 };
 // LocalDistributedLock / LocalLockGuard 两种 feature 下均 re-export：
 // not(etcd) 时唯一锁实现，etcd 时作 etcd 失败的 fallback。

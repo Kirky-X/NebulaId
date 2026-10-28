@@ -56,6 +56,14 @@ pub trait EtcdClientOps: Send + Sync {
     /// lease 续期一次：对 `lease_id` 发送 keep-alive 并等待一次响应。
     /// 每次调用独立建立 keep-alive 流；收到非零 granted TTL 即视为续期成功。
     async fn lease_keep_alive_once(&self, lease_id: i64) -> std::result::Result<(), EtcdError>;
+
+    /// 订阅 `prefix` 前缀下键的 watch 增量事件流。
+    /// 每个键变更（Put/Delete）作为一条事件推送；返回的接收端由订阅方持有，
+    /// 流关闭（client 断开或订阅取消）后 `recv()` 返回 `None`。
+    async fn watch_prefix(
+        &self,
+        prefix: &str,
+    ) -> std::result::Result<tokio::sync::mpsc::Receiver<WorkerKeyEvent>, EtcdError>;
 }
 
 /// etcd 操作错误类型。
@@ -72,6 +80,24 @@ pub enum EtcdError {
 
     #[error("etcd internal error: {0}")]
     Internal(String),
+}
+
+/// worker 键 watch 流的增量事件（etcd watch 的 Put/Delete 映射）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkerKeyEvent {
+    /// 键写入（worker 分配/接管）：携带完整键值。
+    Put { key: String, value: Vec<u8> },
+    /// 键删除（显式释放或 lease 过期被 etcd 回收）。
+    Delete { key: String },
+}
+
+/// 统一集群事件：watch 增量事件收敛进 [`EtcdClusterHealthMonitor`] 事件流的载荷。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClusterEvent {
+    /// worker 键写入。
+    WorkerKeyPut { key: String, value: Vec<u8> },
+    /// worker 键删除。
+    WorkerKeyDelete { key: String },
 }
 
 /// etcd 操作超时默认值（秒），与 `EtcdConfig::operation_timeout_secs` 的 serde 默认一致。
@@ -250,6 +276,67 @@ impl EtcdClientOps for EtcdClientWrapper {
         })
         .await
     }
+
+    async fn watch_prefix(
+        &self,
+        prefix: &str,
+    ) -> std::result::Result<tokio::sync::mpsc::Receiver<WorkerKeyEvent>, EtcdError> {
+        use etcd_client::{EventType, WatchOptions};
+
+        with_operation_timeout(self.operation_timeout, async {
+            let mut client = self.inner.lock().await;
+            let mut stream = client
+                .watch(prefix, Some(WatchOptions::new().with_prefix()))
+                .await
+                .map_err(|e| EtcdError::Network(e.to_string()))?;
+
+            let (tx, rx) = tokio::sync::mpsc::channel(64);
+            tokio::spawn(async move {
+                loop {
+                    match stream.message().await {
+                        Ok(Some(resp)) => {
+                            for event in resp.events() {
+                                let worker_event = match event.event_type() {
+                                    EventType::Put => event.kv().map(|kv| WorkerKeyEvent::Put {
+                                        key: String::from_utf8_lossy(kv.key()).into_owned(),
+                                        value: kv.value().to_vec(),
+                                    }),
+                                    EventType::Delete => {
+                                        event.kv().map(|kv| WorkerKeyEvent::Delete {
+                                            key: String::from_utf8_lossy(kv.key()).into_owned(),
+                                        })
+                                    }
+                                };
+                                if let Some(worker_event) = worker_event {
+                                    if tx.send(worker_event).await.is_err() {
+                                        // 订阅方已关闭：停止转发，watch 流随 task 结束关闭。
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            debug!(
+                                "{}",
+                                t!("log.core.coordinator.etcd.worker_watch_stream_ended")
+                            );
+                            return;
+                        }
+                        Err(e) => {
+                            warn!(
+                                error = %e,
+                                "{}",
+                                t!("log.core.coordinator.etcd.worker_watch_stream_failed", error = e)
+                            );
+                            return;
+                        }
+                    }
+                }
+            });
+            Ok(rx)
+        })
+        .await
+    }
 }
 
 /// etcd 集群健康监控器：状态字段以 `Arc<Atomic*>` 持有，clone 后所有句柄共享同一状态
@@ -265,6 +352,8 @@ pub struct EtcdClusterHealthMonitor {
     is_using_cache: Arc<AtomicBool>,
     /// 可选注入的 etcd 客户端：`Some` 时走可 mock 路径；`None` 时每次检查新建 Client（lazy connect）。
     client: Option<Arc<dyn EtcdClientOps>>,
+    /// 统一事件流：watch 增量事件经 `publish_event` 收敛至此，订阅方经 `subscribe_events` 接收。
+    events_tx: Arc<tokio::sync::watch::Sender<Option<ClusterEvent>>>,
 }
 
 impl EtcdClusterHealthMonitor {
@@ -279,6 +368,7 @@ impl EtcdClusterHealthMonitor {
             cache_file_path,
             is_using_cache: Arc::new(AtomicBool::new(false)),
             client: None,
+            events_tx: Arc::new(tokio::sync::watch::channel(None).0),
         }
     }
 
@@ -298,6 +388,7 @@ impl EtcdClusterHealthMonitor {
             cache_file_path,
             is_using_cache: Arc::new(AtomicBool::new(false)),
             client: Some(client),
+            events_tx: Arc::new(tokio::sync::watch::channel(None).0),
         }
     }
 
@@ -315,6 +406,17 @@ impl EtcdClusterHealthMonitor {
 
     pub fn is_using_cache(&self) -> bool {
         self.is_using_cache.load(Ordering::Relaxed)
+    }
+
+    /// 发布一条统一集群事件（watch 增量事件收敛入口）；
+    /// 无订阅者时仅更新最新值，不报错。
+    pub fn publish_event(&self, event: ClusterEvent) {
+        self.events_tx.send_replace(Some(event));
+    }
+
+    /// 订阅统一事件流：返回句柄后经 `changed()` + `borrow()` 接收增量事件。
+    pub fn subscribe_events(&self) -> tokio::sync::watch::Receiver<Option<ClusterEvent>> {
+        self.events_tx.subscribe()
     }
 
     pub async fn record_success(&self) {
@@ -555,7 +657,50 @@ impl Clone for EtcdClusterHealthMonitor {
             cache_file_path: self.cache_file_path.clone(),
             is_using_cache: self.is_using_cache.clone(),
             client: self.client.clone(),
+            events_tx: self.events_tx.clone(),
         }
+    }
+}
+
+/// garrison `HealthCheck` 包装：把 [`EtcdClusterStatus`] 三态聚合映射为 garrison 健康状态
+/// （Healthy→Healthy、Degraded→Degraded、Failed→Unhealthy），经 `HealthRegistry::register`
+/// 统一暴露 readiness；本地缓存降级（is_using_cache）是 NebulaId 特有容灾行为，不经此包装外报。
+pub struct EtcdClusterHealthCheck {
+    monitor: EtcdClusterHealthMonitor,
+}
+
+impl EtcdClusterHealthCheck {
+    /// 包装 monitor 句柄（clone 语义下所有句柄共享同一状态）。
+    pub fn new(monitor: EtcdClusterHealthMonitor) -> Self {
+        Self { monitor }
+    }
+
+    /// 三态映射：etcd 集群状态 → garrison 健康状态。
+    pub fn map_status(status: &EtcdClusterStatus) -> garrison::health::HealthStatus {
+        match status {
+            EtcdClusterStatus::Healthy => garrison::health::HealthStatus::Healthy,
+            EtcdClusterStatus::Degraded => garrison::health::HealthStatus::Degraded,
+            EtcdClusterStatus::Failed => garrison::health::HealthStatus::Unhealthy,
+        }
+    }
+}
+
+impl garrison::health::HealthCheck for EtcdClusterHealthCheck {
+    fn name(&self) -> &str {
+        "etcd-cluster"
+    }
+
+    fn check(
+        &self,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = garrison::health::HealthResult<garrison::health::HealthStatus>,
+                > + Send,
+        >,
+    > {
+        let status = self.monitor.get_status();
+        Box::pin(async move { Ok(EtcdClusterHealthCheck::map_status(&status)) })
     }
 }
 
@@ -701,6 +846,44 @@ impl EtcdWorkerAllocator {
                 }
             }
         }
+    }
+
+    /// 订阅 worker 键前缀的 etcd watch 增量事件，并把事件收敛进 monitor 的统一事件流。
+    ///
+    /// 替代对 worker 键的 kv_get 轮询：键变更（分配/释放/lease 过期回收）以增量事件
+    /// 推送，转发热路径不做任何 kv_get 调用；watch 流关闭后转发循环退出。
+    pub async fn subscribe_worker_key_changes(
+        &self,
+        monitor: &EtcdClusterHealthMonitor,
+    ) -> std::result::Result<(), WorkerAllocatorError> {
+        let mut events = self
+            .client
+            .watch_prefix(Self::WORKER_PATH_PREFIX)
+            .await
+            .map_err(|e| WorkerAllocatorError::EtcdError(e.to_string()))?;
+
+        let publisher = monitor.clone();
+        info!(
+            "{}",
+            t!(
+                "log.core.coordinator.etcd.worker_watch_established",
+                prefix = Self::WORKER_PATH_PREFIX
+            )
+        );
+        tokio::spawn(async move {
+            while let Some(event) = events.recv().await {
+                let cluster_event = match event {
+                    WorkerKeyEvent::Put { key, value } => ClusterEvent::WorkerKeyPut { key, value },
+                    WorkerKeyEvent::Delete { key } => ClusterEvent::WorkerKeyDelete { key },
+                };
+                publisher.publish_event(cluster_event);
+            }
+            debug!(
+                "{}",
+                t!("log.core.coordinator.etcd.worker_watch_stream_ended")
+            );
+        });
+        Ok(())
     }
 
     /// 用注入的 etcd 客户端构造分配器（生产用 EtcdClientWrapper，测试用 MockEtcdClientOps）。
@@ -975,6 +1158,92 @@ impl EtcdDistributedLock {
             Ok(None)
         }
     }
+
+    /// 锁 lease 看门狗：周期 keep_alive 维持锁的 lease；收到停止信号退出。
+    ///
+    /// TTL 过期事件（`LeaseInvalid`）触发重获取：CAS 抢回 key 并重绑 lease；
+    /// CAS 失败 = key 被其他持有者占用 → 标记所有权丢失并停止看门狗
+    /// （release 随后退化为幂等空操作，不得触碰他人持有的锁）。
+    /// 其他错误（网络抖动，lease 状态未知）记 warning 等下个周期再探，不盲目判死。
+    async fn run_lease_watchdog(
+        lock: EtcdDistributedLock,
+        key: String,
+        ttl_seconds: i64,
+        interval: Duration,
+        shared: Arc<LockGuardShared>,
+        mut stop_rx: tokio::sync::watch::Receiver<bool>,
+    ) {
+        loop {
+            tokio::select! {
+                _ = stop_rx.changed() => {
+                    debug!(
+                        key = %key,
+                        "{}",
+                        t!("log.core.coordinator.etcd.lock_watchdog_stopped")
+                    );
+                    return;
+                }
+                _ = sleep(interval) => {}
+            }
+            let lease_id = *shared.lease_id.read();
+            match lock.client.lease_keep_alive_once(lease_id).await {
+                Ok(()) => {
+                    debug!(
+                        "{}",
+                        t!(
+                            "log.core.coordinator.etcd.lease_keepalive_renewed",
+                            lease_id = lease_id
+                        )
+                    );
+                }
+                Err(EtcdError::LeaseInvalid(_)) => {
+                    warn!(
+                        key = %key,
+                        lease_id = lease_id,
+                        "{}",
+                        t!("log.core.coordinator.etcd.lock_lease_lost")
+                    );
+                    match lock.try_acquire_lock(&key, ttl_seconds).await {
+                        Ok(Some(new_lease)) => {
+                            *shared.lease_id.write() = new_lease;
+                            info!(
+                                key = %key,
+                                old_lease_id = lease_id,
+                                new_lease_id = new_lease,
+                                "{}",
+                                t!("log.core.coordinator.etcd.lock_reacquired")
+                            );
+                        }
+                        Ok(None) => {
+                            shared.lost.store(true, Ordering::SeqCst);
+                            warn!(
+                                key = %key,
+                                "{}",
+                                t!("log.core.coordinator.etcd.lock_ownership_lost")
+                            );
+                            return;
+                        }
+                        Err(e) => {
+                            warn!(
+                                key = %key,
+                                error = %e,
+                                "{}",
+                                t!("log.core.coordinator.etcd.lock_reacquire_failed")
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        lease_id = lease_id,
+                        error = %e,
+                        "{}",
+                        t!("log.core.coordinator.etcd.lock_keepalive_transient_error")
+                    );
+                }
+            }
+        }
+    }
 }
 
 impl Clone for EtcdDistributedLock {
@@ -1011,14 +1280,26 @@ impl DistributedLock for EtcdDistributedLock {
                         )
                     );
 
+                    let (shared, stop_rx) = { LockGuardShared::new(lease_id) };
+                    let shared = Arc::new(shared);
                     let guard = EtcdLockGuard {
                         lock: self.clone(),
                         key: key.to_string(),
-                        lease_id,
                         lock_path: self.lock_path(key),
-                        // 初始化为未释放状态，Drop 时检查
-                        released: Arc::new(AtomicBool::new(false)),
+                        shared: shared.clone(),
                     };
+
+                    // lease 看门狗：周期 keep_alive 维持锁；TTL 过期事件触发重获取。
+                    // 周期 = ttl/3（毫秒粒度），短 TTL 不会退化成 ≥TTL 的假续期。
+                    let interval = Duration::from_millis((ttl_seconds as u64 * 1000 / 3).max(1));
+                    tokio::spawn(Self::run_lease_watchdog(
+                        self.clone(),
+                        key.to_string(),
+                        ttl_seconds,
+                        interval,
+                        shared,
+                        stop_rx,
+                    ));
 
                     return Ok(Box::new(guard));
                 }
@@ -1051,38 +1332,82 @@ impl DistributedLock for EtcdDistributedLock {
     }
 }
 
-/// Etcd 锁守卫：实现 `Drop`，未显式 release 时自动 spawn 后台 task 撤销 lease。
+/// 锁守卫共享状态：当前 lease、丢失/释放标志与看门狗停止信号。
+///
+/// `Arc` 共享给看门狗任务，重绑定 lease 与丢失判定对 `release`/`Drop` 立即可见。
+struct LockGuardShared {
+    /// 当前持有的 lease id；看门狗重获取后换绑（0 = 未持有）。
+    lease_id: RwLock<i64>,
+    /// 所有权丢失（lease 过期且 key 被其他持有者抢占）：release 退化为幂等空操作。
+    lost: AtomicBool,
+    /// 是否已显式 release，防止 Drop 二次释放（AtomicBool 可在 Drop 中读取）。
+    released: AtomicBool,
+    /// 看门狗停止信号。
+    stop_tx: tokio::sync::watch::Sender<bool>,
+}
+
+impl LockGuardShared {
+    /// 构造共享状态并返回看门狗停止信号的接收端（测试直接构造时丢弃接收端即可）。
+    fn new(lease_id: i64) -> (Self, tokio::sync::watch::Receiver<bool>) {
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        (
+            Self {
+                lease_id: RwLock::new(lease_id),
+                lost: AtomicBool::new(false),
+                released: AtomicBool::new(false),
+                stop_tx,
+            },
+            stop_rx,
+        )
+    }
+}
+
+/// Etcd 锁守卫：由 lease 看门狗周期续期；lease TTL 过期事件触发自动重获取并重绑 lease。
 /// 已显式 release 由 `released` 标志阻止二次释放；tokio runtime 不可用时仅记 warning，
 /// 锁由 lease TTL 到期后 etcd 自动回收。
 pub struct EtcdLockGuard {
     lock: EtcdDistributedLock,
     key: String,
-    lease_id: i64,
     lock_path: String,
-    /// 是否已显式 release，防止 Drop 二次释放（AtomicBool 可在 Drop 中读取）。
-    released: Arc<AtomicBool>,
+    shared: Arc<LockGuardShared>,
 }
 
 #[async_trait]
 impl LockGuard for EtcdLockGuard {
     async fn release(&self) -> std::result::Result<(), LockError> {
-        self.lock
-            .client
-            .lease_revoke(self.lease_id)
-            .await
-            .map_err(|e| LockError::ReleaseFailed {
+        // 幂等：重复调用直接成功，不触发第二次 revoke。
+        if self.shared.released.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        let _ = self.shared.stop_tx.send(true);
+
+        // 所有权已丢失（lease 过期且 key 被他人持有）：无 lease 可撤销，
+        // 重复调用不报错（幂等成功），也不得触碰他人持有的锁。
+        if self.shared.lost.load(Ordering::SeqCst) {
+            info!(
+                lock_path = %self.lock_path,
+                key = %self.key,
+                "{}",
+                t!("log.core.coordinator.etcd.lock_release_after_lost")
+            );
+            return Ok(());
+        }
+
+        let lease_id = *self.shared.lease_id.read();
+        if let Err(e) = self.lock.client.lease_revoke(lease_id).await {
+            // 回滚 released 标志：允许调用方重试或 Drop 兜底再撤销。
+            self.shared.released.store(false, Ordering::SeqCst);
+            return Err(LockError::ReleaseFailed {
                 key: self.key.clone(),
                 reason: e.to_string(),
-            })?;
-
-        // 标记已释放，防止 Drop 中二次释放。
-        self.released.store(true, Ordering::SeqCst);
+            });
+        }
 
         // 输出 lock_path 用于运维诊断 etcd key 路径，同时消除 dead_code 警告。
         info!(
             lock_path = %self.lock_path,
             key = %self.key,
-            lease_id = self.lease_id,
+            lease_id = lease_id,
             "{}",
             t!("log.core.coordinator.etcd.lock_released")
         );
@@ -1093,15 +1418,17 @@ impl LockGuard for EtcdLockGuard {
 
 impl Drop for EtcdLockGuard {
     fn drop(&mut self) {
+        let _ = self.shared.stop_tx.send(true);
+
         // 已显式 release 则跳过，避免 double-release。
-        if self.released.load(Ordering::SeqCst) {
+        if self.shared.released.load(Ordering::SeqCst) {
             return;
         }
 
         // 未显式 release 时 spawn 后台 task 释放锁（覆盖早期 return / panic 场景）。
         let lock = self.lock.clone();
         let key = self.key.clone();
-        let lease_id = self.lease_id;
+        let lease_id = *self.shared.lease_id.read();
         let lock_path = self.lock_path.clone();
 
         match tokio::runtime::Handle::try_current() {
@@ -1188,6 +1515,7 @@ mod tests {
             async fn txn_check_create_rev_and_put(&self, key: &str, value: Vec<u8>, lease_id: i64) -> std::result::Result<bool, crate::core::coordinator::EtcdError>;
             async fn ping(&self) -> std::result::Result<(), crate::core::coordinator::EtcdError>;
             async fn lease_keep_alive_once(&self, lease_id: i64) -> std::result::Result<(), crate::core::coordinator::EtcdError>;
+            async fn watch_prefix(&self, prefix: &str) -> std::result::Result<tokio::sync::mpsc::Receiver<WorkerKeyEvent>, crate::core::coordinator::EtcdError>;
         }
     }
 
@@ -1230,6 +1558,12 @@ mod tests {
             _lease_id: i64,
         ) -> std::result::Result<(), EtcdError> {
             Ok(())
+        }
+        async fn watch_prefix(
+            &self,
+            _prefix: &str,
+        ) -> std::result::Result<tokio::sync::mpsc::Receiver<WorkerKeyEvent>, EtcdError> {
+            Err(EtcdError::Internal("watch not supported".into()))
         }
     }
 
@@ -1629,9 +1963,8 @@ mod tests {
         let guard = EtcdLockGuard {
             lock,
             key: "test_key".to_string(),
-            lease_id: 123,
             lock_path: "/locks/test_key".to_string(),
-            released: Arc::new(AtomicBool::new(false)),
+            shared: Arc::new(LockGuardShared::new(123).0),
         };
 
         let result = guard.release().await;
@@ -1652,9 +1985,8 @@ mod tests {
         let guard = EtcdLockGuard {
             lock,
             key: "test_key".to_string(),
-            lease_id: 123,
             lock_path: "/locks/test_key".to_string(),
-            released: Arc::new(AtomicBool::new(false)),
+            shared: Arc::new(LockGuardShared::new(123).0),
         };
 
         let result = guard.release().await;
@@ -1995,6 +2327,92 @@ mod tests {
         .expect("thread should not panic");
 
         // mock 期望 lease_revoke 调用 0 次，若被调用会 panic
+    }
+
+    // 分布式锁 lease 看门狗（mock lease TTL 过期事件）
+
+    /// 轮询等待 `cond` 成立或超时；用于 mock 事件驱动的异步握手断言。
+    async fn wait_until(cond: impl Fn() -> bool, timeout: Duration, what: &str) {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while !cond() {
+            assert!(tokio::time::Instant::now() < deadline, "等待超时: {what}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// mock lease TTL 过期事件（keep-alive 返回 LeaseInvalid）后，看门狗必须重获取锁：
+    /// 二次 grant + CAS 抢回 key，并把 guard 重绑到新 lease；
+    /// guard 语义维持 = release 撤销的是重绑后的新 lease，二次 release 幂等无副作用。
+    #[tokio::test]
+    async fn lock_watchdog_reacquires_lease_after_ttl_expiry() {
+        let mut mock = MockEtcdClientOps::new();
+        let grants = Arc::new(AtomicU64::new(0));
+        {
+            let grants = grants.clone();
+            mock.expect_lease_grant().returning(move |_| {
+                let n = grants.fetch_add(1, Ordering::SeqCst);
+                Ok(100 * (n as i64 + 1))
+            });
+        }
+        mock.expect_txn_check_create_rev_and_put()
+            .returning(|_, _, _| Ok(true));
+        // TTL 过期事件：首次续期返回 LeaseInvalid（lease 已过期被 etcd 回收），重绑后续期成功。
+        let keepalives = Arc::new(AtomicU64::new(0));
+        {
+            let keepalives = keepalives.clone();
+            mock.expect_lease_keep_alive_once().returning(move |_| {
+                let n = keepalives.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    Err(EtcdError::LeaseInvalid("lease 100 expired (ttl=0)".into()))
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        // release 必须恰好撤销重绑后的新 lease 200：撤销过期 lease 100 属于 guard 语义破坏。
+        mock.expect_lease_revoke()
+            .times(1)
+            .withf(|lease_id| *lease_id == 200)
+            .returning(|_| Ok(()));
+
+        let lock = EtcdDistributedLock::with_client(mock_into_client(mock), "/locks/".to_string());
+        let guard = lock
+            .acquire("watchdog_key", 1)
+            .await
+            .expect("首次获取必须成功");
+
+        // 看门狗检测 TTL 过期并重获取：lease_grant 必须出现第二次调用（新 lease=200）。
+        wait_until(
+            || grants.load(Ordering::SeqCst) >= 2,
+            Duration::from_secs(2),
+            "看门狗必须在丢 lease 后重获取锁",
+        )
+        .await;
+        assert_eq!(
+            grants.load(Ordering::SeqCst),
+            2,
+            "重获取只允许一次重试 grant"
+        );
+
+        guard.release().await.expect("重绑后 release 必须成功");
+        guard.release().await.expect("二次 release 必须幂等成功");
+    }
+
+    /// LockGuard::release 幂等：显式 release 成功后重复调用直接成功，
+    /// 不得再次触发 lease_revoke（释放动作至多发生一次撤销）。
+    #[tokio::test]
+    async fn lock_guard_release_is_idempotent() {
+        let mut mock = MockEtcdClientOps::new();
+        mock.expect_lease_grant().returning(|_| Ok(100));
+        mock.expect_txn_check_create_rev_and_put()
+            .returning(|_, _, _| Ok(true));
+        mock.expect_lease_revoke().times(1).returning(|_| Ok(()));
+        mock.expect_lease_keep_alive_once().returning(|_| Ok(()));
+
+        let lock = EtcdDistributedLock::with_client(mock_into_client(mock), "/locks/".to_string());
+        let guard = lock.acquire("idempotent_key", 1).await.unwrap();
+        guard.release().await.expect("首次 release 必须成功");
+        guard.release().await.expect("二次 release 必须幂等成功");
     }
 
     /// load_local_cache 文件不存在时应返回 Ok()（打印 info 后早返回）。
@@ -2868,6 +3286,133 @@ mod tests {
         );
     }
 
+    // worker 键 watch 增量订阅（替代轮询）
+
+    /// worker 键变更必须经 etcd watch 流收到增量事件而非轮询：
+    /// mock watch 通道注入一条 put 事件，订阅方（monitor 事件流）收到同一事件，
+    /// 且 kv_get（轮询路径）零调用、lease 路径零调用（订阅不分配）。
+    #[tokio::test]
+    async fn worker_key_put_event_received_via_watch_without_polling() {
+        let mut mock = MockEtcdClientOps::new();
+        // 轮询禁令：kv_get 任何调用即 panic（watch 增量订阅不得退化轮询）。
+        mock.expect_kv_get().times(0).returning(|_| Ok(None));
+        mock.expect_lease_grant().times(0).returning(|_| Ok(0));
+
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(8);
+        // Receiver 非 Clone，mockall 的 FnMut returning 闭包经 Mutex<Option<_>>.take() 单次交付。
+        let event_rx = std::sync::Mutex::new(Some(event_rx));
+        mock.expect_watch_prefix()
+            .times(1)
+            .withf(|prefix| prefix == EtcdWorkerAllocator::WORKER_PATH_PREFIX)
+            .returning(move |_| {
+                Ok(event_rx
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("watch_prefix 只允许建立一次订阅"))
+            });
+
+        let allocator = EtcdWorkerAllocator::new(mock_into_client(mock), 1, EtcdConfig::default())
+            .await
+            .unwrap();
+        let cache_file = NamedTempFile::new().expect("temp cache file");
+        let monitor = EtcdClusterHealthMonitor::new(
+            EtcdConfig::default(),
+            cache_file.path().to_string_lossy().to_string(),
+        );
+
+        allocator
+            .subscribe_worker_key_changes(&monitor)
+            .await
+            .expect("watch 订阅必须建立成功");
+
+        let mut subscriber = monitor.subscribe_events();
+        event_tx
+            .send(WorkerKeyEvent::Put {
+                key: "/idgen/workers/1/3".to_string(),
+                value: b"host=node-a;dc=1".to_vec(),
+            })
+            .await
+            .expect("注入 put 事件必须成功");
+        drop(event_tx);
+
+        tokio::time::timeout(Duration::from_secs(2), subscriber.changed())
+            .await
+            .expect("订阅方必须收到增量事件")
+            .expect("事件流不得出错");
+        assert_eq!(
+            subscriber.borrow().clone(),
+            Some(ClusterEvent::WorkerKeyPut {
+                key: "/idgen/workers/1/3".to_string(),
+                value: b"host=node-a;dc=1".to_vec(),
+            }),
+            "订阅方收到的必须是注入的 put 事件"
+        );
+    }
+
+    // garrison HealthRegistry 对接（EtcdClusterStatus 三态映射）
+
+    /// `EtcdClusterHealthCheck` 注册进 garrison `HealthRegistry` 后，注册表查询返回
+    /// 三态到 garrison 健康状态的映射（Healthy→Healthy、Degraded→Degraded、Failed→Unhealthy）；
+    /// 本地缓存降级（is_using_cache）是 NebulaId 特有行为：由 monitor 自有状态机承载，
+    /// garrison 检查结果不携带该信息（不外包）。
+    #[tokio::test]
+    async fn etcd_cluster_health_check_maps_three_states_in_garrison_registry() {
+        use garrison::health::{HealthRegistry, HealthStatus};
+
+        // 逐态映射：经 monitor 自有状态机（record_failure 连击）驱动三态。
+        for (failures, expected) in [
+            (0, HealthStatus::Healthy),
+            (3, HealthStatus::Degraded),
+            (5, HealthStatus::Unhealthy),
+        ] {
+            let cache_file = NamedTempFile::new().expect("temp cache file");
+            let monitor = EtcdClusterHealthMonitor::new(
+                EtcdConfig::default(),
+                cache_file.path().to_string_lossy().to_string(),
+            );
+            for _ in 0..failures {
+                monitor.record_failure();
+            }
+
+            let mut registry = HealthRegistry::new();
+            registry.register(Box::new(EtcdClusterHealthCheck::new(monitor.clone())));
+            let report = registry.check_all().await;
+
+            assert_eq!(report.checks.len(), 1, "registry 恰好注册一个检查项");
+            assert_eq!(report.checks[0].name, "etcd-cluster");
+            assert_eq!(
+                report.checks[0].status, expected,
+                "连续失败 {failures} 次必须映射为 garrison {expected:?}"
+            );
+            assert_eq!(report.overall, expected);
+        }
+
+        // Failed 态：garrison 报 Unhealthy，缓存降级标志留在 monitor 侧。
+        let cache_file = NamedTempFile::new().expect("temp cache file");
+        let monitor = EtcdClusterHealthMonitor::new(
+            EtcdConfig::default(),
+            cache_file.path().to_string_lossy().to_string(),
+        );
+        for _ in 0..5 {
+            monitor.record_failure();
+        }
+        let observer = monitor.clone();
+        let mut registry = HealthRegistry::new();
+        registry.register(Box::new(EtcdClusterHealthCheck::new(monitor)));
+        let report = registry.check_all().await;
+
+        assert_eq!(report.overall, HealthStatus::Unhealthy);
+        assert!(
+            observer.is_using_cache(),
+            "Failed 态的本地缓存降级由 NebulaId monitor 自有状态机承载"
+        );
+        assert!(
+            report.checks[0].message.is_none(),
+            "garrison 检查结果不携带缓存降级信息（不外包）"
+        );
+    }
+
     /// 真实 etcd 路径（`etcd` 门控 + #[ignore]）：分配 → 续期一次 → release 全链路。
     /// 运行：`ETCD_TEST_ENDPOINTS=http://127.0.0.1:2379 cargo test --lib -- --ignored integration_`
     #[cfg(feature = "etcd")]
@@ -3048,11 +3593,12 @@ mod tests {
         guard_b.release().await.expect("二次释放必须成功");
     }
 
-    /// 短 TTL：lease 过期后 key 自动消失，另一客户端可获取。
+    /// 看门狗续期（真实 etcd）：持有期间 TTL 反复流逝但锁不丢（keep-alive 维持），
+    /// 显式释放后另一客户端立即可获取。
     #[cfg(feature = "etcd")]
     #[tokio::test]
     #[ignore = "需要真实 etcd：设置 ETCD_TEST_ENDPOINTS 后以 --ignored 运行"]
-    async fn integration_etcd_lock_ttl_expiry() {
+    async fn integration_etcd_lock_watchdog_keeps_lease_alive() {
         let client = integration_etcd_client().await;
         let prefix = integration_lock_prefix("ttl");
         let lock_a = EtcdDistributedLock::new(client.clone(), prefix.clone())
@@ -3060,16 +3606,26 @@ mod tests {
             .unwrap();
         let lock_b = EtcdDistributedLock::new(client, prefix).await.unwrap();
 
-        // 持有者保持存活直到过期：验证的是 lease TTL 而非显式 release。
+        // ttl=1s，看门狗周期 ≈333ms：跨 2 个 TTL 窗口后锁仍被持有者保持。
         let guard = lock_a.acquire("key", 1).await.expect("短 TTL 获取必须成功");
         tokio::time::sleep(Duration::from_millis(2_500)).await;
+        let err = match lock_b.acquire("key", 30).await {
+            Ok(g) => {
+                g.release().await.ok();
+                panic!("看门狗续期期间锁必须仍被持有，他人不得获取");
+            }
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, LockError::AcquireFailed { .. }),
+            "期望 AcquireFailed，实际: {err:?}"
+        );
+        guard.release().await.expect("释放必须成功");
         let guard_b = lock_b
             .acquire("key", 30)
             .await
-            .expect("lease 过期后必须可获取");
+            .expect("显式释放后必须可获取");
         guard_b.release().await.expect("释放必须成功");
-        // 已过期 lease 的 Drop revoke 只记日志，不影响后续。
-        drop(guard);
     }
 
     // 健康状态机阈值（Phase 3 的跨 DC failover 判定直接消费这三态，边界必须钉住）

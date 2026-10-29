@@ -282,6 +282,11 @@ log-core-coordinator-etcd-release_refused_key_owned_by_other = 拒绝释放 work
 # src/core/coordinator/failover.rs
 log-core-coordinator-failover-dc_switched = 主 DC 被判失败后，活动数据中心已由 DC { $from } 切换至 DC { $to }
 
+# 跨 DC 故障转移 / Operator / etcd 启动守卫（语义键，随 cloud-native-dr 交付）
+dc-failover-switched = 原活跃数据中心判失败后，故障转移已将活跃数据中心切换至 DC { $dc }
+operator-cluster-not-ready = NebulaIdCluster '{ $cluster }' 尚未就绪；等待各 DC 工作负载转为健康
+startup-etcd-endpoints-without-feature = 集群 '{ $cluster }' 配置了 etcd 端点但本构建不含 etcd 特性；拒绝启动，不回退本地锁
+
 # src/core/monitoring/core.rs
 log-core-monitoring-core-unknown_alert_expression = 未知的告警表达式：{ $expression }
 log-core-monitoring-core-alert_critical = { $rule_name }：{ $severity } - { $message }

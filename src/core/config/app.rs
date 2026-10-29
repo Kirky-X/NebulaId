@@ -220,6 +220,11 @@ pub(crate) fn redact_optional_url(url: &str) -> String {
 /// endpoint 列表脱敏：逐项经 `redact_db_url` 剥离 userinfo。
 /// etcd 端点可携带 `scheme://user:pass@host:port`，错误消息/日志直接打印
 /// 会把凭据外泄；调用方（SDK 构建、主服务启动）统一走此入口。
+///
+/// cfg 门控跟随调用方：主服务侧仅 `not(etcd)` 的 fail-closed 分支引用它，
+/// SDK 侧引用随 `sdk` 特性；两臂都不在（如 `--features etcd` 且无 sdk）时
+/// 本函数编译即死代码——按使用面裁剪，而不是用 `allow(dead_code)` 掩盖。
+#[cfg(any(not(feature = "etcd"), feature = "sdk"))]
 pub(crate) fn redact_endpoints(endpoints: &[String]) -> Vec<String> {
     endpoints.iter().map(|e| redact_db_url(e)).collect()
 }

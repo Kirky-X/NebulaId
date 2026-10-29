@@ -108,6 +108,28 @@ jobs:
         # 发布前以最大特性集验证包完整性
         run: cargo check --package nebulaid --all-features
 
+      - name: Assert operator member is excluded from publishing
+        # workspace 化后发布链只发主 crate：nebulaid-operator 成员在
+        # crates/nebulaid-operator/Cargo.toml 声明 publish = false，crates.io
+        # 发布面必须显式拒绝它——此处以 dry-run 反向断言（失败即回归），
+        # 防将来有人打开该开关把 operator 误发到主 crate 版本号下。
+        run: |
+          set -uo pipefail
+          if cargo publish --dry-run -p nebulaid-operator >/tmp/operator-dryrun.log 2>&1; then
+            echo "::error::nebulaid-operator is publishable; exclusion regressed (expected publish = false)"
+            cat /tmp/operator-dryrun.log
+            exit 1
+          fi
+          cat /tmp/operator-dryrun.log
+          grep -q "package.publish" /tmp/operator-dryrun.log \
+            && echo "OK nebulaid-operator excluded by publish = false" \
+            || { echo "::error::operator dry-run failed for an unexpected reason (not publish=false)"; exit 1; }
+
+      - name: Dry-run package (main crate only)
+        # 发布前对真正要发的包做 dry-run：从 workspace 打包成 tarball 并独立构建验证，
+        # 能在 tag 前暴露 [workspace] 引入的打包面问题（漏 files/include、路径依赖越界）。
+        run: cargo publish --dry-run -p nebulaid
+
       # 幂等:已发布版本直接跳过,避免重跑时"already exists"报错
       - name: Check already published
         id: published

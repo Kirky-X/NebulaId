@@ -20,6 +20,27 @@
 
 ## [Unreleased]
 
+### feat（云原生与容灾：跨 DC failover / Operator / lease-watch 收尾）
+
+- **`etcd` 纳入 `default` 特性（⚠️ 破坏性，见下节变更）**：标准构建即带 `etcd-client` 与集群协调路径；`--no-default-features` 仍是零 etcd 轻量目标（编译面由 ci.yml 全 targets 腿钉住）。
+- **lease 续期看门狗与幂等释放**：`EtcdWorkerAllocator` 持 lease 句柄周期 `keep_alive`（周期 = TTL/3）；`EtcdDistributedLock` 新增看门狗——TTL 过期事件（`LeaseInvalid`）触发 CAS 重获取并重绑 lease，被他人抢占则判所有权丢失；`LockGuard::release` 幂等（重复调用直接成功，重绑后撤销的是新 lease）。
+- **worker 键 watch 增量订阅**：新增 `EtcdClientOps::watch_prefix` 与 `WorkerKeyEvent`/`ClusterEvent`，`EtcdWorkerAllocator::subscribe_worker_key_changes` 把键变更以增量事件收敛进 `EtcdClusterHealthMonitor` 统一事件流，替代 kv_get 轮询（用例以「零轮询调用」钉住）。
+- **健康三态委托 garrison `HealthRegistry`**：`EtcdClusterHealthCheck` 把 Healthy/Degraded/Failed 映射为 garrison Healthy/Degraded/Unhealthy；本地缓存降级（`is_using_cache`）保留为 NebulaId 特有行为不外包。
+- **跨数据中心自动故障转移**：`DcFailoverController`（保守谓词：仅 active 判 `Failed` 且存在 `Healthy` 候选才切到 dc 号最小者；并发经原子 CAS 只放行一次切换）；号段 ID 按 dc 位前缀分区（高 8 位，局部空间 2^56，`dc=0` 与既有 ID 恒等）、`GenerateContext` 增 dc 维度并由 `AlgorithmRouter` 以 `active_dc()` 填充；真实双 etcd 用例 `tests/etcd_failover.rs`（`etcd-a`/`etcd-b` 容器，`--ignored` 触发）。
+- **Kubernetes Operator（新成员 crate `crates/nebulaid-operator`）**：`NebulaIdCluster` CRD（spec: replicas/datacenters/version；status: phase/activeDc/perDcHealth/endpoints）+ `kube-runtime` reconcile 回路（per-DC StatefulSet + Headless Service、SSA apply、ownerReferences、周期 `/health` 探测回写 status 并择优维护 activeDc）+ 优雅退出；`kube`/`kube-runtime`/`k8s-openapi` 依赖仅在该成员（主 crate 依赖树零影响，`cargo tree -p nebulaid` 复核）。
+- **交付清单**：`deploy/crd/`、`deploy/rbac/`（最小权限，未授予 secrets/configmaps/pods）、`deploy/manifest/`（Deployment + 2 DC 示例）；`docs/DEPLOYMENT.md` 新增「Kubernetes Operator 安装」「跨数据中心故障转移」两节（含真实多云验证 Deferred 边界声明）。
+- **供应链**：workspace 统一锁下 audit 扫出的两个既有漏洞按补丁级修复——`ctutils` 0.4.3→0.4.4、`pulldown-cmark` 0.13.4→0.13.5。
+
+### 变更（⚠️ 破坏性：`default` 特性纳入 `etcd`）
+
+- `default = [..., "garrison-auth", "etcd"]`：默认构建从此携带 `etcd-client`（与主 tonic 0.14 同版本共存，不引入第二 gRPC 栈）与集群协调路径，产物体积随之增大；依赖精简的嵌入场景请用 `--no-default-features` 并按需叠加 `sdk`/算法特性。
+- 行为面：此前「配了 `etcd.endpoints` 但未启用 `etcd` feature」的构建会静默回退进程内本地锁（多实例下重复发号）；现默认构建不再有该分支，显式 `--no-default-features` 裁剪时则 fail-closed 拒绝启动（`src/main.rs` 守卫与 SDK `build()` 返回 `ConfigurationError`）。
+- **workspace 化**：根 `Cargo.toml` 增设 `[workspace] members=["crates/nebulaid-operator"]`（主 crate 仍为 `[package]` 根）；发布链不变，仅 `nebulaid` 发版（operator 成员 `publish = false`，release.yml 以 dry-run 反向断言排除）；`smallvec` 由 1.16 收敛至 1.15（kube 4.2 经 serde-saphyr 传递硬约束 `smallvec <1.16.0`）。
+
+### 路线图状态对齐
+
+- README 双语「云原生与容灾」行由 📋 更新为 🚧 并展开子状态：动态算法切换 ✅、Segment 路由基准 ✅（注「待随下一版发布」）、etcd 默认启用 ✅ + lease/watch 收尾 ✅、健康委托 garrison ✅、跨 DC failover ✅ 与 Operator ✅（真实多云集群验证待窗口）。
+
 ### fix（SDK / etcd 生产化收尾）
 
 - **SDK Segment 仓储接线修复（P0）**：`RouterModule` 此前取到注入仓储后丢弃，生产构建下 Segment 落到 `UnconfiguredSegmentLoader`（单测因 `cfg(test)` 注入 `TestSegmentLoader` 而假通过）。现经 TypeMap `RepositoryInput` 接线 `AlgorithmRouter::with_segment_repository`，并顺带消除「已注入仓储仍自举第二个连接池」的浪费；`test_id_generator_segment_with_repository_succeeds` 改为按 MockDatabase 区间断言。

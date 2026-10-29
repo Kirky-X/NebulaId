@@ -286,6 +286,11 @@ log-core-coordinator-etcd-release_refused_key_owned_by_other = Refusing to relea
 # src/core/coordinator/failover.rs
 log-core-coordinator-failover-dc_switched = Active datacenter switched from DC { $from } to DC { $to } after the primary was marked failed
 
+# 跨 DC 故障转移 / Operator / etcd 启动守卫（语义键，随 cloud-native-dr 交付）
+dc-failover-switched = Failover switched the active datacenter to DC { $dc } after the previous one was marked failed
+operator-cluster-not-ready = NebulaIdCluster '{ $cluster }' is not ready yet; waiting for per-DC workloads to become healthy
+startup-etcd-endpoints-without-feature = Cluster '{ $cluster }' configures etcd endpoints but this build has no etcd feature; refusing to start instead of falling back to a local lock
+
 # src/core/monitoring/core.rs
 log-core-monitoring-core-unknown_alert_expression = Unknown alert expression: { $expression }
 log-core-monitoring-core-alert_critical = { $rule_name }: { $severity } - { $message }

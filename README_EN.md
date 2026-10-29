@@ -540,9 +540,9 @@ Please do not report security vulnerabilities through public issues. Use the pri
 <tr><td align="center">✅</td><td>Service and protocols</td><td>HTTP + gRPC dual protocol, OpenAPI docs, TLS, rate limiting, garrison API key auth, audit logging</td></tr>
 <tr><td align="center">✅</td><td>Observability and i18n</td><td>Per-algorithm p50/p99/p999 metrics, health checks, inklog structured logging, en / zh-CN i18n</td></tr>
 <tr><td align="center">✅</td><td>Quality gates</td><td>Five-stage CI gate, coverage ≥ 95%, cargo-deny / cargo-audit / CodeQL, ~1900 tests</td></tr>
-<tr><td align="center">🚧</td><td>SDK and distributed coordination</td><td>Continued hardening of the <code>sdk</code> facade (trait-kit assembly); production validation of <code>etcd</code> coordination (feature off by default)</td></tr>
+<tr><td align="center">🚧</td><td>SDK and distributed coordination</td><td>Continued hardening of the <code>sdk</code> facade (trait-kit assembly); <code>etcd</code> coordination is now enabled by default (see the "Cloud native and DR" row)</td></tr>
 <tr><td align="center">🚧</td><td>Performance engineering</td><td>Batch generation tuning, Segment routing benchmark integration (the ID-generation throughput benchmark harness and release baselines have landed — see the [Performance Guide](docs/PERFORMANCE.md))</td></tr>
-<tr><td align="center">📋</td><td>Cloud native and DR</td><td>Kubernetes operator, multi-datacenter with automatic failover, dynamic algorithm switching</td></tr>
+<tr><td align="center">🚧</td><td>Cloud native and DR</td><td>Dynamic algorithm switching ✅ (<code>AlgorithmRouter::set_algorithm</code>), Segment routing benchmark ✅ (<code>benches/segment.rs</code>, shipping with the next release), <code>etcd</code> coordination enabled by default ✅ (<code>default</code> includes <code>etcd</code>) plus lease keep-alive watchdog and watch-based incremental subscription ✅, cluster health tri-state delegated to garrison <code>HealthRegistry</code> ✅, cross-datacenter automatic failover ✅ and a Kubernetes operator ✅ (delivered in this change; real multi-cloud validation pending a deployment window)</td></tr>
 </table>
 
 </details>

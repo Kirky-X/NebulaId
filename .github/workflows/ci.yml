@@ -49,13 +49,20 @@ jobs:
           shared-key: "nebula-ci"
           cache-targets: false
 
-      - name: Format Check
-        run: cargo fmt --package ${{ env.PKG }} -- --check
+      - name: Format Check (workspace)
+        # --all：workspace 化后 operator 成员也必须过格式门（此前 --package 只覆盖主 crate，
+        # crates/nebulaid-operator 的格式漂移无人拦截）。
+        run: cargo fmt --all -- --check
 
       - name: Clippy Lint
         # --all-features 可构建：sqlite feature 已删除，dbnexus 的 embedded/server
         # 互斥不再触发；一条命令覆盖 etcd + sdk + alerting + integration-tests。
         run: cargo clippy --package ${{ env.PKG }} --all-features -- -D warnings
+
+      - name: Clippy Lint (operator member)
+        # 成员级 lint：kube/kube-runtime/k8s-openapi 只进 operator crate，
+        # 主 crate 的 clippy 腿看不见它；--all-targets 连测试目标一并钉住。
+        run: cargo clippy --package nebulaid-operator --all-targets -- -D warnings
 
       - name: Check no-default-features
         # 轻量编译检查：postgres 驱动可关，garrison 回退路径与 sdforge 镜像
@@ -243,7 +250,18 @@ jobs:
         if: matrix.feature == 'all'
         run: cargo test --package ${{ env.PKG }} --all-features --no-fail-fast
 
+      - name: Run operator member tests (default leg only)
+        # workspace 成员测试单独成步：nebulaid-operator 的 CRD/择优/状态回写单测
+        # （4 用例）在 default leg 执行；不进覆盖率分母——其 reconcile/patch_status/
+        # owner-watch 路径依赖真实 apiserver，单机不可达，纳入 95% 行覆盖率口径
+        # 会把主 crate 的真实门槛稀释成不可信数字（显式排除，非默认遗漏）。
+        if: matrix.feature == 'default'
+        run: cargo test --package nebulaid-operator
+
       # default leg：覆盖率门禁（≥95%）与 Codecov 上报只在 default 跑。
+      # 覆盖口径只含主 crate（--package ${{ env.PKG }}）：nebulaid-operator 显式排除，
+      # 理由同上（kube API 面单机不可测）。gate job 对 workspace 的成立性由
+      # fmt-clippy 的成员 lint 腿 + 本 leg 的成员测试步共同保证。
       # 采集分两步累积 profraw 再合并出报告：
       #  (1) cargo llvm-cov --no-report：单元/集成测试覆盖 lib 与各 handler；
       #  (2) cargo llvm-cov --no-report run --bin nebula-id：真实启动服务端（连上方

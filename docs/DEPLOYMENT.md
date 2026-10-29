@@ -12,6 +12,8 @@
 - [6. 数据库初始化](#6-数据库初始化)
 - [7. 生产部署建议](#7-生产部署建议)
 - [8. scripts/run.sh 子命令](#8-scriptsrunsh-子命令)
+- [9. Kubernetes Operator 安装](#9-kubernetes-operator-安装)
+- [10. 跨数据中心故障转移](#10-跨数据中心故障转移)
 - [相关文档](#相关文档)
 
 ---
@@ -455,6 +457,107 @@ GitHub Actions CI（`.github/workflows/ci.yml`）不经过 `scripts/run.sh`，�
 ```
 
 输出全部子命令的 Usage 与示例。
+
+## 9. Kubernetes Operator 安装
+
+`nebulaid-operator` 是独立 bin crate（`crates/nebulaid-operator`），把 `NebulaIdCluster`
+CRD 声明期望拓扑 reconcile 成 per-DC 的 StatefulSet + Headless Service，并周期探测
+`/health` 回写 `status`。**kube / kube-runtime / k8s-openapi 依赖仅存在于该 crate**，
+主 `nebulaid` 依赖树零影响（`cargo tree -p nebulaid` 可复核）。
+
+### 9.1 前置条件
+
+- Kubernetes 1.30+（CRD 的 `apiextensions.k8s.io/v1` 与 SSA apply 需 1.22+，本清单按 1.30+ 验证口径）
+- `kubectl` 已配置目标集群上下文
+- 镜像：`nebulaid-operator:0.1.0`（本仓 `crates/nebulaid-operator` 构建；NebulaId 镜像另按 `spec.version` 拉取）
+
+### 9.2 安装步骤
+
+```bash
+# 1. 命名空间与 CRD
+kubectl create namespace nebulaid-system
+kubectl apply -f deploy/crd/nebulaidcluster.yaml
+
+# 2. RBAC（最小权限：nebulaidclusters + apps StatefulSets + core Services/Endpoints）
+kubectl apply -f deploy/rbac/operator-clusterrole.yaml
+
+# 3. Operator 本体
+kubectl apply -f deploy/manifest/operator-deployment.yaml
+
+# 4. 校验
+kubectl -n nebulaid-system rollout status deploy/nebulaid-operator
+kubectl get crd nebulaidclusters.nebulaid.kirky.x
+```
+
+### 9.3 创建 NebulaIdCluster
+
+```bash
+kubectl apply -f deploy/manifest/nebulaidcluster-sample.yaml   # 2 DC 示例
+kubectl get nebulaidclusters prod -o wide
+kubectl get sts,svc -l nebulaid.kirky.x/cluster=prod
+```
+
+`spec` 字段：`replicas`（每 DC 副本数）、`datacenters[]`（`id` = dc 位标识、`etcdEndpoints`）、
+`version`（NebulaId 镜像 tag）。`status` 由 operator 回写：`phase`（Pending/Ready/Degraded）、
+`activeDc`、`perDcHealth[]`、`endpoints[]`。
+
+### 9.4 权限边界
+
+ClusterRole 只授予 CR 本体/status、`apps/statefulsets`、`core/services`、`core/endpoints`（只读）
+与 `events`（只读）；**不授予 secrets、configmaps、pods 等无关资源**。operator 创建的
+StatefulSet/Service 带 ownerReferences，删除 CR 即连带回收。
+
+### 9.5 卸载
+
+```bash
+kubectl delete nebulaidcluster prod          # 连带回收 STS/Svc
+kubectl delete -f deploy/manifest/operator-deployment.yaml
+kubectl delete -f deploy/rbac/operator-clusterrole.yaml
+kubectl delete -f deploy/crd/nebulaidcluster.yaml
+```
+
+---
+
+## 10. 跨数据中心故障转移
+
+### 10.1 per-DC etcd 拓扑
+
+每个 DC 拥有一套**独立** etcd 集群（`spec.datacenters[].etcdEndpoints`），NebulaId StatefulSet
+按 DC 各自连接本集群的协调面。拓扑是「多活协调 + 分区命名空间」而非共享单集群：
+
+- **dc 位隔离**：号段 ID 的前 8 位为 dc 前缀（`DcId` 值域即 `u8`），局部空间 2^56；
+  `dc=0` 时前缀为零、ID 值与单 DC 部署完全一致（向后兼容）。identifier 空间按 DC 分区，
+  跨 DC 天然不重叠——**无需跨 DC 数据复制即可保证 ID 不冲突**。
+- **worker 命名空间**：etcd worker 键为 `/idgen/workers/{dc}/{worker_id}`，同 DC 内 CAS 抢占，
+  跨 DC 不共享键空间。
+- **健康三态**：每个 DC 的 etcd 集群独立判 Healthy / Degraded / Failed（连续 3 次失败降级、
+  连续 5 次判死），失败态自动切本地缓存降级（调用方语义不变）。
+
+### 10.2 切换语义
+
+判定规则（刻意保守，两个层面同构：进程内 `DcFailoverController` 与 operator 的 `status.activeDc`）：
+
+| 现场 | 决策 |
+| --- | --- |
+| active 判 `Failed` 且存在 `Healthy` 候选 | 切到 **dc 号最小**的健康候选（确定性，同一现场必得同一目标） |
+| active `Healthy` 或 `Degraded` | 保持（降级期切走会在两个 DC 之间来回打摆） |
+| active 状态未知（尚未探测） | 保持（判据缺失 ≠ 判死） |
+| 无任何 `Healthy` 候选 | 保持原值（宁可带病服务，不切进不确定源） |
+
+并发正确性：active 切换经原子 CAS，只有真正换掉 active 的那一次算切换（16 线程并发判定
+实测仅一次 `SwitchTo`）。发号流量在 `AlgorithmRouter` 层感知 `active_dc()`：切换后新号段
+落入新 DC 的位前缀带，旧号段自然耗尽，不需要数据迁移。
+
+### 10.3 验证边界（⚠️ Deferred 声明）
+
+- **代码级已验证**：切换谓词（单测三形态 + 边界）、并发单切换（16 线程）、dc 位分区
+  （跨 DC 命名空间不重叠）、真实双 etcd 用例（`tests/etcd_failover.rs`，CI 以 `etcd-a`/`etcd-b`
+  两个容器 + `--ignored` 触发）。
+- **未验证（Deferred）**：真实多云/多集群环境的端到端部署与故障注入。本变更不宣称已在
+  真实生产云完成验证；具备目标集群窗口时按本节步骤执行并回填验证记录（重开条件见
+  change `cloud-native-dr` 的 Deferred 段）。
+
+---
 
 ## 相关文档
 

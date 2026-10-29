@@ -1,0 +1,48 @@
+# operator 最小权限（规则：nebulaidclusters + apps StatefulSets + core Services/Endpoints）。
+# 不授予 secrets/configmaps/pods 等无关资源；status 回写走 CR status 子资源。
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nebulaid-operator
+  namespace: nebulaid-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nebulaid-operator
+rules:
+  # CR 本体：watch 入队 reconcile；patch/update 覆盖 status 回写。
+  - apiGroups: ["nebulaid.kirky.x"]
+    resources: ["nebulaidclusters"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: ["nebulaid.kirky.x"]
+    resources: ["nebulaidclusters/status"]
+    verbs: ["get", "patch", "update"]
+  # operator 派生资源：SSA apply 需 create/update/patch；owns-watch 需 list/watch。
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # Headless Service 的端点发现面（只读）。
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list", "watch"]
+  # CR 事件（诊断面，可选但只读无害）。
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nebulaid-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nebulaid-operator
+subjects:
+  - kind: ServiceAccount
+    name: nebulaid-operator
+    namespace: nebulaid-system

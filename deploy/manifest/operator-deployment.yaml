@@ -1,0 +1,51 @@
+# NebulaId Operator Deployment：单副本（reconcile 幂等，多副本需 leader election，首版不引入）。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nebulaid-operator
+  namespace: nebulaid-system
+  labels:
+    app.kubernetes.io/name: nebulaid-operator
+    app.kubernetes.io/managed-by: nebulaid-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nebulaid-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nebulaid-operator
+    spec:
+      serviceAccountName: nebulaid-operator
+      containers:
+        - name: operator
+          # 与 NebulaIdCluster.spec.version 独立演进；发版时同步升 tag。
+          image: nebulaid-operator:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: RUST_LOG
+              value: "info"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          # 优雅退出：SIGTERM 触发 kube-runtime shutdown_on_signal 的在途回路收尾。
+          terminationGracePeriodSeconds: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

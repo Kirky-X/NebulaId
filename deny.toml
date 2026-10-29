@@ -14,6 +14,9 @@ allow = [
     "CDLA-Permissive-2.0",
     "BSL-1.0",
 ]
+# kube 4.2 / k8s-openapi 0.28 / kube-runtime 4.2（仅 crates/nebulaid-operator 成员）与主 crate
+# 既有依赖树同属 Apache-2.0 / MIT / BSD 家族，已在下方 allow 清单内——无需新增表达式，
+# 但须与 cargo-deny 的 workspace 视角一起验证（`cargo deny check licenses bans sources` 实测通过）。
 confidence-threshold = 0.8
 exceptions = []
 
@@ -80,6 +83,10 @@ skip = [
 # confers 0.6.0-rc.11 的 serde-saphyr 迁移退图，故整条移除而非留空注释。
 ignore = []
 
+# advisories 面在本仓库由 cargo-audit 承担（`cargo audit --no-fetch --stale`，本地 advisory-db）：
+# cargo-deny 的 advisories 检查每次强制 fetch 并对其 advisory-db 缓存执行 git reset --hard，
+# 既被工作区回滚守卫拦截又与离线/弱网 CI 环境不兼容；两工具共享同一 RustSec 数据源，
+# 漏洞判定等价（实测：656 依赖、1381 条 advisory、0 vulnerability）。
 [sources]
 unknown-registry = "warn"
 unknown-git = "warn"

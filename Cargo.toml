@@ -32,6 +32,12 @@ name = "audit_ring_stall_repro"
 path = "tests/audit_ring_stall_repro.rs"
 required-features = ["server"]
 
+# workspace 化：nebulaid-operator 为独立 bin 成员，kube/kube-runtime/k8s-openapi 依赖
+# 仅声明于该成员（主 crate 依赖树零影响，T022 的 cargo tree 断言与 ci 零 etcd 腿共同钉住）。
+[workspace]
+members = ["crates/nebulaid-operator"]
+resolver = "2"
+
 # 跨 DC 故障转移真实双 etcd 用例：需 etcd-a/etcd-b 两个集群与 kill 机制，
 # 仅在 etcd-integration job（health-check.yml）以 --ignored 显式触发。
 [[test]]
@@ -155,7 +161,9 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["loggin
 
 # 基础组件
 arc-swap = { version = "1.9", default-features = false }
-smallvec = { version = "1.16", default-features = false, features = ["const_generics"] }
+# 1.15 而非 1.16：kube 4.2 的 kube-client 经 serde-saphyr 0.0.29 传递硬约束 smallvec <1.16.0，
+# 取最新稳定 kube 4.2 与既有 smallvec 特性面（const_generics）可共存的一组版本。
+smallvec = { version = "1.15", default-features = false, features = ["const_generics"] }
 url = { version = "2.5", default-features = false, features = ["std"] }
 
 # 速率限制和流量控制

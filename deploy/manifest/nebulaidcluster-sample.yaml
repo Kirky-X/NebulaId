@@ -1,0 +1,22 @@
+# 示例：双 DC 的 NebulaIdCluster。
+# dc 位（id）即号段 dc 位前缀，跨 DC 命名空间天然不重叠（无需数据复制）；
+# primary 为 spec.datacenters 的首个 DC（dc 1），operator 依 /health 探测维护 activeDc。
+apiVersion: nebulaid.kirky.x/v1alpha1
+kind: NebulaIdCluster
+metadata:
+  name: prod
+  namespace: default
+spec:
+  replicas: 3
+  version: "0.3.0-rc.4"
+  datacenters:
+    - id: 1
+      etcdEndpoints:
+        - http://etcd-a-0.etcd-a:2379
+        - http://etcd-a-1.etcd-a:2379
+        - http://etcd-a-2.etcd-a:2379
+    - id: 2
+      etcdEndpoints:
+        - http://etcd-b-0.etcd-b:2379
+        - http://etcd-b-1.etcd-b:2379
+        - http://etcd-b-2.etcd-b:2379

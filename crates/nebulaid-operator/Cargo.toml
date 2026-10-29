@@ -1,0 +1,27 @@
+[package]
+name = "nebulaid-operator"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Kubernetes operator for NebulaIdCluster: per-DC StatefulSet/Service orchestration and cross-DC failover status management"
+
+[dependencies]
+# kube 系（最新稳定版 kube 4.2；k8s-openapi 必须与 kube 4.2 的 ^0.28 同 minor，否则
+# CustomResource 派生类型与 kube Api 的 Resource trait 不互操作）。
+# version feature 钉住目标 K8s 版本面，缺省不启用避免编译全量 API。
+kube = { version = "4.2", default-features = false, features = ["client", "runtime", "derive", "rustls-tls"] }
+kube-runtime = { version = "4.2", default-features = false }
+k8s-openapi = { version = "0.28", default-features = false, features = ["v1_34"] }
+serde = { version = "1.0", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
+# kube-derive 4.2 的 CustomResource 派生生成 schemars 属性/实现，要求 schemars 为直接依赖。
+schemars = { version = "1.0", default-features = false, features = ["derive", "std"] }
+thiserror = { version = "2.0", default-features = false, features = ["std"] }
+tokio = { version = "1.53", default-features = false, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+# /health 探测用 HTTP 客户端（对齐 root 依赖树既有 reqwest 0.13 线）与日志订阅器。
+# reqwest 0.13 的 rustls 特性名由 0.12 的 rustls-tls 改名为 rustls。
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "ansi", "env-filter"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }

@@ -187,6 +187,11 @@ jobs:
         env:
           ETCD_DC_A_ENDPOINTS: http://127.0.0.1:2379
           ETCD_DC_B_ENDPOINTS: http://127.0.0.1:2380
-        # kill 机制：runner 与 service 容器同 docker daemon，测试内默认命令
-        # `docker ps -q --filter name=etcd-a | xargs -r docker kill` 直接定位容器。
+          # kill 机制：runner 与 service 容器同 docker daemon。service 容器实际
+          # name 是 "<jobid>_bitnamilegacyetcd35_<hash>"，etcd-a 只是 network
+          # alias——测试内默认命令 `--filter name=etcd-a` 按 NAME 子串匹配在
+          # GH 托管命名下不命中（kill 空转→dc1 永远 Healthy→60s 不切换），
+          # health-check 的 17 次 CI failure 全是这一处。改按 published 端口
+          # 定位容器，与命名方案无关。
+          ETCD_FAILOVER_KILL_CMD: docker ps -q --filter publish=2379 | xargs -r docker kill
         run: cargo test --package nebulaid --features etcd,server --test etcd_failover -- --ignored --test-threads=1

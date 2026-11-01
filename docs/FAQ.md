@@ -352,7 +352,7 @@ async fn main() -> nebulaid::core::Result<()> {
    ```
 
 2. **确保所需特性已启用**（默认为
-   `["server", "segment", "snowflake", "uuid-v8", "uuid-v7", "uuid-v5", "uuid-v4", "postgresql", "garrison-auth"]`）：
+   `["server", "segment", "snowflake", "uuid-v8", "uuid-v7", "uuid-v5", "uuid-v4", "postgresql", "garrison-auth", "etcd"]`）：
    ```toml
    nebulaid = "0.3"
    ```

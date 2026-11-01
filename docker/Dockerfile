@@ -8,7 +8,7 @@
 #
 # Build arguments:
 #   BUILD_PROFILE=release|dev
-#   RUST_VERSION=1.97.1（confers 0.6.0-rc.10 要求 rustc ≥ 1.97.1 / edition 2024）
+#   RUST_VERSION=1.97.1（confers 0.6.0-rc.11 要求 rustc ≥ 1.97.1 / edition 2024）
 # ============================================
 
 # ---------- Builder Stage ----------

@@ -57,13 +57,16 @@ test-integration: ## Run integration tests only (lib tests under src/core/tests)
 	cargo test --package nebulaid --lib --jobs $(BUILD_JOBS) -- --test-threads=4
 
 test-etcd: ## Run real-etcd integration tests (compose etcd + cargo test --ignored)
+	@command -v curl >/dev/null 2>&1 || { echo "error: curl is required for the etcd health wait"; exit 1; }
 	@echo "Starting etcd (docker compose)..."
 	@docker compose -f docker/docker-compose.yml up -d etcd
 	@echo "Waiting for etcd health..."
-	@for i in $$(seq 1 30); do \
-		curl -fsS http://127.0.0.1:2379/health >/dev/null 2>&1 && break; \
+	@ready=0; for i in $$(seq 1 30); do \
+		if curl -fsS http://127.0.0.1:2379/health >/dev/null 2>&1; then ready=1; break; fi; \
 		sleep 1; \
-	done
+	done; \
+	if [ "$$ready" -ne 1 ]; then echo "error: etcd did not become healthy within 30s"; \
+		docker compose -f docker/docker-compose.yml stop etcd; exit 1; fi
 	@ETCD_TEST_ENDPOINTS=http://127.0.0.1:2379 cargo test --package nebulaid \
 		--features etcd,integration-tests --lib -- --ignored integration_etcd_; \
 		status=$$?; docker compose -f docker/docker-compose.yml stop etcd; exit $$status

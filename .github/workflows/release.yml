@@ -13,29 +13,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # 预检：检测 secrets 是否存在（GitHub Actions 不能直接在 if 里比较 secrets）
-  check-secrets:
-    name: Check Registry Secrets
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    outputs:
-      has_cargo_token: ${{ steps.check.outputs.has_cargo_token }}
-      has_npm_token: ${{ steps.check.outputs.has_npm_token }}
-    steps:
-      - name: Detect registry tokens
-        id: check
-        run: |
-          if [ -n "${{ secrets.CARGO_REGISTRY_TOKEN }}" ]; then
-            echo "has_cargo_token=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_cargo_token=false" >> $GITHUB_OUTPUT
-          fi
-          if [ -n "${{ secrets.NPM_TOKEN }}" ]; then
-            echo "has_npm_token=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_npm_token=false" >> $GITHUB_OUTPUT
-          fi
-
   # LOW-4 修复（CWE-1357）：发布前强制安全审查门禁。
   # 规则 19 要求「发布前强制安全审查」——任何 tag 发布前必须通过
   # cargo-audit（RustSec advisory-db）+ cargo-deny（许可证/重复依赖/ban）。
@@ -76,8 +53,9 @@ jobs:
           log-level: warn
 
   # 发布到 crates.io：凭证走 OIDC trusted publishing（rust-lang/crates-io-auth-action），
-  # 不依赖 CARGO_REGISTRY_TOKEN。此前用 has_cargo_token 门控会在 secret 缺失时
-  # 静默 skip 发布（tag 打了但 crates.io 没动），故取消门控让失败显性暴露。
+  # 不依赖长存 secret。原先的 check-secrets 预检 job 已删除：其探测的
+  # CARGO_REGISTRY_TOKEN / NPM_TOKEN 已无任何步骤消费，且 has_cargo_token 门控
+  # 会在 secret 缺失时静默 skip 发布（tag 打了但 crates.io 没动），故取消门控让失败显性暴露。
   publish-cargo:
     name: Publish to crates.io
     runs-on: ubuntu-latest
@@ -131,14 +109,25 @@ jobs:
         run: cargo publish --dry-run -p nebulaid
 
       # 幂等:已发布版本直接跳过,避免重跑时"already exists"报错
+      # 探测必须区分三类结果：200=已发布（跳过）、404=确未发布（发布）、
+      # 其余（000 网络中断/5xx 探针抖动）=状态未知——此时按"未发布"放行会让
+      # cargo publish 撞 "already exists" 而中断发布，故立即失败请重跑 tag 流水线。
       - name: Check already published
         id: published
         run: |
+          set -uo pipefail
           VERSION="${GITHUB_REF#refs/tags/v}"
           CODE=$(curl -s -o /dev/null -w "%{http_code}" -H 'User-Agent: kirky-x-release-verify' \
             "https://crates.io/api/v1/crates/nebulaid/${VERSION}")
           echo "nebulaid ${VERSION}: HTTP ${CODE}"
-          echo "exists=$([[ "$CODE" == "200" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+          case "$CODE" in
+            200) echo "exists=true" >> "$GITHUB_OUTPUT" ;;
+            404) echo "exists=false" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "::error::crates.io version probe returned HTTP ${CODE} (expected 200/404); publish state unknown, aborting instead of guessing"
+              exit 1
+              ;;
+          esac
 
       # crates.io trusted publishing（OIDC）：官方 auth-action 以 Actions OIDC 换取短时发布凭证
       - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9  # v1.0.6

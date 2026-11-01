@@ -184,7 +184,7 @@ println!("{} ids via {:?}", batch.len(), batch.algorithm);
 <summary>📄 代码 · bash</summary>
 
 ```bash
-# 克隆仓库并构建（default 特性：server 全栈 + 三算法 + postgresql + garrison-auth）
+# 克隆仓库并构建（default 特性：server 全栈 + 五种算法 + postgresql + garrison-auth + etcd）
 git clone https://github.com/Kirky-X/NebulaId.git
 cd NebulaId
 cargo build --release

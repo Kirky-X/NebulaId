@@ -182,7 +182,7 @@ println!("{} ids via {:?}", batch.len(), batch.algorithm);
 <summary>📄 Code · bash</summary>
 
 ```bash
-# Clone and build (default features: full server stack + all three algorithms + postgresql + garrison-auth)
+# Clone and build (default features: full server stack + five algorithms + postgresql + garrison-auth + etcd)
 git clone https://github.com/Kirky-X/NebulaId.git
 cd NebulaId
 cargo build --release

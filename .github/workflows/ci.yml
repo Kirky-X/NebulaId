@@ -23,8 +23,11 @@ env:
   PKG: nebulaid
 
 concurrency:
+  # main 分支不取消在飞运行：发布门禁依赖该提交的完整结论，被取消等于无结论
+  # （本轮实测 run 41354606188 在 37 分钟后被外部取消，run_attempt=1，非自我触发）。
+  # PR 仍取消旧运行以省额度。
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # 阶段 1：格式 + Lint（任意非零退出码阻断合并）

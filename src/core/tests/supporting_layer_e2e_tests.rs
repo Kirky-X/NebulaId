@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 /// Config::load_from_file 完整链路：TOML 解析 + `${VAR}` 环境变量展开 + validate。
 ///
-/// 用 `Config::default` 改字段后 `toml::to_string` 生成完整 TOML，避免手写遗漏必填字段。
+/// 用 `Config::default()` 改字段后 `toml::to_string` 生成完整 TOML，避免手写遗漏必填字段。
 #[tokio::test]
 async fn e2e_config_load_from_file_with_env_expansion_and_validation() {
     let dir = tempdir().expect("E2E: tempdir should succeed");

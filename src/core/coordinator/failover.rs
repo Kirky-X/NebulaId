@@ -152,13 +152,19 @@ impl DcFailoverController {
     }
 
     /// 用探针批量刷新视图：探测当前 active 与全部候选。
+    ///
+    /// 探测在写锁**外**完成再一次性写回：`probe` 在真实 etcd 实现里是网络 I/O，
+    /// 持写锁跨 await 会让所有读方（`evaluate`、health 端点）在整个刷新期间阻塞。
     pub async fn refresh(&self, probe: &dyn DcProbe) {
         let mut seen = Vec::with_capacity(self.candidates.len() + 1);
         seen.push(self.active_dc());
         seen.extend_from_slice(&self.candidates);
-        let mut guard = self.view.write().await;
+        let mut results = Vec::with_capacity(seen.len());
         for dc in seen {
-            let status = probe.probe(dc).await;
+            results.push((dc, probe.probe(dc).await));
+        }
+        let mut guard = self.view.write().await;
+        for (dc, status) in results {
             guard.set(dc, status);
         }
     }
@@ -194,6 +200,8 @@ impl DcFailoverController {
             return FailoverDecision::Keep;
         }
         self.switches.fetch_add(1, Ordering::SeqCst);
+        // 结构化字段与 FTL 文案刻意重复：字段供日志后端按 from_dc/to_dc 过滤聚合，
+        // 文案供人工阅读与本地化；两者服务不同消费者，去掉任一都损失能力。
         tracing::warn!(
             from_dc = current,
             to_dc = target,
@@ -211,6 +219,7 @@ impl DcFailoverController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
     use std::sync::Mutex;
 
     /// 预设状态表的 stub 探针：按 DC 返回固定三态，可计数调用次数。
@@ -360,6 +369,69 @@ mod tests {
         ctl.refresh(&probe).await;
         assert_eq!(ctl.evaluate().await, FailoverDecision::SwitchTo(5));
         assert_eq!(ctl.active_dc(), 5);
+    }
+
+    /// 慢探针不得阻塞读者：`refresh` 在探测期间不得持有视图写锁。
+    ///
+    /// 真实 `DcProbe` 走 etcd 网络 I/O；若写锁跨 `probe().await` 持有，
+    /// `evaluate`/health 端点会在整个刷新期间挂住（OCR 性能项 F11/F14）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn refresh_does_not_hold_write_lock_during_probe() {
+        /// 首个探测挂起直到放行信号，用于把 `refresh` 卡在 await 上。
+        struct SlowFirstProbe {
+            entered: AtomicBool,
+            release: tokio::sync::Semaphore,
+        }
+
+        #[async_trait]
+        impl DcProbe for SlowFirstProbe {
+            async fn probe(&self, _dc: DcId) -> EtcdClusterStatus {
+                // 仅首个探测阻塞：其余直接返回，避免测试需多次放行。
+                if !self.entered.swap(true, Ordering::SeqCst) {
+                    let _ = self.release.acquire().await;
+                }
+                EtcdClusterStatus::Healthy
+            }
+        }
+
+        let ctl = Arc::new(DcFailoverController::new(1, vec![2]));
+        let probe = Arc::new(SlowFirstProbe {
+            entered: AtomicBool::new(false),
+            release: tokio::sync::Semaphore::new(0),
+        });
+
+        let refresher = {
+            let ctl = Arc::clone(&ctl);
+            let probe = Arc::clone(&probe);
+            tokio::spawn(async move { ctl.refresh(probe.as_ref()).await })
+        };
+
+        // 等首个探测确认进入 await，再验证读者能否取得视图。
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !probe.entered.load(Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("首个探测应已进入 await");
+
+        let view = ctl.view();
+        let read = tokio::time::timeout(std::time::Duration::from_secs(1), view.read()).await;
+        assert!(
+            read.is_ok(),
+            "refresh 探测期间写锁未被释放：读者无法取得视图"
+        );
+        drop(read);
+
+        probe.release.add_permits(1);
+        tokio::time::timeout(std::time::Duration::from_secs(5), refresher)
+            .await
+            .expect("refresh 必须在放行后结束")
+            .expect("refresh task must finish");
+        assert_eq!(
+            ctl.view().read().await.status_of(1),
+            Some(&EtcdClusterStatus::Healthy)
+        );
     }
 
     /// T019 的并发正确性部分：16 线程并发 evaluate 只允许产生一次 SwitchTo。

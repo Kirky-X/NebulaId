@@ -637,19 +637,43 @@ async fn assemble_coordination(config: &Config) -> Result<CoordinationComponents
     }
 
     // fail-closed：配置显式含 etcd endpoints，装配任一步失败 → Err（拒绝启动）。
-    let wrapper = EtcdClientWrapper::new(config.etcd.configured_endpoints())
-        .await
-        .map_err(|e| {
-            nebulaid::core::types::CoreError::ConfigurationError(t!(
+    // 端点一律经 `redact_endpoints` 脱敏：`scheme://user:pass@host:port` 形态的
+    // userinfo 直接落错误消息即凭据外泄，与 SDK 侧（kit.rs）同口径。
+    let redacted_endpoints = || {
+        format!(
+            "{:?}",
+            nebulaid::core::config::app::redact_endpoints(&config.etcd.endpoints)
+        )
+    };
+    // 连接期超时与 SDK 侧（kit.rs）同口径：`EtcdClientWrapper::new` 内部即
+    // `Client::connect`，只给 ping 包超时时连接期会按系统 TCP 默认超时（数分钟）
+    // 挂死；启动期「配置了但不可达」必须按 connect_timeout_ms 快速失败。
+    let connect_timeout = std::time::Duration::from_millis(config.etcd.connect_timeout_ms.max(1));
+    let wrapper = match tokio::time::timeout(
+        connect_timeout,
+        EtcdClientWrapper::new(config.etcd.configured_endpoints()),
+    )
+    .await
+    {
+        Ok(Ok(wrapper)) => wrapper,
+        Ok(Err(e)) => {
+            return Err(nebulaid::core::types::CoreError::ConfigurationError(t!(
                 "error.main.etcd_client_connect_failed",
-                endpoints = format!("{:?}", config.etcd.endpoints),
+                endpoints = redacted_endpoints(),
                 reason = e
-            ))
-        })?
-        // operation_timeout_secs 自配置接线（默认 3s）。
-        .with_operation_timeout(std::time::Duration::from_secs(
-            config.etcd.operation_timeout_secs,
-        ));
+            )));
+        }
+        Err(_) => {
+            return Err(nebulaid::core::types::CoreError::ConfigurationError(t!(
+                "error.main.etcd_connect_timed_out",
+                timeout_ms = config.etcd.connect_timeout_ms,
+                endpoints = redacted_endpoints()
+            )));
+        }
+    }
+    .with_operation_timeout(std::time::Duration::from_secs(
+        config.etcd.operation_timeout_secs,
+    ));
     let client: std::sync::Arc<dyn nebulaid::core::coordinator::EtcdClientOps> =
         std::sync::Arc::new(wrapper);
 
@@ -660,7 +684,7 @@ async fn assemble_coordination(config: &Config) -> Result<CoordinationComponents
         Ok(Err(e)) => {
             return Err(nebulaid::core::types::CoreError::ConfigurationError(t!(
                 "error.main.etcd_ping_failed",
-                endpoints = format!("{:?}", config.etcd.endpoints),
+                endpoints = redacted_endpoints(),
                 reason = e
             )));
         }
@@ -668,7 +692,7 @@ async fn assemble_coordination(config: &Config) -> Result<CoordinationComponents
             return Err(nebulaid::core::types::CoreError::ConfigurationError(t!(
                 "error.main.etcd_ping_timed_out",
                 timeout_ms = config.etcd.connect_timeout_ms,
-                endpoints = format!("{:?}", config.etcd.endpoints)
+                endpoints = redacted_endpoints()
             )));
         }
     }
@@ -2060,6 +2084,31 @@ mod tests {
         assert!(
             err_msg.contains("127.0.0.1:1") || err_msg.contains("ping"),
             "错误信息应指向不可达端点或 ping 探活，实际: {err_msg}"
+        );
+    }
+
+    /// 端点 URL 携带 userinfo 时，fail-closed 错误消息必须脱敏（口令不外泄）。
+    ///
+    /// 与 SDK 侧（kit.rs）同口径：`config.etcd.endpoints` 原样打印会把
+    /// `scheme://user:pass@host:port` 中的口令写进日志/告警通道。
+    #[cfg(feature = "etcd")]
+    #[tokio::test]
+    async fn test_assemble_coordination_redacts_endpoint_credentials() {
+        let mut config = Config::default();
+        config.etcd.endpoints = vec!["http://user:s3cr3t@127.0.0.1:1".to_string()];
+        config.etcd.connect_timeout_ms = 300;
+
+        let err_msg = match assemble_coordination(&config).await {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("端点不可达时必须拒绝装配（fail-closed）"),
+        };
+        assert!(
+            !err_msg.contains("s3cr3t"),
+            "端点口令必须脱敏，不得出现在错误消息中，实际: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("***") || err_msg.contains("127.0.0.1:1"),
+            "脱敏后仍应保留可定位的端点信息（*** 或 host:port），实际: {err_msg}"
         );
     }
 

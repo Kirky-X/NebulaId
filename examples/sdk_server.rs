@@ -154,7 +154,7 @@ async fn serve_openapi_json() -> impl IntoResponse {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 默认算法须为 snowflake：Config::default 的 segment 需数据库，未注入会被拒绝。
+    // 默认算法须为 snowflake：Config::default() 的 segment 需数据库，未注入会被拒绝。
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
     let kit = NebulaIdKitBuilder::new(config).build().await?;

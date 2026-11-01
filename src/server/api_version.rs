@@ -117,7 +117,7 @@ pub async fn api_version_middleware(
 
     let mut response = next.run(req).await;
 
-    // invariant: ApiVersion::as_str returns "v1"/"v2", always valid HeaderValues
+    // invariant: ApiVersion::as_str() returns "v1"/"v2", always valid HeaderValues
     response.headers_mut().insert(
         &API_VERSION_HEADER,
         version

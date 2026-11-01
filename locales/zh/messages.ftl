@@ -484,6 +484,7 @@ error-main-etcd_allocator_init_failed = etcd worker allocator 初始化失败：
 error-main-etcd_worker_id_allocation_failed = etcd worker_id 分配失败：{ $reason }
 error-main-etcd_worker_id_range_exceeded = etcd 分配的 worker_id { $worker_id } 超出 config.worker_id 的 u8 取值范围
 error-main-etcd_client_connect_failed = etcd 客户端连接 endpoints { $endpoints } 失败：{ $reason }
+error-main-etcd_connect_timed_out = etcd 客户端连接 endpoints { $endpoints } 在 { $timeout_ms }ms 后超时
 error-main-etcd_ping_failed = etcd ping endpoints { $endpoints } 失败：{ $reason }
 error-main-etcd_ping_timed_out = etcd ping 在 { $timeout_ms }ms 后超时，endpoints：{ $endpoints }
 error-main-etcd_lock_create_failed = 创建 EtcdDistributedLock 失败：{ $reason }

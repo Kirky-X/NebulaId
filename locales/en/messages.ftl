@@ -488,6 +488,7 @@ error-main-etcd_allocator_init_failed = etcd worker allocator init failed: { $re
 error-main-etcd_worker_id_allocation_failed = etcd worker_id allocation failed: { $reason }
 error-main-etcd_worker_id_range_exceeded = etcd allocated worker_id { $worker_id } exceeds config.worker_id u8 range
 error-main-etcd_client_connect_failed = etcd client connect failed for endpoints { $endpoints }: { $reason }
+error-main-etcd_connect_timed_out = etcd client connect timed out after { $timeout_ms }ms for endpoints { $endpoints }
 error-main-etcd_ping_failed = etcd ping failed for endpoints { $endpoints }: { $reason }
 error-main-etcd_ping_timed_out = etcd ping timed out after { $timeout_ms }ms for endpoints { $endpoints }
 error-main-etcd_lock_create_failed = failed to create EtcdDistributedLock: { $reason }

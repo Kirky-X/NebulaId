@@ -1540,7 +1540,7 @@ async fn e2e_audit_middleware_records_success_event_for_2xx_response() {
 
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // log.await 返回时事件已写入内存（VecDeque），无需额外等待
+    // log().await 返回时事件已写入内存（VecDeque），无需额外等待
 
     let events = audit_logger.get_recent_events(10).await;
     assert_eq!(events.len(), 1);

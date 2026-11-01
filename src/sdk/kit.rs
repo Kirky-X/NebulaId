@@ -724,7 +724,7 @@ mod tests {
     }
 
     /// 测试共享：单机配置（etcd endpoints 置空白 → 走 LocalDistributedLock，零外部依赖）。
-    /// 注意 `Config::default` 的 endpoints 为空列表，但显式写入编排内网地址时
+    /// 注意 `Config::default()` 的 endpoints 为空列表，但显式写入编排内网地址时
     /// 未配置可达 etcd 会显性失败（fail-closed）。
     fn local_config() -> Config {
         let mut config = Config::default();
@@ -866,7 +866,7 @@ mod tests {
     #[cfg(feature = "database")]
     #[tokio::test]
     async fn test_id_generator_segment_without_repository_returns_configuration_error() {
-        // local_config（同 Config::default）默认算法为 segment
+        // local_config（同 Config::default()）默认算法为 segment
         let kit = NebulaIdKitBuilder::new(local_config())
             .build()
             .await

@@ -131,7 +131,10 @@ etcd-client = { version = "0.21", optional = true, default-features = false, fea
 parking_lot = { version = "0.12", default-features = false }
 
 # 日志追踪（tracing-subscriber 由 inklog 间接引入，日志初始化通过 inklog 接管）
-tracing = { version = "0.1", default-features = false, features = ["std"] }
+# attributes: 直接消费 `#[tracing::instrument]`（algorithm/router.rs、server/audit/logger.rs）。
+# 该特性此前只由 axum/tower/redis 的传递 default 特性偶然打开，剪裁到
+# `--no-default-features` 时符号被 cfg 掉、编译断裂（E0433）；直接声明消除隐式依赖。
+tracing = { version = "0.1", default-features = false, features = ["std", "attributes"] }
 
 # metrics: /metrics 经 exporter 自有 registry 渲染既有原子快照（generate 热路径零改动）；不自起监听器。
 metrics = { version = "0.24", default-features = false }
@@ -145,7 +148,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 hex = { version = "0.4", default-features = false, features = ["std"] }
 base64 = { version = "0.23", default-features = false, features = ["std"] }
 sha2 = { version = "0.11", default-features = false, features = ["alloc", "oid"] }
-rand = { version = "0.10", default-features = false, features = ["std", "std_rng"] }
+# rand: `rand::rng()`（thread-local CSPRNG，API Key secret 生成与 auth 缓存抖动）
+# 在 0.10 由 `thread_rng` 特性门控；不开时该符号被 cfg 掉，无 redis/inklog 的
+# 剪裁组合（如 `--no-default-features --features database`）会在编译期断裂（E0423/E0603）。
+rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 subtle = { version = "2.6", optional = true, default-features = false, features = ["std"] }
 # argon2: API key 密钥哈希（CWE-916 修复）；0.6 起 std 废弃，OsRng 由 getrandom feature 提供。
 argon2 = { version = "0.6", optional = true, default-features = false, features = ["alloc", "password-hash", "getrandom"] }

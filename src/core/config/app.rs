@@ -224,8 +224,10 @@ pub(crate) fn redact_optional_url(url: &str) -> String {
 /// cfg 门控跟随调用方：主服务侧仅 `not(etcd)` 的 fail-closed 分支引用它，
 /// SDK 侧引用随 `sdk` 特性；两臂都不在（如 `--features etcd` 且无 sdk）时
 /// 本函数编译即死代码——按使用面裁剪，而不是用 `allow(dead_code)` 掩盖。
+/// `pub`（非 `pub(crate)`）：bin 侧 main.rs 的 fail-closed 分支同为本仓消费面，
+/// lib/bin 是两个 crate，`pub(crate)` 对 bin 不可见（E0603）；cfg 门控保持使用面裁剪。
 #[cfg(any(not(feature = "etcd"), feature = "sdk"))]
-pub(crate) fn redact_endpoints(endpoints: &[String]) -> Vec<String> {
+pub fn redact_endpoints(endpoints: &[String]) -> Vec<String> {
     endpoints.iter().map(|e| redact_db_url(e)).collect()
 }
 

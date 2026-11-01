@@ -292,6 +292,9 @@ jobs:
           cargo llvm-cov --no-report --package ${{ env.PKG }} --lib -- \
             --ignored integration_ --test-threads=1 \
             || { echo "::error::真实 etcd 集成用例未通过"; exit 1; }
+          # 编译先行（前台）：llvm-cov run 的冷编译可达 2 分钟，若让它在轮询
+          # 窗口内并行进行，120s 就绪窗会被编译期吃掉（runner 波动下必现假失败）。
+          ETCD_ENDPOINTS=http://127.0.0.1:2379 cargo llvm-cov --no-report run --bin nebula-id -- --help >/dev/null 2>&1 || true
           # (3) 真实启动二进制覆盖组合根（注入 ETCD_ENDPOINTS：默认产物含 etcd 后，
           # 启动必须走 etcd 协调臂而不是单机本地锁臂，同时把 EtcdClientWrapper 的
           # connect/ping/kv/lease grant/keepalive/revoke 真实 I/O 臂计入覆盖）

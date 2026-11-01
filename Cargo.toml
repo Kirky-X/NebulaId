@@ -96,7 +96,7 @@ sdforge = { version = "0.5.0-rc.9", default-features = false }
 inklog = { version = "0.3.0-rc.10", optional = true, default-features = false, features = ["fast-masking"] }
 # fast-masking: Aho-Corasick 多模式脱敏加速；凭证/密钥类日志字段自动脱敏是合规刚需，开 feature 即得。
 # garrison: 同作者认证框架；rc.2 为 firewall-bruteforce 最低可用版（rc.1 编译失败），需 limiteron ^0.3.0-rc.7。
-garrison = { version = "0.9.0-rc.4", optional = true, default-features = false, features = ["firewall-bruteforce"] }
+garrison = { version = "0.9.0-rc.5", optional = true, default-features = false, features = ["firewall-bruteforce"] }
 # trait-kit: 模块标准接口与 Kit 能力管理中心；仅 sdk feature 拉入（dep:trait-kit），不开 sdk 依赖树零影响。
 trait-kit = { version = "0.5.0-rc.10", optional = true, default-features = false, features = ["async", "lifecycle", "health"] }
 

@@ -2160,7 +2160,10 @@ mod tests {
     /// 环境变量 NEBULA_LOCALE 优先于配置值。
     #[test]
     fn test_resolve_locale_env_overrides_config() {
-        let (locale, invalid) = resolve_locale(Some("zh-CN"), "en");
+        // 走纯函数并隔离宿主环境链：真实现读宿主 LC_ALL/LANG/sys-locale，
+        // 显式入口合法时本就短路，但显式为 None/空的用例会继续走链落回宿主语区，
+        // 在非受控宿主上假失败——注入 None 使断言只针对被测语义。
+        let (locale, invalid) = resolve_locale_from(Some("zh-CN"), "en", None, None, None, None);
         assert_eq!(locale, "zh-CN");
         assert!(!invalid);
     }
@@ -2168,11 +2171,11 @@ mod tests {
     /// 环境变量缺失时使用配置值。
     #[test]
     fn test_resolve_locale_falls_back_to_config() {
-        let (locale, invalid) = resolve_locale(None, "zh-CN");
+        let (locale, invalid) = resolve_locale_from(None, "zh-CN", None, None, None, None);
         assert_eq!(locale, "zh-CN");
         assert!(!invalid);
 
-        let (locale, invalid) = resolve_locale(None, "en");
+        let (locale, invalid) = resolve_locale_from(None, "en", None, None, None, None);
         assert_eq!(locale, "en");
         assert!(!invalid);
     }
@@ -2180,7 +2183,7 @@ mod tests {
     /// 环境变量为空串视同未设置（沿环境变量覆盖惯例）。
     #[test]
     fn test_resolve_locale_empty_env_treated_as_unset() {
-        let (locale, invalid) = resolve_locale(Some(""), "zh-CN");
+        let (locale, invalid) = resolve_locale_from(Some(""), "zh-CN", None, None, None, None);
         assert_eq!(locale, "zh-CN");
         assert!(!invalid);
     }
@@ -2189,17 +2192,17 @@ mod tests {
     #[test]
     fn test_resolve_locale_invalid_values_fall_back_to_en() {
         // env 非法
-        let (locale, invalid) = resolve_locale(Some("fr"), "en");
+        let (locale, invalid) = resolve_locale_from(Some("fr"), "en", None, None, None, None);
         assert_eq!(locale, "en", "非法 env 值必须回退 en");
         assert!(invalid, "非法值必须被标记，供调用方告警");
 
         // config 非法
-        let (locale, invalid) = resolve_locale(None, "es-ES");
+        let (locale, invalid) = resolve_locale_from(None, "es-ES", None, None, None, None);
         assert_eq!(locale, "en", "非法 config 值必须回退 en");
         assert!(invalid);
 
         // 大小写敏感：非规范取值按非法处理（不做隐式归一化）
-        let (locale, invalid) = resolve_locale(Some("ZH-cn"), "en");
+        let (locale, invalid) = resolve_locale_from(Some("ZH-cn"), "en", None, None, None, None);
         assert_eq!(locale, "en");
         assert!(invalid);
     }

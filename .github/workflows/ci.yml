@@ -299,7 +299,7 @@ jobs:
           # 窗口内并行进行，120s 就绪窗会被编译期吃掉（runner 波动下必现假失败）。
           # 用 show-env + build（不是 run --help：该二进制无 --help 早退，服务会
           # 起在 8080 并挂住整条腿，实测触发 30 分钟 job 超时被强杀）。
-          eval "$(cargo llvm-cov show-env --export-prefix=LLVM_COV_)"
+          eval "$(cargo llvm-cov show-env --sh)"
           cargo build --bin nebula-id --quiet
           # (3) 真实启动二进制覆盖组合根（注入 ETCD_ENDPOINTS：默认产物含 etcd 后，
           # 启动必须走 etcd 协调臂而不是单机本地锁臂，同时把 EtcdClientWrapper 的

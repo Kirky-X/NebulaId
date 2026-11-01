@@ -39,7 +39,7 @@ jobs:
         # 版本修正（可验证的外部事实）：`v0.12.0` 在 zizmorcore/zizmor-action 仓库不存在
         # （tags 列表最高为 v0.7.1），引用不存在的 ref 会让 job 在 "Set up job" 直接报
         # Unable to resolve action 而红；改为 SHA 钉住 v0.7.1，与本工作区 vecboost 仓已采用的写法一致。
-        uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
+        uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
       - name: gitleaks 密钥扫描
         # 第三方 action 钉 SHA：可变 tag（@v2）可被上游重指，与本文件其余 action 一致。
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0

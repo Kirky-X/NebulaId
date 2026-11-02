@@ -295,24 +295,23 @@ jobs:
           cargo llvm-cov --no-report --package ${{ env.PKG }} --lib -- \
             --ignored integration_ --test-threads=1 \
             || { echo "::error::真实 etcd 集成用例未通过"; exit 1; }
-          # 编译先行（前台）：llvm-cov run 的冷编译可达 2 分钟，若让它在轮询
-          # 窗口内并行进行，120s 就绪窗会被编译期吃掉（runner 波动下必现假失败）。
-          # 用 show-env + build（不是 run --help：该二进制无 --help 早退，服务会
-          # 起在 8080 并挂住整条腿，实测触发 30 分钟 job 超时被强杀）。
-          eval "$(cargo llvm-cov show-env --sh)"
-          cargo build --bin nebula-id --quiet
+          # 不做单独预编译：`cargo llvm-cov run` 的冷编译最长约 2 分钟，此前它被
+          # 算进 120s 就绪窗导致假红。改为把窗口提到 420s（编译 2 分钟 + 启动
+          # 1 分钟 + runner 抖动余量），比引入 show-env/--no-run 等易错变体更稳
+          # （实测 show-env 的 LLVM_PROFILE_FILE 指向 target/，report 读
+          # llvm-cov-target 会报 not found *.profraw；--no-run 与 --no-report 互斥）。
           # (3) 真实启动二进制覆盖组合根（注入 ETCD_ENDPOINTS：默认产物含 etcd 后，
           # 启动必须走 etcd 协调臂而不是单机本地锁臂，同时把 EtcdClientWrapper 的
           # connect/ping/kv/lease grant/keepalive/revoke 真实 I/O 臂计入覆盖）
           ETCD_ENDPOINTS=http://127.0.0.1:2379 cargo llvm-cov --no-report run --bin nebula-id -- --config config/config.toml &
           SERVER_PID=$!
           healthy=0
-          for i in $(seq 1 60); do
+          for i in $(seq 1 210); do
             if curl -sf http://127.0.0.1:8080/health >/dev/null 2>&1; then healthy=1; break; fi
             sleep 2
           done
           if [ "$healthy" != "1" ]; then
-            echo "::error::nebula-id 未在 120s 内就绪，无法采集组合根覆盖率"
+            echo "::error::nebula-id 未在 420s 内就绪（含编译时间），无法采集组合根覆盖率"
             kill -TERM "$SERVER_PID" 2>/dev/null || true
             exit 1
           fi

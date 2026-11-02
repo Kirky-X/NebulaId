@@ -320,9 +320,17 @@ jobs:
           # (4) 合并三轮 profraw 出 lcov 并强制 95% 行覆盖率门禁。
           # 加 --summary-only：使百分比在 job 日志里可直接审计（原先只写 lcov 不落屏幕，
           # 腿红掉时看不到真实数字，只能盲猜差多少行）；阈值与口径不变。
+          # 先出 lcov 再用 awk 打印百分比与判定：--summary-only 在 fail 时
+          # 会把数值吞在错误行里，日志看不到真实差距（本轮多跑盲猜）。
           cargo llvm-cov report --package ${{ env.PKG }} \
             --ignore-filename-regex "server/proto/" \
-            --fail-under-lines 95 --summary-only --lcov --output-path lcov.info
+            --lcov --output-path lcov.info
+          total=$(awk -F: '/^LF:/{lf+=$2} /^LH:/{lh+=$2} END{if (lf==0) {print "0.00"} else {printf "%.2f", 100*lh/lf}}' lcov.info)
+          echo "实测行覆盖率: ${total}%（分母 $(awk -F: '/^LF:/{s+=$2} END{print s}' lcov.info) 行，阈值 95%）"
+          awk -v t="$total" 'BEGIN{exit !(t+0 >= 95)}' || {
+            echo "::error::行覆盖率 ${total}% < 95%"
+            exit 1
+          }
 
       - name: Upload Coverage Report
         if: always() && matrix.feature == 'default'

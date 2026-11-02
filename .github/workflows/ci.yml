@@ -315,6 +315,10 @@ jobs:
             kill -TERM "$SERVER_PID" 2>/dev/null || true
             exit 1
           fi
+          # 就绪后再稳态运行 20s：main.rs 的若干周期性任务（health monitor 首轮、
+          # watchdog、cache flush）只在正常运行期命中；健康检查一过就 SIGTERM
+          # 会漏掉这些路径（实测 CI 覆盖率 94.51% 而稳态运行的本机达 95.20%）。
+          sleep 20
           pkill -TERM -f 'config/config.toml' || true
           wait "$SERVER_PID" 2>/dev/null || true
           # (4) 合并三轮 profraw 出 lcov 并强制 95% 行覆盖率门禁。

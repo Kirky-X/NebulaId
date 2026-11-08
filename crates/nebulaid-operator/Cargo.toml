@@ -12,7 +12,7 @@ description = "Kubernetes operator for NebulaIdCluster: per-DC StatefulSet/Servi
 # version feature 钉住目标 K8s 版本面，缺省不启用避免编译全量 API。
 kube = { version = "4.2", default-features = false, features = ["client", "runtime", "derive", "rustls-tls"] }
 kube-runtime = { version = "4.2", default-features = false }
-k8s-openapi = { version = "0.28", default-features = false, features = ["v1_34"] }
+k8s-openapi = { version = "0.29", default-features = false, features = ["v1_34"] }
 serde = { version = "1.0", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
 # kube-derive 4.2 的 CustomResource 派生生成 schemars 属性/实现，要求 schemars 为直接依赖。

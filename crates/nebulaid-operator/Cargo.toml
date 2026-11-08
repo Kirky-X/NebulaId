@@ -11,7 +11,7 @@ description = "Kubernetes operator for NebulaIdCluster: per-DC StatefulSet/Servi
 # CustomResource 派生类型与 kube Api 的 Resource trait 不互操作）。
 # version feature 钉住目标 K8s 版本面，缺省不启用避免编译全量 API。
 kube = { version = "4.2", default-features = false, features = ["client", "runtime", "derive", "rustls-tls"] }
-kube-runtime = { version = "4.2", default-features = false }
+kube-runtime = { version = "5.0", default-features = false }
 k8s-openapi = { version = "0.28", default-features = false, features = ["v1_34"] }
 serde = { version = "1.0", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }

@@ -18,8 +18,13 @@ serde_json = { version = "1.0", default-features = false, features = ["std"] }
 # kube-derive 4.2 的 CustomResource 派生生成 schemars 属性/实现，要求 schemars 为直接依赖。
 schemars = { version = "1.0", default-features = false, features = ["derive", "std"] }
 thiserror = { version = "2.0", default-features = false, features = ["std"] }
-tokio = { version = "1.53", default-features = false, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+# net：探针面 TcpListener；探针路由/serve 全部经 sdforge 门面，不引直接 axum 依赖。
+tokio = { version = "1.53", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+# 探针面基座：health 挂载 /healthz + /readyz（绕过认证层），graceful 提供
+# serve_with_graceful_shutdown（SIGTERM/SIGINT → 停接 → 排空）。reconcile 主循环
+# （kube-runtime）零依赖 sdforge，探针面独立监听不影响收敛回路。
+sdforge = { version = "0.5.0-rc.9", default-features = false, features = ["health", "graceful"] }
 # /health 探测用 HTTP 客户端（对齐 root 依赖树既有 reqwest 0.13 线）与日志订阅器。
 # reqwest 0.13 的 rustls 特性名由 0.12 的 rustls-tls 改名为 rustls。
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }

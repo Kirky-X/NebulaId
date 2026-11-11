@@ -35,11 +35,20 @@ spec:
               memory: 128Mi
             limits:
               memory: 512Mi
-          # 优雅退出：SIGTERM 触发 kube-runtime shutdown_on_signal 的在途回路收尾。
+          # 优雅退出：SIGTERM 触发 kube-runtime shutdown_on_signal 的在途回路收尾
+          # 与探针面 graceful drain（30s 上限同 grace period）。
           terminationGracePeriodSeconds: 30
+          # 探针面由 sdforge health 挂载：/healthz 恒 200（进程存活）；
+          # /readyz 在 reconcile 回路武装（watcher 开始轮询）后转 200。
           livenessProbe:
             httpGet:
-              path: /health
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10

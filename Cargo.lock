@@ -5041,9 +5041,9 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "sdforge"
-version = "0.5.0-rc.10"
+version = "0.5.0-rc.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44a5dbdd22c0682ce5e77e7a4dc5cea9b4dc0176fc13bc8f81677eba0113cb04"
+checksum = "2f432e54ec9aabe6168af38f7e3be498edfee3045217115ba16270c953b559f8"
 dependencies = [
  "async-trait",
  "axum",
@@ -6344,9 +6344,9 @@ dependencies = [
 
 [[package]]
 name = "trait-kit"
-version = "0.5.0-rc.13"
+version = "0.5.0-rc.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d766fef13bfd0f12142df57477175307703b07d5596f1f1bb9c18cba194dc121"
+checksum = "fb67168334999a77008eae80a9fc4241e2a2c7f8bd9e05bc4d4c989fdcfe9ba5"
 dependencies = [
  "aho-corasick",
  "fancy-regex",

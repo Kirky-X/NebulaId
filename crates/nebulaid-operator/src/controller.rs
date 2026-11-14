@@ -357,7 +357,7 @@ mod tests {
                         etcd_endpoints: vec!["http://etcd-b:2379".to_string()],
                     },
                 ],
-                version: "0.3.0-rc.4".to_string(),
+                version: "0.3.0".to_string(),
             },
         );
         cluster.metadata.uid = Some("uid-prod-1".to_string());

@@ -11,14 +11,14 @@
 
 ## 📋 目录
 
-- [Unreleased](#unreleased)
+- [0.3.0 - 2026-11-14](#030---2026-11-14)
 - [0.3.0-rc.3 - 2026-10-15](#030-rc3---2026-10-15)
 - [0.3.0-rc.1 - 2026-09-22](#030-rc1---2026-09-22)
 - [0.2.0 - 2026-07-23](#020---2026-07-23)
 
 ---
 
-## [Unreleased]
+## [0.3.0] - 2026-11-14
 
 ### feat（云原生与容灾：跨 DC failover / Operator / lease-watch 收尾）
 
@@ -32,6 +32,8 @@
 - **供应链**：workspace 统一锁下 audit 扫出的两个既有漏洞按补丁级修复——`ctutils` 0.4.3→0.4.4、`pulldown-cmark` 0.13.4→0.13.5。
 
 ### 变更（⚠️ 破坏性：`default` 特性纳入 `etcd`）
+
+- **自研依赖定版稳定版**：confers `0.6`、trait-kit `0.5`、oxcache `0.5`、dbnexus `0.6`、inklog `0.3`、sdforge `0.5`、limiteron `0.3`、garrison `0.9` 全部由 rc 钉版收敛为 minor 精度稳定版（crates.io 已发布），传递面收敛掉 icu/fluent/num-rational 等 rc 期冗余依赖。
 
 - `default = [..., "garrison-auth", "etcd"]`：默认构建从此携带 `etcd-client`（与主 tonic 0.14 同版本共存，不引入第二 gRPC 栈）与集群协调路径，产物体积随之增大；依赖精简的嵌入场景请用 `--no-default-features` 并按需叠加 `sdk`/算法特性。
 - 行为面：此前「配了 `etcd.endpoints` 但未启用 `etcd` feature」的构建会静默回退进程内本地锁（多实例下重复发号）；现默认构建不再有该分支，显式 `--no-default-features` 裁剪时则 fail-closed 拒绝启动（`src/main.rs` 守卫与 SDK `build()` 返回 `ConfigurationError`）。

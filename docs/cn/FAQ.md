@@ -1718,7 +1718,7 @@ API 文档与教程
 
 **Apache License 2.0**
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](../LICENSE)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](../../LICENSE)
 
 **权限：**
 - ✅ 商业使用

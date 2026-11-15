@@ -161,7 +161,7 @@ export DATABASE_URL="postgresql://..."
 
 ### 需要帮助？
 
-- 查看完整文档：[USER_GUIDE.md](../docs/USER_GUIDE.md)
+- 查看完整文档：[USER_GUIDE.md](USER_GUIDE.md)
 - 提交问题：https://github.com/Kirky-X/NebulaId/issues
 - 社区讨论：GitHub Discussions
 
@@ -940,4 +940,4 @@ HTTP port must be between 1 and 65535`）：
 | `obfuscation.key_hex` 为 None 或恰 16 个 hex 字符 | `Config::validate` |
 | `1 <= batch_generate.max_batch_size <= 10000` | `Config::validate` |
 
-> 完整参考：[`config/config.toml`](../config/config.toml)。
+> 完整参考：[`config/config.toml`](../../config/config.toml)。

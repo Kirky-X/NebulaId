@@ -4,11 +4,11 @@
 
 [![Rust 2021](https://img.shields.io/badge/Rust-2021-edded?logo=rust&style=for-the-badge)](https://www.rust-lang.org/) [![release](https://img.shields.io/github/v/release/Kirky-X/NebulaId?style=for-the-badge)](https://github.com/Kirky-X/NebulaId/releases) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/NebulaId/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/Kirky-X/NebulaId/actions/workflows/ci.yml) [![security](https://img.shields.io/github/actions/workflow/status/Kirky-X/NebulaId/codeql.yml?branch=main&label=security&style=for-the-badge)](https://github.com/Kirky-X/NebulaId/actions/workflows/codeql.yml) [![license](https://img.shields.io/github/license/Kirky-X/NebulaId?style=for-the-badge)](./LICENSE)
 
-**[中文](README.md)** | English
+English | [中文](README_CN.md)
 
 **Enterprise-grade high-performance distributed ID generation system**
 
-[✨ Features](#-features) • [🚀 Quick Start](#-quick-start) • [📚 Documentation](#-documentation) • [💻 Examples](#-examples) • [🤝 Contributing](#-contributing)
+[✨ Features](#-features) • [🚀 Quick Start](#-quick-start) • [📚 Documentation](#-documentation) • [🤝 Contributing](#-contributing)
 
 </div>
 
@@ -43,20 +43,9 @@ Double-buffered segments, drift-guarded bit slicing, and the full UUID v4/v7/v8 
 <summary>📑 Table of Contents</summary>
 
 - [✨ Features](#-features)
-- [🎯 Use Cases](#-use-cases)
 - [🚀 Quick Start](#-quick-start)
 - [📚 Documentation](#-documentation)
-- [💻 Examples](#-examples)
-- [🏗️ Architecture](#️-architecture)
-- [⚙️ Configuration](#️-configuration)
-- [🌐 Internationalization](#-internationalization)
-- [🛠️ scripts/run.sh Usage](#️-scriptsrunsh-usage)
-- [🧪 Testing](#-testing)
-- [📊 Performance](#-performance)
-- [🔒 Security](#-security)
-- [🗺️ Roadmap](#️-roadmap)
 - [🤝 Contributing](#-contributing)
-- [📋 Changelog](#-changelog)
 - [📄 License](#-license)
 - [🙏 Acknowledgments](#-acknowledgments)
 - [📞 Contact & Support](#contact--support)
@@ -95,88 +84,11 @@ Double-buffered segments, drift-guarded bit slicing, and the full UUID v4/v7/v8 
 </tr>
 </table>
 
-Beyond the core capabilities above, engine declarations other than PostgreSQL (the runtime config enum keeps `sqlite`/`mysql` variants, but the build contains no matching driver, so connecting fails), the `integration-tests` gate for tests that need a real database, hot-reload watching, and Redis caching are also provided via configuration or features; see the [⚙️ Configuration](#️-configuration) section and the [Config Migration Guide](docs/CONFIG_MIGRATION_GUIDE.md) for itemized details.
-
----
-
-## 🎯 Use Cases
-
-### 💼 Embed into Existing Rust Services
-
-Ship ID generation as an in-process library with no separate deployment (adapted from [`examples/embedded.rs`](examples/embedded.rs)):
-
-<details>
-<summary>📄 Code · rust</summary>
-
-```rust
-use nebulaid::core::Config;
-use nebulaid::sdk::NebulaIdKitBuilder; // feature `sdk`
-
-#[tokio::main]
-async fn main() -> nebulaid::core::Result<()> {
-    let mut config = Config::default();
-    config.algorithm.default = "snowflake".to_string();
-
-    let kit = NebulaIdKitBuilder::new(config).build().await?;
-    let generator = kit.id_generator()?;
-
-    // Default algorithm (`config.algorithm.default`)
-    let id = generator.generate("prod", "core", "order").await?;
-
-    // Or pin one algorithm per call
-    let uuid = generator
-        .generate_with_algorithm(nebulaid::core::types::AlgorithmType::UuidV8,
-                                 "prod", "core", "trace")
-        .await?;
-
-    println!("snowflake={id} uuid_v8={uuid}");
-    kit.shutdown().await;
-    Ok(())
-}
-```
-
-</details>
-
-### 🔧 Unique Identifiers for Microservices
-
-`Id` is a zero-cost wrapper around UUID that converts losslessly in both directions — ideal for passing and storing identifiers across services:
-
-<details>
-<summary>📄 Code · rust</summary>
-
-```rust
-use nebulaid::core::types::Id;
-use uuid::Uuid;
-
-// Any Uuid is wrapped into a Nebula `Id` via the single constructor `from_uuid_v8`
-let id = Id::from_uuid_v8(Uuid::now_v7());
-let id_string = id.to_string(); // renders as a standard 36-char UUID string
-
-// Converts back losslessly
-let uuid = id.to_uuid_v8();
-```
-
-</details>
-
-### ⚡ High-Throughput Batch Generation
-
-Segment's double buffering and dynamic step are internal — the step size scales with CPU usage within `[min_step, max_step]` as `step = clamp(base_step × (1 + 2 × cpu), min_step, max_step)` (busier CPU → larger segments → fewer segment fetches); from the outside you just ask for N ids in one call (`IdAlgorithm::batch_generate`):
-
-<details>
-<summary>📄 Code · rust</summary>
-
-```rust
-let batch = generator.batch_generate("prod", "core", "order", 1000).await?;
-println!("{} ids via {:?}", batch.len(), batch.algorithm);
-```
-
-</details>
+Beyond the core capabilities above, engine declarations other than PostgreSQL (the runtime config enum keeps `sqlite`/`mysql` variants, but the build contains no matching driver, so connecting fails), the `integration-tests` gate for tests that need a real database, hot-reload watching, and Redis caching are also provided via configuration or features; see the [Config Migration Guide](docs/en/CONFIG_MIGRATION_GUIDE.md) for itemized details.
 
 ---
 
 ## 🚀 Quick Start
-
-### 📦 Installation
 
 <details>
 <summary>📄 Code · bash</summary>
@@ -193,87 +105,11 @@ cargo build --release
 
 </details>
 
-<details>
-<summary>📋 Table</summary>
-
-| Feature | Default | Description |
-|---------|:----:|------|
-| `server` | ✅ | Full server layer (HTTP/gRPC/auth/audit/rate limiting), implies `database` + `http` + `grpc`; the `nebula-id` binary is only built with this feature |
-| `segment` | ✅ | Segment algorithm, implies `database` (segments are DB-backed by definition) |
-| `snowflake` / `uuid-v8` / `uuid-v7` / `uuid-v5` / `uuid-v4` | ✅ | DB-free leaf algorithms, can be enabled independently (v8 private layout with tenant context, v7 standard time-ordered zero-config, v4 random zero-metadata; `uuid-v5` is RFC 9562 §5.5 deterministic derivation, not minting) |
-| `database` | ➖ | Repository-layer switch (dbnexus + sea-orm), implied by `segment` / `server` (SDK repository surface enabled via the `sdk,database` combination), never used standalone |
-| `postgresql` | ✅ | dbnexus PostgreSQL storage backend (can be turned off with `--no-default-features`; compile-only guarantee, a real PostgreSQL is needed at runtime) |
-| `http` / `grpc` | ✅ | REST and gRPC access (sdforge mirror features, implied by `server`) |
-| `garrison-auth` | ✅ | garrison takes over API key verification (falling back to the hand-written Argon2id path when disabled) |
-| `etcd` | ➖ | etcd distributed coordination |
-| `sdk` | ➖ | Embedded SDK facade (`NebulaIdKit`, implies `openapi`; pure-algorithm embedding compiles with a zero-DB tree, repository surface gated on `database`) |
-| `openapi` | ➖ | sdforge OpenAPI mirror feature (without it, `#[forge]` registers no OpenAPI routes and `/api-docs/openapi.json` has empty paths) |
-| `integration-tests` | ➖ | Gates `#[ignore]` tests that need a real database |
-| `alerting` | ➖ | Gates the alerting subsystem and webhook dispatch (`src/core/monitoring`, not compiled into production builds by default) |
-
-</details>
-
 > 💡 `--all-features` **is buildable** (= default + etcd + alerting + sdk + integration-tests + openapi); CI and docs uniformly adopt that switch.
 
-> ✂️ **Library-consumer trimming**: when embedding the algorithms as a library (no service deployment), trim features as needed — e.g. UUID v8 only:
->
-> ```toml
-> [dependencies]
-> nebulaid = { version = "0.3", default-features = false, features = ["uuid-v8"] }
-> ```
->
-> That combination pulls 196 crates vs 519 for the full default (about 62% fewer; measured with `cargo tree -e normal --prefix none | sort -u | wc -l` on 2026-10-11); the trim combination is pinned by the CI `Check feature trim` step to prevent out-of-scope imports from silently rotting it.
+For the full feature table and library-consumer trimming (e.g. UUID v8 only: `nebulaid = { version = "0.3", default-features = false, features = ["uuid-v8"] }`), see the [API Reference · Feature Gates](docs/en/API_REFERENCE.md#-feature-gates); for the minimal embedded-SDK example, see [`examples/embedded.rs`](examples/embedded.rs) (`cargo run --package nebulaid --example embedded --features sdk`). Core concepts (the triple namespace, algorithm selection, the degradation chain) live in the [User Guide · Core Concepts](docs/en/USER_GUIDE.md#core-concepts).
 
-### 💡 Minimal Example
-
-The example below is adapted from [`examples/embedded.rs`](examples/embedded.rs) and generates IDs with zero DB and zero network:
-
-<details>
-<summary>📄 Code · rust</summary>
-
-```rust
-use nebulaid::core::Config;
-use nebulaid::sdk::NebulaIdKitBuilder;
-
-#[tokio::main]
-async fn main() -> nebulaid::core::Result<()> {
-    // Pure algorithms (snowflake/uuid_v8) work with Config::default();
-    // segment requires NebulaIdKitBuilder::with_repository(..) because it
-    // allocates number ranges from the database.
-    let mut config = Config::default();
-    config.algorithm.default = "snowflake".to_string();
-
-    let kit = NebulaIdKitBuilder::new(config).build().await?;
-    let generator = kit.id_generator()?;
-
-    for _ in 0..5 {
-        let id = generator.generate("embedded", "demo", "order").await?;
-        println!("Generated ID: {id}");
-    }
-
-    kit.shutdown().await;
-    Ok(())
-}
-```
-
-</details>
-
-<details>
-<summary>📄 Code · bash</summary>
-
-```bash
-cargo run --package nebulaid --example embedded --features sdk
-```
-
-</details>
-
-### 🧭 Core Concepts
-
-- **Triple namespace**: `generate(workspace_id, group_id, biz_tag)`; the workspace is the tenant isolation boundary (biz-tags queries are filtered by role).
-- **Algorithm selection**: `[algorithm].default` is the global default and `generate_with_algorithm` overrides per call; pure algorithms (snowflake/uuid_v8) work with zero DB, while segment requires an injected repository.
-- **Dual protocol, one source**: HTTP and gRPC share the same algorithm router and auth middleware; unauthenticated gRPC requests receive `Unauthenticated`.
-- **Kit assembly**: the SDK validates a trait-kit AsyncKit dependency graph (missing dependencies or cycles fail in `build()`), and the `IdGenerator` handle is `Clone`-able for sharing across tasks.
-- **Degradation fallback**: when the primary algorithm is unavailable, generation falls back along the `[Snowflake, UuidV8]` chain.
+**Configuration**: the smallest parseable config ships as [`config/config.toml`](config/config.toml); the full options table, `Config::validate()` rules, and per-version migrations live in the [🔧 Config Migration Guide](docs/en/CONFIG_MIGRATION_GUIDE.md).
 
 ---
 
@@ -284,266 +120,18 @@ cargo run --package nebulaid --example embedded --features sdk
 
 | Document | Description |
 |------|------|
-| [📖 User Guide](docs/USER_GUIDE.md) | Complete tutorial from installation to advanced usage |
-| [📘 API Reference](docs/API_REFERENCE.md) | HTTP / gRPC endpoints, headers, error codes, and type definitions |
-| [🏗️ Architecture](docs/ARCHITECTURE.md) | Module dependencies, external library roles, and algorithm design |
-| [🔧 Config Migration Guide](docs/CONFIG_MIGRATION_GUIDE.md) | Full config table, validation rules, and version migrations |
-| [🚀 Deployment Guide](docs/DEPLOYMENT.md) | Docker deployment, environment variables, monitoring, and script subcommands |
-| [📈 Performance Guide](docs/PERFORMANCE.md) | Benchmark methodology, hot-path design, and optimization tips |
-| [🔒 Security](docs/SECURITY.md) | Security design, supply chain gates, and vulnerability handling |
-| [🧪 Test Scenario Matrix](docs/TEST_SCENARIOS.md) | Layered test strategy and scenario matrix |
-| [❓ FAQ](docs/FAQ.md) | Frequently asked questions |
-| [📋 Changelog](docs/CHANGELOG.md) | Change records for every release |
-| [🤝 Contributing Guide](docs/CONTRIBUTING.md) | How to participate in project development |
-
-</details>
-
----
-
-## 💻 Examples
-
-All examples live in the [`examples/`](examples/) directory and are built only with the `sdk` feature enabled:
-
-<details>
-<summary>📄 Code · bash</summary>
-
-```bash
-# Embedded SDK: generate IDs with zero DB and zero network
-cargo run --package nebulaid --example embedded --features sdk
-
-# SDK server: sdforge #[forge] wrapper + OpenAPI documentation
-cargo run --package nebulaid --example sdk_server --features sdk,http
-```
-
-</details>
-
-### 🧩 embedded.rs
-
-`NebulaIdKitBuilder` assembly → `id_generator()` handle → `generate` / `batch_generate` → `shutdown` for graceful teardown. Ideal for embedding ID generation directly into an existing Rust service.
-
-### 🚀 sdk_server.rs
-
-The same Kit exposed as an HTTP service via the sdforge `#[forge]` macro with OpenAPI routes registered (`/api-docs/openapi.json`) — a one-line switch from "library" to "service" for validating dual-protocol access.
-
----
-
-## 🏗️ Architecture
-
-Nebula ID follows a "server → core → self-developed ecosystem" layered design: `src/server/` hosts the HTTP (axum) and gRPC (tonic) endpoints, middleware (auth, rate limiting, CORS, locale, security headers), and handlers; `src/core/` contains the algorithm router with the three algorithm implementations, database repositories, the etcd coordinator, monitoring, and i18n; databases, configuration, logging, caching, rate limiting, service discovery, and authentication are delegated to the same-author ecosystem of `dbnexus` / `confers` / `inklog` / `oxcache` / `limiteron` / `sdforge` / `garrison` / `trait-kit`. Segment draws number ranges from the database with double buffering and a dynamic step, Snowflake serializes `(last_timestamp, sequence)` migrations to prevent concurrent duplicates, and a degradation chain takes over when the primary algorithm is unavailable.
-
-For the architecture diagram, module dependencies, external library roles, the `mod.rs` interface isolation standard (rule 25), and trait relationship diagrams, see the [Architecture doc](docs/ARCHITECTURE.md).
-
----
-
-## ⚙️ Configuration
-
-`Config` spans the thirteen sections `app`, `database`, `redis`, `etcd`, `auth`, `algorithm`, `monitoring`, `logging`, `rate_limit`, `audit`, `hot_reload`, `tls`, and `batch_generate`; apart from `[redis]`, `[audit]`, and `[hot_reload]` — which carry `serde(default)` and may be omitted entirely — the remaining ten sections are **required**. All 18 config structs carry `#[serde(deny_unknown_fields)]`, so unknown keys and missing required keys alike fail the whole file and abort startup with exit code 1. Environment variables work in two ways: `APP_HOST`, `DATABASE_URL`, `ETCD_ENDPOINTS`, and friends override the file config at startup, while `NEBULA_DATABASE_PASSWORD`, `NEBULA_API_KEY_SALT`, and friends are referenced inside the file as `${VAR}` and expanded before parsing.
-
-The smallest fully parseable config ships as [`config/config.toml`](config/config.toml) and looks like:
-
-<details>
-<summary>📄 Code · toml</summary>
-
-```toml
-[app]
-name = "nebula-id"
-host = "0.0.0.0"
-http_port = 8080            # there is no `app.port`
-grpc_port = 9091
-dc_id = 0                   # 0..=7 with default datacenter_id_bits=3
-worker_id = 0
-
-[database]
-engine = "postgresql"
-host = "localhost"
-port = 5432
-username = "idgen"
-password = "${NEBULA_DATABASE_PASSWORD}"
-database = "idgen"
-max_connections = 100
-min_connections = 10
-acquire_timeout_seconds = 30
-idle_timeout_seconds = 300
-
-[etcd]
-endpoints = []          # empty = single-process local lock; fill in for multi-instance etcd
-connect_timeout_ms = 5000
-watch_timeout_ms = 5000
-
-[auth]
-enabled = true
-cache_ttl_seconds = 300
-
-[algorithm]
-default = "segment"         # segment | snowflake | uuid_v8
-
-[monitoring]
-metrics_enabled = true
-metrics_path = "/metrics"
-tracing_enabled = false
-otlp_endpoint = ""
-
-[logging]
-level = "info"
-format = "json"
-include_location = true
-
-[rate_limit]
-enabled = true
-default_rps = 10000
-burst_size = 100            # validate(): must be <= 10 × default_rps
-
-[tls]
-enabled = false
-cert_path = ""
-key_path = ""
-http_enabled = false
-grpc_enabled = false
-
-[batch_generate]
-max_batch_size = 100        # validate(): 1..=10000
-```
-
-</details>
-
-> ⚠️ Note: at server startup `Config::merge()` overwrites the `algorithm.segment` / `algorithm.snowflake` / `algorithm.uuid_v8` sub-tables with environment-derived values (only `algorithm.default` survives); do not rely on those sub-tables until that merge is fixed.
-
-**The full options table (type / default / required), the `Config::validate()` rule list, and per-version migration steps live in the [Config Migration Guide](docs/CONFIG_MIGRATION_GUIDE.md).**
-
----
-
-## 🌐 Internationalization
-
-Since v0.2.0 Nebula ID ships built-in internationalization, now on the Fluent/ICU stack (fluent-bundle + unic-langid + sys-locale, replacing the rust-i18n YAML backend in 0.3.0 and aligned with the unify-rust-i18n baseline) covering runtime translation of error messages and logs:
-
-<details>
-<summary>📋 Table</summary>
-
-| Locale tag | Language | Locales file | Status |
-|------------|----------|--------------|--------|
-| `en` | English (default) | `locales/en/messages.ftl` | ✅ Complete |
-| `zh-CN` | Simplified Chinese | `locales/zh/messages.ftl` | ✅ Complete |
-
-</details>
-
-Negotiation: `locale_middleware` parses the HTTP `Accept-Language` header (RFC 7231 §5.3.5), matches the first supported locale by descending q-value (exact match wins, then prefix match), and falls back to `en` when the header is missing; business handlers read the result via `Extension<Locale>` and translate error responses. `Locale` derives from user input and is forgeable — do **not** use it for authentication, authorization, or any security decision.
-
-For curl examples, header semantics, and the i18n module's place in the architecture, see the [API Reference · Accept-Language](docs/API_REFERENCE.md#accept-language-请求头) and the [Architecture doc · i18n module](docs/ARCHITECTURE.md#8-i18n-模块位置).
-
----
-
-## 🛠️ scripts/run.sh Usage
-
-Since v0.2.0 all development/deployment scripts are merged into the single entry point `scripts/run.sh` (legacy scripts were renamed to `_*_impl.sh` internals and are no longer invoked directly):
-
-<details>
-<summary>📋 Table</summary>
-
-| Subcommand | Alias | Purpose |
-|--------|------|------|
-| `deploy` | — | Deploy the full stack via docker-compose (PostgreSQL + Redis + Etcd + App) |
-| `lint` / `pre-commit` | aliases of each other | Local CI pre-checks (fmt + clippy + test + security/docs/coverage) |
-| `redis-test` | — | Redis integration tests (requires Redis on 6379) |
-| `api-test` | — | API endpoint tests, optional `server_url` argument |
-| `install-hooks` | — | Install git pre-commit hooks |
-| `help` | `--help`, `-h` | Show usage |
-
-</details>
-
-<details>
-<summary>📄 Code · bash</summary>
-
-```bash
-./scripts/run.sh pre-commit            # run before every commit
-./scripts/run.sh api-test http://localhost:8080
-```
-
-</details>
-
-CI (`ci.yml` / `release.yml` / `health-check.yml`) does not go through `scripts/run.sh`; it invokes the toolchain directly (`cargo fmt` / `clippy` / `test` / `llvm-cov` / `deny` / `audit`). `scripts/run.sh` is the local development entry point — it shares the same toolchain with CI but the call paths are independent. For the internal implementations and full arguments of each subcommand, see the [Deployment Guide · scripts/run.sh subcommands](docs/DEPLOYMENT.md#8-scriptsrunsh-子命令).
-
----
-
-## 🧪 Testing
-
-### 🎯 Test Strategy
-
-Testing is layered: inline unit tests in `src/` (`#[cfg(test)]`), E2E modules under `src/core/tests/` organized by layer (algorithms, auth, cache, degradation, gRPC monitoring, infrastructure, server layer, and more — 11 files), the end-to-end i18n test in `tests/i18n_e2e.rs`, shell end-to-end scripts in `tests/*.sh` (API, degradation, distributed, database concurrency), and Criterion benchmarks (`benches/i18n.rs`, `benches/algorithms.rs`). For the per-domain scenario matrix and file mapping, see the [test scenario doc](docs/TEST_SCENARIOS.md).
-
-### ▶️ Commands (matching CI)
-
-<details>
-<summary>📄 Code · bash</summary>
-
-```bash
-# Full test run (CI matrix runs default / all (--all-features))
-cargo test --package nebulaid --all-features
-
-# Lint and format gates
-cargo fmt --package nebulaid -- --check
-cargo clippy --package nebulaid --all-features -- -D warnings
-
-# Coverage gate: at least 95% line coverage (authoritative gate on the CI default leg,
-# excluding server/proto/ generated code)
-cargo llvm-cov --package nebulaid \
-  --fail-under-lines 95 --ignore-filename-regex "server/proto/"
-
-# Light compile check (no-default paths such as the garrison fallback; same as CI fmt-clippy job)
-cargo check --package nebulaid --no-default-features --lib --bins
-
-# Benchmarks
-cargo bench --bench i18n
-cargo bench --bench algorithms
-
-# Shell end-to-end scripts
-./scripts/run.sh api-test
-```
-
-</details>
-
-### 📊 Test Scale
-
-As of the 0.3.0-rc.3 workspace: about 1737 Rust test functions (`cargo test -- --list` measured), 4 shell end-to-end scripts, and 3 benchmark groups (2 Criterion groups: i18n hot paths with 4 benchmark functions / 12 cases plus ID-generation / rate-limit / auth-cache hot paths with 7 benchmark functions / 7 cases; 1 performance gate: auth_cache_adoption, comparing the baseline AuthCache against the candidate oxcache Cache on the auth-hit path in P99 and throughput). The CI coverage gate requires at least 95% line coverage, and the pre-push hook enforces a local 90% gate; actual line coverage at the v0.2.0 release was 89.91%. For per-module counts and methodology, see the [test scenario doc · statistics](docs/TEST_SCENARIOS.md#统计汇总).
-
----
-
-## 📊 Performance
-
-Two Criterion benchmarks are declared in this repository: the i18n hot paths (`benches/i18n.rs`, covering translation lookups, argumented translation, error localization, and Accept-Language parsing) and the ID-generation / rate-limit / auth-cache hot paths (`benches/algorithms.rs`, covering Snowflake single and batch generation, the routing chain, the token bucket, and auth-cache hits). Reproduce with `cargo bench --bench i18n` and `cargo bench --bench algorithms`; baseline medians live in the [Performance Guide · Recorded baselines](docs/PERFORMANCE.md#已记录基线). Design-level hot-path highlights — Segment double buffering with a dynamic step, the Snowflake lock-free CAS state word, the ring-buffer p50/p99/p999 percentiles, and the release profile (thin LTO + `panic = "abort"`) — are covered in the same guide.
-
----
-
-## 🔒 Security
-
-### 🛡️ Security Design
-
-Security design follows "authenticate → throttle → transport → audit": garrison API key authentication (Argon2id hashing + constant-time comparison + cache + rotation grace period, values beyond 30 days rejected by startup validation), token-bucket rate limiting (genuinely mounted on the HTTP stack with normalized 429 headers), rustls TLS (handshakes below TLS 1.3 rejected when `tls13` is selected), security headers with strict CORS, trusted-proxy X-Forwarded-For validation, gRPC auth failure code distinction (`Unauthenticated` / `PermissionDenied`), the single-admin-key guard, and biz-tags tenant isolation (IDOR fix). Mechanism-level details live in the [Security doc](docs/SECURITY.md).
-
-### ⛓️ Supply Chain and Gates
-
-The five-stage CI gate (fmt + clippy → cargo-deny → cargo-audit `--deny warnings` → multi-feature test matrix with coverage ≥ 95% → aggregate gate), CodeQL static analysis, the pre-commit gitleaks private-key scan, and the pre-push test + coverage gate together form the supply chain defense; for the full checklist, see the [Security doc · Supply Chain and Gates](docs/SECURITY.md#供应链与门禁).
-
-### 🚨 Reporting Security Issues
-
-Please do not report security vulnerabilities through public issues. Use the private GitHub [Security Advisories](https://github.com/Kirky-X/NebulaId/security/policy) disclosure channel instead. See the full policy in [SECURITY.md](docs/SECURITY.md).
-
----
-
-## 🗺️ Roadmap
-
-<details>
-<summary>📋 Table</summary>
-
-<table style="width:100%; border-collapse: collapse">
-<tr><th style="text-align:center">Status</th><th style="text-align:left">Area</th><th style="text-align:left">Items</th></tr>
-<tr><td align="center">✅</td><td>Core algorithms</td><td>Segment double buffering with dynamic step, Snowflake, UUID v8, algorithm router and degradation chain</td></tr>
-<tr><td align="center">✅</td><td>Service and protocols</td><td>HTTP + gRPC dual protocol, OpenAPI docs, TLS, rate limiting, garrison API key auth, audit logging</td></tr>
-<tr><td align="center">✅</td><td>Observability and i18n</td><td>Per-algorithm p50/p99/p999 metrics, health checks, inklog structured logging, en / zh-CN i18n</td></tr>
-<tr><td align="center">✅</td><td>Quality gates</td><td>Five-stage CI gate, coverage ≥ 95%, cargo-deny / cargo-audit / CodeQL, ~1900 tests</td></tr>
-<tr><td align="center">🚧</td><td>SDK and distributed coordination</td><td>Continued hardening of the <code>sdk</code> facade (trait-kit assembly); <code>etcd</code> coordination is now enabled by default (see the "Cloud native and DR" row)</td></tr>
-<tr><td align="center">🚧</td><td>Performance engineering</td><td>Batch generation tuning, Segment routing benchmark integration (the ID-generation throughput benchmark harness and release baselines have landed — see the [Performance Guide](docs/PERFORMANCE.md))</td></tr>
-<tr><td align="center">🚧</td><td>Cloud native and DR</td><td>Dynamic algorithm switching ✅ (<code>AlgorithmRouter::set_algorithm</code>), Segment routing benchmark ✅ (<code>benches/segment.rs</code>, shipping with the next release), <code>etcd</code> coordination enabled by default ✅ (<code>default</code> includes <code>etcd</code>) plus lease keep-alive watchdog and watch-based incremental subscription ✅, cluster health tri-state delegated to garrison <code>HealthRegistry</code> ✅, cross-datacenter automatic failover ✅ and a Kubernetes operator ✅ (delivered in this change; real multi-cloud validation pending a deployment window)</td></tr>
-</table>
+| [📖 User Guide](docs/en/USER_GUIDE.md) | Complete tutorial from installation to advanced usage |
+| [📘 API Reference](docs/en/API_REFERENCE.md) | HTTP / gRPC endpoints, headers, error codes, and type definitions |
+| [🏗️ Architecture](docs/en/ARCHITECTURE.md) | Module dependencies, external library roles, and algorithm design |
+| [🔧 Config Migration Guide](docs/en/CONFIG_MIGRATION_GUIDE.md) | Full config table, validation rules, and version migrations |
+| [🚀 Deployment Guide](docs/en/DEPLOYMENT.md) | Docker deployment, environment variables, monitoring, and script subcommands |
+| [📈 Performance Guide](docs/en/PERFORMANCE.md) | Benchmark methodology, hot-path design, and optimization tips |
+| [🔒 Security](docs/en/SECURITY.md) | Security design, supply chain gates, and vulnerability handling |
+| [🧪 Test Scenario Matrix](docs/en/TEST_SCENARIOS.md) | Layered test strategy and scenario matrix (in-depth plan: [Master Test Plan](docs/en/TEST_PLAN.md)) |
+| [❓ FAQ](docs/en/FAQ.md) | Frequently asked questions |
+| [📋 Changelog](docs/en/CHANGELOG.md) | Change records for every release and the [development roadmap](docs/en/CHANGELOG.md#️-development-roadmap) |
+| [🤝 Contributing Guide](docs/en/CONTRIBUTING.md) | How to participate in project development |
+| [💻 Examples](examples/) | Embedded SDK and SDK server examples (`sdk` feature) |
 
 </details>
 
@@ -551,59 +139,9 @@ Please do not report security vulnerabilities through public issues. Use the pri
 
 ## 🤝 Contributing
 
-For the detailed contribution workflow and code standards, see the [🤝 Contributing Guide](docs/CONTRIBUTING.md).
+For the detailed contribution workflow and code standards, see the [🤝 Contributing Guide](docs/en/CONTRIBUTING.md). Run `./scripts/run.sh pre-commit` before committing (or the equivalent lefthook hooks); commit messages follow Conventional Commits. Found an issue? [Create one](https://github.com/Kirky-X/NebulaId/issues/new). Have a great idea? [Start a discussion](https://github.com/Kirky-X/NebulaId/discussions). Want to contribute code? [Fork & PR](https://github.com/Kirky-X/NebulaId/pulls).
 
-### 🛠️ Development Environment
-
-Run `./scripts/run.sh pre-commit` before committing (or the equivalent lefthook hooks: pre-commit runs rustfmt, clippy, and the gitleaks private-key scan; pre-push runs `cargo test --package nebulaid --all-features` and the coverage gate); commit messages follow Conventional Commits. For the full environment setup, see the [Contributing Guide · getting started](docs/CONTRIBUTING.md#快速开始).
-
-### 💖 Ways to Contribute
-
-<table style="width:100%; border-collapse: collapse">
-<tr>
-<td width="33%" align="center" style="padding: 16px">
-
-### 🐛 Report Bugs
-
-Found an issue?<br>
-<a href="https://github.com/Kirky-X/NebulaId/issues/new">Create Issue</a>
-
-</td>
-<td width="33%" align="center" style="padding: 16px">
-
-### 💡 Feature Suggestions
-
-Have a great idea?<br>
-<a href="https://github.com/Kirky-X/NebulaId/discussions">Start Discussion</a>
-
-</td>
-<td width="33%" align="center" style="padding: 16px">
-
-### 🔧 Submit PR
-
-Want to contribute code?<br>
-<a href="https://github.com/Kirky-X/NebulaId/pulls">Fork & PR</a>
-
-</td>
-</tr>
-</table>
-
----
-
-## 📋 Changelog
-
-For the full version history, see the [📋 Changelog](docs/CHANGELOG.md) (following the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and semantic versioning).
-
-<details>
-<summary>📋 Table</summary>
-
-| Version | Date | Highlights |
-|------|------|------|
-| 0.3.0-rc.3 | 2026-10-15 | RFC 9562 v5 deterministic derivation (`uuid-v5` leaf feature, bit-exact compatible with etyma's 340,566 existing IDs), UUID v4/v7 true algorithms + ⚠️ breaking alias reversal, i18n folded into sdforge (snapshot lock-free rendering), garrison auth brute-force adoption (`BoundedDao` capacity valve + fail-closed), confers hot-reload wiring, self-developed deps upgraded to the latest RC wave (8 crates + utoipa 6.0 alignment), pre-release security remediation |
-| 0.3.0-rc.1 | 2026-09-22 | Ecosystem fully switched to the crates.io registry (RC-wave alignment), i18n migrated to the Fluent/ICU stack (fluent-bundle, aligned with the unify-rust-i18n baseline), SDK migrated to trait-kit assembly (`NebulaIdKit`), gRPC auth on all RPCs, rate limiting genuinely mounted, TLS fail-fast, config `deny_unknown_fields` + exit code 1, key rotation grace period |
-| 0.2.0 | 2026-07-23 | garrison DAO infrastructure, expanded e2e suite (95% module coverage), dbnexus / sdforge / confers architecture takeover, 3 strix security fixes |
-
-</details>
+**Please do not report security vulnerabilities through public issues**: use the private GitHub [Security Advisories](https://github.com/Kirky-X/NebulaId/security/policy) disclosure channel instead; the full policy is in the [🔒 Security doc](docs/en/SECURITY.md).
 
 ---
 
@@ -615,33 +153,7 @@ This project is licensed under Apache-2.0. See [LICENSE](LICENSE).
 
 ## 🙏 Acknowledgments
 
-### 🌟 Core Dependencies
-
-Nebula ID stands on the shoulders of these excellent open source projects:
-
-<details>
-<summary>📋 Table</summary>
-
-| Dependency | Purpose |
-|------|------|
-| [tokio](https://github.com/tokio-rs/tokio) | Async runtime |
-| [axum](https://github.com/tokio-rs/axum) | HTTP framework |
-| [tonic](https://github.com/hyperium/tonic) | gRPC framework |
-| [sea-orm](https://github.com/SeaQL/sea-orm) | Database ORM |
-| [uuid](https://github.com/uuid-rs/uuid) | UUID generation |
-| [rustls](https://github.com/rustls/rustls) | TLS implementation |
-| [confers](https://crates.io/crates/confers) | Configuration management (Kirky.X ecosystem) |
-| [dbnexus](https://crates.io/crates/dbnexus) | Database abstraction (Kirky.X ecosystem) |
-| [sdforge](https://crates.io/crates/sdforge) | Service framework and OpenAPI (Kirky.X ecosystem) |
-| [garrison](https://crates.io/crates/garrison) | API key authentication (Kirky.X ecosystem) |
-| [trait-kit](https://crates.io/crates/trait-kit) | Module interfaces and Kit assembly (Kirky.X ecosystem) |
-| [limiteron](https://crates.io/crates/limiteron) | Rate-limiting primitives (Kirky.X ecosystem) |
-| [oxcache](https://crates.io/crates/oxcache) | Multi-level cache (Kirky.X ecosystem) |
-| [fluent-bundle](https://crates.io/crates/fluent-bundle) | ICU internationalization (unify-rust-i18n baseline) |
-
-</details>
-
-### 💝 Special Thanks
+Nebula ID stands on the shoulders of excellent open source projects such as [tokio](https://github.com/tokio-rs/tokio), [axum](https://github.com/tokio-rs/axum), [tonic](https://github.com/hyperium/tonic), [sea-orm](https://github.com/SeaQL/sea-orm), [uuid](https://github.com/uuid-rs/uuid), and [rustls](https://github.com/rustls/rustls), plus the same-author self-developed ecosystem (confers / dbnexus / sdforge / garrison / trait-kit / limiteron / oxcache / inklog). Each dependency's role and version are in the [Architecture doc · External library roles](docs/en/ARCHITECTURE.md#3-external-library-roles).
 
 Thanks to the Rust community and all [contributors](https://github.com/Kirky-X/NebulaId/graphs/contributors).
 

@@ -262,7 +262,7 @@ git checkout -b docs/update-readme
 
 #### 2️⃣ 修改代码
 
-请遵循项目的编码标准和最佳实践。参考 [src/core/algorithm/](../src/core/algorithm/) 中的实现模式。
+请遵循项目的编码标准和最佳实践。参考 [src/core/algorithm/](../../src/core/algorithm/) 中的实现模式。
 
 #### 3️⃣ 运行静态检查与测试
 

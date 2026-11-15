@@ -2,7 +2,7 @@
 
 > 本文档描述 Nebula ID 的基准口径、热路径设计要点与性能优化建议。所有内容以仓库内实际存在的基准与代码为准；文档不发布未经基准框架产出的吞吐数字。
 
-[🏠 主页](../README.md) • [🏗️ 架构文档](ARCHITECTURE.md) • [🧪 测试场景矩阵](TEST_SCENARIOS.md)
+[🏠 主页](../../README_CN.md) • [🏗️ 架构文档](ARCHITECTURE.md) • [🧪 测试场景矩阵](TEST_SCENARIOS.md)
 
 ---
 

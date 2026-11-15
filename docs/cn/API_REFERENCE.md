@@ -2,7 +2,7 @@
 
 > Nebula ID 完整 API 文档：HTTP / gRPC 端点、请求头、错误码与类型定义。
 
-[🏠 首页](../README.md) • [📖 用户指南](USER_GUIDE.md) • [🏗️ 架构文档](ARCHITECTURE.md)
+[🏠 首页](../../README_CN.md) • [📖 用户指南](USER_GUIDE.md) • [🏗️ 架构文档](ARCHITECTURE.md)
 
 ---
 
@@ -1878,7 +1878,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 <div align="center">
 
-**[📖 用户指南](USER_GUIDE.md)** • **[🏠 首页](../README.md)** • **[🐛 报告问题](https://github.com/Kirky-X/NebulaId/issues)**
+**[📖 用户指南](USER_GUIDE.md)** • **[🏠 首页](../../README_CN.md)** • **[🐛 报告问题](https://github.com/Kirky-X/NebulaId/issues)**
 
 由 Kirky.X 用 ❤️ 构建
 

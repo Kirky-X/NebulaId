@@ -4,7 +4,7 @@
 > 编写依据（只读核对）：`src/` 全部模块源码、`src/core/tests/` 12 个文件（11 个 E2E 测试模块 + `mod.rs`）、`tests/` 脚本、`docs/` 11 篇文档、`docker/`、`scripts/`、`.github/workflows/ci.yml`、`protos/nebula_id.proto`。
 > 与 [TEST_SCENARIOS.md](TEST_SCENARIOS.md) 的关系：该文档是**场景矩阵概览**（已覆盖什么）；本文档是**深度方案**——模块交互分析、正常+异常场景穷举、特性组合行为差异、以及每个场景的前置条件/步骤/预期/验证方法。两者编号体系独立。
 
-[🏠 主页](../README.md) • [架构文档](ARCHITECTURE.md) • [场景矩阵](TEST_SCENARIOS.md) • [API 参考](API_REFERENCE.md)
+[🏠 主页](../../README_CN.md) • [架构文档](ARCHITECTURE.md) • [场景矩阵](TEST_SCENARIOS.md) • [API 参考](API_REFERENCE.md)
 
 ---
 

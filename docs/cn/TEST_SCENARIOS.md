@@ -4,7 +4,7 @@
 > 编写依据（只读核对）：`Cargo.toml [features]` 与 `[[bench]]`、`src/core/tests/mod.rs` 模块注册表、`tests/` 目录、`.github/workflows/ci.yml`、`lefthook.yml`、`scripts/_coverage_gate.sh`、`CHANGELOG.md`。
 > 所有模块级测试计数均经 `grep -c '#\[test\]|#\[tokio::test'` 核实。
 
-[🏠 主页](../README.md) • [架构文档](ARCHITECTURE.md) • [性能指南](PERFORMANCE.md) • **深度方案**：[测试总体方案](TEST_PLAN.md)（模块交互分析 · 场景穷举 · 特性组合 · 执行计划）
+[🏠 主页](../../README_CN.md) • [架构文档](ARCHITECTURE.md) • [性能指南](PERFORMANCE.md) • **深度方案**：[测试总体方案](TEST_PLAN.md)（模块交互分析 · 场景穷举 · 特性组合 · 执行计划）
 
 ---
 

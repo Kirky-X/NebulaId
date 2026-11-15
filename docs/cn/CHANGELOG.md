@@ -5,7 +5,7 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
-[🏠 主页](../README.md) • [🔒 安全文档](SECURITY.md) • [⚡ 性能指南](PERFORMANCE.md)
+[🏠 主页](../../README_CN.md) • [🔒 安全文档](SECURITY.md) • [⚡ 性能指南](PERFORMANCE.md)
 
 ---
 
@@ -15,6 +15,7 @@
 - [0.3.0-rc.3 - 2026-10-15](#030-rc3---2026-10-15)
 - [0.3.0-rc.1 - 2026-09-22](#030-rc1---2026-09-22)
 - [0.2.0 - 2026-07-23](#020---2026-07-23)
+- [🗺️ 开发路线图](#️-开发路线图)
 
 ---
 
@@ -476,3 +477,23 @@ and redundant-comment cleanup.
 ### Deprecated
 
 - Nothing deprecated in v0.2.0.
+
+---
+
+## 🗺️ 开发路线图
+
+<details>
+<summary>📋 表格</summary>
+
+<table style="width:100%; border-collapse: collapse">
+<tr><th style="text-align:center">状态</th><th style="text-align:left">方向</th><th style="text-align:left">条目</th></tr>
+<tr><td align="center">✅</td><td>核心算法</td><td>Segment 双缓冲与动态步长、Snowflake、UUID v8、算法路由与降级链</td></tr>
+<tr><td align="center">✅</td><td>服务与协议</td><td>HTTP + gRPC 双协议、OpenAPI 文档、TLS、限流、garrison API key 认证、审计日志</td></tr>
+<tr><td align="center">✅</td><td>可观测与国际化</td><td>逐算法 p50/p99/p999 指标、健康检查、inklog 结构化日志、en / zh-CN i18n</td></tr>
+<tr><td align="center">✅</td><td>质量门禁</td><td>CI 五阶段门禁、覆盖率 ≥ 95%、cargo-deny / cargo-audit / CodeQL、约 1900 个测试</td></tr>
+<tr><td align="center">🚧</td><td>SDK 与分布式协调</td><td><code>sdk</code> facade（trait-kit 装配）持续强化；<code>etcd</code> 协调已默认启用（见「云原生与容灾」行）</td></tr>
+<tr><td align="center">🚧</td><td>性能工程</td><td>批量生成调优、Segment 路由基准接入（ID 生成吞吐基准框架与发布基线已落地，见 [📈 性能指南](PERFORMANCE.md)）</td></tr>
+<tr><td align="center">🚧</td><td>云原生与容灾</td><td>动态算法切换 ✅（<code>AlgorithmRouter::set_algorithm</code>）、Segment 路由基准 ✅（<code>benches/segment.rs</code>，待随下一版发布）、<code>etcd</code> 协调默认启用 ✅（<code>default</code> 含 <code>etcd</code>）+ lease 续期看门狗与 watch 增量订阅 ✅、集群健康三态委托 garrison <code>HealthRegistry</code> ✅、跨数据中心自动故障转移 ✅ 与 Kubernetes Operator ✅（本变更交付，真实多云集群验证待具备部署窗口）</td></tr>
+</table>
+
+</details>

@@ -2,7 +2,7 @@
 
 > 完整的 Nebula ID 使用指南：从安装入门到进阶用法与最佳实践。
 
-[🏠 首页](../README.md) • [🎯 示例](../examples/) • [❓ 常见问题](FAQ.md)
+[🏠 首页](../../README_CN.md) • [🎯 示例](../../examples/) • [❓ 常见问题](FAQ.md)
 
 ---
 
@@ -681,7 +681,7 @@ cargo run --package nebulaid --example sdk_server --features sdk,http
 深入了解内部机制
 </td>
 <td width="33%" align="center">
-<a href="../examples/">
+<a href="../../examples/">
 <img src="https://img.icons8.com/fluency/96/000000/code.png" width="64"><br>
 <b>💻 示例代码</b>
 </a><br>

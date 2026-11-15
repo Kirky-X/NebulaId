@@ -2,7 +2,7 @@
 
 > 关于 Nebula ID 常见问题的快速解答。
 
-[🏠 主页](../README.md) • [📖 用户指南](USER_GUIDE.md) • [🔧 API 参考](API_REFERENCE.md)
+[🏠 主页](../../README_CN.md) • [📖 用户指南](USER_GUIDE.md) • [🔧 API 参考](API_REFERENCE.md)
 
 ---
 
@@ -584,7 +584,7 @@ async fn main() -> nebulaid::core::Result<()> {
 
 **下一步：**
 - 📖 [用户指南](USER_GUIDE.md)
-- 💻 [示例](../examples/)
+- 💻 [示例](../../examples/)
 
 </details>
 
@@ -1760,13 +1760,13 @@ API 文档与教程
 <table>
 <tr>
 <td width="33%" align="center">
-<a href="../../issues">
+<a href="../../../issues">
 <img src="https://img.icons8.com/fluency/96/000000/bug.png" width="48"><br>
 <b>提交 Issue</b>
 </a>
 </td>
 <td width="33%" align="center">
-<a href="../../discussions">
+<a href="../../../discussions">
 <img src="https://img.icons8.com/fluency/96/000000/chat.png" width="48"><br>
 <b>发起讨论</b>
 </a>
@@ -1782,7 +1782,7 @@ API 文档与教程
 
 ---
 
-**[📖 用户指南](USER_GUIDE.md)** • **[🔧 API 参考](API_REFERENCE.md)** • **[🏠 主页](../README.md)**
+**[📖 用户指南](USER_GUIDE.md)** • **[🔧 API 参考](API_REFERENCE.md)** • **[🏠 主页](../../README_CN.md)**
 
 由 Kirky.X 用 ❤️ 打造
 

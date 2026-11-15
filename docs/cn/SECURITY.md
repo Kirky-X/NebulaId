@@ -2,7 +2,7 @@
 
 > 本文档描述 Nebula ID 的安全设计、供应链门禁、漏洞报告流程与安全最佳实践。内容基于仓库代码、CI 配置与 Git 钩子的实际实现。
 
-[🏠 主页](../README.md) • [🏗️ 架构文档](ARCHITECTURE.md) • [🔧 配置迁移指南](CONFIG_MIGRATION_GUIDE.md)
+[🏠 主页](../../README_CN.md) • [🏗️ 架构文档](ARCHITECTURE.md) • [🔧 配置迁移指南](CONFIG_MIGRATION_GUIDE.md)
 
 ---
 

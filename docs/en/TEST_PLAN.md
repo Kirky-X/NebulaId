@@ -34,27 +34,25 @@
 ### 1.1 Layered Overview
 
 ```
-┌─────────────────────────── 表现层 src/server/ ───────────────────────────┐
-│ router.rs（路由装配+Prometheus桥+中间件序）                                │
-│ handlers/（system·workspace·biz_tag·id·api_key）  grpc.rs（5 RPC）        │
-│ middleware/（request_id→size_limit→locale→api_key_auth）                  │
-│ rate_limit/  audit/  auth/（garrison缓存）  config/（cors·hot_reload·tls）│
-│ api_version.rs  models.rs（错误信封）  openapi.rs  sdforge_adapter.rs     │
-└──────────────────────────────────┬───────────────────────────────────────┘
-┌──────────────────────────────────▼───────────────────────────────────────┐
-│                          核心层 src/core/                                 │
-│ algorithm/（router·segment·snowflake·uuid_v8·degradation_manager·traits） │
-│ coordinator/（etcd│local：worker分配·分布式锁·集群健康监控）               │
-│ database/（connection·迁移·4域仓储）  config/（13节聚合+22条校验+热重载）  │
-│ auth/（KeyHasher→Argon2id）  monitoring/（告警子系统，门控）  i18n.rs      │
-│ types/（CoreError 24变体·Id·Metrics）                                     │
-└──────────────────────────────────┬───────────────────────────────────────┘
-┌──────────────────────────────────▼───────────────────────────────────────┐
-│ 基础设施（自研生态，统一走 crates.io registry，无路径依赖）：              │
-│ dbnexus(PostgreSQL) · oxcache(缓存) · confers(配置/插值/watch)             │
-│ sdforge(HTTP/gRPC/OpenAPI宏) · inklog(日志/脱敏) · limiteron(令牌桶)       │
-│ garrison(认证缓存) · trait-kit(仅sdk) · etcd-client(仅etcd)               │
-└───────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────── Presentation Layer src/server/ ────────────────────────────┐
+│ router.rs (route assembly + Prometheus bridge + middleware order)                     │
+│ handlers/ (system·workspace·biz_tag·id·api_key)  grpc.rs (5 RPCs)                     │
+│ middleware/ (request_id→size_limit→locale→api_key_auth)                               │
+│ rate_limit/  audit/  auth/ (garrison cache)  config/ (cors·hot_reload·tls)            │
+│ api_version.rs  models.rs (error envelope)  openapi.rs  sdforge_adapter.rs            │
+┌───────────────────────────────────────────▼───────────────────────────────────────────┐
+│                           Core Layer src/core/                                        │
+│ algorithm/ (router·segment·snowflake·uuid_v8·degradation_manager·traits)              │
+│ coordinator/ (etcd│local: worker allocation · distributed lock · cluster health)      │
+│ database/ (connection·migrations·4 domain repos)  config/ (13 sections+22 validations)│
+│ auth/ (KeyHasher→Argon2id)  monitoring/ (alerting subsystem, gated)  i18n.rs          │
+│ types/ (CoreError 24 variants·Id·Metrics)                                             │
+┌───────────────────────────────────────────▼───────────────────────────────────────────┐
+│ Infrastructure (self-developed ecosystem, all via crates.io registry, no path deps):  │
+│ dbnexus(PostgreSQL) · oxcache(cache) · confers(config/interpolation/watch)            │
+│ sdforge(HTTP/gRPC/OpenAPI macros) · inklog(logs/masking) · limiteron(token bucket)    │
+│ garrison(auth cache) · trait-kit(sdk only) · etcd-client(etcd only)                   │
+└───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 1.2 Core Module Inventory and Responsibilities
@@ -82,15 +80,15 @@
 ### 1.3 HTTP Request Lifecycle (the backbone tests must understand)
 
 ```
-TCP(TLS?) → size_limit(1MiB→413) → request_id(UUIDv7透传/生成) → sdforge context
-→ 审计中间件(响应后按状态码记 Success/Failure/Partial) → CORS(ALLOWED_ORIGINS env)
-→ 安全头×6(nosniff/DENY/CSP/HSTS/XSS/Referrer) → 限流（可选，429 特例体 + x-ratelimit-* 响应头）
-→ 路由匹配 ┬ 公开: /health /ready /metrics /api-docs/openapi.json /health/sdforge /swagger-ui /api/v1(info)
+TCP(TLS?) → size_limit(1MiB→413) → request_id(UUIDv7 passthrough/mint) → sdforge context
+→ audit middleware (after response, records Success/Failure/Partial by status) → CORS(ALLOWED_ORIGINS env)
+→ security headers ×6(nosniff/DENY/CSP/HSTS/XSS/Referrer) → rate limit (optional, 429 special body + x-ratelimit-* headers)
+→ route match ┬ public: /health /ready /metrics /api-docs/openapi.json /health/sdforge /swagger-ui /api/v1(info)
            └ /api/v1 → locale(Accept-Language) → api_version(v2→400)
-              ├ admin组: auth_middleware → admin_required(非Admin→403)
-              └ authenticated组: auth_middleware → anonymous_block(Anonymous→401 fail-closed)
-                 → handler → core_error_classification 单表映射错误信封
-信封: {code, business_code(4位串), message(i18n+5xx消毒), details, request_id, timestamp(ms)}
+              ├ admin group: auth_middleware → admin_required(non-Admin→403)
+              └ authenticated group: auth_middleware → anonymous_block(Anonymous→401 fail-closed)
+                 → handler → core_error_classification single-table error-envelope mapping
+envelope: {code, business_code(4-digit string), message(i18n+5xx sanitized), details, request_id, timestamp(ms)}
 ```
 
 Key invariants (each should be pinned by a test):
@@ -108,13 +106,13 @@ Per RPC: `authenticate` (shared failure bucket, 10 per 5min per IP → ResourceE
 ### 1.5 Startup/Shutdown Lifecycle (main.rs)
 
 ```
-init_observability → init_sdforge(防inventory剥离) → load_config(fail-fast矩阵)
-→ 生产强制TLS校验(exit 1, 逃生门NEBULA_ALLOW_INSECURE_TLS=1)
-→ init_repository(DB连接失败exit1→迁移失败exit1→[etcd]fail-closed装配→盐缺失panic)
-→ init_auth_stack(garrison缓存[ttl>0]→ApiKeyAuth[无DB exit1]→key装载→审计→热重载)
-→ run_servers: [etcd]健康巡检+worker租约(失败exit1) → 降级巡检后台 → spawn HTTP+gRPC
-→ select! 四臂: HTTP结束/GRPC结束/shutdown信号(SIGINT·SIGTERM)/[etcd]租约续期失败(→fail-stop)
-→ 收尾: 停巡检→abort限流清理→[etcd]停keepalive+释放worker_id
+init_observability → init_sdforge(prevents inventory stripping) → load_config(fail-fast matrix)
+→ production-enforced TLS validation (exit 1, escape hatch NEBULA_ALLOW_INSECURE_TLS=1)
+→ init_repository(DB connect fail exit1→migration fail exit1→[etcd]fail-closed assembly→missing salt panic)
+→ init_auth_stack(garrison cache[ttl>0]→ApiKeyAuth[no DB exit1]→key loading→audit→hot reload)
+→ run_servers: [etcd] health patrol + worker lease (fail exit1) → degradation patrol background → spawn HTTP+gRPC
+→ select! four arms: HTTP end/GRPC end/shutdown signal(SIGINT·SIGTERM)/[etcd] lease renewal fail(→fail-stop)
+→ teardown: stop patrols→abort rate-limit cleanup→[etcd] stop keepalive + release worker_id
 ```
 
 ---

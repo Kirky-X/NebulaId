@@ -23,18 +23,18 @@
 ```mermaid
 graph TB
     subgraph Docker Compose
-        App[Nebula ID App<br/>nebula-app<br/>:8080 HTTP<br/>:8443 HTTPS（可选）<br/>/health /ready /metrics<br/>:9091 gRPC]
+        App[Nebula ID App<br/>nebula-app<br/>:8080 HTTP<br/>:8443 HTTPS (optional)<br/>/health /ready /metrics<br/>:9091 gRPC]
         PG[(PostgreSQL 16<br/>nebula-postgres<br/>:5432)]
         Redis[(Redis 7.2<br/>nebula-redis<br/>:6379)]
         Etcd[(Etcd 3.5<br/>nebula-etcd<br/>:2379)]
     end
 
-    Client[客户端] --> App
+    Client[Client] --> App
     App --> PG
     App --> Etcd
-    App -.->|预留：当前无消费点<br/>缓存为进程内 oxcache| Redis
+    App -.->|reserved: no consumer yet today<br/>cache is in-process oxcache| Redis
 
-    Prom[Prometheus] -->|抓取 /metrics（Prometheus 文本）| App
+    Prom[Prometheus] -->|scrape /metrics (Prometheus text)| App
 
     style App fill:#bbdefb
     style PG fill:#a5d6a7
@@ -42,7 +42,7 @@ graph TB
     style Etcd fill:#ffcc80
 ```
 
-> Redis note: the `[redis]` section and `REDIS_URL` are a **reserved configuration surface** — the current version has no production consumer: segment double buffering (the `segment` DoubleBuffer) and the auth decision cache are both in-process (oxcache memory / garrison memory). A Redis failure therefore does not affect minting or authentication; `docker compose` still starts the service to keep the deployment shape aligned with future wiring (methodology: FAULT-08 in `docs/TEST_PLAN.md`).
+> Redis note: the `[redis]` section and `REDIS_URL` are a **reserved configuration surface** — the current version has no production consumer: segment double buffering (the `segment` DoubleBuffer) and the auth decision cache are both in-process (oxcache memory / garrison memory). A Redis failure therefore does not affect minting or authentication; `docker compose` still starts the service to keep the deployment shape aligned with future wiring (methodology: FAULT-08 in `docs/en/TEST_PLAN.md`).
 
 ## 2. Docker Deployment
 

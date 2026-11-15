@@ -30,9 +30,9 @@
 
 ## Test Layering Overview
 
-| Layer | Location | Scale (as of the 0.3.0-rc.3 workspace) | How to run |
+| Layer | Location | Scale (as of the 0.3.0 workspace) | How to run |
 |-------|----------|----------------------------------------|------------|
-| Inline unit tests | `#[cfg(test)]` in each `src/` module | ~1779 test functions | `cargo test --package nebulaid` |
+| Inline unit tests | `#[cfg(test)]` in each `src/` module | ~1809 test functions | `cargo test --package nebulaid` |
 | E2E test modules | `src/core/tests/` (11 test modules + `mod.rs`) | 220 test functions | `cargo test --package nebulaid --all-features` |
 | i18n end-to-end | `tests/i18n_e2e.rs` | 1 file (the full chain: middleware → Extension → translated response) | Same as above |
 | Audit-pipeline stall regression | `tests/audit_ring_stall_repro.rs` | 1 test (fills the inklog async channel, then asserts the audit `log()` does not block) | Same as above |
@@ -188,12 +188,12 @@ Gate ownership: the CI five stages (fmt-clippy → deny → audit → test matri
 
 ## Statistics Summary
 
-As of the 0.3.0-rc.3 workspace (methodology: `grep -rnE '#\[(tokio::)?test\]' --include='*.rs' src tests | wc -l`):
+As of the 0.3.0 workspace (methodology: `grep -rnE '#\[(tokio::)?test\]' --include='*.rs' src tests | wc -l`):
 
 | Category | Count |
 |----------|------:|
-| Rust test functions total | ~2006 |
-| ├─ `src/` inline unit tests | ~1779 |
+| Rust test functions total | ~2040 |
+| ├─ `src/` inline unit tests | ~1809 |
 | ├─ `src/core/tests/` E2E modules | 220 |
 | └─ `tests/i18n_e2e.rs` | 7 (full-chain i18n) |
 | Shell end-to-end scripts | 4 (plus 1 shared library) |

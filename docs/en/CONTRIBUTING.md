@@ -211,19 +211,19 @@ cargo doc --no-deps --package nebulaid
 
 ```mermaid
 graph LR
-    A[Fork 仓库] --> B[创建分支]
-    B --> C[修改代码]
-    C --> D[编写测试]
-    D --> E[运行测试]
-    E --> F{测试通过?}
-    F -->|否| C
-    F -->|是| G[提交代码]
-    G --> H[推送到 Fork]
-    H --> I[创建 PR]
-    I --> J[代码评审]
-    J --> K{通过评审?}
-    K -->|需要修改| C
-    K -->|是| L[合并!]
+    A[Fork the repo] --> B[Create a branch]
+    B --> C[Modify code]
+    C --> D[Write tests]
+    D --> E[Run tests]
+    E --> F{Tests pass?}
+    F -->|no| C
+    F -->|yes| G[Commit code]
+    G --> H[Push to fork]
+    H --> I[Create PR]
+    I --> J[Code review]
+    J --> K{Review approved?}
+    K -->|changes requested| C
+    K -->|yes| L[Merge!]
     
     style A fill:#e1f5ff
     style L fill:#4caf50
@@ -425,7 +425,7 @@ cargo llvm-cov --package nebulaid \
 - **Public APIs**: every `pub` item must carry a `///` doc comment.
 - **Example code**: doc comments should include runnable examples.
 - **Update sync**: code changes must be synced into the related README and API documentation.
-- **Algorithm docs**: new algorithm implementations need design documentation added in `docs/ARCHITECTURE.md`.
+- **Algorithm docs**: new algorithm implementations need design documentation added in `docs/en/ARCHITECTURE.md`.
 
 ---
 

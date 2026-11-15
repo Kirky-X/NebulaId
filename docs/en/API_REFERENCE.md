@@ -117,7 +117,7 @@ Module-level feature isolation; library consumers trim the dependency tree as ne
 | `garrison-auth` | ✅ | — | garrison API key authentication |
 | `sdk` | ➖ | `openapi` | The embedded SDK facade; does not imply `database` (the repository surface is gated on the `database` cfg — combinations needing a repository explicitly enable `sdk,database`) |
 | `alerting` | ➖ | Pulls in `reqwest` | The alerting subsystem and webhook dispatch |
-| `etcd` | ➖ | — | etcd distributed coordination |
+| `etcd` | ✅ | — | etcd distributed coordination (joined `default` in 0.3.0) |
 | `openapi` / `integration-tests` | ➖ | — | The sdforge OpenAPI mirror / the real-DB test gate |
 
 Behavioral constraints:
@@ -127,7 +127,7 @@ Behavioral constraints:
 - The `nebulaid::core::Cache` public re-export is visible only with the `server` feature.
 
 ```toml
-# 只用 UUID v8 的最小依赖组合（196 个 crate；完整 default 为 519；实测口径 cargo tree -e normal --prefix none | sort -u | wc -l）
+# Minimal dependency set with only UUID v8 (197 crates; full default is 521; measured via cargo tree -e normal --prefix none | sort -u | wc -l)
 nebulaid = { version = "0.3", default-features = false, features = ["uuid-v8"] }
 ```
 
@@ -263,7 +263,7 @@ The segment loader that connects to the real database segment table (generic con
 pub struct DbSegmentLoader<R: SegmentRepository> {
     repository: Arc<R>,
     step: i32,
-    dynamic: Option<DynamicStepPolicy>, // 私有策略结构：Some 时覆盖固定 step
+    dynamic: Option<DynamicStepPolicy>, // private policy struct: when Some, it overrides the fixed step
 }
 ```
 
@@ -494,7 +494,7 @@ and v5 is not a routing algorithm and is not counted.
 Two zero-state minters (`src/core/algorithm/uuid_v4.rs` / `uuid_v7.rs`, gated by feature `uuid-v4` / `uuid-v7`).
 
 ```rust
-pub fn generate(&self, ctx: &GenerateContext) -> Result<Id>   // 经 IdAlgorithm
+pub fn generate(&self, ctx: &GenerateContext) -> Result<Id>   // via IdAlgorithm
 pub async fn batch_generate(&self, ctx: &GenerateContext, size: usize) -> Result<IdBatch>
 ```
 
@@ -1599,7 +1599,7 @@ GET /health/sdforge
 
 The sdforge integration health check. The endpoint registers through the
 `#[forge]` macro (see `src/server/sdforge_adapter.rs::sdforge_health`),
-and is exposed via sdforge 0.5.0-rc.8's inventory route merger. It returns
+and is exposed via sdforge 0.5.0's inventory route merger. It returns
 the Nebula ID crate's version number, so callers can confirm this route is served by
 the running binary.
 
@@ -1616,7 +1616,7 @@ the running binary.
 ```json
 {
   "status": "ok",
-  "sdforge_version": "0.3.0-rc.3"
+  "sdforge_version": "0.3.0"
 }
 ```
 
@@ -1631,7 +1631,7 @@ the running binary.
 
 ```bash
 curl http://localhost:8080/health/sdforge
-# {"status":"ok","sdforge_version":"0.3.0-rc.3"}
+# {"status":"ok","sdforge_version":"0.3.0"}
 ```
 
 **Notes:**
@@ -1640,7 +1640,7 @@ curl http://localhost:8080/health/sdforge
   `#[forge(name = "sdforge_health", version = "v1", description = "sdforge integration health check", path = "/health/sdforge", method = "GET")]`.
   The `name` argument uses the underscore-separated form `sdforge_health`
   (rather than the hyphenated `sdforge-health`), because `sdforge-macros`
-  0.5.0-rc.5 validates that `name` must be a legal Rust identifier. The HTTP route
+  0.5.0 validates that `name` must be a legal Rust identifier. The HTTP route
   path is unaffected.
 - At startup, `init_sdforge()` must be called once (see `src/main.rs`),
   lest the inventory-registered routes be stripped by the linker.
@@ -1699,7 +1699,7 @@ use nebulaid::core::{database, Config};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::default();
 
-    // 生产装配：真连 DB 的号段装载器 + CPU 使用率驱动的动态步长。
+    // Production assembly: a DB-backed segment loader + CPU-usage-driven dynamic step.
     let conn = database::create_connection(&config.database).await?;
     let repo = Arc::new(database::SeaOrmRepository::new(
         conn,
@@ -1733,8 +1733,8 @@ use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // dc_id / worker_id 取自 Config.app，受 algorithm.snowflake 位宽约束
-    // （默认 datacenter_id_bits=3 即 0-7、worker_id_bits=8 即 0-255）。
+    // dc_id / worker_id come from Config.app, constrained by the algorithm.snowflake bit widths
+    // (defaults: datacenter_id_bits=3, i.e. 0-7; worker_id_bits=8, i.e. 0-255).
     let mut config = Config::default();
     config.app.dc_id = 1;
     config.app.worker_id = 1;
@@ -1847,8 +1847,8 @@ use nebulaid::core::Config;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::default();
 
-    // 批量发号同样经 IdAlgorithm::batch_generate；Segment 算法注入
-    // DbSegmentLoader 后用法相同，上限由 batch_generate.max_batch_size 控制。
+    // Batch minting likewise goes through IdAlgorithm::batch_generate; the Segment
+    // algorithm works the same after injecting DbSegmentLoader, capped by batch_generate.max_batch_size.
     let algo = AlgorithmBuilder::new(AlgorithmType::Snowflake)
         .build(&config)
         .await?;

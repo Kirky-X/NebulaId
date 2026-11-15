@@ -264,7 +264,7 @@ cargo add nebulaid tokio
 **可选特性**（`Cargo.toml` 的 `[features]`）：
 
 ```toml
-# default = ["server", "segment", "snowflake", "uuid-v8", "uuid-v7", "uuid-v5", "uuid-v4", "postgresql", "garrison-auth"]
+# default = ["server", "segment", "snowflake", "uuid-v8", "uuid-v7", "uuid-v5", "uuid-v4", "postgresql", "garrison-auth", "etcd"]
 nebulaid = { version = "0.3", features = ["etcd"] }  # 分布式协调
 # nebulaid = { version = "0.3", features = ["sdk"] } # NebulaIdKit 门面
 # 并不存在 `monitoring` / `audit` / `tls` 特性：指标、审计日志与

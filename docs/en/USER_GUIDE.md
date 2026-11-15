@@ -337,7 +337,7 @@ use nebulaid::core::algorithm::derive_uuid_v5;
 use nebulaid::core::types::IdFormat;
 use uuid::Uuid;
 
-let namespace = Uuid::from_bytes([/* 调用方业务命名空间（16 字节） */]);
+let namespace = Uuid::from_bytes([/* caller's business namespace (16 bytes) */]);
 let id = derive_uuid_v5(namespace, "ecdict|abandon|en")?;
 // The canonical hyphenated string must go through render (Id's Display version whitelist is
 // {v4, v7, v8}; calling to_string() directly on v5 prints the decimal numeric value)

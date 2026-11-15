@@ -22,33 +22,33 @@
 
 ```mermaid
 graph TB
-    Client[客户端应用] --> Gateway[API 网关]
+    Client[Client Application] --> Gateway[API Gateway]
     Gateway --> HTTP[HTTP REST API<br/>axum]
-    Gateway --> gRPC[gRPC 服务<br/>tonic]
-    HTTP --> Router[算法路由器<br/>AlgorithmRouter]
+    Gateway --> gRPC[gRPC Service<br/>tonic]
+    HTTP --> Router[Algorithm Router<br/>AlgorithmRouter]
     gRPC --> Router
 
-    Router --> Seg[Segment 算法<br/>双 buffer + 动态步长]
-    Router --> Snow[Snowflake 算法<br/>串行化时间戳+序列号]
+    Router --> Seg[Segment Algorithm<br/>double buffer + dynamic step]
+    Router --> Snow[Snowflake Algorithm<br/>serialized timestamp + sequence]
     Router --> UUID[UUID v8]
 
     Seg --> DB[(PostgreSQL<br/>sea-orm)]
-    Seg --> DcDetector[DC 故障检测器]
-    Snow --> EtcdCluster[Etcd 集群健康监控]
-    UUID --> Cache[(Redis 缓存<br/>oxcache)]
+    Seg --> DcDetector[DC Failover Detector]
+    Snow --> EtcdCluster[Etcd Cluster Health Monitor]
+    UUID --> Cache[(Redis Cache<br/>oxcache)]
 
-    Router --> CB[熔断器<br/>CircuitBreaker]
-    Router --> Degrade[降级管理器]
-    Router --> Monitor[监控指标]
+    Router --> CB[Circuit Breaker<br/>CircuitBreaker]
+    Router --> Degrade[Degradation Manager]
+    Router --> Monitor[Monitoring Metrics]
 
     CB --> Router
     Degrade --> Router
 
-    DcDetector --> Etcd[(Etcd<br/>分布式协调)]
+    DcDetector --> Etcd[(Etcd<br/>Distributed Coordination)]
     EtcdCluster --> Etcd
 
-    Monitor --> Metrics[Prometheus 指标<br/>/metrics]
-    Monitor --> Health[健康检查<br/>/health]
+    Monitor --> Metrics[Prometheus Metrics<br/>/metrics]
+    Monitor --> Health[Health Check<br/>/health]
 
     style Client fill:#e1f5ff
     style Gateway fill:#b3e5fc
@@ -65,24 +65,24 @@ graph TB
 
 ```mermaid
 graph LR
-    subgraph 入口层
-        Bin[main.rs<br/>装配与启动]
-        Sdk[src/sdk/<br/>嵌入式 Kit facade<br/>（sdk 门控）]
+    subgraph Entry Layer
+        Bin[main.rs<br/>assembly & startup]
+        Sdk[src/sdk/<br/>embedded Kit facade<br/>(sdk gated)]
     end
 
-    subgraph 表现层
-        Server[server/<br/>HTTP, gRPC, 中间件]
+    subgraph Presentation Layer
+        Server[server/<br/>HTTP, gRPC, middleware]
     end
 
-    subgraph 核心层
-        Algo[core/algorithm/<br/>ID 算法]
-        Coord[core/coordinator/<br/>分布式协调]
-        DB[core/database/<br/>SeaORM 实体<br/>（database 门控）]
-        Types[core/types/<br/>类型定义]
-        Config[core/config/<br/>配置]
-        Auth[core/auth/<br/>认证]
-        Monitor[core/monitoring/<br/>监控<br/>（alerting 门控）]
-        I18n[core/i18n.rs<br/>国际化]
+    subgraph Core Layer
+        Algo[core/algorithm/<br/>ID algorithms]
+        Coord[core/coordinator/<br/>distributed coordination]
+        DB[core/database/<br/>SeaORM entities<br/>(database gated)]
+        Types[core/types/<br/>type definitions]
+        Config[core/config/<br/>configuration]
+        Auth[core/auth/<br/>authentication]
+        Monitor[core/monitoring/<br/>monitoring<br/>(alerting gated)]
+        I18n[core/i18n.rs<br/>internationalization]
     end
 
     Bin --> Server
@@ -110,19 +110,19 @@ graph LR
 
 ## 3. External Library Roles
 
-The project decouples its infrastructure through 8 self-developed ecosystem crates.io libraries (one RC wave) plus 1 third-party library (versions are the current req lower bounds in `Cargo.toml`):
+The project decouples its infrastructure through 8 self-developed ecosystem crates.io libraries (all stable releases) plus 1 third-party library (versions are the locked resolutions in `Cargo.lock`):
 
 | Library | Version | Role | Usage |
 |---------|---------|------|-------|
-| `confers` | 0.6.0-rc.10 | Configuration management | Provides the `ConfigProvider` trait, environment variable expansion, and watch |
-| `oxcache` | 0.5.0-rc.8 | Multi-level cache | Provides the `Cache` abstraction (memory + Redis) |
-| `dbnexus` | 0.6.0-rc.9 | Database abstraction | Provides the PostgreSQL connection pool and transaction management |
-| `sdforge` | 0.5.0-rc.8 | Service framework | Provides HTTP / gRPC / Web (OpenAPI) assembly macros; not service discovery |
-| `inklog` | 0.3.0-rc.9 | Logging | Structured logging and fast-masking redaction |
-| `garrison` | 0.9.0-rc.3 | Auth framework | API key verification (`garrison-auth` gated) |
-| `trait-kit` | 0.5.0-rc.9 | Kit interface hub | AsyncKit modular assembly (pulled in only under the `sdk` gate) |
-| `limiteron` | 0.3.0-rc.7 | Rate limiting | Provides core rate-limit primitives (TokenBucket / ConcurrencyLimiter) |
-| `etcd-client` | 0.20 | Third-party etcd client | Distributed coordination (`etcd` gated) |
+| `confers` | 0.6.0 | Configuration management | Provides the `ConfigProvider` trait, environment variable expansion, and watch |
+| `oxcache` | 0.5.0 | Multi-level cache | Provides the `Cache` abstraction (memory + Redis) |
+| `dbnexus` | 0.6.0 | Database abstraction | Provides the PostgreSQL connection pool and transaction management |
+| `sdforge` | 0.5.0 | Service framework | Provides HTTP / gRPC / Web (OpenAPI) assembly macros; not service discovery |
+| `inklog` | 0.3.0 | Logging | Structured logging and fast-masking redaction |
+| `garrison` | 0.9.0 | Auth framework | API key verification (`garrison-auth` gated) |
+| `trait-kit` | 0.5.0 | Kit interface hub | AsyncKit modular assembly (pulled in only under the `sdk` gate) |
+| `limiteron` | 0.3.1 | Rate limiting | Provides core rate-limit primitives (TokenBucket / ConcurrencyLimiter) |
+| `etcd-client` | 0.21 | Third-party etcd client | Distributed coordination (`etcd` gated) |
 
 **Dependency feature-hygiene principle (Rule 28):**
 - All external libraries use `default-features = false`, declaring required features explicitly
@@ -136,16 +136,16 @@ The project decouples its infrastructure through 8 self-developed ecosystem crat
 
 ```mermaid
 graph LR
-    subgraph 双 Buffer 设计
-        Current[当前 Buffer<br/>ArcSwap<AtomicSegment>]
-        Next[预加载 Buffer<br/>ArcSwapOption<AtomicSegment>]
-        Loader[后台加载器<br/>mpsc 通道]
+    subgraph Double-Buffer Design
+        Current[Current Buffer<br/>ArcSwap<AtomicSegment>]
+        Next[Preload Buffer<br/>ArcSwapOption<AtomicSegment>]
+        Loader[Background Loader<br/>mpsc channel]
     end
 
-    Current -->|剩余 < 阈值| Switch[swap 切换]
+    Current -->|remaining < threshold| Switch[swap switch]
     Next --> Switch
     Switch --> Current
-    Loader -->|预加载| Next
+    Loader -->|preload| Next
 
     style Current fill:#a5d6a7
     style Next fill:#ce93d8
@@ -171,10 +171,10 @@ graph LR
 ```mermaid
 stateDiagram-v2
     [*] --> Closed
-    Closed --> Open: 连续失败 ≥ 阈值<br/>swap(STATE_OPEN)
-    Open --> HalfOpen: 超时后请求<br/>CAS(OPEN→HALF_OPEN)
-    HalfOpen --> Closed: 成功 ≥ 阈值<br/>CAS(HALF_OPEN→CLOSED)
-    HalfOpen --> Open: 任意失败<br/>swap(STATE_OPEN)
+    Closed --> Open: consecutive failures ≥ threshold<br/>swap(STATE_OPEN)
+    Open --> HalfOpen: request after timeout<br/>CAS(OPEN→HALF_OPEN)
+    HalfOpen --> Closed: successes ≥ threshold<br/>CAS(HALF_OPEN→CLOSED)
+    HalfOpen --> Open: any failure<br/>swap(STATE_OPEN)
 ```
 
 **Optimization points:**
@@ -218,14 +218,14 @@ Since v0.2.0, the ICU internationalization layer sits in the system architecture
 
 ```mermaid
 graph LR
-    Client[客户端请求<br/>Accept-Language 头] --> Gateway[API 网关<br/>axum Router]
+    Client[Client Request<br/>Accept-Language header] --> Gateway[API Gateway<br/>axum Router]
     Gateway --> LocaleMW[locale_middleware<br/>src/server/middleware/locale.rs]
-    LocaleMW -->|Extension&lt;Locale&gt;| V1Routes[/api/v1/* 路由]
-    V1Routes --> Handlers[业务 Handlers<br/>src/server/handlers/*.rs]
-    Handlers -->|错误转换| Helpers[helpers.rs<br/>core_error_to_response]
-    Helpers --> I18n[i18n 模块<br/>src/core/i18n.rs]
+    LocaleMW -->|Extension&lt;Locale&gt;| V1Routes[/api/v1/* routes]
+    V1Routes --> Handlers[Business Handlers<br/>src/server/handlers/*.rs]
+    Handlers -->|error conversion| Helpers[helpers.rs<br/>core_error_to_response]
+    Helpers --> I18n[i18n module<br/>src/core/i18n.rs]
     I18n -->|translate_with_locale_args| Locales[(locales/en/messages.ftl<br/>locales/zh/messages.ftl)]
-    Locales -->|include_str! + 键集注册快照| I18n
+    Locales -->|include_str! + key-set registration snapshot| I18n
 
     style LocaleMW fill:#ffcc80
     style I18n fill:#ce93d8
@@ -246,17 +246,17 @@ The `EtcdClientOps` trait decouples etcd business logic from `etcd_client::Clien
 
 ```mermaid
 graph TB
-    subgraph Trait层
-        Trait[EtcdClientOps trait<br/>src/core/coordinator/etcd.rs<br/>7 方法: kv_get/kv_delete/<br/>lease_grant/lease_revoke/<br/>txn_check_create_rev_and_put/ping/<br/>lease_keep_alive_once]
+    subgraph Trait Layer
+        Trait[EtcdClientOps trait<br/>src/core/coordinator/etcd.rs<br/>8 methods: kv_get/kv_delete/<br/>lease_grant/lease_revoke/<br/>txn_check_create_rev_and_put/ping/<br/>lease_keep_alive_once/watch_prefix]
         Err[EtcdError enum<br/>Network/KeyNotFound/<br/>LeaseInvalid/Internal]
     end
 
-    subgraph 实现层
+    subgraph Implementation Layer
         Wrapper[EtcdClientWrapper<br/>tokio::sync::Mutex&lt;etcd_client::Client&gt;<br/>impl EtcdClientOps]
         Mock[MockEtcdClientOps<br/>#[cfg(test)] mockall::mock!]
     end
 
-    subgraph 调用方
+    subgraph Callers
         Lock[EtcdDistributedLock<br/>client: Arc&lt;dyn EtcdClientOps&gt;]
         Allocator[EtcdWorkerAllocator<br/>client: Arc&lt;dyn EtcdClientOps&gt;]
         Monitor[EtcdClusterHealthMonitor<br/>client: Option&lt;Arc&lt;dyn EtcdClientOps&gt;&gt;]
@@ -264,10 +264,10 @@ graph TB
 
     Wrapper -.->|impl| Trait
     Mock -.->|impl test only| Trait
-    Trait -->|Arc&lt;dyn EtcdClientOps&gt; 注入| Lock
-    Trait -->|Arc&lt;dyn EtcdClientOps&gt; 注入| Allocator
-    Trait -->|Option&lt;Arc&lt;dyn EtcdClientOps&gt;&gt; 注入| Monitor
-    Trait -->|返回值| Err
+    Trait -->|Arc&lt;dyn EtcdClientOps&gt; injected| Lock
+    Trait -->|Arc&lt;dyn EtcdClientOps&gt; injected| Allocator
+    Trait -->|Option&lt;Arc&lt;dyn EtcdClientOps&gt;&gt; injected| Monitor
+    Trait -->|return value| Err
 
     style Trait fill:#bbdefb
     style Err fill:#ffcdd2
@@ -291,16 +291,16 @@ The `ConfigManagementService` trait decouples the HTTP handlers from the concret
 
 ```mermaid
 graph TB
-    subgraph Trait层
-        Trait[ConfigManagementService trait<br/>src/server/config/management.rs<br/>22 方法: get_config/get_secure_config/<br/>get_batch_max_size/update_rate_limit/<br/>update_logging/reload_config/<br/>set_algorithm/biz_tag CRUD/<br/>workspace&amp;group CRUD/metrics]
+    subgraph Trait Layer
+        Trait[ConfigManagementService trait<br/>src/server/config/management.rs<br/>22 methods: get_config/get_secure_config/<br/>get_batch_max_size/update_rate_limit/<br/>update_logging/reload_config/<br/>set_algorithm/biz_tag CRUD/<br/>workspace&amp;group CRUD/metrics]
     end
 
-    subgraph 实现层
-        Manager[ConfigManager<br/>生产实现<br/>impl ConfigManagementService]
+    subgraph Implementation Layer
+        Manager[ConfigManager<br/>production implementation<br/>impl ConfigManagementService]
         MockCfg[MockConfigManagementService<br/>#[cfg(test)] mockall::mock!]
     end
 
-    subgraph 调用方
+    subgraph Callers
         Handlers[ApiHandlers<br/>config_service: Arc&lt;dyn ConfigManagementService&gt;<br/>src/server/handlers/mod.rs]
         Router[create_router<br/>NebulaIdState.config_service:<br/>Arc&lt;dyn ConfigManagementService&gt;]
         Main[src/main.rs<br/>Arc::new(ConfigManager::new(...))<br/>coerce to Arc&lt;dyn ConfigManagementService&gt;]
@@ -308,8 +308,8 @@ graph TB
 
     Manager -.->|impl| Trait
     MockCfg -.->|impl test only| Trait
-    Main -->|构造并 coerce| Trait
-    Trait -->|Arc&lt;dyn ...&gt; 注入| Handlers
+    Main -->|construct & coerce| Trait
+    Trait -->|Arc&lt;dyn ...&gt; injected| Handlers
     Handlers -->|get_config_service| Router
 
     style Trait fill:#bbdefb
@@ -324,7 +324,7 @@ graph TB
 
 - **Name yield**: the former `ConfigManagementService` struct was renamed to `ConfigManager`, letting the trait own the canonical name. All callers use `Arc<dyn ConfigManagementService>` to reference the trait; implementation details are hidden behind `ConfigManager`.
 - **Coercion at construction**: in `src/main.rs`, `Arc::new(ConfigManager::new(...))` auto-coerces to `Arc<dyn ConfigManagementService>` with no explicit cast.
-- **Test coverage**: the `#[cfg(test)] mod tests` in `src/server/handlers/mod.rs` defines `MockConfigManagementService` with `mockall::mock!`, covering all ~18 trait methods. 55 new tests push the handlers module coverage to ≥ 95%.
+- **Test coverage**: the `#[cfg(test)] mod tests` in `src/server/handlers/mod.rs` defines `MockConfigManagementService` with `mockall::mock!`, covering all 22 trait methods. 55 new tests push the handlers module coverage to ≥ 95%.
 - **Interface isolation (Rule 25)**: the `ConfigManagementService` trait is defined in `src/server/config/management.rs` with `mod.rs` re-exporting only; `ApiHandlers` holds the reference as an `Arc<dyn ConfigManagementService>` field, and every call inside the handlers goes through trait method dispatch.
 
 ## Related Documents

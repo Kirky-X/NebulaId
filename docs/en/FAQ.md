@@ -251,7 +251,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-nebulaid = "0.3"                       # Cargo 包名是 `nebulaid`
+nebulaid = "0.3"                       # the Cargo package name is `nebulaid`
 tokio = { version = "1.0", features = ["full"] }
 ```
 
@@ -264,18 +264,18 @@ cargo add nebulaid tokio
 **Optional features** (`[features]` in `Cargo.toml`):
 
 ```toml
-# default = ["server", "segment", "snowflake", "uuid-v8", "uuid-v7", "uuid-v5", "uuid-v4", "postgresql", "garrison-auth"]
-nebulaid = { version = "0.3", features = ["etcd"] }  # 分布式协调
-# nebulaid = { version = "0.3", features = ["sdk"] } # NebulaIdKit 门面
-# 并不存在 `monitoring` / `audit` / `tls` 特性：指标、审计日志与
-# TLS 均为运行时配置（[monitoring] / [auth] / [tls]）。
+# default = ["server", "segment", "snowflake", "uuid-v8", "uuid-v7", "uuid-v5", "uuid-v4", "postgresql", "garrison-auth", "etcd"]
+nebulaid = { version = "0.3", features = ["etcd"] }  # distributed coordination
+# nebulaid = { version = "0.3", features = ["sdk"] } # the NebulaIdKit facade
+# There are no `monitoring` / `audit` / `tls` features: metrics, audit logs,
+# and TLS are all runtime configuration ([monitoring] / [auth] / [tls]).
 ```
 
 **Verification:**
 
 ```rust
 use nebulaid::core::Config;
-use nebulaid::sdk::NebulaIdKitBuilder; // 需要特性 `sdk`
+use nebulaid::sdk::NebulaIdKitBuilder; // requires the `sdk` feature
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
@@ -503,7 +503,7 @@ grpc_enabled = false
 [batch_generate]
 max_batch_size = 100
 
-# 可选项：
+# Optional:
 # [redis] url = "redis://localhost:6379"
 # [hot_reload] auto_watch_enabled = false
 ```
@@ -519,7 +519,7 @@ max_batch_size = 100
 There is no `NEBULA_DATABASE_URL` / `NEBULA_AUTH_API_KEY` family. The real environment variables are:
 
 ```bash
-# 由 `Config::load_from_env()` 叠加到文件之上：
+# Overlaid on top of the file by `Config::load_from_env()`:
 export APP_HOST="0.0.0.0"
 export APP_HTTP_PORT="8080"
 export APP_GRPC_PORT="9091"
@@ -529,9 +529,9 @@ export DATABASE_URL="postgresql://idgen:pass@localhost:5432/idgen"
 export ETCD_ENDPOINTS="http://localhost:2379"
 export RUST_LOG="info"
 
-# 在解析前于文件内部展开为 ${VAR}：
+# Expanded inside the file to ${VAR} before parsing:
 export NEBULA_DATABASE_PASSWORD="..."   # [database].password / url
-export NEBULA_API_KEY_SALT="..."        # [auth].api_key_salt 的回退值
+export NEBULA_API_KEY_SALT="..."        # fallback for [auth].api_key_salt
 ```
 
 **See also:** the [Config Migration Guide](CONFIG_MIGRATION_GUIDE.md#config-reference-all-options-and-validation-rules)
@@ -557,23 +557,23 @@ export NEBULA_API_KEY_SALT="..."        # [auth].api_key_salt 的回退值
 
 ```rust
 use nebulaid::core::Config;
-use nebulaid::sdk::NebulaIdKitBuilder; // 特性 `sdk`
+use nebulaid::sdk::NebulaIdKitBuilder; // the `sdk` feature
 
 #[tokio::main]
 async fn main() -> nebulaid::core::Result<()> {
-    // Segment 需要 `NebulaIdKitBuilder::with_repository(..)`，因为它
-    // 要从数据库分配号段；纯算法则无需任何额外设置。
+    // Segment needs `NebulaIdKitBuilder::with_repository(..)` because it
+    // allocates segments from the database; pure algorithms need no extra setup.
     let mut config = Config::default();
     config.algorithm.default = "snowflake".to_string();
 
     let kit = NebulaIdKitBuilder::new(config).build().await?;
     let generator = kit.id_generator()?;
 
-    // 生成单个 ID
+    // Generate a single ID
     let id = generator.generate("prod", "core", "order").await?;
     println!("Generated ID: {} (u128: {})", id, id.as_u128());
 
-    // 批量生成 ID
+    // Batch-generate IDs
     let batch = generator.batch_generate("prod", "core", "order", 100).await?;
     println!("Generated {} IDs", batch.len());
 
@@ -613,10 +613,10 @@ use nebulaid::core::Config;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::default();
 
-    // 算法结构体（SegmentAlgorithm / SnowflakeAlgorithm / UuidV8Impl）是 crate 内部的；
-    // 请通过公开的 AlgorithmBuilder 构建。
-    // Snowflake 与 UuidV8 是纯算法、无需数据库；Segment 则需要先接入
-    // repository（见 src/sdk/client.rs 中的 SDK 说明）。
+    // Algorithm structs (SegmentAlgorithm / SnowflakeAlgorithm / UuidV8Impl) are crate-internal;
+    // build them through the public AlgorithmBuilder.
+    // Snowflake and UuidV8 are pure algorithms and need no database; Segment needs a
+    // repository wired up first (see the SDK notes in src/sdk/client.rs).
     let snowflake = AlgorithmBuilder::new(AlgorithmType::Snowflake)
         .build(&config)
         .await?;
@@ -662,8 +662,8 @@ use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // `dc_id` 来自 [app]；具体的 SegmentAlgorithm 类型是
-    // crate 内部的，因此请通过公开的 AlgorithmBuilder 构建。
+    // `dc_id` comes from [app]; the concrete SegmentAlgorithm type is
+    // crate-internal, so build it through the public AlgorithmBuilder.
     let mut config = Config::default();
     config.app.dc_id = 1;
 
@@ -673,11 +673,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ctx = GenerateContext::default();
 
-    // 生成单个 ID（来自预分配的号段）
+    // Generate a single ID (from the pre-allocated segment)
     let id = segment.generate(&ctx).await?;
     println!("Generated ID: {}", id);
 
-    // 批量生成（为 `size` 个 ID 只做一次数据库往返）
+    // Batch generation (one database round-trip for `size` IDs)
     let batch = segment.batch_generate(&ctx, 1000).await?;
     println!("Generated {} IDs", batch.ids.len());
 
@@ -721,8 +721,8 @@ use nebulaid::core::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // dc/worker 来自 [app]；具体的 SnowflakeAlgorithm 类型是
-    // crate 内部的，因此请通过公开的 AlgorithmBuilder 构建。
+    // dc/worker come from [app]; the concrete SnowflakeAlgorithm type is
+    // crate-internal, so build it through the public AlgorithmBuilder.
     let mut config = Config::default();
     config.app.dc_id = 1;
     config.app.worker_id = 1;
@@ -734,8 +734,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let id = snowflake.generate(&GenerateContext::default()).await?;
     println!("Snowflake ID: {} (u128: {})", id, id.as_u128());
 
-    // 位布局可从配置中读出；64 位中的剩余部分
-    // 即时间戳字段。
+    // The bit layout is readable from the config; the remaining bits of the
+    // 64 form the timestamp field.
     let s = &config.algorithm.snowflake;
     println!(
         "timestamp({}) | dc({}) | worker({}) | seq({})",
@@ -795,7 +795,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let id = uuid.generate(&GenerateContext::default()).await?;
     println!("UUID v8: {}", id);
 
-    // 通过 uuid crate 的表示形式做往返转换
+    // Round-trip through the uuid crate's representation
     let as_uuid = id.to_uuid_v8();
     let back = Id::from_uuid_v8(as_uuid);
     assert_eq!(back, id);
@@ -846,7 +846,7 @@ Nebula ID uses etcd for distributed coordination:
 
 ```rust
 use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
-use nebulaid::core::coordinator::EtcdClusterHealthMonitor; // 特性 `etcd`
+use nebulaid::core::coordinator::EtcdClusterHealthMonitor; // the `etcd` feature
 use nebulaid::core::config::EtcdConfig;
 use nebulaid::core::types::AlgorithmType;
 use nebulaid::core::Config;
@@ -855,13 +855,13 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // new(config: EtcdConfig, cache_file_path: String) -> Self
-    // 当 etcd 不可达时使用缓存文件。
+    // Uses the cache file when etcd is unreachable.
     let health_monitor = Arc::new(EtcdClusterHealthMonitor::new(
         EtcdConfig::default(),
         "./etcd-cache.json".to_string(),
     ));
 
-    // 通过公开的 builder 把它交给算法。
+    // Hand it to the algorithm via the public builder.
     let segment = AlgorithmBuilder::new(AlgorithmType::Segment)
         .with_etcd_health_monitor(health_monitor)
         .build(&Config::default())
@@ -899,8 +899,8 @@ async fn run() -> Result<Id, CoreError> {
 async fn main() {
     match run().await {
         Ok(id) => println!("Generated ID: {}", id.as_u128()),
-        // 变体名称与载荷形态与
-        // src/core/types/error.rs 中的声明完全一致。
+        // Variant names and payload shapes are exactly as declared in
+        // src/core/types/error.rs.
         Err(CoreError::ClockMovedBackward { last_timestamp }) => {
             eprintln!("❌ System clock regressed to {last_timestamp}, NTP sync required");
         }
@@ -955,11 +955,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ctx = GenerateContext::default();
 
-    // 异步生成单个 ID
+    // Generate a single ID asynchronously
     let id = segment.generate(&ctx).await?;
     println!("Generated ID: {}", id);
 
-    // 异步批量生成
+    // Batch-generate asynchronously
     let batch = segment.batch_generate(&ctx, 100).await?;
     println!("Generated {} IDs", batch.len());
 
@@ -1034,16 +1034,16 @@ cargo bench
 
 2. **Use batch generation:**
    ```rust
-   // 不要逐个生成 ID（`IdAlgorithm::batch_generate`）
+   // Do not generate IDs one by one (`IdAlgorithm::batch_generate`)
    let batch = segment.batch_generate(&ctx, 1000).await?;
    ```
 
 3. **Configure sensible segment sizes:**
    ```toml
-   # `SegmentAlgorithmConfig` 的键 —— 四个键均为解析器必填。
-   # base_step 必须保持在 [min_step, max_step] 之间。
+   # Keys of `SegmentAlgorithmConfig` — all four keys are required by the parser.
+   # base_step must stay within [min_step, max_step].
    [algorithm.segment]
-   base_step = 10000  # 步长越大 = 数据库往返越少
+   base_step = 10000  # a larger step = fewer database round-trips
    min_step = 500
    max_step = 100000
    switch_threshold = 0.1
@@ -1076,7 +1076,7 @@ The repository currently has no memory benchmarks, so it publishes no concrete m
 Evaluate deployment memory against your own workload, for example:
 
 ```bash
-# 进程峰值 RSS
+# peak process RSS
 /usr/bin/time -v ./target/release/nebula-id 2>&1 | grep "Maximum resident"
 ```
 
@@ -1115,14 +1115,14 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // `IdAlgorithm: Send + Sync`，因此一个共享句柄即可服务多个任务。
+    // `IdAlgorithm: Send + Sync`, so one shared handle can serve multiple tasks.
     let snowflake: Arc<dyn IdAlgorithm> = Arc::from(
         AlgorithmBuilder::new(AlgorithmType::Snowflake)
             .build(&Config::default())
             .await?,
     );
 
-    // 派生并发任务
+    // Spawn concurrent tasks
     let mut handles = Vec::new();
     for _ in 0..100 {
         let snowflake = Arc::clone(&snowflake);
@@ -1131,7 +1131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }));
     }
 
-    // 收集结果（JoinError 与 CoreError 都可转换为 Box<dyn Error>）
+    // Collect results (both JoinError and CoreError convert into Box<dyn Error>)
     let mut ids: Vec<Id> = Vec::with_capacity(handles.len());
     for handle in handles {
         ids.push(handle.await??);
@@ -1213,24 +1213,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```toml
 [auth]
-enabled = true                     # 必填
-cache_ttl_seconds = 300            # 必填
-# 静态引导密钥；运行时密钥存放在数据库 / garrison 中。
-# ApiKeyEntry 的每个字段都是必填的。
-# 启动时只预置第一条条目（`src/main.rs:105` 取 `keys.first()`）；
-# 第 2..N 条会被解析和校验但从不创建，且没有任何警告。
-# `workspace` 必须是 UUID 字符串或字面量 "global"（其他值会使
-# `Uuid::parse_str` 失败并被静默替换为全零 UUID）。
-# `role` 只有在值恰好为 "admin"（不区分大小写）时才是 admin；其他
-# 任何值都成为 user。当设置了 NEBULA_ADMIN_API_KEY_SECRET 时，
-# 整个配置段都会被忽略。
+enabled = true                     # required
+cache_ttl_seconds = 300            # required
+# Static bootstrap keys; runtime keys live in the database / garrison.
+# Every field of ApiKeyEntry is required.
+# Only the first entry is provisioned at startup (`src/main.rs:105` takes `keys.first()`);
+# entries 2..N are parsed and validated but never created, without any warning.
+# `workspace` must be a UUID string or the literal "global" (any other value makes
+# `Uuid::parse_str` fail and it is silently replaced with an all-zero UUID).
+# `role` is admin only when the value is exactly "admin" (case-insensitive); any
+# other value becomes user. When NEBULA_ADMIN_API_KEY_SECRET is set,
+# the whole configuration section is ignored.
 api_keys = [
   { key_id = "svc-billing", key_secret = "replace-me", workspace = "0f5f6c8e-1f2e-4a7b-9c3d-2b1a4e5f6071",
     role = "user", rate_limit = 1000, name = "Billing service" },
 ]
-api_key_salt = "${NEBULA_API_KEY_SALT}"   # 可选；生产环境拒绝空盐值
-key_rotation_grace_period_seconds = 0 # 可选；0（默认）= 关闭宽限期；>0 需要两个
-                                      # 宽限期列，启动迁移会自行添加
+api_key_salt = "${NEBULA_API_KEY_SALT}"   # optional; production rejects an empty salt
+key_rotation_grace_period_seconds = 0 # optional; 0 (default) = grace period off; >0 requires the two
+                                      # grace-period columns, which the startup migration adds itself
 
 [rate_limit]
 enabled = true
@@ -1238,7 +1238,7 @@ default_rps = 10000
 burst_size = 100                   # validate(): <= 10 × default_rps
 
 [batch_generate]
-max_batch_size = 100               # 防止 DoS 攻击的最大批量大小
+max_batch_size = 100               # maximum batch size, guarding against DoS
 ```
 
 > 不存在 `[auth].api_key` 字符串键，也没有 `token_expiry_hours`；凭据始终是
@@ -1249,11 +1249,11 @@ max_batch_size = 100               # 防止 DoS 攻击的最大批量大小
 ```rust
 use nebulaid::core::Config;
 
-// API 密钥校验发生在由 `src/main.rs` 装配的 HTTP/gRPC 服务器内部。
+// API key verification happens inside the HTTP/gRPC servers assembled by `src/main.rs`.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load_from_file("config/config.toml")?;
 
-    // `auth.enabled` 是控制中间件的开关。
+    // `auth.enabled` is the switch controlling the middleware.
     println!("auth enabled: {}", config.auth.enabled);
 
     Ok(())
@@ -1367,7 +1367,7 @@ Error: system clock moved backward
 
 2. **Configure NTP auto-sync:**
    ```bash
-   # 添加到 /etc/chrony.conf
+   # append to /etc/chrony.conf
    server pool.ntp.org iburst
    ```
 
@@ -1398,7 +1398,7 @@ Error: failed to connect to database
 **Solution:**
 1. **Confirm the database is running:**
    ```bash
-   # PostgreSQL（本服务当前唯一支持的数据库）
+   # PostgreSQL (currently the only database this service supports)
    pg_isready -h localhost -p 5432
    ```
 
@@ -1443,7 +1443,7 @@ Generated IDs are not monotonically increasing.
 
 3. **Use UUID v8 for time ordering:**
    ```rust
-   // 在 `async fn` 内部：
+    // Inside an `async fn`:
    use nebulaid::core::algorithm::{AlgorithmBuilder, GenerateContext, IdAlgorithm};
    use nebulaid::core::types::AlgorithmType;
    use nebulaid::core::Config;
@@ -1474,8 +1474,8 @@ use nebulaid::core::Config;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
-    // 具体算法结构体（SegmentAlgorithm / SnowflakeAlgorithm / UuidV8Impl）
-    // 是 crate 内部实现；公开入口只有 AlgorithmBuilder + IdAlgorithm trait。
+    // The concrete algorithm structs (SegmentAlgorithm / SnowflakeAlgorithm / UuidV8Impl)
+    // are crate-internal; the public entry points are AlgorithmBuilder + the IdAlgorithm trait.
     let config = Config::default();
     let algorithm = AlgorithmBuilder::new(AlgorithmType::Snowflake)
         .build(&config)
@@ -1496,13 +1496,13 @@ RUST_LOG=nebulaid=debug
 **Common debug commands:**
 
 ```bash
-# 检查 etcd 健康状态
+# Check etcd health
 etcdctl endpoint health
 
-# 检查数据库连接
+# Check the database connection
 SELECT count(*) FROM pg_stat_activity;
 
-# 监控指标
+# Monitoring metrics
 curl http://localhost:8080/metrics
 ```
 
@@ -1524,7 +1524,7 @@ curl http://localhost:8080/metrics
 
 2. **Monitor the connection pool:**
    ```bash
-   # 检查活跃连接
+   # Check active connections
    SELECT count(*) FROM pg_stat_activity WHERE datname = 'nebula';
    ```
 
@@ -1623,28 +1623,28 @@ curl http://localhost:8080/metrics
 **Writing a high-quality bug report:**
 
 ```markdown
-### 描述
-清晰描述该缺陷
+### Description
+Describe the bug clearly
 
-### 复现步骤
-1. 第一步
-2. 第二步
-3. 查看错误
+### Steps to reproduce
+1. First step
+2. Second step
+3. See the error
 
-### 预期行为
-应当发生什么
+### Expected behavior
+What should happen
 
-### 实际行为
-实际发生了什么
+### Actual behavior
+What actually happened
 
-### 环境
+### Environment
 - OS: Ubuntu 22.04
 - Rust version: 1.75.0
 - Nebula ID version: 0.1.0
 - Database: PostgreSQL 15
 
-### 补充信息
-其他任何相关信息
+### Additional context
+Any other relevant information
 ```
 
 **Submit:** [Create an issue](https://github.com/Kirky-X/NebulaId/issues/new)

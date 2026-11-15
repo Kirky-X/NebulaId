@@ -117,7 +117,7 @@
 | `garrison-auth` | ✅ | — | garrison API key 认证 |
 | `sdk` | ➖ | `openapi` | 嵌入式 SDK facade；不蕴含 `database`（仓储面随 `database` cfg 门控，需仓储的组合显式启用 `sdk,database`） |
 | `alerting` | ➖ | 拉入 `reqwest` | 告警子系统与 webhook 分发 |
-| `etcd` | ➖ | — | etcd 分布式协调 |
+| `etcd` | ✅ | — | etcd 分布式协调（0.3.0 起进 `default`） |
 | `openapi` / `integration-tests` | ➖ | — | sdforge OpenAPI 镜像 / 真实 DB 测试门控 |
 
 行为约束：
@@ -127,7 +127,7 @@
 - `nebulaid::core::Cache` 公共 re-export 仅随 `server` 特性可见。
 
 ```toml
-# 只用 UUID v8 的最小依赖组合（196 个 crate；完整 default 为 519；实测口径 cargo tree -e normal --prefix none | sort -u | wc -l）
+# 只用 UUID v8 的最小依赖组合（197 个 crate；完整 default 为 521；实测口径 cargo tree -e normal --prefix none | sort -u | wc -l）
 nebulaid = { version = "0.3", default-features = false, features = ["uuid-v8"] }
 ```
 
@@ -430,7 +430,7 @@ re-export）解析。
 `UuidV8Impl` **无法**从 crate 外部导入。请改用公开的工厂构建：
 
 ```rust
-// Inside an `async fn` (the builder's `build` is async):
+// 须在 `async fn` 内（builder 的 `build` 是异步方法）：
 use nebulaid::core::algorithm::AlgorithmBuilder;
 use nebulaid::core::types::AlgorithmType;
 use nebulaid::core::Config;
@@ -771,7 +771,7 @@ Nebula ID 中的核心 ID 类型。
 
 ```rust
 pub struct Id {
-    // Internal representation (u128)
+    // 内部表示（u128）
 }
 ```
 
@@ -788,8 +788,8 @@ pub fn to_uuid_v8(&self) -> Uuid
 pub fn to_prefixed(&self, prefix: &str) -> String
 pub fn to_hex(&self) -> String
 pub fn to_base36(&self) -> String
-// `Display` renders a standard UUID string when the version nibble is 4/7/8,
-// otherwise the plain u128 (`src/core/types/id.rs:55-70`).
+// `Display` 在版本半字节为 4/7/8 时渲染标准 UUID 字符串，
+// 否则输出纯 u128（`src/core/types/id.rs:55-70`）。
 ```
 
 > `Id` 没有 `from_uuid_v7` / `from_uuid_v4` 构造函数——`from_uuid_v8`（历史命名）
@@ -1207,19 +1207,19 @@ Nebula ID 遵循 HTTP `Accept-Language` 请求头（参见
 **curl 示例：**
 
 ```bash
-# Request Chinese responses
+# 请求中文响应
 curl -H "Accept-Language: zh-CN" http://localhost:8080/api/v1/generate \
     -H "Content-Type: application/json" \
     -H "Authorization: ApiKey <key_id>:<key_secret>" \
     -d '{"workspace":"demo","group":"order","biz_tag":"order"}'
 
-# Request English responses (explicit)
+# 显式请求英文响应
 curl -H "Accept-Language: en-US,en;q=0.9" http://localhost:8080/api/v1/generate \
     -H "Content-Type: application/json" \
     -H "Authorization: ApiKey <key_id>:<key_secret>" \
     -d '{"workspace":"demo","group":"order","biz_tag":"order"}'
 
-# Mixed q-value negotiation (zh-CN wins because q=0.9 > en q=0.8)
+# 混合 q 值协商（zh-CN 因 q=0.9 > en q=0.8 胜出）
 curl -H "Accept-Language: zh-CN;q=0.9, en;q=0.8" http://localhost:8080/api/v1/invalid
 ```
 
@@ -1607,7 +1607,7 @@ GET /health/sdforge
 
 sdforge 集成健康检查。该端点通过
 `#[forge]` 宏注册（见 `src/server/sdforge_adapter.rs::sdforge_health`），
-并经 `sdforge` 0.5.0-rc.8 的 inventory 路由合并器对外暴露。它返回
+并经 `sdforge` 0.5.0 的 inventory 路由合并器对外暴露。它返回
 Nebula ID crate 的版本号，调用方可据此确认该路由由
 正在运行的二进制提供服务。
 
@@ -1624,7 +1624,7 @@ Nebula ID crate 的版本号，调用方可据此确认该路由由
 ```json
 {
   "status": "ok",
-  "sdforge_version": "0.3.0-rc.3"
+  "sdforge_version": "0.3.0"
 }
 ```
 
@@ -1639,7 +1639,7 @@ Nebula ID crate 的版本号，调用方可据此确认该路由由
 
 ```bash
 curl http://localhost:8080/health/sdforge
-# {"status":"ok","sdforge_version":"0.3.0-rc.3"}
+# {"status":"ok","sdforge_version":"0.3.0"}
 ```
 
 **注意：**
@@ -1648,7 +1648,7 @@ curl http://localhost:8080/health/sdforge
   `#[forge(name = "sdforge_health", version = "v1", description = "sdforge integration health check", path = "/health/sdforge", method = "GET")]`。
   `name` 参数采用下划线分隔形式 `sdforge_health`
   （而非连字符形式 `sdforge-health`），因为 `sdforge-macros`
-  0.5.0-rc.5 会校验 `name` 必须是合法的 Rust 标识符。HTTP 路由
+  0.5.0 会校验 `name` 必须是合法的 Rust 标识符。HTTP 路由
   路径不受影响。
 - 启动时必须调用一次 `init_sdforge()`（见 `src/main.rs`），
   以防 inventory 注册的路由被链接器剥离。
@@ -1770,7 +1770,7 @@ use nebulaid::core::Config;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::default();
 
-    // The only UUID algorithm is uuid_v8 (time-ordered RFC 9562 v8 layout).
+    // 唯一的 UUID 算法是 uuid_v8（时间有序的 RFC 9562 v8 布局）。
     let uuid = AlgorithmBuilder::new(AlgorithmType::UuidV8)
         .build(&config)
         .await?;

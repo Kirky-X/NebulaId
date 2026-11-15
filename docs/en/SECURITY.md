@@ -23,7 +23,7 @@ We recommend that all users always run the latest release to receive the full se
 
 | Version | Support status |
 |---------|----------------|
-| latest (0.3.0-rc.3 and Unreleased) | ✅ Receives security fixes |
+| latest (0.3.0 and Unreleased) | ✅ Receives security fixes |
 | Earlier versions | ❌ No longer receives fixes |
 
 Dependency security is monitored by `cargo-audit` (run with `--deny warnings` in both CI and the release preflight) and `cargo-deny` (license + security advisories checks, configured in `deny.toml`).

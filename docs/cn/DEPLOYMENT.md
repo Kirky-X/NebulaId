@@ -46,7 +46,7 @@ graph TB
 > 消费点——号段双缓冲（`segment` 的 DoubleBuffer）与认证决策缓存都在进程内
 > （oxcache memory / garrison memory）。因此 Redis 故障不影响发号与认证，
 > `docker compose` 仍启动该服务以保持部署形态与后续接线一致（口径见
-> `docs/TEST_PLAN.md` FAULT-08）。
+> `docs/cn/TEST_PLAN.md` FAULT-08）。
 
 ## 2. Docker 部署
 

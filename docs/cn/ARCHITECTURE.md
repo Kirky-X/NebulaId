@@ -110,19 +110,19 @@ graph LR
 
 ## 3. 外部库角色
 
-项目通过 8 个自研生态 crates.io 库（同一 RC 波次）加 1 个第三方库实现基础设施解耦（版本为 `Cargo.toml` 当前 req 下界）：
+项目通过 8 个自研生态 crates.io 库（均已发布稳定版）加 1 个第三方库实现基础设施解耦（版本为 `Cargo.lock` 锁定解析版本）：
 
 | 库 | 版本 | 角色 | 使用方式 |
 |----|------|------|----------|
-| `confers` | 0.6.0-rc.10 | 配置管理 | 提供 `ConfigProvider` trait、环境变量展开与 watch |
-| `oxcache` | 0.5.0-rc.8 | 多级缓存 | 提供 `Cache` 抽象（内存 + Redis） |
-| `dbnexus` | 0.6.0-rc.9 | 数据库抽象 | 提供 PostgreSQL 连接池与事务管理 |
-| `sdforge` | 0.5.0-rc.8 | 服务框架 | 提供 HTTP / gRPC / Web（OpenAPI）装配宏，非服务发现 |
-| `inklog` | 0.3.0-rc.9 | 日志 | 结构化日志与 fast-masking 脱敏 |
-| `garrison` | 0.9.0-rc.3 | 认证框架 | API key 验证（`garrison-auth` 门控） |
-| `trait-kit` | 0.5.0-rc.9 | Kit 接口中心 | AsyncKit 模块化装配（仅 `sdk` 门控拉入） |
-| `limiteron` | 0.3.0-rc.7 | 限流 | 提供 core 限流原语（TokenBucket / ConcurrencyLimiter） |
-| `etcd-client` | 0.20 | 第三方 etcd 客户端 | 分布式协调（`etcd` 门控） |
+| `confers` | 0.6.0 | 配置管理 | 提供 `ConfigProvider` trait、环境变量展开与 watch |
+| `oxcache` | 0.5.0 | 多级缓存 | 提供 `Cache` 抽象（内存 + Redis） |
+| `dbnexus` | 0.6.0 | 数据库抽象 | 提供 PostgreSQL 连接池与事务管理 |
+| `sdforge` | 0.5.0 | 服务框架 | 提供 HTTP / gRPC / Web（OpenAPI）装配宏，非服务发现 |
+| `inklog` | 0.3.0 | 日志 | 结构化日志与 fast-masking 脱敏 |
+| `garrison` | 0.9.0 | 认证框架 | API key 验证（`garrison-auth` 门控） |
+| `trait-kit` | 0.5.0 | Kit 接口中心 | AsyncKit 模块化装配（仅 `sdk` 门控拉入） |
+| `limiteron` | 0.3.1 | 限流 | 提供 core 限流原语（TokenBucket / ConcurrencyLimiter） |
+| `etcd-client` | 0.21 | 第三方 etcd 客户端 | 分布式协调（`etcd` 门控） |
 
 **依赖特性化原则（规则 28）：**
 - 所有外部库均使用 `default-features = false`，显式声明所需特性
@@ -247,7 +247,7 @@ graph LR
 ```mermaid
 graph TB
     subgraph Trait层
-        Trait[EtcdClientOps trait<br/>src/core/coordinator/etcd.rs<br/>7 方法: kv_get/kv_delete/<br/>lease_grant/lease_revoke/<br/>txn_check_create_rev_and_put/ping/<br/>lease_keep_alive_once]
+        Trait[EtcdClientOps trait<br/>src/core/coordinator/etcd.rs<br/>8 方法: kv_get/kv_delete/<br/>lease_grant/lease_revoke/<br/>txn_check_create_rev_and_put/ping/<br/>lease_keep_alive_once/watch_prefix]
         Err[EtcdError enum<br/>Network/KeyNotFound/<br/>LeaseInvalid/Internal]
     end
 
@@ -324,7 +324,7 @@ graph TB
 
 - **命名让位**：原 `ConfigManagementService` struct 重命名为 `ConfigManager`，让 trait 占据规范名称。所有调用方使用 `Arc<dyn ConfigManagementService>` 引用 trait，实现细节由 `ConfigManager` 隐藏。
 - **构造时 coerce**：`src/main.rs` 中 `Arc::new(ConfigManager::new(...))` 自动 coerce 为 `Arc<dyn ConfigManagementService>`，无需显式 cast。
-- **测试覆盖**：`src/server/handlers/mod.rs` 的 `#[cfg(test)] mod tests` 用 `mockall::mock!` 定义 `MockConfigManagementService`，覆盖全部 ~18 个 trait 方法。55 个新增测试使 handlers 模块覆盖率 ≥ 95%。
+- **测试覆盖**：`src/server/handlers/mod.rs` 的 `#[cfg(test)] mod tests` 用 `mockall::mock!` 定义 `MockConfigManagementService`，覆盖全部 22 个 trait 方法。55 个新增测试使 handlers 模块覆盖率 ≥ 95%。
 - **接口隔离（规则 25）**：`ConfigManagementService` trait 在 `src/server/config/management.rs` 定义，`mod.rs` 仅 re-export；`ApiHandlers` 通过 `Arc<dyn ConfigManagementService>` 字段持有引用，handlers 内部所有调用走 trait method dispatch。
 
 ## 相关文档

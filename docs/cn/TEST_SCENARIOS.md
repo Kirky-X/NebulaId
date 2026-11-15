@@ -30,9 +30,9 @@
 
 ## 测试分层总览
 
-| 层 | 位置 | 规模（截至 0.3.0-rc.3 工作区） | 运行方式 |
+| 层 | 位置 | 规模（截至 0.3.0 工作区） | 运行方式 |
 |----|------|---------------------------|----------|
-| 内联单元测试 | `src/` 各模块 `#[cfg(test)]` | 约 1779 个测试函数 | `cargo test --package nebulaid` |
+| 内联单元测试 | `src/` 各模块 `#[cfg(test)]` | 约 1809 个测试函数 | `cargo test --package nebulaid` |
 | E2E 测试模块 | `src/core/tests/`（11 个测试模块 + `mod.rs`） | 220 个测试函数 | `cargo test --package nebulaid --all-features` |
 | i18n 端到端 | `tests/i18n_e2e.rs` | 1 个文件（middleware → Extension → 翻译响应全链） | 同上 |
 | 审计管道阻塞回归 | `tests/audit_ring_stall_repro.rs` | 1 个测试（灌满 inklog async 通道后断言审计 log() 不阻塞） | 同上 |
@@ -188,12 +188,12 @@ cargo bench --bench i18n
 
 ## 统计汇总
 
-截至 0.3.0-rc.3 工作区（口径：`grep -rnE '#\[(tokio::)?test\]' --include='*.rs' src tests | wc -l`）：
+截至 0.3.0 工作区（口径：`grep -rnE '#\[(tokio::)?test\]' --include='*.rs' src tests | wc -l`）：
 
 | 类别 | 数量 |
 |------|-----:|
-| Rust 测试函数合计 | 约 2006 |
-| ├─ `src/` 内联单元测试 | 约 1779 |
+| Rust 测试函数合计 | 约 2040 |
+| ├─ `src/` 内联单元测试 | 约 1809 |
 | ├─ `src/core/tests/` E2E 模块 | 220 |
 | └─ `tests/i18n_e2e.rs` | 7（全链 i18n） |
 | Shell 端到端脚本 | 4（另有 1 个共用库） |

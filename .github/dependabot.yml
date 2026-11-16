@@ -30,6 +30,11 @@ updates:
         update-types:
           - "minor"
         applies-to: "version-updates"
+    # patch 级版本更新关闭自动 PR（2026-11-16）
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-patch"
 
   # GitHub Actions 版本更新
   - package-ecosystem: "github-actions"
@@ -46,3 +51,8 @@ updates:
     commit-message:
       prefix: "deps(ci)"
       include: "scope"
+    # patch 级版本更新关闭自动 PR（2026-11-16）
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-patch"

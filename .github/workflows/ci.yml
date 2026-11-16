@@ -160,7 +160,7 @@ jobs:
       - name: Security Audit
         run: cargo audit --deny warnings
 
-  # 阶段 4：多 feature matrix 测试 + 覆盖率门禁（≥94%，策略回退，见 coverage 判定处）
+  # 阶段 4：多 feature matrix 测试 + 覆盖率门禁（≥95%，见 coverage 判定处）
   # all leg（--all-features）覆盖 etcd + sdk + alerting + integration-tests 的
   # 编译与测试；no-default 组合的编译检查在 fmt-clippy job。
   test:
@@ -261,7 +261,7 @@ jobs:
         if: matrix.feature == 'default'
         run: cargo test --package nebulaid-operator
 
-      # default leg：覆盖率门禁（≥94%）与 Codecov 上报只在 default 跑。
+      # default leg：覆盖率门禁（≥95%）与 Codecov 上报只在 default 跑。
       # 覆盖口径只含主 crate（--package ${{ env.PKG }}）：nebulaid-operator 显式排除，
       # 理由同上（kube API 面单机不可测）。gate job 对 workspace 的成立性由
       # fmt-clippy 的成员 lint 腿 + 本 leg 的成员测试步共同保证。
@@ -271,9 +271,9 @@ jobs:
       #      postgres/redis 服务、跑迁移、装载 API key、起 HTTP+gRPC），健康就绪后
       #      SIGTERM 优雅停机，覆盖 main.rs 组合根（init_*/run_servers/shutdown_signal）
       #      —— 这些代码 `cargo test` 结构上无法执行，只有跑真实二进制才命中。
-      # 阈值见 coverage 判定处（2026-11-06 起 94%）；--ignore-filename-regex 仅排除 prost/tonic 生成的 proto 胶水，
+      # 阈值见 coverage 判定处（2026-11-17 起 95%）；--ignore-filename-regex 仅排除 prost/tonic 生成的 proto 胶水，
       # main.rs 等手写代码全量计入（现经真实启动覆盖）。
-      - name: Collect coverage (tests + live server boot), enforce ≥94%
+      - name: Collect coverage (tests + live server boot), enforce ≥95%
         if: matrix.feature == 'default'
         env:
           NEBULA_ENV: development
@@ -330,13 +330,12 @@ jobs:
             --ignore-filename-regex "server/proto/" \
             --lcov --output-path lcov.info
           total=$(awk -F: '/^LF:/{lf+=$2} /^LH:/{lh+=$2} END{if (lf==0) {print "0.00"} else {printf "%.2f", 100*lh/lf}}' lcov.info)
-          echo "实测行覆盖率: ${total}%（分母 $(awk -F: '/^LF:/{s+=$2} END{print s}' lcov.info) 行，阈值 94%）"
-          # 门禁 94%（2026-11-06 调整）：用户策略为理想 95%、不满足回退最低 90%。
-          # 全量口径实测 94.51%（run 41371353817；本采集路径比稳态本机低 0.69pp，
-          # 见上注），< 95，按策略回退 94%（> 90 底线、贴近实测不白送余量）；
-          # 提升到 95% 前先补测试，不得收窄分母。
-          awk -v t="$total" 'BEGIN{exit !(t+0 >= 94)}' || {
-            echo "::error::行覆盖率 ${total}% < 94%（策略底线）"
+          echo "实测行覆盖率: ${total}%（分母 $(awk -F: '/^LF:/{s+=$2} END{print s}' lcov.info) 行，阈值 95%）"
+          # 门禁 95%（2026-11-17 调整）：用户指令门禁一律取 5 的倍数，不再使用
+          # 94 这类非 5 倍数回退值。全量口径实测 95.20%（2026-11-15），高于 95；
+          # 若后续跌破 95%，先补测试，不得收窄分母。
+          awk -v t="$total" 'BEGIN{exit !(t+0 >= 95)}' || {
+            echo "::error::行覆盖率 ${total}% < 95%（门禁）"
             exit 1
           }
 

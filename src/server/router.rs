@@ -3719,7 +3719,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_generate_user_ok_and_admin_rejected() {
-        use crate::server::middleware::ApiKeyRole;
         use axum::{Extension, Json};
 
         let state = create_test_app_state();

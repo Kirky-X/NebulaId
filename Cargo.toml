@@ -32,14 +32,12 @@ name = "audit_ring_stall_repro"
 path = "tests/audit_ring_stall_repro.rs"
 required-features = ["server"]
 
-# workspace 化：nebulaid-operator 为独立 bin 成员，kube/kube-runtime/k8s-openapi 依赖
-# 仅声明于该成员（主 crate 依赖树零影响，T022 的 cargo tree 断言与 ci 零 etcd 腿共同钉住）。
+# workspace：nebulaid-operator 独立 bin 成员，kube/kube-runtime/k8s-openapi 仅在该成员声明，主 crate 依赖树零影响
 [workspace]
 members = ["crates/nebulaid-operator"]
 resolver = "2"
 
-# 跨 DC 故障转移真实双 etcd 用例：需 etcd-a/etcd-b 两个集群与 kill 机制，
-# 仅在 etcd-integration job（health-check.yml）以 --ignored 显式触发。
+# 跨 DC 故障转移真实双 etcd 用例：需 etcd-a/etcd-b 两个集群与 kill 机制，仅在 etcd-integration job（health-check.yml）以 --ignored 显式触发。
 [[test]]
 name = "etcd_failover"
 path = "tests/etcd_failover.rs"
@@ -47,13 +45,12 @@ required-features = ["etcd", "server"]
 
 [features]
 # 特性模型（模块级门控）：--all-features 可构建；--no-default-features 为有效轻量目标（未启用模块经 cfg 门控排除）。
-# etcd 进 default：多实例部署的 worker_id 分配与号段分布式锁只有 etcd 实现具备
-# lease + CAS 语义，默认产物必须携带该路径（etcd-client 0.21 与主 tonic 0.14 同版本共存，
-# 默认化不引入 gRPC 栈冲突）。裁剪承诺由 ci.yml 的 --no-default-features 腿钉住。
+# etcd 进 default：worker_id 分配与号段锁需 etcd 的 lease+CAS 语义，默认产物必须携带
+# etcd-client 0.21 与主 tonic 0.14 同版共存；裁剪由 ci.yml --no-default-features 钉住
 default = ["server", "segment", "snowflake", "uuid-v8", "uuid-v5", "uuid-v4", "uuid-v7", "postgresql", "garrison-auth", "etcd"]
 postgresql = ["dbnexus/postgres"]
-# etcd: 默认启用；--no-default-features 即零 etcd 轻量目标（etcd.rs 整模块不进编译面）。
-# 蕴含 dep:garrison：集群健康三态经 garrison HealthCheck 委托 HealthRegistry（开 etcd 即得，不另设门控）。
+# etcd 默认启用；--no-default-features 即零 etcd 轻量目标（etcd.rs 整模块不编译）
+# 蕴含 dep:garrison：集群健康经 HealthCheck 委托 HealthRegistry，开 etcd 即得无独立门控
 etcd = ["dep:etcd-client", "dep:garrison"]
 # database 为仓储层开关（segment 蕴含 database）；snowflake/uuid-v* 为零 DB 叶子算法；server 为整层开关。
 database = ["dep:dbnexus", "dep:sea-orm", "dep:argon2", "dep:subtle"]
@@ -100,13 +97,11 @@ garrison = { version = "0.9", optional = true, default-features = false, feature
 # trait-kit: 模块标准接口与 Kit 能力管理中心；仅 sdk feature 拉入（dep:trait-kit），不开 sdk 依赖树零影响。
 trait-kit = { version = "0.5", optional = true, default-features = false, features = ["async", "lifecycle", "health"] }
 
-# 工具
 async-trait = { version = "0.1", default-features = false }
 thiserror = { version = "2.0", default-features = false, features = ["std"] }
 serde = { version = "1.0", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
 
-# 异步运行时
 tokio = { version = "1.53", default-features = false, features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", optional = true, default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
@@ -124,23 +119,19 @@ tonic-prost = { version = "0.14", optional = true, default-features = false }
 # tonic: 直接依赖仅为启用 tls 特性（sdforge 的 tonic 未开）；版本须与 sdforge 内部一致（0.14）。
 tonic = { version = "0.14", optional = true, default-features = false, features = ["transport", "tls-ring"] }
 
-# 分布式协调
 etcd-client = { version = "0.21", optional = true, default-features = false, features = ["tls"] }
 
-# 缓存与存储
 parking_lot = { version = "0.13", default-features = false }
 
 # 日志追踪（tracing-subscriber 由 inklog 间接引入，日志初始化通过 inklog 接管）
-# attributes: 直接消费 `#[tracing::instrument]`（algorithm/router.rs、server/audit/logger.rs）。
-# 该特性此前只由 axum/tower/redis 的传递 default 特性偶然打开，剪裁到
-# `--no-default-features` 时符号被 cfg 掉、编译断裂（E0433）；直接声明消除隐式依赖。
+# attributes：直接消费 #[tracing::instrument]（algorithm/router.rs、server/audit/logger.rs）
+# 此前仅由 axum/tower/redis 传递 default 偶然打开，剪裁后符号被 cfg 掉（E0433），故显式声明
 tracing = { version = "0.1", default-features = false, features = ["std", "attributes"] }
 
 # metrics: /metrics 经 exporter 自有 registry 渲染既有原子快照（generate 热路径零改动）；不自起监听器。
 metrics = { version = "0.24", default-features = false }
 metrics-exporter-prometheus = { version = "0.18", optional = true, default-features = false }
 
-# 工具库
 # uuid: v5 无条件开在依赖面（使用侧经 uuid-v5 门控）；与消费方 Uuid::new_v5 同 crate 同版本，保证派生数值逐位兼容。
 uuid = { version = "1.26", default-features = false, features = ["std", "v4", "v7", "v8", "v5", "serde"] }
 # chrono: AuditEvent 的 serde 派生含 DateTime<Utc> 字段；sea-orm 转 optional 后须显式声明。
@@ -148,9 +139,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 hex = { version = "0.4", default-features = false, features = ["std"] }
 base64 = { version = "0.23", default-features = false, features = ["std"] }
 sha2 = { version = "0.11", default-features = false, features = ["alloc", "oid"] }
-# rand: `rand::rng()`（thread-local CSPRNG，API Key secret 生成与 auth 缓存抖动）
-# 在 0.10 由 `thread_rng` 特性门控；不开时该符号被 cfg 掉，无 redis/inklog 的
-# 剪裁组合（如 `--no-default-features --features database`）会在编译期断裂（E0423/E0603）。
+# rand：rand::rng()（thread-local CSPRNG，API Key secret 与 auth 缓存抖动）在 0.10 由 thread_rng 门控
+# 不开则符号被 cfg 掉，--no-default-features --features database 等组合编译断裂（E0423/E0603）
 rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 subtle = { version = "2.6", optional = true, default-features = false, features = ["std"] }
 # argon2: API key 密钥哈希（CWE-916 修复）；0.6 起 std 废弃，OsRng 由 getrandom feature 提供。
@@ -159,20 +149,15 @@ reqwest = { version = "0.13", optional = true, default-features = false, feature
 # validator 经 sdforge::validator re-export 消费（http 门控且本 crate 恒开），不列直接依赖。
 serde_with = { version = "3.23", default-features = false, features = ["std", "macros"] }
 
-# 错误处理
 
-# 加密
 rustls = { version = "0.23", default-features = false, features = ["std", "logging", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12"] }
 
-# 基础组件
 arc-swap = { version = "1.9", default-features = false }
-# 1.15 而非 1.16：kube 4.2 的 kube-client 经 serde-saphyr 0.0.29 传递硬约束 smallvec <1.16.0，
-# 取最新稳定 kube 4.2 与既有 smallvec 特性面（const_generics）可共存的一组版本。
+# smallvec 1.15 而非 1.16：kube 4.2 的 kube-client 经 serde-saphyr 0.0.29 硬约束 smallvec <1.16.0
 smallvec = { version = "1.15", default-features = false, features = ["const_generics"] }
 url = { version = "2.5", default-features = false, features = ["std"] }
 
-# 速率限制和流量控制
 # limiteron: 只消费 core 原语，postgres/quota-control/ban-manager 等 feature 全仓零使用不启用。
 limiteron = { version = "0.3", optional = true, default-features = false }
 

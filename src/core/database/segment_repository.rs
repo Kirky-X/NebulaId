@@ -1037,4 +1037,94 @@ mod mock_tests {
     // MockDatabase 对 begin()/commit() 恒返回 Ok，SeaORM 不提供注入失败的手段，
     // 故 .map_err 分支不可达；需自定义连接包装器或真实 DB 集成测试才能覆盖。
     // 作为已知覆盖缺口记录，闭包保留为防御性错误处理（失败必须显性）。
+
+    // ============== 覆盖率攻坚补充（2026-11-17）：allocate RETURNING 行契约 ==============
+
+    /// allocate 主路径：UPDATE RETURNING 命中行 → 按列契约映射 SegmentInfo
+    /// （start_id=旧值含、max_id=新值不含、step/delta 原样；复用既有 returning_row helper）。
+    #[tokio::test]
+    async fn test_segment_allocate_returning_row_maps_columns() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![returning_row(1, 101)]])
+            .into_connection();
+        let repo = make_repo(db);
+
+        let seg = repo.allocate_segment("ws1", "t1", 100).await.unwrap();
+        assert_eq!(
+            seg.current_id, 1,
+            "start_id（推进前旧值，含）落在 current_id"
+        );
+        assert_eq!(seg.max_id, 101, "max_id（推进后新值，不含）");
+        assert_eq!(seg.step, 100);
+        assert_eq!(seg.workspace_id, "ws1");
+        assert_eq!(seg.biz_tag, "t1");
+    }
+
+    /// allocate 到顶臂：UPDATE 无行（ceiling 拦截）+ 重试后行存在且 ceiling 非空
+    /// → SegmentExhausted 携带 ceiling 上界。
+    #[tokio::test]
+    async fn test_segment_allocate_exhausted_reports_ceiling() {
+        // UPDATE 无行 → INSERT 兜底建行（exec 桩）→ 重试 UPDATE 仍无行 → SELECT 行存在（ceiling 非空）
+        let mut exhausted = sample_segment_model(3, "ws1", "t1");
+        exhausted.ceiling = Some(500);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![], vec![], vec![exhausted]])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+        let repo = make_repo(db);
+
+        match repo.allocate_segment("ws1", "t1", 100).await {
+            Err(crate::core::CoreError::SegmentExhausted { max_id }) => {
+                assert_eq!(max_id, 500, "SegmentExhausted 必须携带 ceiling 上界");
+            }
+            other => panic!("expected SegmentExhausted, got {other:?}"),
+        }
+    }
+
+    /// allocate 部署态臂：UPDATE 无行、INSERT 建行、重试 UPDATE 仍无行且 SELECT 无行
+    /// → deploy_error 固定文案。
+    #[tokio::test]
+    async fn test_segment_allocate_missing_row_after_retry_reports_deploy_error() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<MockRow, Vec<MockRow>, Vec<Vec<MockRow>>>(vec![
+                vec![],
+                vec![],
+                vec![],
+            ])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+        let repo = make_repo(db);
+
+        match repo.allocate_segment("ws1", "t1", 100).await {
+            Err(crate::core::CoreError::DatabaseError(msg, _)) => {
+                assert!(
+                    msg.contains("segment allocation failed after insert-on-conflict retry"),
+                    "部署态错误固定文案，got: {msg}"
+                );
+            }
+            other => panic!("expected DatabaseError deploy message, got {other:?}"),
+        }
+    }
+
+    /// naive_to_utc：Some 走 UTC 语义转换，None 兜底当前时间。
+    #[test]
+    fn test_naive_to_utc_some_and_none() {
+        let naive = NaiveDateTime::from_timestamp_opt(1_700_000_000, 0).unwrap();
+        let converted = naive_to_utc(Some(naive));
+        assert_eq!(converted.timestamp(), 1_700_000_000);
+
+        let before = Utc::now();
+        let fallback = naive_to_utc(None);
+        let after = Utc::now();
+        assert!(
+            fallback >= before && fallback <= after,
+            "None 兜底必须落在当前时间附近"
+        );
+    }
 }

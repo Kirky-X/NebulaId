@@ -869,4 +869,37 @@ mod tests {
             "工作空间未找到：ws-1"
         );
     }
+    // ===== 覆盖率攻坚补充（2026-11-17）：FTL 字面量展开与反转义边界臂 =====
+
+    /// expand_string_literals：无字面量输入原样返回；未闭合 `{ "` 保守回显原文。
+    #[test]
+    fn test_expand_string_literals_boundaries() {
+        assert_eq!(expand_string_literals("plain text"), "plain text");
+        // 无闭合的 `{ "`：整段按原文回显（保守分支）
+        assert_eq!(
+            expand_string_literals("broken { \"unclosed"),
+            "broken { \"unclosed"
+        );
+        // 正常闭合：内部反转义（`\n` → 换行符）
+        assert_eq!(expand_string_literals("a { \"x\\ny\" } b"), "a x\ny b");
+    }
+
+    /// unescape_ftl_literal：五种已知转义 + \uXXXX + 非法 \u + 未知转义 + 尾部孤立反斜杠。
+    /// 输入是含反斜杠的 FTL 原文（函数内部吃掉 `\` 决定转义语义）。
+    #[test]
+    fn test_unescape_ftl_literal_all_escapes() {
+        assert_eq!(unescape_ftl_literal("\\n"), "\n");
+        assert_eq!(unescape_ftl_literal("\\t"), "\t");
+        assert_eq!(unescape_ftl_literal("\\r"), "\r");
+        assert_eq!(unescape_ftl_literal("\\\""), "\"");
+        assert_eq!(unescape_ftl_literal("\\\\"), "\\");
+        // \uXXXX 合法：小写十六进制
+        assert_eq!(unescape_ftl_literal("\\u0041"), "A");
+        // \u 非法十六进制：回显原始序列
+        assert_eq!(unescape_ftl_literal("\\uZZZZ"), "\\uZZZZ");
+        // 未知转义字符：保留反斜杠原样
+        assert_eq!(unescape_ftl_literal("\\q"), "\\q");
+        // 尾部孤立反斜杠：单字符输出
+        assert_eq!(unescape_ftl_literal("\\"), "\\");
+    }
 }

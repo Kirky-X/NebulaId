@@ -3963,4 +3963,153 @@ mod tests {
         let (status, _) = result.unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
+
+    // ===== 覆盖率攻坚补充（2026-11-17）：generate/parse/create_group 成功主干 =====
+
+    /// mock_tests::test_group_response 的本地等价构造（该 fn 为 mock_tests 私有）。
+    fn mock_tests_test_group_response() -> crate::server::models::GroupResponse {
+        crate::server::models::GroupResponse {
+            id: uuid::Uuid::new_v4().to_string(),
+            workspace_id: uuid::Uuid::new_v4().to_string(),
+            workspace_name: "ws-a".to_string(),
+            name: "test-group".to_string(),
+            description: Some("Test group".to_string()),
+            max_biz_tags: 50,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
+    /// batch_generate 成功主干：User 归属匹配 → mock 出号 → Ok 响应（624-629 臂）。
+    #[tokio::test]
+    async fn t033_batch_generate_user_success_returns_ids() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let ws_a = uuid::Uuid::new_v4();
+        let mut mock = MockConfigManagementService::new();
+        mock.expect_get_workspace()
+            .returning(move |_| Ok(Some(make_workspace_response(ws_a, "ws-a"))));
+        mock.expect_get_batch_max_size().return_once(|| 100);
+        let state = app_state_with_mock(mock);
+
+        let req = BatchGenerateRequest {
+            workspace: "ws-a".to_string(),
+            group: "g".to_string(),
+            biz_tag: "t".to_string(),
+            size: Some(3),
+            algorithm: None,
+        };
+        let result = handle_batch_generate(
+            State(state),
+            Extension(Some(ws_a)),
+            Extension(TestApiKeyRole::User),
+            Extension(Locale::En),
+            Json(req),
+        )
+        .await;
+        let resp = result.expect("归属匹配的批量出号必须成功");
+        assert_eq!(resp.0.ids.len(), 3);
+        assert_eq!(resp.0.size, 3);
+        assert!(!resp.0.algorithm.is_empty());
+    }
+
+    /// batch_generate 4xx 臂：业务失败（4xx）→ warn 观测臂 + 错误响应透传。
+    #[tokio::test]
+    async fn t033_batch_generate_client_error_takes_warn_branch() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let ws_a = uuid::Uuid::new_v4();
+        let mut mock = MockConfigManagementService::new();
+        mock.expect_get_workspace()
+            .returning(move |_| Ok(Some(make_workspace_response(ws_a, "ws-a"))));
+        mock.expect_get_batch_max_size().return_once(|| 2);
+        let state = app_state_with_mock(mock);
+
+        // size 超过 mock 配置的 batch 上限（2）→ 4xx → 走 warn! 观测臂。
+        let req = BatchGenerateRequest {
+            workspace: "ws-a".to_string(),
+            group: "g".to_string(),
+            biz_tag: "t".to_string(),
+            size: Some(10),
+            algorithm: None,
+        };
+        let result = handle_batch_generate(
+            State(state),
+            Extension(Some(ws_a)),
+            Extension(TestApiKeyRole::User),
+            Extension(Locale::En),
+            Json(req),
+        )
+        .await;
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// parse 成功主干：合法 u128 十进制串 → mock 算法名回填（642-664 臂）。
+    #[tokio::test]
+    async fn t033_parse_valid_id_returns_metadata() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let state = app_state_with_mock(MockConfigManagementService::new());
+        let req = ParseRequest {
+            id: "123456789012345".to_string(),
+            workspace: "ws".to_string(),
+            group: "g".to_string(),
+            biz_tag: "t".to_string(),
+            algorithm: "segment".to_string(),
+        };
+        let result = handle_parse(State(state), Extension(Locale::En), Json(req)).await;
+        let resp = result.expect("合法 ID 的 parse 必须成功");
+        assert_eq!(resp.0.original_id, "123456789012345");
+        assert_eq!(resp.0.algorithm, "segment");
+    }
+
+    /// parse 校验臂：空 workspace → 4xx 校验错误（warn 分支同型）。
+    #[tokio::test]
+    async fn t033_parse_empty_workspace_rejected() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let state = app_state_with_mock(MockConfigManagementService::new());
+        let req = ParseRequest {
+            id: "1".to_string(),
+            workspace: String::new(),
+            group: "g".to_string(),
+            biz_tag: "t".to_string(),
+            algorithm: String::new(),
+        };
+        let result = handle_parse(State(state), Extension(Locale::En), Json(req)).await;
+        assert!(result.is_err(), "空 workspace 必须被校验层拒绝");
+    }
+
+    /// create_group 成功主干：User 归属匹配 → mock 落库 → Ok（1114-1135 主干臂）。
+    #[tokio::test]
+    async fn t033_create_group_user_success_returns_group() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let ws_a = uuid::Uuid::new_v4();
+        let group = mock_tests_test_group_response();
+        let group_name = group.name.clone();
+        let mut mock = MockConfigManagementService::new();
+        mock.expect_get_workspace()
+            .returning(move |_| Ok(Some(make_workspace_response(ws_a, "ws-a"))));
+        mock.expect_create_group().return_once(move |_| Ok(group));
+        let state = app_state_with_mock(mock);
+
+        let req = CreateGroupRequest {
+            workspace: "ws-a".to_string(),
+            name: group_name,
+            description: None,
+            max_biz_tags: None,
+        };
+        let result = handle_create_group(
+            State(state),
+            Extension(Some(ws_a)),
+            Extension(TestApiKeyRole::User),
+            Extension(Locale::En),
+            Json(req),
+        )
+        .await;
+        let resp = result.expect("归属匹配的建 group 必须成功");
+        assert_eq!(resp.0.name, "test-group");
+    }
 }

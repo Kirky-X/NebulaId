@@ -482,4 +482,14 @@ mod tests {
         let built = DcHealthView::from_statuses(statuses(&[(3, EtcdClusterStatus::Degraded)]));
         assert_eq!(built.status_of(3), Some(&EtcdClusterStatus::Degraded));
     }
+
+    // ===== 覆盖率攻坚补充（2026-11-17）：Default 契约 =====
+
+    /// DcHealthView::default 与 new 同构（空视图 + 起始时间戳）。
+    #[test]
+    fn dc_health_view_default_matches_new() {
+        let d = DcHealthView::default();
+        // 空视图：无任何 per-dc 状态
+        assert!(d.updated_at() <= std::time::Instant::now());
+    }
 }

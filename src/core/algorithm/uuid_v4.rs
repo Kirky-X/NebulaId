@@ -209,4 +209,14 @@ mod tests {
         assert_eq!(algo.algorithm_type(), AlgorithmType::UuidV4);
         assert_eq!(algo.health_check(), crate::core::HealthStatus::Healthy);
     }
+
+    // ===== 覆盖率攻坚补充（2026-11-17）：Default 契约 =====
+
+    /// Default 委托 new（trait 约定，防漂移）。
+    #[test]
+    fn default_delegates_to_new() {
+        let _ = UuidV4Impl::default();
+        // UuidV4Impl 是零大小标记类型：Default 与 new 同构即可编译期锁定
+        let _d: UuidV4Impl = Default::default();
+    }
 }

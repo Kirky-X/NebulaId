@@ -131,4 +131,23 @@ mod tests {
         assert!(load(&path).is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // ===== 覆盖率攻坚补充（2026-11-17）：load 边界臂 =====
+
+    /// 损坏 JSON：读得通但反序列化失败 → warn + None（调用方视为无历史）。
+    #[test]
+    fn test_load_corrupt_json_returns_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("corrupt.json");
+        std::fs::write(&path, b"{ not valid json !!!").unwrap();
+        assert!(load(&path).is_none());
+    }
+
+    /// 路径是目录（read 返回非 NotFound 的 io 错误）→ warn + None，不 panic。
+    #[test]
+    fn test_load_directory_path_returns_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 对目录执行 read 会得到非 NotFound 错误 → 走 warn 臂
+        assert!(load(dir.path()).is_none());
+    }
 }

@@ -3732,7 +3732,7 @@ mod tests {
         let (status, _) = handle_generate(
             State(state.clone()),
             Extension(None),
-            Extension(ApiKeyRole::Admin),
+            Extension(TestApiKeyRole::Admin),
             Extension(Locale::En),
             Json(admin_req),
         )
@@ -3750,10 +3750,217 @@ mod tests {
         let _ = handle_generate(
             State(state),
             Extension(None),
-            Extension(ApiKeyRole::User),
+            Extension(TestApiKeyRole::User),
             Extension(Locale::En),
             Json(user_req),
         )
         .await;
+    }
+
+    // ===== 覆盖率攻坚补充（2026-11-17）：BizTag CRUD handler 直调契约 =====
+
+    use crate::server::middleware::ApiKeyRole as TestApiKeyRole;
+
+    fn make_mock_biz_tag(ws: uuid::Uuid) -> crate::core::database::BizTag {
+        crate::core::database::BizTag {
+            id: uuid::Uuid::new_v4(),
+            workspace_id: ws,
+            group_id: uuid::Uuid::new_v4(),
+            name: "cov-biz-tag".to_string(),
+            description: Some("coverage tag".to_string()),
+            algorithm: AlgorithmType::Segment,
+            format: crate::core::types::IdFormat::Numeric,
+            prefix: "cov_".to_string(),
+            base_step: 100,
+            max_step: 1000,
+            datacenter_ids: vec![0],
+            created_at: chrono::Utc::now().naive_utc(),
+            updated_at: chrono::Utc::now().naive_utc(),
+        }
+    }
+
+    /// get_biz_tag 主干：UUID 解析 → User 角色校验 → 反查归属 → 放行。
+    #[tokio::test]
+    async fn t032_get_biz_tag_user_own_workspace_succeeds() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let ws = uuid::Uuid::new_v4();
+        let tag = make_mock_biz_tag(ws);
+        let tag_id = tag.id;
+        let mut mock = MockConfigManagementService::new();
+        mock.expect_get_biz_tag()
+            .return_once(move |_| Ok(Some(tag)));
+        let state = app_state_with_mock(mock);
+
+        let result = handle_get_biz_tag(
+            State(state),
+            axum::Extension(Some(ws)),
+            Extension(TestApiKeyRole::User),
+            Extension(Locale::En),
+            Path(tag_id.to_string()),
+        )
+        .await;
+        assert!(result.is_ok(), "归属匹配的 get 必须放行");
+    }
+
+    /// get_biz_tag IDOR 臂：BizTag 属他人 workspace → 403。
+    #[tokio::test]
+    async fn t032_get_biz_tag_cross_workspace_forbidden() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let owner_ws = uuid::Uuid::new_v4();
+        let caller_ws = uuid::Uuid::new_v4();
+        let tag = make_mock_biz_tag(owner_ws);
+        let tag_id = tag.id;
+        let mut mock = MockConfigManagementService::new();
+        mock.expect_get_biz_tag()
+            .return_once(move |_| Ok(Some(tag)));
+        let state = app_state_with_mock(mock);
+
+        let result = handle_get_biz_tag(
+            State(state),
+            axum::Extension(Some(caller_ws)),
+            Extension(TestApiKeyRole::User),
+            Extension(Locale::En),
+            Path(tag_id.to_string()),
+        )
+        .await;
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    /// get_biz_tag 非法 UUID 臂 → 400 invalid uuid 响应（不触达仓储）。
+    #[tokio::test]
+    async fn t032_get_biz_tag_invalid_uuid_rejected() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let state = app_state_with_mock(MockConfigManagementService::new());
+        let result = handle_get_biz_tag(
+            State(state),
+            axum::Extension(None),
+            Extension(TestApiKeyRole::User),
+            Extension(Locale::En),
+            Path("not-a-uuid".to_string()),
+        )
+        .await;
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// update_biz_tag 主干：校验 → 归属 → 更新回显（名称变更落库）。
+    #[tokio::test]
+    async fn t032_update_biz_tag_own_workspace_updates() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let ws = uuid::Uuid::new_v4();
+        let existing = make_mock_biz_tag(ws);
+        let tag_id = existing.id;
+        let mut updated = existing.clone();
+        updated.name = "renamed-tag".to_string();
+        let mut mock = MockConfigManagementService::new();
+        let existing_clone = existing.clone();
+        mock.expect_get_biz_tag()
+            .return_once(move |_| Ok(Some(existing_clone)));
+        mock.expect_update_biz_tag()
+            .return_once(move |_, _| Ok(updated));
+        let state = app_state_with_mock(mock);
+
+        let req = UpdateBizTagRequest {
+            name: Some("renamed-tag".to_string()),
+            description: None,
+            algorithm: None,
+            format: None,
+            prefix: None,
+            base_step: None,
+            max_step: None,
+            datacenter_ids: None,
+        };
+        let result = handle_update_biz_tag(
+            State(state),
+            axum::Extension(Some(ws)),
+            Extension(TestApiKeyRole::User),
+            Extension(Locale::En),
+            Path(tag_id.to_string()),
+            Json(req),
+        )
+        .await;
+        let resp = result.expect("归属匹配的 update 必须放行");
+        assert_eq!(resp.0.name, "renamed-tag");
+    }
+
+    /// update_biz_tag 校验臂：空名称触发 validator → 422/400 校验错误响应。
+    #[tokio::test]
+    async fn t032_update_biz_tag_validation_error_rejected() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let state = app_state_with_mock(MockConfigManagementService::new());
+        let req = UpdateBizTagRequest {
+            name: Some(String::new()), // min length 1 → 校验失败
+            description: None,
+            algorithm: None,
+            format: None,
+            prefix: None,
+            base_step: None,
+            max_step: None,
+            datacenter_ids: None,
+        };
+        let result = handle_update_biz_tag(
+            State(state),
+            axum::Extension(Some(uuid::Uuid::new_v4())),
+            Extension(TestApiKeyRole::User),
+            Extension(Locale::En),
+            Path(uuid::Uuid::new_v4().to_string()),
+            Json(req),
+        )
+        .await;
+        let (status, _) = result.unwrap_err();
+        assert!(
+            status == StatusCode::UNPROCESSABLE_ENTITY || status == StatusCode::BAD_REQUEST,
+            "校验失败必须返回 4xx 校验错误，实际 {status}"
+        );
+    }
+
+    /// delete_biz_tag 主干：归属校验 → 删除 → 204。
+    #[tokio::test]
+    async fn t032_delete_biz_tag_own_workspace_returns_no_content() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let ws = uuid::Uuid::new_v4();
+        let tag = make_mock_biz_tag(ws);
+        let tag_id = tag.id;
+        let mut mock = MockConfigManagementService::new();
+        mock.expect_get_biz_tag()
+            .return_once(move |_| Ok(Some(tag)));
+        mock.expect_delete_biz_tag().return_once(|_| Ok(()));
+        let state = app_state_with_mock(mock);
+
+        let result = handle_delete_biz_tag(
+            State(state),
+            axum::Extension(Some(ws)),
+            Extension(TestApiKeyRole::User),
+            Extension(Locale::En),
+            Path(tag_id.to_string()),
+        )
+        .await;
+        let status = result.expect("归属匹配的 delete 必须放行");
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+
+    /// delete_biz_tag Admin 臂：admin_cannot_perform → 403（role 前置校验）。
+    #[tokio::test]
+    async fn t032_delete_biz_tag_admin_rejected() {
+        use crate::server::handlers::mock_tests::MockConfigManagementService;
+
+        let state = app_state_with_mock(MockConfigManagementService::new());
+        let result = handle_delete_biz_tag(
+            State(state),
+            axum::Extension(None),
+            Extension(TestApiKeyRole::Admin),
+            Extension(Locale::En),
+            Path(uuid::Uuid::new_v4().to_string()),
+        )
+        .await;
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
     }
 }

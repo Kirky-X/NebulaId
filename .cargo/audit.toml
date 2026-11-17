@@ -35,6 +35,19 @@ ignore = [
     # (drop this entry and re-run `cargo audit`). Family-wide exemption — same
     # entry already carries inklog/janvi/oxcache with the same cause.
     "RUSTSEC-2026-0459",
+    # RUSTSEC-2026-0543 — chrono (all versions) — unmaintained (INFO, warning; not a vulnerability)
+    # Root cause: chrono sits in the graph via multiple transitive chains:
+    # dbnexus (with-chrono) → sea-orm (with-chrono) → chrono; garrison/inklog/
+    # limiteron/utoipa each pull chrono directly. nebulaid itself does not
+    # declare chrono as a direct dependency and cannot prune it from the
+    # feature-union resolution of published dependencies.
+    # Upstream status: advisory recommends jiff/time; no ecosystem-wide migration
+    # has landed in the family's dependency set (sea-orm/dbnexus still require chrono).
+    # Cannot be fixed from this repository.
+    # Re-evaluate: when sea-orm/dbnexus ship a jiff (or time) compatibility
+    # release (drop this entry and re-run `cargo audit`). Family-wide event —
+    # all family repos will hit this advisory on their next CI run.
+    "RUSTSEC-2026-0543",
 ]
 
 [yanked]

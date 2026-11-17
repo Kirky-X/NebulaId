@@ -81,7 +81,11 @@ skip = [
 # 受影响版本，宁可让门禁红起来再显式评估）。
 # 历史条目 RUSTSEC-2024-0449（unsafe-libyaml 维护停滞）已随 limiteron 0.3.0-rc.8 /
 # confers 0.6.0-rc.11 的 serde-saphyr 迁移退图，故整条移除而非留空注释。
-ignore = []
+# RUSTSEC-2026-0543（chrono 全版本 unmaintained，INFO 级非漏洞）：经
+# dbnexus(with-chrono)/sea-orm/garrison/inklog/limiteron/utoipa 多链传递入图，
+# 本仓无直接依赖、无法剪枝；上游生态无 jiff/time 迁移版本可升级。
+# 复评条件：sea-orm/dbnexus 发布 jiff/time 兼容版后移除本条（.cargo/audit.toml 同步豁免）。
+ignore = ["RUSTSEC-2026-0543"]
 
 # advisories 面在本仓库由 cargo-audit 承担（`cargo audit --no-fetch --stale`，本地 advisory-db）：
 # cargo-deny 的 advisories 检查每次强制 fetch 并对其 advisory-db 缓存执行 git reset --hard，

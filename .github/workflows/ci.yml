@@ -292,7 +292,9 @@ jobs:
           # “不降门槛、只补测”的原则用本 job 的 etcd 服务补齐，而不是加豁免。
           # 关键：不开 `--features integration-tests`——那会多编译 414 行永不执行的
           # DB 用例体入分母（实测 94.56% → 93.64%）；改用与 (1) 完全相同的默认特性。
-          cargo llvm-cov --no-report --package ${{ env.PKG }} --lib -- \
+          # 加 --bins：main.rs 的启动自举函数（admin key 自举/配置装配）真 PG 集成
+          # 测试属 bin target，不带 --bins 时永远不进采集（2026-11-17 补）。
+          cargo llvm-cov --no-report --package ${{ env.PKG }} --lib --bins -- \
             --ignored integration_ --test-threads=1 \
             || { echo "::error::真实 etcd 集成用例未通过"; exit 1; }
           # 先预编译（--no-report run 的冷编译在 CI 上可达 4 分钟，曾把就绪窗

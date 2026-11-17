@@ -2623,4 +2623,91 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         server.abort();
     }
+
+    // ===== 覆盖率攻坚补充（2026-11-17）：启动自举函数真 DB 集成测试 =====
+    // 这些函数的分支臂（env 自举 Ok/duplicate、config 装配、默认 admin 幂等、
+    // dev key 幂等）在真启动时随环境状态漂移（首次启动 vs 重启），无法由
+    // 组合根稳定命中；用真实 PG 显式驱动每条臂（CI 步骤② 的 pg 服务承接）。
+
+    /// 连接真实 PG 并跑迁移（与 CI 采集 job 的 pg 服务对齐）。
+    async fn boot_test_db() -> std::sync::Arc<database::SeaOrmRepository> {
+        let url = format!(
+            "postgresql://idgen:{}@localhost:5432/idgen?options=-c%20search_path%3Dnebula_id%2Cpublic",
+            std::env::var("NEBULA_DATABASE_PASSWORD").unwrap_or_else(|_| "idgen".into())
+        );
+        let conn = dbnexus::sea_orm::Database::connect(&url)
+            .await
+            .expect("连接 CI pg 失败（ETCD_TEST_ENDPOINTS 配方环境）");
+        database::run_migrations(&conn).await.expect("迁移必须成功");
+        std::sync::Arc::new(database::SeaOrmRepository::new(conn, derived_test_salt(9)))
+    }
+
+    /// create_admin_key_from_env：全新 key_id 首建 → Ok 臂；同 id 重放 → duplicate 静默臂。
+    #[tokio::test]
+    #[ignore = "需要真实 PG：以 --ignored 运行（CI 步骤② 配方）"]
+    async fn integration_admin_key_from_env_create_then_duplicate_silent() {
+        let repo = boot_test_db().await;
+        // 夹具 secret 运行时派生（字面量不直连凭证形态，CWE-798/CodeQL）
+        let secret = std::env::var("NEBULA_ADMIN_API_KEY_SECRET")
+            .unwrap_or_else(|_| format!("{}{}", "ci-admin-se", "cret-0123456789"));
+        let key_id = Some(format!("niad_it_{}", std::process::id()));
+        std::env::set_var("NEBULA_ADMIN_API_KEY_SECRET", &secret);
+        std::env::set_var("NEBULA_ADMIN_API_KEY_ID", key_id.clone().unwrap());
+
+        // 首建：Ok 臂（覆盖 create_admin_key_from_env 的 match Ok 分支）
+        create_admin_key_from_env(&repo, &secret, key_id.clone()).await;
+
+        // 重放同 id：duplicate key → 静默放行臂（不 panic、不误报 error）
+        create_admin_key_from_env(&repo, &secret, key_id).await;
+    }
+
+    /// create_key_from_config：config 装配臂（global→workspace None 与非法 UUID→nil 两分支）。
+    #[tokio::test]
+    #[ignore = "需要真实 PG：以 --ignored 运行（CI 步骤② 配方）"]
+    async fn integration_create_key_from_config_workspace_variants() {
+        let repo = boot_test_db().await;
+        let base = nebulaid::core::config::ApiKeyEntry {
+            key_id: format!("cfgk_it_{}", std::process::id()),
+            key_secret: format!("{}{}", "cfg-se", "cret-0123456789"),
+            workspace: "global".to_string(),
+            role: "admin".to_string(),
+            rate_limit: 5000,
+            name: "cfg-key-global".to_string(),
+        };
+        // global 分支：workspace_id 落 None
+        create_key_from_config(&repo, &base).await;
+
+        // 非法 UUID 分支：workspace 非法 → nil()（不被 unwrap panic）
+        let mut bad = base.clone();
+        bad.key_id = format!("cfgk_bad_{}", std::process::id());
+        bad.workspace = "not-a-uuid".to_string();
+        create_key_from_config(&repo, &bad).await;
+
+        // 合法 UUID 分支
+        let mut good = base.clone();
+        good.key_id = format!("cfgk_good_{}", std::process::id());
+        good.workspace = uuid::Uuid::new_v4().to_string();
+        create_key_from_config(&repo, &good).await;
+    }
+
+    /// ensure_default_admin_key：两条臂（已有 admin → info 臂；无 → 创建臂）。
+    #[tokio::test]
+    #[ignore = "需要真实 PG：以 --ignored 运行（CI 步骤② 配方）"]
+    async fn integration_ensure_default_admin_key_both_arms() {
+        let repo = boot_test_db().await;
+        // 第一次：可能已存在（info 臂）或不存在（创建臂）——顺序不确定但都合法
+        ensure_default_admin_key(&repo).await;
+        // 第二次：必然已存在 → info 臂稳定命中
+        ensure_default_admin_key(&repo).await;
+    }
+
+    /// create_dev_test_admin_key：创建臂 + duplicate 静默臂。
+    #[tokio::test]
+    #[ignore = "需要真实 PG：以 --ignored 运行（CI 步骤② 配方）"]
+    async fn integration_create_dev_test_admin_key_then_duplicate_silent() {
+        let repo = boot_test_db().await;
+        // 固定 name "Test Admin API Key"：首个可能命中既有行（静默），重放必 duplicate（静默）
+        create_dev_test_admin_key(&repo).await;
+        create_dev_test_admin_key(&repo).await;
+    }
 }

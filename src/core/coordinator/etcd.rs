@@ -3786,4 +3786,108 @@ mod tests {
             "错误应点名写入失败，实际：{err:?}"
         );
     }
+
+    // ===== 覆盖率攻坚补充（2026-11-17）：真 etcd watch/lease 增量路径 =====
+
+    /// watch_prefix 真实事件流（Put + Delete 双事件型，覆盖 stream 循环全臂）：
+    /// 订阅 worker 前缀 → 经 lease 挂 key 写入触发 Put 事件 → revoke 触发 Delete 事件，
+    /// 两条事件都必须经订阅转发循环进入 monitor 统一事件流。
+    #[cfg(feature = "etcd")]
+    #[tokio::test]
+    #[ignore = "需要真实 etcd：设置 ETCD_TEST_ENDPOINTS 后以 --ignored 运行"]
+    async fn integration_watch_prefix_put_and_delete_events_forwarded() {
+        use crate::core::coordinator::ClusterEvent;
+
+        let client = integration_etcd_client().await;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let key = format!("/idgen/workers/it-watch-{nanos}");
+
+        let allocator = EtcdWorkerAllocator::new(client.clone(), 1, EtcdConfig::default())
+            .await
+            .expect("allocator 构造必须成功");
+        let cache_file = NamedTempFile::new().expect("temp cache file");
+        let monitor = EtcdClusterHealthMonitor::new(
+            EtcdConfig::default(),
+            cache_file.path().to_string_lossy().to_string(),
+        );
+        allocator
+            .subscribe_worker_key_changes(&monitor)
+            .await
+            .expect("watch 订阅必须建立成功");
+
+        // watch 建立需要一点时间在 etcd 侧生效（注册 watch 流）
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let mut subscriber = monitor.subscribe_events();
+
+        // Put 事件：grant 短租约后经 CAS 写入挂约 key（key 不存在时必须成功）
+        let lease = client.lease_grant(30).await.expect("lease grant 必须成功");
+        let put_ok = client
+            .txn_check_create_rev_and_put(&key, b"host=node-a".to_vec(), lease)
+            .await
+            .expect("txn put 必须成功");
+        assert!(put_ok, "key 不存在时 CAS 写入必须成功");
+
+        // 等待 Put 事件经订阅循环转发
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                subscriber.changed().await.expect("watch 通道不得关闭");
+                if let Some(ClusterEvent::WorkerKeyPut { key: k, value }) =
+                    subscriber.borrow().clone()
+                {
+                    if k == key && value == b"host=node-a".to_vec() {
+                        return;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("5s 内必须收到 Put 事件");
+
+        // Delete 事件：lease revoke 连带删除挂约 key
+        client
+            .lease_revoke(lease)
+            .await
+            .expect("lease revoke 必须成功");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                subscriber.changed().await.expect("watch 通道不得关闭");
+                if let Some(ClusterEvent::WorkerKeyDelete { key: k }) = subscriber.borrow().clone()
+                {
+                    if k == key {
+                        return;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("5s 内必须收到 Delete 事件");
+    }
+
+    /// lease_keep_alive_once 真实续期：grant 短租约 → keep-alive 一次必须成功；
+    /// revoke 后 keep-alive 必须以 LeaseInvalid 失败（错误分支臂）。
+    #[cfg(feature = "etcd")]
+    #[tokio::test]
+    #[ignore = "需要真实 etcd：设置 ETCD_TEST_ENDPOINTS 后以 --ignored 运行"]
+    async fn integration_lease_keep_alive_once_success_and_invalid() {
+        let client = integration_etcd_client().await;
+
+        let lease = client.lease_grant(30).await.expect("lease grant 必须成功");
+        client
+            .lease_keep_alive_once(lease)
+            .await
+            .expect("有效租约 keep-alive 必须成功");
+
+        client.lease_revoke(lease).await.expect("revoke 必须成功");
+        let err = client
+            .lease_keep_alive_once(lease)
+            .await
+            .expect_err("已撤销租约的 keep-alive 必须失败");
+        assert!(
+            matches!(err, EtcdError::LeaseInvalid(_)),
+            "撤销后 keep-alive 应报 LeaseInvalid，实际: {err:?}"
+        );
+    }
 }

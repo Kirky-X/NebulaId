@@ -1324,4 +1324,63 @@ mod tests {
         }
         assert_eq!(count, 0, "空输入流不得产生任何响应项");
     }
+
+    // ===== 覆盖率攻坚补充（2026-11-17）：AuthStubRepo 全臂驱动 =====
+
+    /// AuthStubRepo 的全部仓储方法逐一驱动（validate/get 之外此前零调用）。
+    #[tokio::test]
+    async fn test_auth_stub_repo_all_repository_methods_driven() {
+        let repo = AuthStubRepo::accepting(DbRole::User, Some(Uuid::new_v4()));
+
+        // get_api_key_by_id：row=None → None
+        assert!(repo.get_api_key_by_id("any").await.unwrap().is_none());
+        // validate：validated 桩 → Some
+        let got = repo.validate_api_key("k", "s").await.unwrap();
+        assert!(got.is_some(), "accepting 桩必须放行");
+
+        // list：空 vec
+        assert!(repo
+            .list_api_keys(Uuid::new_v4(), Some(10), Some(0))
+            .await
+            .unwrap()
+            .is_empty());
+        // delete/revoke/update_last_used：恒 Ok
+        let id = Uuid::new_v4();
+        repo.delete_api_key(id).await.unwrap();
+        repo.revoke_api_key(id).await.unwrap();
+        repo.update_last_used(id).await.unwrap();
+        // admin 守卫面
+        assert!(repo
+            .get_admin_api_key(Uuid::new_v4())
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(repo.count_api_keys(Uuid::new_v4()).await.unwrap(), 0);
+        assert!(repo.find_api_key_by_row_id(id).await.unwrap().is_none());
+        assert_eq!(repo.count_admin_keys().await.unwrap(), 0);
+        // rotate：显性失败
+        let rotated = repo
+            .rotate_api_key("k", 300)
+            .await
+            .expect_err("stub rotate 必须显性失败");
+        assert!(matches!(
+            rotated,
+            crate::core::types::CoreError::InternalError(_)
+        ));
+        // get_keys_older_than：空 vec
+        assert!(repo.get_keys_older_than(30).await.unwrap().is_empty());
+
+        // 带行构造：get_api_key_by_id 返回行
+        let with_row = AuthStubRepo {
+            validated: None,
+            row: Some(stub_row(true, None)),
+        };
+        let row = with_row
+            .get_api_key_by_id("stub-key")
+            .await
+            .unwrap()
+            .expect("带行桩必须返回行");
+        assert_eq!(row.key_id, "stub-key");
+        assert!(row.enabled);
+    }
 }

@@ -1873,4 +1873,51 @@ mod tests {
             "切换前后生成的 ID 集合无重复"
         );
     }
+
+    // ===== 覆盖率攻坚补充（2026-11-17）：MockSegmentRepository 契约臂 =====
+
+    /// 未实现臂的显性契约：DbSegmentLoader 单测只走 allocate_segment，
+    /// 其余仓储方法必须 panic 显性暴露（静默返回会掩盖误用）。
+    /// 每臂一个 should_panic，锁定 unimplemented! 语义不被改成静默默认值。
+    #[tokio::test]
+    #[should_panic(expected = "DbSegmentLoader 单测只走 allocate_segment")]
+    async fn contract_get_segment_is_explicitly_unimplemented() {
+        let repo = MockSegmentRepository::returning(Ok(sample_segment_info(1, 2)));
+        let _ = repo.get_segment("ws", "t").await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "DbSegmentLoader 单测只走 allocate_segment")]
+    async fn contract_allocate_segment_with_dc_is_explicitly_unimplemented() {
+        let repo = MockSegmentRepository::returning(Ok(sample_segment_info(1, 2)));
+        let _ = repo.allocate_segment_with_dc("ws", "t", 100, 0).await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "DbSegmentLoader 单测只走 allocate_segment")]
+    async fn contract_update_segment_is_explicitly_unimplemented() {
+        let repo = MockSegmentRepository::returning(Ok(sample_segment_info(1, 2)));
+        let _ = repo.update_segment("ws", "t", 0, 1, 2).await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "DbSegmentLoader 单测只走 allocate_segment")]
+    async fn contract_create_segment_is_explicitly_unimplemented() {
+        let repo = MockSegmentRepository::returning(Ok(sample_segment_info(1, 2)));
+        let _ = repo.create_segment("ws", "t", 1, 2, 100, 0).await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "DbSegmentLoader 单测只走 allocate_segment")]
+    async fn contract_list_segments_is_explicitly_unimplemented() {
+        let repo = MockSegmentRepository::returning(Ok(sample_segment_info(1, 2)));
+        let _ = repo.list_segments("ws").await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "DbSegmentLoader 单测只走 allocate_segment")]
+    async fn contract_delete_segment_is_explicitly_unimplemented() {
+        let repo = MockSegmentRepository::returning(Ok(sample_segment_info(1, 2)));
+        let _ = repo.delete_segment("ws", "t").await;
+    }
 }

@@ -1609,4 +1609,73 @@ mod tests {
         let result = auth.validate_key("k", "s").await;
         assert!(result.is_some(), "行读取失败只影响缓存写入，不影响放行");
     }
+
+    // ===== 覆盖率攻坚补充（2026-11-17）：MockApiKeyRepo 全臂驱动 =====
+
+    /// MockApiKeyRepo 的全部仓储方法逐一驱动（create 之外的臂此前零调用）。
+    #[tokio::test]
+    async fn test_mock_repo_all_repository_methods_driven() {
+        let repo = MockApiKeyRepo {
+            keys: std::collections::HashMap::new(),
+        };
+
+        // create：返回带 grace 字段的完整 secret 响应
+        let created = repo
+            .create_api_key(&crate::core::database::CreateApiKeyRequest {
+                workspace_id: Some(Uuid::new_v4()),
+                name: "drv".to_string(),
+                description: None,
+                role: crate::core::database::ApiKeyRole::User,
+                rate_limit: None,
+                expires_at: None,
+                key_secret: None,
+                key_id: None,
+            })
+            .await
+            .expect("create 桩必须成功");
+        assert!(!created.key.key_id.is_empty());
+        assert!(!created.key_secret.is_empty());
+
+        // get_api_key_by_id：恒 None
+        assert!(repo.get_api_key_by_id("any").await.unwrap().is_none());
+
+        // validate：空 keys 表 → None
+        assert!(repo.validate_api_key("k", "s").await.unwrap().is_none());
+
+        // list：空表 → 空 vec
+        assert!(repo
+            .list_api_keys(Uuid::new_v4(), Some(10), Some(0))
+            .await
+            .unwrap()
+            .is_empty());
+
+        // delete/revoke/update_last_used：恒 Ok
+        let id = Uuid::new_v4();
+        repo.delete_api_key(id).await.unwrap();
+        repo.revoke_api_key(id).await.unwrap();
+        repo.update_last_used(id).await.unwrap();
+
+        // admin 守卫面：get_admin_api_key None、count 0、find None
+        assert!(repo
+            .get_admin_api_key(Uuid::new_v4())
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(repo.count_api_keys(Uuid::new_v4()).await.unwrap(), 0);
+        assert!(repo.find_api_key_by_row_id(id).await.unwrap().is_none());
+        assert_eq!(repo.count_admin_keys().await.unwrap(), 0);
+
+        // rotate：桩错误（显性 InternalError）
+        let rotated = repo
+            .rotate_api_key("k", 300)
+            .await
+            .expect_err("mock rotate 桩必须显性失败");
+        assert!(matches!(
+            rotated,
+            crate::core::types::CoreError::InternalError(_)
+        ));
+
+        // get_keys_older_than：空 vec
+        assert!(repo.get_keys_older_than(30).await.unwrap().is_empty());
+    }
 }

@@ -2707,4 +2707,148 @@ mod tests {
         assert_eq!(id2.as_u128(), 2);
         router.shutdown().await;
     }
+
+    // ===== 覆盖率攻坚补充（2026-11-17）：委托适配器 / reporting 面 / 公共带算法 API =====
+
+    /// DynSegmentRepository 委托适配器契约：8 个仓储方法逐一透传到底层实现
+    /// （`DbSegmentLoader` 要求 Sized 的桥接层，漏 delegate 任何一臂都会在生产静默断路）。
+    #[cfg(feature = "segment")]
+    #[tokio::test]
+    async fn dyn_segment_repository_delegates_all_repository_ops() {
+        let inner = Arc::new(MockSegmentRepo::new());
+        let dyn_repo = DynSegmentRepository(inner.clone());
+
+        assert!(
+            dyn_repo.get_segment("ws", "bt").await.unwrap().is_none(),
+            "未预置段时 get_segment 必须透传 None"
+        );
+
+        let seg = dyn_repo.allocate_segment("ws", "bt", 100).await.unwrap();
+        assert_eq!(seg.current_id, 1, "首段从计数器 +1 起步");
+        assert_eq!(
+            inner.last_step.load(std::sync::atomic::Ordering::SeqCst),
+            100,
+            "allocate_segment 步长必须透传"
+        );
+
+        let seg_dc = dyn_repo
+            .allocate_segment_with_dc("ws", "bt", 50, 2)
+            .await
+            .unwrap();
+        assert_eq!(seg_dc.current_id, 101, "with_dc 臂走同一计数器续段");
+        assert_eq!(
+            inner.last_step.load(std::sync::atomic::Ordering::SeqCst),
+            50,
+            "allocate_segment_with_dc 委托 allocate_segment 透传步长"
+        );
+
+        dyn_repo.update_segment("ws", "bt", 2, 7, 10).await.unwrap();
+
+        let created = dyn_repo
+            .create_segment("ws", "bt", 500, 900, 100, 0)
+            .await
+            .unwrap();
+        assert_eq!(created.max_id, 900, "create_segment 必须落 max_id");
+
+        assert!(dyn_repo.list_segments("ws").await.unwrap().is_empty());
+        dyn_repo.delete_segment("ws", "bt").await.unwrap();
+    }
+
+    /// reporting 面：None 时解析默认算法并回填实际执行算法（单条 + 批量）。
+    #[tokio::test]
+    async fn id_generator_reporting_paths_resolve_default_and_report_algorithm() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Segment,
+            }),
+        );
+
+        // 显式指定：Some 臂直接采用请求算法
+        let (id, used) = IdGenerator::generate_reporting_algorithm(
+            &router,
+            Some(AlgorithmType::Segment),
+            "ws",
+            "g",
+            "bt",
+        )
+        .await
+        .unwrap();
+        assert_eq!(id.as_u128(), 42);
+        assert_eq!(used, AlgorithmType::Segment);
+
+        // None 臂：解析默认算法（Segment），报告面回填实际算法
+        let (id2, used2) =
+            IdGenerator::generate_reporting_algorithm(&router, None, "ws", "g", "bt2")
+                .await
+                .unwrap();
+        assert_eq!(id2.as_u128(), 42);
+        assert_eq!(used2, AlgorithmType::Segment);
+
+        let batch =
+            IdGenerator::batch_generate_reporting_algorithm(&router, None, "ws", "g", "bt3", 3)
+                .await
+                .unwrap();
+        assert_eq!(batch.ids.len(), 3);
+        assert_eq!(
+            batch.algorithm,
+            AlgorithmType::Segment,
+            "IdBatch.algorithm 必须回填实际执行算法而非请求值"
+        );
+    }
+
+    /// 公共带算法 API：显式指定算法直达主路径（绕过 biz_tag 覆盖解析）。
+    #[tokio::test]
+    async fn generate_with_algorithm_public_apis_direct_route() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        let id = router
+            .generate_with_algorithm(AlgorithmType::Snowflake, "ws", "g", "bt")
+            .await
+            .unwrap();
+        assert_eq!(id.as_u128(), 42);
+
+        let ids = router
+            .batch_generate_with_algorithm(AlgorithmType::Snowflake, "ws", "g", "bt", 4)
+            .await
+            .unwrap();
+        assert_eq!(ids.ids.len(), 4, "批量长度必须等于请求 size");
+        assert!(ids.ids.iter().all(|i| i.as_u128() == 42));
+    }
+
+    /// shutdown 错误臂：单个算法 shutdown 失败只记 error 日志，路由 shutdown 不 panic。
+    #[tokio::test]
+    async fn router_shutdown_swallows_algorithm_shutdown_errors() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        let mut failing = MockConfigurableAlgorithm::new(AlgorithmType::Segment);
+        failing.fail_shutdown = true;
+        insert_mock(&router, AlgorithmType::Segment, Arc::new(failing));
+        router.shutdown().await;
+    }
+
+    /// with_etcd_health_monitor 装配契约：builder 落字段，initialize/generate 主路径不受监控臂影响。
+    #[cfg(feature = "etcd")]
+    #[tokio::test]
+    async fn with_etcd_health_monitor_builder_wires_monitor() {
+        let config = Config::default();
+        let monitor = Arc::new(
+            crate::core::coordinator::etcd::EtcdClusterHealthMonitor::new(
+                config.etcd.clone(),
+                "/tmp/nebulaid-test-etcd-health-cache".to_string(),
+            ),
+        );
+        let router = AlgorithmRouter::new(config, None).with_etcd_health_monitor(monitor);
+        router.initialize().await.unwrap();
+        let id = router.generate(&make_ctx("bt")).await.unwrap();
+        assert!(id.as_u128() > 0, "装配监控臂后主出号路径必须可用");
+        router.shutdown().await;
+    }
 }

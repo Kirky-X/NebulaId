@@ -2239,6 +2239,7 @@ dependencies = [
  "http",
  "http-body",
  "pin-project-lite",
+ "tokio",
 ]
 
 [[package]]
@@ -3535,6 +3536,8 @@ dependencies = [
  "futures-util",
  "garrison",
  "hex",
+ "http-body",
+ "http-body-util",
  "inklog",
  "limiteron",
  "metrics",

@@ -638,6 +638,7 @@ mod tests {
     use crate::server::config::management::{ConfigManagementService, ConfigManager};
     use crate::server::config::HotReloadConfig;
     use crate::server::handlers::mock_generator::MockIdGenerator;
+    use sdforge::tonic::codegen::Bytes;
     use std::sync::Arc;
 
     /// Build a GrpcServer wired to a MockIdGenerator + ConfigManager.
@@ -1205,5 +1206,122 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), sdforge::tonic::Code::Internal);
+    }
+
+    // ===== 覆盖率攻坚补充（2026-11-17）：batch_generate_stream 流式契约 =====
+
+    /// 手工构造 gRPC 流式请求体：每条消息按 gRPC 帧格式封装
+    /// （1B 压缩标志 + 4B 大端长度 + prost payload）。
+    fn grpc_frame(msg: &BatchGenerateStreamRequest) -> Result<Bytes, sdforge::prost::EncodeError> {
+        use sdforge::prost::Message as _;
+        let payload = msg.encode_to_vec();
+        let mut frame = Vec::with_capacity(5 + payload.len());
+        frame.push(0u8); // 压缩标志：未压缩
+        frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&payload);
+        Ok(Bytes::from(frame))
+    }
+
+    /// 构造携带若干流式请求的 tonic Streaming（服务端解码方向）。
+    fn make_streaming_request(
+        msgs: Vec<BatchGenerateStreamRequest>,
+    ) -> Request<sdforge::tonic::codec::Streaming<BatchGenerateStreamRequest>> {
+        use http_body_util::StreamBody;
+        use sdforge::tonic::body::Body as TonicBody;
+        use sdforge::tonic::codec::Streaming;
+        use tonic_prost::ProstDecoder;
+
+        let frames = msgs
+            .iter()
+            .map(grpc_frame)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("prost encode must not fail");
+        let body =
+            TonicBody::new(StreamBody::new(tokio_stream::iter(frames.into_iter().map(
+                |f| Ok::<_, std::convert::Infallible>(http_body::Frame::data(f)),
+            ))));
+        let decoder: ProstDecoder<BatchGenerateStreamRequest> =
+            ProstDecoder::new(Default::default());
+        Request::new(Streaming::new_request(decoder, body, None, None))
+    }
+
+    /// 流式批量：两条请求（count=3 / count=2）逐帧解码、逐项以流回吐，
+    /// 总 ID 数 = 两帧 count 之和，每项携带 algorithm 且非空 id。
+    #[tokio::test]
+    async fn test_batch_generate_stream_multi_frame_success() {
+        let server = create_test_grpc_server();
+        let resp = server
+            .batch_generate_stream(make_streaming_request(vec![
+                BatchGenerateStreamRequest {
+                    namespace: "stream-ns".to_string(),
+                    tag: "t1".to_string(),
+                    count: 3,
+                    metadata: Default::default(),
+                },
+                BatchGenerateStreamRequest {
+                    namespace: "stream-ns".to_string(),
+                    tag: "t2".to_string(),
+                    count: 2,
+                    metadata: Default::default(),
+                },
+            ]))
+            .await
+            .expect("stream entry must be accepted");
+        let mut total = 0usize;
+        let mut stream = resp.into_inner();
+        while let Some(item) = stream.next().await {
+            let frame = item.expect("per-item frame must be Ok");
+            let id = frame.id.expect("每项必须携带 id（逐项流式回吐契约）");
+            assert!(!id.id.is_empty());
+            assert_eq!(id.algorithm, "segment");
+            total += 1;
+        }
+        assert_eq!(total, 5, "两帧 count(3+2) 的 ID 必须逐项全部回吐");
+    }
+
+    /// 流式批量业务失败臂：非法 count（0）→ 业务错误以 Err(Status) 终止流
+    /// （变体同源映射到 gRPC 状态码）。
+    #[tokio::test]
+    async fn test_batch_generate_stream_business_error_terminates_stream_with_status() {
+        let server = create_test_grpc_server();
+        let resp = server
+            .batch_generate_stream(make_streaming_request(vec![BatchGenerateStreamRequest {
+                namespace: "stream-ns".to_string(),
+                tag: "bad".to_string(),
+                count: 0, // 触发 validate/business 错误
+                metadata: Default::default(),
+            }]))
+            .await
+            .expect("流入口本身应接受请求（错误在流内传递）");
+        let mut saw_err = None;
+        let mut stream = resp.into_inner();
+        while let Some(item) = stream.next().await {
+            if let Err(status) = item {
+                saw_err = Some(status);
+                break;
+            }
+        }
+        let status = saw_err.expect("count=0 必须以 Err(Status) 终止流");
+        assert_ne!(
+            status.code(),
+            sdforge::tonic::Code::Ok,
+            "错误帧状态码不得为 Ok"
+        );
+    }
+
+    /// 流式批量空流臂：零帧请求 → 流直接结束，不产生任何响应项（spawn 任务自然退出）。
+    #[tokio::test]
+    async fn test_batch_generate_stream_empty_input_yields_empty_stream() {
+        let server = create_test_grpc_server();
+        let resp = server
+            .batch_generate_stream(make_streaming_request(vec![]))
+            .await
+            .expect("空流入口应正常接受");
+        let mut count = 0usize;
+        let mut stream = resp.into_inner();
+        while stream.next().await.is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 0, "空输入流不得产生任何响应项");
     }
 }

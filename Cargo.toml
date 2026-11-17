@@ -188,6 +188,9 @@ criterion = { version = "0.8", default-features = false }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
 # toml 仅用于测试中序列化 Config 为 TOML 字符串（confers 不提供序列化功能）
 toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
+# http-body-util / http-body 仅用于测试中手工构造 gRPC 流式请求体（batch_generate_stream 契约测试）
+http-body-util = { version = "0.1", default-features = false, features = ["channel"] }
+http-body = { version = "1.1", default-features = false }
 
 [[bench]]
 name = "i18n"

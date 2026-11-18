@@ -32,6 +32,15 @@ api-error-workspace_not_found = 工作空间未找到
 api-error-invalid_workspace_id = 无效的工作空间 ID
 api-error-workspace_id_required = 用户密钥需要 workspace_id
 
+# src/server/config/management.rs — 配置管理响应消息。
+# 四处校验失败复用上方的 validation_error 键。
+api-success-config-rate_limit_updated = 速率限制配置更新成功
+api-success-config-logging_updated = 日志配置更新成功
+api-success-config-reloaded = 配置已从文件重新加载
+api-error-config-reload_failed = 重新加载配置失败：{ $error }
+api-error-config-invalid_algorithm = 无效的算法 '{ $algorithm }'。有效选项：segment、snowflake、uuid_v8、uuid_v4、uuid_v7
+api-success-config-algorithm_set = 业务标签 '{ $biz_tag }' 的算法已成功设置为 '{ $algorithm }'
+
 # Phase 4 v0.2.0-final-polish — handler 构造的错误/成功消息国际化。
 # 由 src/server/handlers/*.rs 中的 t!() 宏使用，对 CoreError 变体的
 # 内部 String（或成功响应消息）进行本地化。这些消息随后会经过
@@ -217,6 +226,8 @@ error-core-config-attribution-blank_workspace = attribution.protected_workspaces
 error-core-config-algorithm-high_requires_worker_bits = unpredictability = "high" 要求 worker_id_bits >= 8
 error-core-config-algorithm-high_requires_sequence_bits = unpredictability = "high" 要求 sequence_bits >= 6
 error-core-algorithm-simulation-invalid_layout = 容量预演的 Snowflake 位布局非法：sequence_bits 至少为 1 且总位宽小于 64
+error-core-algorithm-simulation-recommended_layout = 建议增大 sequence_bits（当前容量 { $capacity }）；worker_count={ $worker_count }
+error-core-algorithm-simulation-note = random_start=true：容量按一半估算（均匀起点的保守期望）
 
 # src/core/database/connection.rs
 log-core-database-connection-connecting = 正在连接 { $engine } 数据库，URL：{ $url }
@@ -697,6 +708,7 @@ error-detail-segment_loader_not_configured = Segment 算法未接通数据源，
 # src/sdk/posture.rs —— SDK 安全姿态报告（feature `sdk`）。六项三态检查
 # 均经 `t!` 取值（进程默认 locale）。示例 CLI 未调用 init_i18n，恒取 en 束。
 log-sdk-posture_announced = sdk: 安全姿态已声明
+sdk-posture-summary = 已启用 { $enabled }/{ $total } 项安全能力
 sdk-posture-check-auth-detail = API key 认证仅在 server 栈且启用 garrison-auth 时在场；纯算法嵌入形态无认证。
 sdk-posture-check-rate-limit-detail = 限流是 server-only 能力，SDK 无 HTTP 中间件；嵌入方须自行施加限流。
 sdk-posture-check-audit-detail = 仅当 server 审计链在场或向 kit 注入审计日志器时，发号事件才写入审计链。

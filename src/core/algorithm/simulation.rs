@@ -10,6 +10,7 @@
 //! 突发非平稳流量下模型失真，报告带 `model = "poisson"` 标注防误读。
 
 use crate::core::algorithm::SnowflakeLayoutInfo;
+use crate::core::i18n::translate_with_locale_args;
 
 /// 预演输入（全部显式，零运行时状态读取）。
 #[derive(Debug, Clone)]
@@ -60,8 +61,13 @@ fn poisson_tail(lambda: f64, capacity: u64) -> f64 {
     (1.0 - cdf).clamp(0.0, 1.0)
 }
 
-/// 纯函数容量预演。
+/// 纯函数容量预演（默认 `en` 文案；请求 locale 见 [`simulate_snowflake_with_locale`]）。
 pub fn simulate_snowflake(input: &DryRunInput) -> DryRunReport {
+    simulate_snowflake_with_locale(input, "en")
+}
+
+/// 纯函数容量预演：`recommended_layout` / `note` 按请求 locale 走 FTL 翻译。
+pub fn simulate_snowflake_with_locale(input: &DryRunInput, locale: &str) -> DryRunReport {
     let mask = (1u64 << input.layout.sequence_bits) - 1;
     let capacity = if input.random_start { mask / 2 } else { mask };
     let duration_ms = input.duration_secs.saturating_mul(1000);
@@ -70,17 +76,20 @@ pub fn simulate_snowflake(input: &DryRunInput) -> DryRunReport {
     let demand = (input.rps * duration_ms as f64).ceil() as u64;
     let projected = (duration_ms as f64 * probability).ceil() as u64;
     let recommended = if probability > 1e-6 {
-        Some(format!(
-            "increase sequence_bits (current capacity {capacity}); worker_count={}",
-            input.worker_count
+        Some(translate_with_locale_args(
+            locale,
+            "error.core.algorithm.simulation.recommended_layout",
+            &[
+                ("capacity", capacity.to_string()),
+                ("worker_count", input.worker_count.to_string()),
+            ],
         ))
     } else {
         None
     };
-    let note = input.random_start.then(|| {
-        "random_start=true: capacity halved (conservative expectation of a uniform start)"
-            .to_string()
-    });
+    let note = input
+        .random_start
+        .then(|| translate_with_locale_args(locale, "error.core.algorithm.simulation.note", &[]));
     DryRunReport {
         model: "poisson",
         capacity_per_ms: capacity,

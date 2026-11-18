@@ -116,10 +116,10 @@ impl SecurityPostureReport {
             .iter()
             .filter(|c| c.status == PostureStatus::Enabled)
             .count();
-        format!(
-            "{}/{} security capabilities enabled",
-            enabled,
-            self.checks.len()
+        t!(
+            "sdk.posture.summary",
+            enabled = enabled,
+            total = self.checks.len()
         )
     }
 }

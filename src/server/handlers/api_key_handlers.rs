@@ -96,7 +96,10 @@ impl super::ApiHandlers {
             Some(ts) => Some(
                 chrono::DateTime::parse_from_rfc3339(ts)
                     .map_err(|_| {
-                        CoreError::InvalidIdFormat("Invalid expires_at format".to_string())
+                        CoreError::InvalidIdFormat(
+                            t!("api.error.handlers.api_key_handlers.invalid_expires_at_format")
+                                .to_string(),
+                        )
                     })?
                     .with_timezone(&chrono::Utc)
                     .naive_utc(),

@@ -1,6 +1,7 @@
 // Copyright (c) 2025-2026 Kirky.X🌠
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::core::i18n::translate_with_locale;
 use crate::server::api_version::{api_version_middleware, API_V1};
 use crate::server::audit::{audit_middleware_fn, AuditLogger, AuditMiddleware};
 use crate::server::config::{cors, management::ConfigManagementService};
@@ -343,7 +344,7 @@ pub async fn create_router_with_rate_limit(
         // 错放在 authenticated 路由会让任意 User key 改写全局配置。
         .route("/config/rate-limit", post(handle_update_rate_limit))
         .route("/config/logging", post(handle_update_logging))
-        .route("/config/reload", post(handle_reload_config))
+        .route("/config/reload", post(handle_reload_config_localized))
         .route("/config/algorithm", post(handle_set_algorithm))
         // 容量预演（Admin 只读预演，不触碰运行时状态）
         .route("/generate/dry-run", post(handle_dry_run))
@@ -722,7 +723,7 @@ fn dry_run_layout(
 /// 容量预演：假设位布局与流量参数，返回纯函数估算报告（Admin only）。
 async fn handle_dry_run(
     State(state): State<NebulaIdState>,
-    Extension(_locale): Extension<Locale>,
+    Extension(locale): Extension<Locale>,
     Json(req): Json<crate::server::models::DryRunRequest>,
 ) -> Result<Json<crate::server::models::DryRunReportResponse>, (StatusCode, Json<ErrorResponse>)> {
     let layout = dry_run_layout(&req).ok_or_else(|| {
@@ -731,11 +732,14 @@ async fn handle_dry_run(
             Json(ErrorResponse::new(
                 StatusCode::BAD_REQUEST.as_u16() as i32,
                 crate::server::models::ApiErrorCode::InvalidInput,
-                t!("error.core.algorithm.simulation.invalid_layout"),
+                translate_with_locale(
+                    locale.as_str(),
+                    "error.core.algorithm.simulation.invalid_layout",
+                ),
             )),
         )
     })?;
-    let report = crate::core::algorithm::simulation::simulate_snowflake(
+    let report = crate::core::algorithm::simulation::simulate_snowflake_with_locale(
         &crate::core::algorithm::simulation::DryRunInput {
             layout,
             worker_count: req.worker_count,
@@ -743,6 +747,7 @@ async fn handle_dry_run(
             duration_secs: req.duration_secs,
             random_start: req.random_start,
         },
+        locale.as_str(),
     );
     let _ = &state;
     Ok(Json(crate::server::models::DryRunReportResponse {
@@ -810,7 +815,12 @@ async fn handle_update_rate_limit(
     // handler 边界强制 `#[validate(range(min = 1, max = 1000000))]`
     // （防止越界值被 config service 静默接受）。
     validate_request(&req, locale)?;
-    Ok(Json(state.config_service.update_rate_limit(req).await))
+    Ok(Json(
+        state
+            .config_service
+            .update_rate_limit_localized(req, locale.as_str())
+            .await,
+    ))
 }
 
 async fn handle_update_logging(
@@ -820,13 +830,33 @@ async fn handle_update_logging(
 ) -> Result<Json<UpdateConfigResponse>, (StatusCode, Json<ErrorResponse>)> {
     // 转发前强制 `#[validate(length(min = 1, max = 20))]`。
     validate_request(&req, locale)?;
-    Ok(Json(state.config_service.update_logging(req).await))
+    Ok(Json(
+        state
+            .config_service
+            .update_logging_localized(req, locale.as_str())
+            .await,
+    ))
 }
 
 // 不用 #[axum::debug_handler]：axum 0.8 该 derive 宏生成 `::axum::` 绝对路径，
 // 要求 axum 为直接依赖，违反「axum 由 sdforge 接管」原则；签名的编译报错会更晦涩。
+/// English-default entry point for direct callers.
+#[cfg(test)]
 async fn handle_reload_config(State(state): State<NebulaIdState>) -> Json<UpdateConfigResponse> {
     Json(state.config_service.reload_config().await)
+}
+
+/// Locale-aware reload handler wired from `Accept-Language` via `locale_middleware`.
+async fn handle_reload_config_localized(
+    State(state): State<NebulaIdState>,
+    Extension(locale): Extension<Locale>,
+) -> Json<UpdateConfigResponse> {
+    Json(
+        state
+            .config_service
+            .reload_config_localized(locale.as_str())
+            .await,
+    )
 }
 
 async fn handle_set_algorithm(
@@ -836,7 +866,12 @@ async fn handle_set_algorithm(
 ) -> Result<Json<SetAlgorithmResponse>, (StatusCode, Json<ErrorResponse>)> {
     // 强制 `biz_tag`(1..=64) 与 `algorithm`(1..=20) 的 validate 约束。
     validate_request(&req, locale)?;
-    Ok(Json(state.config_service.set_algorithm(req).await))
+    Ok(Json(
+        state
+            .config_service
+            .set_algorithm_localized(req, locale.as_str())
+            .await,
+    ))
 }
 
 /// `/api/v1` 路由前缀清单（`:name`/`:id` 风格）：api-info parity 守卫的数据源，

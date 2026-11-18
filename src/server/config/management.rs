@@ -7,6 +7,7 @@ use crate::core::database::{
     CreateGroupRequest as CoreCreateGroupRequest,
     CreateWorkspaceRequest as CoreCreateWorkspaceRequest,
 };
+use crate::core::i18n::{translate_with_locale, translate_with_locale_args};
 use crate::core::types::id::AlgorithmType;
 use crate::server::models::{
     AlgorithmConfigInfo, CacheMetrics, ConfigResponse, ConnectionPoolMetrics, CreateGroupRequest,
@@ -36,6 +37,39 @@ pub trait ConfigManagementService: Send + Sync {
     async fn reload_config(&self) -> UpdateConfigResponse;
     async fn get_rate_limit_override(&self) -> Option<(u32, u32)>;
     async fn set_algorithm(&self, req: SetAlgorithmRequest) -> SetAlgorithmResponse;
+
+    // Locale-aware variants: the default delegates to the legacy method so that
+    // test mocks and minimal services keep their signatures. `ConfigManager`
+    // overrides these to translate response messages with the request locale
+    // wired from `router.rs`.
+    async fn update_rate_limit_localized(
+        &self,
+        req: UpdateRateLimitRequest,
+        locale: &str,
+    ) -> UpdateConfigResponse {
+        let _ = locale;
+        self.update_rate_limit(req).await
+    }
+    async fn update_logging_localized(
+        &self,
+        req: UpdateLoggingRequest,
+        locale: &str,
+    ) -> UpdateConfigResponse {
+        let _ = locale;
+        self.update_logging(req).await
+    }
+    async fn reload_config_localized(&self, locale: &str) -> UpdateConfigResponse {
+        let _ = locale;
+        self.reload_config().await
+    }
+    async fn set_algorithm_localized(
+        &self,
+        req: SetAlgorithmRequest,
+        locale: &str,
+    ) -> SetAlgorithmResponse {
+        let _ = locale;
+        self.set_algorithm(req).await
+    }
 
     async fn create_biz_tag(
         &self,
@@ -258,10 +292,22 @@ impl ConfigManagementService for ConfigManager {
     }
 
     async fn update_rate_limit(&self, req: UpdateRateLimitRequest) -> UpdateConfigResponse {
+        self.update_rate_limit_localized(req, "en").await
+    }
+
+    async fn update_rate_limit_localized(
+        &self,
+        req: UpdateRateLimitRequest,
+        locale: &str,
+    ) -> UpdateConfigResponse {
         if let Err(e) = req.validate() {
             return UpdateConfigResponse {
                 success: false,
-                message: format!("Validation error: {}", e),
+                message: translate_with_locale_args(
+                    locale,
+                    "api.error.validation_error",
+                    &[("error", e.to_string())],
+                ),
                 config: None,
             };
         }
@@ -279,7 +325,11 @@ impl ConfigManagementService for ConfigManager {
         if let Err(e) = config.validate() {
             return UpdateConfigResponse {
                 success: false,
-                message: format!("Validation error: {}", e),
+                message: translate_with_locale_args(
+                    locale,
+                    "api.error.validation_error",
+                    &[("error", e.to_string())],
+                ),
                 config: None,
             };
         }
@@ -299,16 +349,28 @@ impl ConfigManagementService for ConfigManager {
 
         UpdateConfigResponse {
             success: true,
-            message: "Rate limit configuration updated successfully".to_string(),
+            message: translate_with_locale(locale, "api.success.config.rate_limit_updated"),
             config: Some(Self::config_to_response(&config)),
         }
     }
 
     async fn update_logging(&self, req: UpdateLoggingRequest) -> UpdateConfigResponse {
+        self.update_logging_localized(req, "en").await
+    }
+
+    async fn update_logging_localized(
+        &self,
+        req: UpdateLoggingRequest,
+        locale: &str,
+    ) -> UpdateConfigResponse {
         if let Err(e) = req.validate() {
             return UpdateConfigResponse {
                 success: false,
-                message: format!("Validation error: {}", e),
+                message: translate_with_locale_args(
+                    locale,
+                    "api.error.validation_error",
+                    &[("error", e.to_string())],
+                ),
                 config: None,
             };
         }
@@ -323,21 +385,29 @@ impl ConfigManagementService for ConfigManager {
 
         UpdateConfigResponse {
             success: true,
-            message: "Logging configuration updated successfully".to_string(),
+            message: translate_with_locale(locale, "api.success.config.logging_updated"),
             config: Some(Self::config_to_response(&config)),
         }
     }
 
     async fn reload_config(&self) -> UpdateConfigResponse {
+        self.reload_config_localized("en").await
+    }
+
+    async fn reload_config_localized(&self, locale: &str) -> UpdateConfigResponse {
         match self.hot_config.reload_from_file().await {
             Ok(_) => UpdateConfigResponse {
                 success: true,
-                message: "Configuration reloaded from file successfully".to_string(),
+                message: translate_with_locale(locale, "api.success.config.reloaded"),
                 config: Some(Self::config_to_response(&self.hot_config.get_config())),
             },
             Err(e) => UpdateConfigResponse {
                 success: false,
-                message: format!("Failed to reload configuration: {}", e),
+                message: translate_with_locale_args(
+                    locale,
+                    "api.error.config.reload_failed",
+                    &[("error", e.to_string())],
+                ),
                 config: None,
             },
         }
@@ -349,12 +419,24 @@ impl ConfigManagementService for ConfigManager {
     }
 
     async fn set_algorithm(&self, req: SetAlgorithmRequest) -> SetAlgorithmResponse {
+        self.set_algorithm_localized(req, "en").await
+    }
+
+    async fn set_algorithm_localized(
+        &self,
+        req: SetAlgorithmRequest,
+        locale: &str,
+    ) -> SetAlgorithmResponse {
         if let Err(e) = req.validate() {
             return SetAlgorithmResponse {
                 success: false,
                 biz_tag: req.biz_tag.clone(),
                 algorithm: req.algorithm.clone(),
-                message: format!("Validation error: {}", e),
+                message: translate_with_locale_args(
+                    locale,
+                    "api.error.validation_error",
+                    &[("error", e.to_string())],
+                ),
             };
         }
 
@@ -366,9 +448,10 @@ impl ConfigManagementService for ConfigManager {
                     success: false,
                     biz_tag: req.biz_tag.clone(),
                     algorithm: req.algorithm.clone(),
-                    message: format!(
-                        "Invalid algorithm '{}'. Valid options: segment, snowflake, uuid_v8, uuid_v4, uuid_v7",
-                        req.algorithm
+                    message: translate_with_locale_args(
+                        locale,
+                        "api.error.config.invalid_algorithm",
+                        &[("algorithm", req.algorithm.clone())],
                     ),
                 };
             }
@@ -380,9 +463,13 @@ impl ConfigManagementService for ConfigManager {
             .set_algorithm(biz_tag.clone(), algorithm_type)
             .await;
 
-        let message = format!(
-            "Algorithm for biz_tag '{}' set to '{}' successfully",
-            biz_tag, algorithm
+        let message = translate_with_locale_args(
+            locale,
+            "api.success.config.algorithm_set",
+            &[
+                ("biz_tag", biz_tag.clone()),
+                ("algorithm", algorithm.clone()),
+            ],
         );
 
         SetAlgorithmResponse {

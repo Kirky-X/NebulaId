@@ -16,7 +16,7 @@
 #                 when the underlying CoreError String may carry sensitive
 #                 data — only the generic message reaches the client.
 # - log.* : tracing log messages (used by t!() macro, global locale)
-#           NOTE: T041之后，新增 tracing 日志应改为结构化字段而非 t!()
+#           NOTE: After T041, new tracing logs should use structured fields instead of t!()
 #           (see LOW L-5 fix). Existing log.* keys are preserved for
 #           backwards compatibility but should not be added to.
 
@@ -33,6 +33,15 @@ api-error-workspace_name_not_found = Workspace '{ $name }' not found
 api-error-workspace_not_found = Workspace not found
 api-error-invalid_workspace_id = Invalid workspace ID
 api-error-workspace_id_required = workspace_id is required for user keys
+
+# src/server/config/management.rs — config management response messages.
+# The validation_error key above is reused for the four validation failures.
+api-success-config-rate_limit_updated = Rate limit configuration updated successfully
+api-success-config-logging_updated = Logging configuration updated successfully
+api-success-config-reloaded = Configuration reloaded from file successfully
+api-error-config-reload_failed = Failed to reload configuration: { $error }
+api-error-config-invalid_algorithm = Invalid algorithm '{ $algorithm }'. Valid options: segment, snowflake, uuid_v8, uuid_v4, uuid_v7
+api-success-config-algorithm_set = Algorithm for biz_tag '{ $biz_tag }' set to '{ $algorithm }' successfully
 
 # Phase 4 v0.2.0-final-polish — handler-constructed error/success messages.
 # Used by t!() macro in src/server/handlers/*.rs to localize the inner
@@ -221,6 +230,8 @@ error-core-config-attribution-blank_workspace = attribution.protected_workspaces
 error-core-config-algorithm-high_requires_worker_bits = unpredictability = "high" requires worker_id_bits >= 8
 error-core-config-algorithm-high_requires_sequence_bits = unpredictability = "high" requires sequence_bits >= 6
 error-core-algorithm-simulation-invalid_layout = Invalid dry-run Snowflake layout: sequence_bits must be >= 1 and total bits < 64
+error-core-algorithm-simulation-recommended_layout = Increase sequence_bits (current capacity { $capacity }); worker_count={ $worker_count }
+error-core-algorithm-simulation-note = random_start=true: capacity halved (conservative expectation of a uniform start)
 
 # src/core/database/connection.rs
 log-core-database-connection-connecting = Connecting to { $engine } database, URL: { $url }
@@ -294,7 +305,7 @@ log-core-coordinator-etcd-release_refused_key_owned_by_other = Refusing to relea
 # src/core/coordinator/failover.rs
 log-core-coordinator-failover-dc_switched = Active datacenter switched from DC { $from } to DC { $to } after the primary was marked failed
 
-# 跨 DC 故障转移 / Operator / etcd 启动守卫（语义键，随 cloud-native-dr 交付）
+# Cross-DC failover / Operator / etcd startup guards (semantic keys, shipped with cloud-native-dr)
 dc-failover-switched = Failover switched the active datacenter to DC { $dc } after the previous one was marked failed
 operator-cluster-not-ready = NebulaIdCluster '{ $cluster }' is not ready yet; waiting for per-DC workloads to become healthy
 startup-etcd-endpoints-without-feature = Cluster '{ $cluster }' configures etcd endpoints but this build has no etcd feature; refusing to start instead of falling back to a local lock
@@ -706,6 +717,7 @@ error-detail-segment_loader_not_configured = Segment algorithm has no data sourc
 # three-state checks resolved via `t!` (process default locale). The example
 # CLI never calls init_i18n, so the en bundle applies — no Chinese default.
 log-sdk-posture_announced = sdk: security posture announced
+sdk-posture-summary = { $enabled }/{ $total } security capabilities enabled
 sdk-posture-check-auth-detail = API key verification is active only in the server stack with garrison-auth; pure-algorithm embedding has no authentication.
 sdk-posture-check-rate-limit-detail = Rate limiting is a server-only capability; the SDK has no HTTP middleware. The embedder must apply its own limits.
 sdk-posture-check-audit-detail = Generation events are written to the audit chain only when the server audit logger is present or injected into the kit.

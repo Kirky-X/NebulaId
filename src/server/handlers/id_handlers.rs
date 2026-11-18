@@ -5,8 +5,9 @@
 
 use crate::core::{CoreError, Id, Result};
 use crate::server::models::{
-    BatchGenerateRequest, BatchGenerateResponse, ErrorResponse, GenerateRequest, GenerateResponse,
-    IdMetadataResponse, ParseRequest, ParseResponse,
+    BatchGenerateRequest, BatchGenerateResponse, DryRunReportResponse, DryRunRequest,
+    ErrorResponse, GenerateRequest, GenerateResponse, IdMetadataResponse, ParseRequest,
+    ParseResponse,
 };
 use std::sync::atomic::Ordering;
 
@@ -433,6 +434,20 @@ pub fn batch_generate_docs() {}
     )
 )]
 pub fn parse_docs() {}
+
+/// OpenAPI 注解载体：`POST /api/v1/generate/dry-run`（实际 handler：`router::handle_dry_run`）。
+#[utoipa::path(
+    post,
+    path = "/api/v1/generate/dry-run",
+    tag = "id",
+    request_body = DryRunRequest,
+    responses(
+        (status = 200, description = "Capacity dry-run report", body = DryRunReportResponse),
+        (status = 400, description = "Invalid layout parameters", body = ErrorResponse),
+        (status = 401, description = "Missing/invalid API Key", body = ErrorResponse),
+    )
+)]
+pub fn dry_run_docs() {}
 
 #[cfg(test)]
 mod tests {

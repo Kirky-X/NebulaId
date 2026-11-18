@@ -82,6 +82,7 @@ use crate::server::models::{
         crate::server::handlers::id_handlers::generate_docs,
         crate::server::handlers::id_handlers::batch_generate_docs,
         crate::server::handlers::id_handlers::parse_docs,
+        crate::server::handlers::id_handlers::dry_run_docs,
         // config（注解载体见 handlers/system_handlers.rs）
         crate::server::handlers::system_handlers::get_config_docs,
         crate::server::handlers::system_handlers::update_rate_limit_docs,

@@ -862,6 +862,7 @@ async fn handle_api_info() -> Json<ApiInfoResponse> {
             "GET /api/v1 - API information".to_string(),
             "POST /api/v1/generate - Generate ID".to_string(),
             "POST /api/v1/generate/batch - Batch generate IDs".to_string(),
+            "POST /api/v1/generate/dry-run - Snowflake capacity dry-run (admin)".to_string(),
             "POST /api/v1/parse - Parse ID".to_string(),
             "GET /api/v1/config - Get configuration".to_string(),
             "POST /api/v1/config/rate-limit - Update rate limit".to_string(),

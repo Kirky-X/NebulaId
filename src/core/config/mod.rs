@@ -29,7 +29,8 @@ pub mod tls;
 
 // Re-export 公开类型以保持向后兼容（下游引用 `crate::core::config::NebulaIdConfig` 等）
 pub use algorithm::{
-    AlgorithmConfig, SegmentAlgorithmConfig, SnowflakeAlgorithmConfig, UuidV8Config,
+    AlgorithmConfig, SegmentAlgorithmConfig, SnowflakeAlgorithmConfig, UnpredictabilityProfile,
+    UuidV8Config,
 };
 pub use app::{DatabaseConfig, DatabaseEngine, EtcdConfig, NebulaIdConfig};
 pub use app_config::resolve_startup_config;

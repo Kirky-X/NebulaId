@@ -67,6 +67,15 @@ impl ObfuscationConfig {
     }
 }
 
+/// 不可预测性强度声明；Basic 为现状（序列号毫秒内从 0 严格递增）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UnpredictabilityProfile {
+    #[default]
+    Basic,
+    High,
+}
+
 /// Snowflake algorithm configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -87,6 +96,9 @@ pub struct SnowflakeAlgorithmConfig {
     /// 文件系统需指定可写目录或配合 state_guard=false）。
     #[serde(default)]
     pub state_dir: Option<String>,
+    /// 不可预测性强度声明；High 隐含启用毫秒内序列号随机起点。
+    #[serde(default)]
+    pub unpredictability: UnpredictabilityProfile,
 }
 
 fn default_true() -> bool {
@@ -120,6 +132,7 @@ impl Default for SnowflakeAlgorithmConfig {
             clock_drift_threshold_ms: 1000,
             state_guard: true,
             state_dir: None,
+            unpredictability: UnpredictabilityProfile::Basic,
         }
     }
 }
@@ -230,5 +243,21 @@ mod tests {
         assert_eq!(config.worker_id_mask(), 0xFF);
         assert_eq!(config.sequence_mask(), 0x3FF);
         assert_eq!(config.timestamp_bits(), 43);
+    }
+    /// 缺省 → Basic；显式 high → High；未知档位字符串报反序列化错误（R-snowflake-301）。
+    #[test]
+    fn test_unpredictability_profile_deserialization() {
+        let base = "datacenter_id_bits = 3\nworker_id_bits = 8\nsequence_bits = 10\nclock_drift_threshold_ms = 1000\n";
+        let default: SnowflakeAlgorithmConfig = toml::from_str(base).expect("缺省档位应可解析");
+        assert_eq!(default.unpredictability, UnpredictabilityProfile::Basic);
+
+        let high: SnowflakeAlgorithmConfig =
+            toml::from_str(&format!("{base}unpredictability = \"high\"\n"))
+                .expect("high 档位应可解析");
+        assert_eq!(high.unpredictability, UnpredictabilityProfile::High);
+
+        let invalid: Result<SnowflakeAlgorithmConfig, _> =
+            toml::from_str(&format!("{base}unpredictability = \"ultra\"\n"));
+        assert!(invalid.is_err(), "未知档位必须报反序列化错误");
     }
 }

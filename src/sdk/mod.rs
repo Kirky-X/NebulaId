@@ -3,8 +3,10 @@
 
 //! 嵌入式 SDK（trait-kit Kit 范式装配，feature `sdk` 门控）。
 //!
-//! 本 `mod.rs` 只做模块声明与 re-export，实现位于 [`kit`]。
+//! 本 `mod.rs` 只做模块声明与 re-export，实现位于 [`kit`] 与 [`posture`]。
 
 pub mod kit;
+pub mod posture;
 
 pub use kit::{IdGenerator, NebulaIdKit, NebulaIdKitBuilder};
+pub use posture::{PostureCheck, PostureStatus, SecurityPostureReport};

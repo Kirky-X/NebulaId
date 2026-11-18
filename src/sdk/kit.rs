@@ -451,6 +451,16 @@ impl NebulaIdKit {
         })
     }
 
+    /// 盘点当前安全姿态（纯配置读取，随时可调，零 IO）。
+    /// Ready Kit 的 TypeMap 恒含 Config（build 注入），缺失是装配不变量破坏，显性报错。
+    pub fn security_posture(&self) -> crate::sdk::posture::SecurityPostureReport {
+        let config = self
+            .inner()
+            .config::<Config>()
+            .expect(&t!("error.sdk.assembly_config_missing", reason = "Config"));
+        crate::sdk::posture::assess(&config)
+    }
+
     /// 各算法健康状态快照（直调 router）。
     /// Ready Kit 上 RouterModule 必然存在，`expect` 是内部不变量断言（显性失败，不吞错）。
     pub async fn health_check(&self) -> Vec<(AlgorithmType, crate::core::types::HealthStatus)> {
@@ -632,6 +642,28 @@ mod tests {
     use super::*;
     use crate::core::algorithm::GenerateContext;
     use crate::core::config::Config;
+    use crate::sdk::posture::PostureStatus;
+
+    /// Ready Kit 暴露六项安全姿态检查，名称无重复且顺序固定。
+    #[cfg(any(feature = "snowflake", feature = "uuid-v8"))]
+    #[tokio::test]
+    async fn test_kit_security_posture_reports_six_unique_checks() {
+        let kit = NebulaIdKitBuilder::new(local_config())
+            .build()
+            .await
+            .expect("build 必须成功");
+        let report = kit.security_posture();
+        assert_eq!(report.checks.len(), 6, "恒产出 design 六项检查");
+        let mut names: Vec<&str> = report.checks.iter().map(|c| c.name).collect();
+        names.sort_unstable();
+        let mut deduped = names.clone();
+        deduped.dedup();
+        assert_eq!(names, deduped, "检查项名称不得重复");
+        assert!(report
+            .checks
+            .iter()
+            .any(|c| c.status == PostureStatus::Undeclared));
+    }
 
     /// 默认 Config 下 build 成功返回 Ready Kit，TypeMap 已注入 Config 与 audit_logger。
     #[cfg(any(feature = "snowflake", feature = "uuid-v8"))]

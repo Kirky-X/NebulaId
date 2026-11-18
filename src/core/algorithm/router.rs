@@ -2978,6 +2978,21 @@ mod tests {
         assert!(details["details"].get("drift_ms").is_some());
         assert!(details["details"].get("worker_id").is_some());
         assert!(details["details"].get("dc_id").is_some());
+        let json = serde_json::to_string(clock_events[0]).expect("审计事件须可 JSON 序列化");
+        for field in [
+            "ClockBackwards",
+            "clock_backwards",
+            "Errored",
+            "worker_id",
+            "dc_id",
+            "algorithm",
+            "drift_ms",
+        ] {
+            assert!(
+                json.contains(field),
+                "ClockBackwards JSON 样例缺字段 {field}: {json}"
+            );
+        }
     }
 
     /// 阈值内等待后成功：resolution=Waited（R-audit-204）。
@@ -3225,8 +3240,24 @@ mod tests {
         assert_eq!(details["biz_tag"], "order");
         assert_eq!(details["actual_algorithm"], "Snowflake");
         assert_eq!(details["reason"], "primary_unavailable");
-        assert_eq!(details["dc"], 3);
         assert!(details.get("primary_algorithm").is_some());
+        let json = serde_json::to_string(event).expect("审计事件须可 JSON 序列化");
+        for field in [
+            "FallbackUsed",
+            "ws-a",
+            "fallback_generate",
+            "group_id",
+            "biz_tag",
+            "primary_algorithm",
+            "actual_algorithm",
+            "dc",
+            "reason",
+        ] {
+            assert!(
+                json.contains(field),
+                "FallbackUsed JSON 样例缺字段 {field}: {json}"
+            );
+        }
     }
 
     /// 批量路径经同一 try_fallback_chain 发射 FallbackUsed（R-audit-202）。

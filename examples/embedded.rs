@@ -36,6 +36,18 @@ async fn main() -> nebulaid::core::Result<()> {
         println!("{id}");
     }
 
+    println!("-- security posture --");
+    let report = kit.security_posture();
+    for check in &report.checks {
+        let symbol = match check.status {
+            nebulaid::sdk::PostureStatus::Enabled => '✓',
+            nebulaid::sdk::PostureStatus::Disabled => '✗',
+            nebulaid::sdk::PostureStatus::Undeclared => '!',
+        };
+        println!("{symbol} {} — {}", check.name, check.detail);
+    }
+    println!("summary: {}", report.summary());
+
     kit.shutdown().await;
     Ok(())
 }

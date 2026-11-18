@@ -10,6 +10,7 @@ use crate::core::algorithm::{
 use crate::core::config::{Config, SnowflakeAlgorithmConfig};
 use crate::core::types::{AlgorithmType, CoreError, Id, IdBatch, Result};
 use async_trait::async_trait;
+use rand::RngExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -409,15 +410,23 @@ impl SnowflakeAlgorithm {
             }
 
             if timestamp > last_ts {
-                // 新毫秒：从 seq 0 起预留 take 个（take <= mask 保证可编码）。
+                // 新毫秒：预留 take 个（start + take <= mask 保证耗尽哨兵不入号）。
+                // High 档用 CSPRNG 随机起点，Basic 档保持从 0 起（逐位兼容）。
                 let take = count.min(seq_mask);
-                let new_state = self.pack_state(timestamp, take);
+                let start = if self.config.unpredictability
+                    == crate::core::config::UnpredictabilityProfile::High
+                {
+                    rand::rng().random_range(0..=(seq_mask - take))
+                } else {
+                    0
+                };
+                let new_state = self.pack_state(timestamp, start + take);
                 if self
                     .state
                     .compare_exchange(state, new_state, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
                 {
-                    return Ok((timestamp, 0, take));
+                    return Ok((timestamp, start, take));
                 }
                 continue;
             }
@@ -1323,5 +1332,43 @@ mod tests {
         assert_eq!(layout.worker_id_bits, 8);
         assert_eq!(layout.sequence_bits, 10);
         assert_eq!(layout.timestamp_bits, 43);
+    }
+}
+
+#[cfg(all(test, feature = "snowflake"))]
+mod unpredictability_tests {
+    use super::*;
+    use crate::core::config::UnpredictabilityProfile;
+
+    /// Basic 档新毫秒起点恒 0（逐位兼容既有部署）；High 档起点来自 CSPRNG，
+    /// 连续多个新毫秒的起点不会全为 0，且 start+take 恒不超过 mask（R-snowflake-303）。
+    #[tokio::test]
+    async fn test_high_profile_random_start_within_mask() {
+        let mut algo = SnowflakeAlgorithm::new(0, 1);
+        algo.config.unpredictability = UnpredictabilityProfile::High;
+        let mask = algo.config.sequence_mask();
+
+        let mut starts = Vec::new();
+        for _ in 0..8 {
+            let (_, start, take) = algo.reserve(1).await.expect("reserve 应成功");
+            assert!(start + take <= mask, "随机起点不得占用耗尽哨兵");
+            starts.push(start);
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        assert!(
+            starts.iter().any(|s| *s > 0),
+            "High 档连续新毫秒起点不应全为 0: {starts:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_basic_profile_start_always_zero() {
+        let algo = SnowflakeAlgorithm::new(0, 2);
+        assert_eq!(algo.config.unpredictability, UnpredictabilityProfile::Basic);
+        for _ in 0..3 {
+            let (_, start, _) = algo.reserve(1).await.expect("reserve 应成功");
+            assert_eq!(start, 0);
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
     }
 }

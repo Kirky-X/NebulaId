@@ -5,9 +5,9 @@
 
 use super::audit::AuditConfig;
 use super::{
-    AlgorithmConfig, AuthConfig, BatchGenerateConfig, ConfigError, ConfigResult, DatabaseConfig,
-    EtcdConfig, LogLevel, LoggingConfig, MonitoringConfig, NebulaIdConfig, RateLimitConfig,
-    RedisConfig, TlsConfig,
+    AlgorithmConfig, AttributionConfig, AuthConfig, BatchGenerateConfig, ConfigError, ConfigResult,
+    DatabaseConfig, EtcdConfig, LogLevel, LoggingConfig, MonitoringConfig, NebulaIdConfig,
+    RateLimitConfig, RedisConfig, TlsConfig,
 };
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -47,6 +47,9 @@ pub struct Config {
     /// 审计持久化设置（内存容量独立配置，生产默认文件持久化）
     #[serde(default)]
     pub audit: AuditConfig,
+    /// 归属强制配置（默认关闭，既有配置文件零改动兼容）。
+    #[serde(default)]
+    pub attribution: AttributionConfig,
     /// 热更新设置（auto_watch_enabled 默认 false，缺省时零行为变化）
     #[serde(default)]
     pub hot_reload: HotReloadSettings,

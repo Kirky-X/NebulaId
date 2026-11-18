@@ -1563,3 +1563,30 @@ mod tests {
         assert!(req.validate().is_err());
     }
 }
+
+/// 容量预演请求（Snowflake 假设位布局与流量参数）。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DryRunRequest {
+    pub datacenter_id_bits: u8,
+    pub worker_id_bits: u8,
+    pub sequence_bits: u8,
+    #[serde(default)]
+    pub worker_count: u32,
+    pub rps: f64,
+    pub duration_secs: u64,
+    #[serde(default)]
+    pub random_start: bool,
+}
+
+/// 容量预演报告响应（字段与 core DryRunReport 一一对应）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+pub struct DryRunReportResponse {
+    pub model: String,
+    pub capacity_per_ms: u64,
+    pub capacity_per_window: u64,
+    pub demand_estimate: u64,
+    pub projected_exhaustions: u64,
+    pub exhaustion_probability: f64,
+    pub recommended_layout: Option<String>,
+    pub note: Option<String>,
+}

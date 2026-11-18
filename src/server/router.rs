@@ -345,6 +345,8 @@ pub async fn create_router_with_rate_limit(
         .route("/config/logging", post(handle_update_logging))
         .route("/config/reload", post(handle_reload_config))
         .route("/config/algorithm", post(handle_set_algorithm))
+        // 容量预演（Admin 只读预演，不触碰运行时状态）
+        .route("/generate/dry-run", post(handle_dry_run))
         // 先接 admin 层、后接 auth 层（axum 0.8 后 layer 者先执行），
         // 保证 auth 先运行并注入 ApiKeyRole 扩展。
         .layer(axum::middleware::from_fn(
@@ -696,6 +698,62 @@ async fn handle_metrics(State(state): State<NebulaIdState>) -> axum::response::R
         body,
     )
         .into_response()
+}
+
+/// 预演位布局合法性：总位宽 < 64 且 sequence_bits ≥ 1。
+fn dry_run_layout(
+    req: &crate::server::models::DryRunRequest,
+) -> Option<crate::core::algorithm::SnowflakeLayoutInfo> {
+    let total = u32::from(req.datacenter_id_bits)
+        .saturating_add(u32::from(req.worker_id_bits))
+        .saturating_add(u32::from(req.sequence_bits));
+    if total >= 64 || req.sequence_bits == 0 {
+        return None;
+    }
+    Some(crate::core::algorithm::SnowflakeLayoutInfo {
+        timestamp_bits: (64 - total) as u8,
+        datacenter_id_bits: req.datacenter_id_bits,
+        worker_id_bits: req.worker_id_bits,
+        sequence_bits: req.sequence_bits,
+    })
+}
+
+/// 容量预演：假设位布局与流量参数，返回纯函数估算报告（Admin only）。
+async fn handle_dry_run(
+    State(state): State<NebulaIdState>,
+    Extension(_locale): Extension<Locale>,
+    Json(req): Json<crate::server::models::DryRunRequest>,
+) -> Result<Json<crate::server::models::DryRunReportResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let layout = dry_run_layout(&req).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                StatusCode::BAD_REQUEST.as_u16() as i32,
+                crate::server::models::ApiErrorCode::InvalidInput,
+                t!("error.core.algorithm.simulation.invalid_layout"),
+            )),
+        )
+    })?;
+    let report = crate::core::algorithm::simulation::simulate_snowflake(
+        &crate::core::algorithm::simulation::DryRunInput {
+            layout,
+            worker_count: req.worker_count,
+            rps: req.rps,
+            duration_secs: req.duration_secs,
+            random_start: req.random_start,
+        },
+    );
+    let _ = &state;
+    Ok(Json(crate::server::models::DryRunReportResponse {
+        model: report.model.to_string(),
+        capacity_per_ms: report.capacity_per_ms,
+        capacity_per_window: report.capacity_per_window,
+        demand_estimate: report.demand_estimate,
+        projected_exhaustions: report.projected_exhaustions,
+        exhaustion_probability: report.exhaustion_probability,
+        recommended_layout: report.recommended_layout,
+        note: report.note,
+    }))
 }
 
 async fn handle_parse(
@@ -4114,5 +4172,32 @@ mod tests {
         .await;
         let resp = result.expect("归属匹配的建 group 必须成功");
         assert_eq!(resp.0.name, "test-group");
+    }
+    #[test]
+    fn test_dry_run_layout_validation() {
+        use crate::server::models::DryRunRequest;
+        let base = DryRunRequest {
+            datacenter_id_bits: 3,
+            worker_id_bits: 8,
+            sequence_bits: 10,
+            worker_count: 1,
+            rps: 50_000.0,
+            duration_secs: 1,
+            random_start: false,
+        };
+        let layout = dry_run_layout(&base).expect("合法布局");
+        assert_eq!(layout.sequence_bits, 10);
+        assert_eq!(layout.timestamp_bits, 43);
+
+        let invalid = DryRunRequest {
+            sequence_bits: 0,
+            ..base.clone()
+        };
+        assert!(dry_run_layout(&invalid).is_none());
+        let too_wide = DryRunRequest {
+            worker_id_bits: 60,
+            ..base
+        };
+        assert!(dry_run_layout(&too_wide).is_none());
     }
 }

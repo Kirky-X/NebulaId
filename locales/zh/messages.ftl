@@ -216,6 +216,7 @@ error-core-config-attribution-blank_workspace = attribution.protected_workspaces
 # High 档不可预测性参数下限
 error-core-config-algorithm-high_requires_worker_bits = unpredictability = "high" 要求 worker_id_bits >= 8
 error-core-config-algorithm-high_requires_sequence_bits = unpredictability = "high" 要求 sequence_bits >= 6
+error-core-algorithm-simulation-invalid_layout = 容量预演的 Snowflake 位布局非法：sequence_bits 至少为 1 且总位宽小于 64
 
 # src/core/database/connection.rs
 log-core-database-connection-connecting = 正在连接 { $engine } 数据库，URL：{ $url }

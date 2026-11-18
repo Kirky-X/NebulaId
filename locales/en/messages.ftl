@@ -220,6 +220,7 @@ error-core-config-attribution-blank_workspace = attribution.protected_workspaces
 # Unpredictability High profile parameter gates
 error-core-config-algorithm-high_requires_worker_bits = unpredictability = "high" requires worker_id_bits >= 8
 error-core-config-algorithm-high_requires_sequence_bits = unpredictability = "high" requires sequence_bits >= 6
+error-core-algorithm-simulation-invalid_layout = Invalid dry-run Snowflake layout: sequence_bits must be >= 1 and total bits < 64
 
 # src/core/database/connection.rs
 log-core-database-connection-connecting = Connecting to { $engine } database, URL: { $url }

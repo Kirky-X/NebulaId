@@ -7,6 +7,8 @@ pub mod router;
 #[cfg(feature = "segment")]
 pub(crate) mod segment;
 #[cfg(feature = "snowflake")]
+pub mod simulation;
+#[cfg(feature = "snowflake")]
 pub(crate) mod snowflake;
 #[cfg(feature = "snowflake")]
 pub(crate) mod snowflake_state;

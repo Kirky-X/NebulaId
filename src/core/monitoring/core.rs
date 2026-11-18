@@ -242,7 +242,11 @@ impl Default for AlertingConfig {
         Self {
             enabled: false,
             evaluation_interval_ms: DEFAULT_EVALUATION_INTERVAL_MS,
-            rules: Vec::new(),
+            rules: vec![AlertRule::new(
+                "clock_backwards_spike",
+                "clock_backwards > 3",
+                AlertSeverity::Critical,
+            )],
             channels: Vec::new(),
             global_labels: HashMap::new(),
         }
@@ -457,6 +461,64 @@ impl AlertEvaluator for DefaultEvaluator {
                 (false, None)
             }
         }
+    }
+}
+
+/// 带窗口状态的服务端告警评估器：`clock_backwards > N` 按自上次评估以来的
+/// 增量比较（累计值不适合阈值告警）；其余表达式原样委托 [`DefaultEvaluator`]。
+#[cfg(feature = "alerting")]
+pub struct WindowedEvaluator {
+    baselines: std::sync::RwLock<std::collections::HashMap<String, u64>>,
+    inner: DefaultEvaluator,
+}
+
+#[cfg(feature = "alerting")]
+impl WindowedEvaluator {
+    pub fn new() -> Self {
+        Self {
+            baselines: std::sync::RwLock::new(std::collections::HashMap::new()),
+            inner: DefaultEvaluator,
+        }
+    }
+}
+
+#[cfg(feature = "alerting")]
+impl Default for WindowedEvaluator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(feature = "alerting")]
+impl AlertEvaluator for WindowedEvaluator {
+    fn evaluate(&self, rule: &AlertRule, metrics: &GlobalMetrics) -> (bool, Option<String>) {
+        let expr = rule.expression.trim();
+        let threshold = if let Some(rest) = expr.strip_prefix("clock_backwards > ") {
+            rest.trim().parse::<u64>().ok()
+        } else {
+            None
+        };
+        let Some(threshold) = threshold else {
+            return self.inner.evaluate(rule, metrics);
+        };
+
+        let current = metrics
+            .algorithms
+            .read()
+            .values()
+            .map(|m| m.get_clock_backwards())
+            .max()
+            .unwrap_or(0);
+        let previous = *self.baselines.read().unwrap().get(&rule.name).unwrap_or(&0);
+        self.baselines
+            .write()
+            .unwrap()
+            .insert(rule.name.clone(), current);
+        let delta = current.saturating_sub(previous);
+        (
+            delta >= threshold,
+            Some(format!("clock_backwards_delta: {}", delta)),
+        )
     }
 }
 
@@ -753,7 +815,7 @@ impl AlertManager {
             alerts_tx,
             notification_sender,
             metrics,
-            evaluator: Arc::new(DefaultEvaluator),
+            evaluator: Arc::new(WindowedEvaluator::new()),
             running: Arc::new(AtomicBool::new(false)),
             eval_interval: Duration::from_millis(DEFAULT_EVALUATION_INTERVAL_MS),
             shutdown_rx,
@@ -1422,7 +1484,8 @@ mod tests {
         let c = AlertingConfig::default();
         assert!(!c.enabled);
         assert_eq!(c.evaluation_interval_ms, DEFAULT_EVALUATION_INTERVAL_MS);
-        assert!(c.rules.is_empty());
+        assert_eq!(c.rules.len(), 1);
+        assert_eq!(c.rules[0].name, "clock_backwards_spike");
         assert!(c.channels.is_empty());
         assert!(c.global_labels.is_empty());
     }
@@ -2491,9 +2554,10 @@ mod tests {
     }
 
     #[test]
-    fn test_alert_manager_new_with_empty_rules_has_no_states() {
+    fn test_alert_manager_new_with_default_rules_registers_state() {
         let (manager, _rx) = make_test_manager_with_config(AlertingConfig::default());
-        assert_eq!(manager.get_all_states().len(), 0);
+        assert_eq!(manager.get_all_states().len(), 1);
+        assert!(manager.get_state("clock_backwards_spike").is_some());
     }
 
     // start
@@ -3158,5 +3222,48 @@ mod tests {
         let (firing, value) = evaluate_expression("bogus_expression", &metrics);
         assert!(!firing);
         assert!(value.is_none());
+    }
+}
+
+#[cfg(all(test, feature = "alerting"))]
+mod clock_backwards_spike_tests {
+    use super::*;
+
+    #[test]
+    fn test_clock_backwards_spike_evaluates_window_delta() {
+        let evaluator = WindowedEvaluator::new();
+        let metrics = GlobalMetrics::new();
+        let alg = metrics.get_or_create_metrics(crate::core::types::AlgorithmType::Snowflake);
+        let rule = AlertRule::new(
+            "clock_backwards_spike",
+            "clock_backwards > 3",
+            AlertSeverity::Critical,
+        );
+
+        // 第一次评估：累计 10，基线 0 → 增量 10 ≥ 3 → firing。
+        for _ in 0..10 {
+            alg.record_clock_backward();
+        }
+        let (firing, value) = evaluator.evaluate(&rule, &metrics);
+        assert!(firing, "窗口增量 10 应触发: {value:?}");
+        assert_eq!(value.as_deref(), Some("clock_backwards_delta: 10"));
+
+        // 第二次评估：无新回拨，增量 0 → 不 firing（累计值仍为 10）。
+        let (firing, _) = evaluator.evaluate(&rule, &metrics);
+        assert!(!firing, "无新回拨时不得因累计值继续 firing");
+
+        // 增量 2 < 3 → 不 firing。
+        alg.record_clock_backward();
+        alg.record_clock_backward();
+        let (firing, _) = evaluator.evaluate(&rule, &metrics);
+        assert!(!firing, "增量 2 小于阈值 3 不得触发");
+
+        // 自上次评估起增量 3 → firing（基线每次评估都更新）。
+        for _ in 0..3 {
+            alg.record_clock_backward();
+        }
+        let (firing, value) = evaluator.evaluate(&rule, &metrics);
+        assert!(firing);
+        assert_eq!(value.as_deref(), Some("clock_backwards_delta: 3"));
     }
 }

@@ -686,6 +686,16 @@ error-sdk-etcd_feature_required = 已配置 etcd 端点（{ $endpoints }），�
 log-sdk-audit_logger_injection_confirmed = sdk: audit_logger 注入确认
 error-detail-segment_loader_not_configured = Segment 算法未接通数据源，需在装配处注入 DbSegmentLoader（SegmentRepository::allocate_segment）
 
+# src/sdk/posture.rs —— SDK 安全姿态报告（feature `sdk`）。六项三态检查
+# 均经 `t!` 取值（进程默认 locale）。示例 CLI 未调用 init_i18n，恒取 en 束。
+log-sdk-posture_announced = sdk: 安全姿态已声明
+sdk-posture-check-auth-detail = API key 认证仅在 server 栈且启用 garrison-auth 时在场；纯算法嵌入形态无认证。
+sdk-posture-check-rate-limit-detail = 限流是 server-only 能力，SDK 无 HTTP 中间件；嵌入方须自行施加限流。
+sdk-posture-check-audit-detail = 仅当 server 审计链在场或向 kit 注入审计日志器时，发号事件才写入审计链。
+sdk-posture-check-tls-detail = TLS 由 server 传输层提供；SDK 嵌入方自带传输层安全责任。
+sdk-posture-check-tenant-context-detail = UUID v8 携带 16 位租户 shard；启用 uuid-v8 feature 与配置即得租户上下文。
+sdk-posture-check-unpredictability-detail = 未声明不可预测性强度；Snowflake 序列号每毫秒从 0 起，可被外部观测。
+
 # examples/sdk_server.rs —— SDK 服务器示例二进制：启动横幅路由表与
 # IdGenerator 未初始化的 panic 文案，均经 `t!` 取值（进程默认 locale）。
 # 示例未调用 init_i18n，恒取 i18n 默认 en，无中文硬编码默认值。

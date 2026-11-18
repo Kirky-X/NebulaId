@@ -694,6 +694,17 @@ error-sdk-etcd_feature_required = etcd endpoints are configured ({ $endpoints })
 log-sdk-audit_logger_injection_confirmed = sdk: audit_logger injection confirmed
 error-detail-segment_loader_not_configured = Segment algorithm has no data source wired; inject DbSegmentLoader (SegmentRepository::allocate_segment) at the assembly site
 
+# src/sdk/posture.rs — SDK security posture report (feature `sdk`). Six
+# three-state checks resolved via `t!` (process default locale). The example
+# CLI never calls init_i18n, so the en bundle applies — no Chinese default.
+log-sdk-posture_announced = sdk: security posture announced
+sdk-posture-check-auth-detail = API key verification is active only in the server stack with garrison-auth; pure-algorithm embedding has no authentication.
+sdk-posture-check-rate-limit-detail = Rate limiting is a server-only capability; the SDK has no HTTP middleware. The embedder must apply its own limits.
+sdk-posture-check-audit-detail = Generation events are written to the audit chain only when the server audit logger is present or injected into the kit.
+sdk-posture-check-tls-detail = TLS is provided by the server transport layer; an SDK embedder owns transport security itself.
+sdk-posture-check-tenant-context-detail = UUID v8 carries a 16-bit tenant shard; enable the uuid-v8 feature and its config for tenant context.
+sdk-posture-check-unpredictability-detail = No unpredictability profile is declared; the snowflake sequence starts at 0 per millisecond and is observable.
+
 # examples/sdk_server.rs — SDK-server example binary: startup banner route
 # table and the IdGenerator-not-initialized panic message. Both resolve
 # through `t!` (process default locale). The example never calls

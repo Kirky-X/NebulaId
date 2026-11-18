@@ -74,6 +74,49 @@ fn fast_rand_26() -> u64 {
     (t ^ (t >> 27)).wrapping_mul(0x2545F4914F6CDD1D) & RAND_MASK
 }
 
+/// UUID v8 位段反解产物（与生成路径打包顺序严格互逆）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedUuidV8Id {
+    pub timestamp_ms: u64,
+    pub dc_id: u8,
+    pub worker_id: u8,
+    /// counter 为 COUNTER_HI + COUNTER_LO 共 21 位，u16 无法承载。
+    pub counter: u32,
+    pub shard: u16,
+    pub rand: u32,
+}
+
+/// UUID v8 位布局反解（feature `uuid-v8`）。
+pub struct UuidV8LayoutInfo;
+
+impl UuidV8LayoutInfo {
+    /// 与 `generate_inner` 的打包顺序严格互逆。
+    pub fn parse(value: u128) -> ParsedUuidV8Id {
+        let timestamp_ms = (value >> 80) as u64;
+        let custom_b = ((value >> 64) & 0xFFF) as u64;
+        let dc_id = (custom_b >> (COUNTER_HI_BITS + NODE_WORKER_BITS)) as u8;
+        let worker_id = ((custom_b >> COUNTER_HI_BITS) & NODE_WORKER_MAX) as u8;
+        let counter_hi = custom_b & 0x1;
+
+        // custom_c 的高 6 位在 variant 字段的 bits 62..56；低 56 位在 node 字段。
+        let custom_c_high = ((value >> 56) & 0x3F) as u64;
+        let custom_c_low = (value & 0x00FF_FFFF_FFFF_FFFF) as u64;
+        let custom_c = (custom_c_high << 56) | custom_c_low;
+        let shard = (custom_c >> (COUNTER_LO_BITS + RAND_BITS)) as u16;
+        let counter_lo = ((custom_c >> RAND_BITS) & COUNTER_LO_MASK) as u32;
+        let rand = (custom_c & RAND_MASK) as u32;
+
+        ParsedUuidV8Id {
+            timestamp_ms,
+            dc_id,
+            worker_id,
+            counter: ((counter_hi as u32) << COUNTER_LO_BITS) | counter_lo,
+            shard,
+            rand,
+        }
+    }
+}
+
 /// 时间有序 v8 UUID 算法实现。
 pub struct UuidV8Impl {
     last_timestamp: AtomicU64,
@@ -508,5 +551,46 @@ mod tests {
         let algo = UuidV8Impl::new_with_source(0, 0, 1000, RandomSource::Timer);
         let id = algo.generate(&ctx()).await.expect("生成成功");
         assert!(id.as_u128() > 0);
+    }
+}
+
+#[cfg(all(test, feature = "uuid-v8"))]
+mod layout_parse_tests {
+    use super::*;
+
+    /// 生成 → as_u128 → parse roundtrip：全部位段严格互逆（R-observability-401）。
+    /// counter 为 21 位（COUNTER_HI+LO），用 u32 承载（design 中 u16 不足以容纳）。
+    #[tokio::test]
+    async fn test_parse_roundtrip_all_fields() {
+        let algo = UuidV8Impl::new(3, 200, 1000);
+        let c = GenerateContext {
+            workspace_id: "ws-x".to_string(),
+            group_id: "grp".to_string(),
+            biz_tag: "bt".to_string(),
+            ..GenerateContext::default()
+        };
+        let id = algo.generate(&c).await.expect("生成成功");
+        let parsed = UuidV8LayoutInfo::parse(id.as_u128());
+        assert_eq!(parsed.dc_id, 3);
+        assert_eq!(parsed.worker_id, 200);
+        assert_eq!(parsed.shard, shard_of("ws-x", "grp", "bt") as u16);
+        assert!(parsed.counter <= COUNTER_TOTAL_MASK as u32);
+        assert!(parsed.rand <= RAND_MASK as u32);
+        assert!(parsed.timestamp_ms > 0);
+    }
+
+    #[test]
+    fn test_parse_arbitrary_u128_never_panics_and_stays_in_range() {
+        // 固定伪随机序列（不引入 rand 到测试断言路径），覆盖全值域关键边界。
+        let mut x: u128 = 0x9E37_79B9_7F4A_7C15;
+        for _ in 0..100 {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let parsed = UuidV8LayoutInfo::parse(x);
+            assert!(parsed.dc_id <= NODE_DC_MAX as u8);
+            assert!(parsed.worker_id <= NODE_WORKER_MAX as u8);
+            assert!(parsed.counter <= COUNTER_TOTAL_MASK as u32);
+            assert!(parsed.shard <= SHARD_MASK as u16);
+            assert!(parsed.rand <= RAND_MASK as u32);
+        }
     }
 }

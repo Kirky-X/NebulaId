@@ -18,7 +18,7 @@ pub(crate) mod uuid_v5;
 #[cfg(feature = "uuid-v7")]
 pub(crate) mod uuid_v7;
 #[cfg(feature = "uuid-v8")]
-pub(crate) mod uuid_v8;
+pub mod uuid_v8;
 // RFC 9562 v5 确定性派生的公开路径：直调与 SDK 薄包装共用同一实现。
 #[cfg(feature = "uuid-v5")]
 pub use uuid_v5::{derive_uuid_v5, derive_uuid_v5_batch, derive_uuid_v5_bytes};

@@ -109,6 +109,22 @@ cargo build --release
 
 For the full feature table and library-consumer trimming (e.g. UUID v8 only: `nebulaid = { version = "0.3", default-features = false, features = ["uuid-v8"] }`), see the [API Reference · Feature Gates](docs/en/API_REFERENCE.md#-feature-gates); for the minimal embedded-SDK example, see [`examples/embedded.rs`](examples/embedded.rs) (`cargo run --package nebulaid --example embedded --features sdk`). Core concepts (the triple namespace, algorithm selection, the degradation chain) live in the [User Guide · Core Concepts](docs/en/USER_GUIDE.md#core-concepts).
 
+### SDK security posture declaration
+
+Embedded SDK mode has no HTTP stack, so server security capabilities (authentication, rate limiting, audit chain, TLS) are absent. Call `kit.security_posture()` to see what your deployment loses; it reads configuration only and performs no IO. Each check uses one of three states:
+
+| State | Symbol | Meaning |
+|-------|--------|---------|
+| Enabled | `✓` | Capability is present and active |
+| Disabled | `✗` | Capability is absent; the host service must provide it |
+| Undeclared | `!` | Configuration exists but no strength profile is declared |
+
+```bash
+cargo run --package nebulaid --example sdk_doctor --features sdk
+```
+
+The `sdk_doctor` example prints six checks, a summary, and an actionable suggestion. To emit the summary at build time, use `NebulaIdKitBuilder::new(config).posture_announce(true).build().await`; this logs via `tracing::info!` only and never blocks the build.
+
 **Configuration**: the smallest parseable config ships as [`config/config.toml`](config/config.toml); the full options table, `Config::validate()` rules, and per-version migrations live in the [🔧 Config Migration Guide](docs/en/CONFIG_MIGRATION_GUIDE.md).
 
 ---

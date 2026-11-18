@@ -109,6 +109,22 @@ cargo build --release
 
 Feature 全表与库消费剪裁（如只用 UUID v8：`nebulaid = { version = "0.3", default-features = false, features = ["uuid-v8"] }`）见 [API 参考 · Feature Gates](docs/cn/API_REFERENCE.md#-feature-gates)；嵌入式 SDK 最小示例见 [`examples/embedded.rs`](examples/embedded.rs)（`cargo run --package nebulaid --example embedded --features sdk`）。核心概念（三元组命名空间、算法选择、降级链）见 [用户指南 · 核心概念](docs/cn/USER_GUIDE.md#核心概念)。
 
+### SDK 安全姿态声明
+
+嵌入式 SDK 形态无 HTTP 栈，server 侧安全能力（认证、限流、审计链、TLS）不在场。调用 `kit.security_posture()` 即可查看部署失去哪些能力；盘点只读配置，零 IO。每项检查为三态之一：
+
+| 状态 | 符号 | 含义 |
+|------|------|------|
+| Enabled | `✓` | 能力在场且已启用 |
+| Disabled | `✗` | 能力不在场；宿主服务须自行提供 |
+| Undeclared | `!` | 配置存在但未声明强度档位 |
+
+```bash
+cargo run --package nebulaid --example sdk_doctor --features sdk
+```
+
+`sdk_doctor` 示例打印六项检查、摘要与一条可操作建议。若要在 build 期输出摘要，用 `NebulaIdKitBuilder::new(config).posture_announce(true).build().await`；该开关只经 `tracing::info!` 记录日志，绝不阻止 build。
+
 **配置**：最小可解析配置见 [`config/config.toml`](config/config.toml)；全量选项表、`Config::validate()` 校验规则与版本迁移见 [🔧 配置迁移指南](docs/cn/CONFIG_MIGRATION_GUIDE.md)。
 
 ---

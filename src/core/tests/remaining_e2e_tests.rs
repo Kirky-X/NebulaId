@@ -111,6 +111,7 @@ fn make_parse_request_with_workspace(workspace: &str) -> ParseRequest {
         group: "g".to_string(),
         biz_tag: "tag".to_string(),
         algorithm: String::new(),
+        attribution: None,
     }
 }
 
@@ -122,6 +123,7 @@ fn make_parse_request_with_algorithm(algorithm: &str) -> ParseRequest {
         group: "g".to_string(),
         biz_tag: "tag".to_string(),
         algorithm: algorithm.to_string(),
+        attribution: None,
     }
 }
 
@@ -133,6 +135,7 @@ fn make_parse_request_with_id(id: &str) -> ParseRequest {
         group: "g".to_string(),
         biz_tag: "tag".to_string(),
         algorithm: String::new(),
+        attribution: None,
     }
 }
 

@@ -537,6 +537,8 @@ impl NebulaIdKit {
 pub struct NebulaIdKitBuilder {
     config: Config,
     audit_logger: Option<DynAuditLogger>,
+    /// build 成功后是否输出安全姿态摘要（默认 false，不改变既有行为）。
+    posture_announce: bool,
     #[cfg(feature = "database")]
     repository: Option<SeaOrmRepository>,
 }
@@ -547,9 +549,17 @@ impl NebulaIdKitBuilder {
         Self {
             config,
             audit_logger: None,
+            posture_announce: false,
             #[cfg(feature = "database")]
             repository: None,
         }
+    }
+
+    /// build 成功后经 `tracing::info!` 输出姿态摘要（默认 false）。
+    /// 仅日志，不阻止 build——嵌入方合法地不需要 server 安全能力。
+    pub fn posture_announce(mut self, announce: bool) -> Self {
+        self.posture_announce = announce;
+        self
     }
 
     /// 注入审计日志器（可选）。
@@ -633,6 +643,12 @@ impl NebulaIdKitBuilder {
         let nebula = NebulaIdKit { kit: ready_kit };
         // 收尾轻校验：Ready Kit 的健康报告可枚举（空图必为空），触及一次可观测性。
         let _ = nebula.inner().health_report();
+
+        if self.posture_announce {
+            let report = nebula.security_posture();
+            tracing::info!(target: "sdk", posture = %report.summary(), "{}", t!("log.sdk.posture_announced"));
+        }
+
         Ok(nebula)
     }
 }
@@ -643,6 +659,28 @@ mod tests {
     use crate::core::algorithm::GenerateContext;
     use crate::core::config::Config;
     use crate::sdk::posture::PostureStatus;
+
+    /// 默认不声明姿态：build 行为与既有版本一致。
+    #[cfg(any(feature = "snowflake", feature = "uuid-v8"))]
+    #[tokio::test]
+    async fn test_posture_announce_default_false_builds_normally() {
+        let builder = NebulaIdKitBuilder::new(local_config());
+        assert!(!builder.posture_announce, "默认不输出姿态声明");
+        let kit = builder.build().await.expect("默认 build 必须成功");
+        assert_eq!(kit.security_posture().checks.len(), 6);
+    }
+
+    /// 开启声明后 build 不 panic，姿态信息仍可查询。
+    #[cfg(any(feature = "snowflake", feature = "uuid-v8"))]
+    #[tokio::test]
+    async fn test_posture_announce_true_builds_without_panic() {
+        let kit = NebulaIdKitBuilder::new(local_config())
+            .posture_announce(true)
+            .build()
+            .await
+            .expect("开启声明后 build 必须成功（仅日志，不强制门禁）");
+        assert_eq!(kit.security_posture().checks.len(), 6);
+    }
 
     /// Ready Kit 暴露六项安全姿态检查，名称无重复且顺序固定。
     #[cfg(any(feature = "snowflake", feature = "uuid-v8"))]

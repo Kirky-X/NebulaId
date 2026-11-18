@@ -177,7 +177,7 @@ impl super::ApiHandlers {
 
         let metadata = match algorithm.as_str() {
             "snowflake" => self.extract_snowflake_metadata(id.clone()),
-            "uuid_v8" => self.extract_timestamp_metadata(id.clone(), "uuid_v8"),
+            "uuid_v8" => self.extract_uuid_v8_metadata(id.clone(), req.attribution.as_ref()),
             // v7 走标准时间戳提取（RFC 9562 §5.7）；dc/worker/sequence 无对应字段。
             "uuid_v7" => self.extract_timestamp_metadata(id.clone(), "uuid_v7"),
             // v4 显式零元数据而非落 unknown：v4 本就无法解析出任何字段。
@@ -188,6 +188,13 @@ impl super::ApiHandlers {
                 sequence: 0,
                 algorithm: "uuid_v4".to_string(),
                 biz_tag: String::new(),
+                dc_id: None,
+                worker_id_v8: None,
+                shard: None,
+                counter: None,
+                rand: None,
+                generated_at: None,
+                attribution_verified: None,
             },
             "segment" => self.extract_segment_metadata(id.clone(), req.biz_tag),
             _ => IdMetadataResponse {
@@ -197,6 +204,13 @@ impl super::ApiHandlers {
                 sequence: 0,
                 algorithm: "unknown".to_string(),
                 biz_tag: req.biz_tag.clone(),
+                dc_id: None,
+                worker_id_v8: None,
+                shard: None,
+                counter: None,
+                rand: None,
+                generated_at: None,
+                attribution_verified: None,
             },
         };
 
@@ -226,6 +240,13 @@ impl super::ApiHandlers {
             sequence: parsed.sequence,
             algorithm: "snowflake".to_string(),
             biz_tag: String::new(),
+            dc_id: None,
+            worker_id_v8: None,
+            shard: None,
+            counter: None,
+            rand: None,
+            generated_at: None,
+            attribution_verified: None,
         }
     }
 
@@ -239,6 +260,68 @@ impl super::ApiHandlers {
             sequence: 0,
             algorithm: "unknown".to_string(),
             biz_tag: String::new(),
+            dc_id: None,
+            worker_id_v8: None,
+            shard: None,
+            counter: None,
+            rand: None,
+            generated_at: None,
+            attribution_verified: None,
+        }
+    }
+
+    /// UUID v8 全位段反解 + 归属候选验证（feature `uuid-v8` 门控）。
+    #[cfg(feature = "uuid-v8")]
+    fn extract_uuid_v8_metadata(
+        &self,
+        id: Id,
+        attribution: Option<&crate::server::models::AttributionCandidate>,
+    ) -> IdMetadataResponse {
+        use crate::core::algorithm::uuid_v8::{UuidV8LayoutInfo, UuidV8LayoutInfo as Layout};
+        let value = id.as_u128();
+        let parsed = UuidV8LayoutInfo::parse(value);
+        let generated_at = chrono::DateTime::from_timestamp_millis(parsed.timestamp_ms as i64)
+            .map(|dt| dt.to_rfc3339());
+        let verified = attribution
+            .and_then(|a| Layout::verify_attribution(&parsed, &a.workspace, &a.group, &a.biz_tag));
+        IdMetadataResponse {
+            timestamp: parsed.timestamp_ms,
+            datacenter_id: parsed.dc_id,
+            worker_id: parsed.worker_id as u16,
+            sequence: 0,
+            algorithm: "uuid_v8".to_string(),
+            biz_tag: String::new(),
+            dc_id: Some(parsed.dc_id),
+            worker_id_v8: Some(parsed.worker_id),
+            shard: Some(parsed.shard),
+            counter: Some(parsed.counter),
+            rand: Some(parsed.rand),
+            generated_at,
+            attribution_verified: verified,
+        }
+    }
+
+    /// 非 uuid-v8 构建：维持零值占位，不产出「成功解码」假象。
+    #[cfg(not(feature = "uuid-v8"))]
+    fn extract_uuid_v8_metadata(
+        &self,
+        _id: Id,
+        _attribution: Option<&crate::server::models::AttributionCandidate>,
+    ) -> IdMetadataResponse {
+        IdMetadataResponse {
+            timestamp: 0,
+            datacenter_id: 0,
+            worker_id: 0,
+            sequence: 0,
+            algorithm: "uuid_v8".to_string(),
+            biz_tag: String::new(),
+            dc_id: None,
+            worker_id_v8: None,
+            shard: None,
+            counter: None,
+            rand: None,
+            generated_at: None,
+            attribution_verified: None,
         }
     }
 
@@ -260,6 +343,13 @@ impl super::ApiHandlers {
             sequence: 0,
             algorithm: algorithm.to_string(),
             biz_tag: String::new(),
+            dc_id: None,
+            worker_id_v8: None,
+            shard: None,
+            counter: None,
+            rand: None,
+            generated_at: None,
+            attribution_verified: None,
         }
     }
 
@@ -271,6 +361,13 @@ impl super::ApiHandlers {
             sequence: 0,
             algorithm: "segment".to_string(),
             biz_tag,
+            dc_id: None,
+            worker_id_v8: None,
+            shard: None,
+            counter: None,
+            rand: None,
+            generated_at: None,
+            attribution_verified: None,
         }
     }
 }
@@ -454,6 +551,7 @@ mod tests {
             group: "test".to_string(),
             biz_tag: "test-biz".to_string(),
             algorithm: "segment".to_string(),
+            attribution: None,
         };
         let _response = handlers.parse(parse_req).await;
     }
@@ -475,6 +573,7 @@ mod tests {
                 group: "g".to_string(),
                 biz_tag: "t".to_string(),
                 algorithm: algorithm.to_string(),
+                attribution: None,
             };
             let resp = handlers
                 .parse(req)
@@ -501,6 +600,7 @@ mod tests {
                 group: "g".to_string(),
                 biz_tag: "t".to_string(),
                 algorithm: "uuid_v7".to_string(),
+                attribution: None,
             })
             .await
             .expect("v7 parse must succeed");
@@ -518,6 +618,7 @@ mod tests {
                 group: "g".to_string(),
                 biz_tag: "t".to_string(),
                 algorithm: "uuid_v4".to_string(),
+                attribution: None,
             })
             .await
             .expect("v4 parse must succeed");
@@ -526,5 +627,101 @@ mod tests {
             v4_resp.metadata.timestamp, 0,
             "v4 has no embedded timestamp"
         );
+    }
+}
+
+#[cfg(all(test, feature = "uuid-v8"))]
+mod uuid_v8_parse_tests {
+    use crate::server::models::{AttributionCandidate, ParseRequest};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_parse_uuid_v8_full_metadata_and_attribution() {
+        // 用算法生成一枚真实 v8 ID，确保反解位段非零且与候选验证一致。
+        let config = crate::core::config::Config::default();
+        let algo = crate::core::algorithm::uuid_v8::UuidV8Impl::new(3, 200, 1000);
+        let ctx = crate::core::algorithm::GenerateContext {
+            workspace_id: "ws-v8".to_string(),
+            group_id: "grp".to_string(),
+            biz_tag: "bt".to_string(),
+            ..Default::default()
+        };
+        use crate::core::algorithm::IdAlgorithm;
+        let id = algo.generate(&ctx).await.expect("生成成功").to_string();
+
+        let hot_config = Arc::new(crate::server::config::HotReloadConfig::new(
+            config,
+            "config/config.toml".to_string(),
+        ));
+        let router = Arc::new(crate::core::algorithm::AlgorithmRouter::new(
+            crate::core::config::Config::default(),
+            None,
+        ));
+        let config_service: Arc<dyn crate::server::config::management::ConfigManagementService> =
+            Arc::new(crate::server::config::management::ConfigManager::new(
+                hot_config, router,
+            ));
+        let mock_gen = Arc::new(crate::server::handlers::mock_generator::MockIdGenerator::new());
+        let handlers = crate::server::handlers::ApiHandlers::new(mock_gen, config_service);
+
+        let resp = handlers
+            .parse(ParseRequest {
+                id: id.clone(),
+                workspace: "ws-v8".to_string(),
+                group: "grp".to_string(),
+                biz_tag: "bt".to_string(),
+                algorithm: "uuid_v8".to_string(),
+                attribution: Some(AttributionCandidate {
+                    workspace: "ws-v8".to_string(),
+                    group: "grp".to_string(),
+                    biz_tag: "bt".to_string(),
+                }),
+            })
+            .await
+            .expect("v8 parse 必须成功");
+        assert_eq!(resp.metadata.dc_id, Some(3));
+        assert_eq!(resp.metadata.worker_id_v8, Some(200));
+        assert!(resp.metadata.shard.unwrap() > 0);
+        assert_eq!(resp.metadata.attribution_verified, Some(true));
+        assert!(resp.metadata.generated_at.as_ref().unwrap().contains('T'));
+    }
+
+    fn algo_for_test() -> uuid::Uuid {
+        // v8 形态 UUID（version nibble=8），用固定合法值即可验证字段缺席语义。
+        uuid::Uuid::from_u128(0x0183_4567_89AB_8ABC_8DEF_0123_4567_89AB)
+    }
+
+    #[tokio::test]
+    async fn test_parse_without_attribution_omits_verified_field() {
+        let config = crate::core::config::Config::default();
+        let hot_config = Arc::new(crate::server::config::HotReloadConfig::new(
+            config,
+            "config/config.toml".to_string(),
+        ));
+        let router = Arc::new(crate::core::algorithm::AlgorithmRouter::new(
+            crate::core::config::Config::default(),
+            None,
+        ));
+        let config_service: Arc<dyn crate::server::config::management::ConfigManagementService> =
+            Arc::new(crate::server::config::management::ConfigManager::new(
+                hot_config, router,
+            ));
+        let mock_gen = Arc::new(crate::server::handlers::mock_generator::MockIdGenerator::new());
+        let handlers = crate::server::handlers::ApiHandlers::new(mock_gen, config_service);
+        let v8 = algo_for_test().to_string();
+        let resp = handlers
+            .parse(ParseRequest {
+                id: v8,
+                workspace: "w".to_string(),
+                group: "g".to_string(),
+                biz_tag: "t".to_string(),
+                algorithm: "uuid_v8".to_string(),
+                attribution: None,
+            })
+            .await
+            .expect("parse 成功");
+        assert_eq!(resp.metadata.attribution_verified, None);
+        let json = serde_json::to_string(&resp.metadata).expect("序列化成功");
+        assert!(!json.contains("attribution_verified"));
     }
 }

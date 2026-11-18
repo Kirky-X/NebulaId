@@ -413,6 +413,20 @@ pub struct ParseRequest {
     #[serde(default)]
     #[schema(example = "segment")]
     pub algorithm: String,
+
+    /// UUID v8 归属候选三元组（可验证 shard 是否匹配）。
+    #[serde(default)]
+    pub attribution: Option<AttributionCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AttributionCandidate {
+    #[serde(default)]
+    pub workspace: String,
+    #[serde(default)]
+    pub group: String,
+    #[serde(default)]
+    pub biz_tag: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -450,6 +464,21 @@ pub struct IdMetadataResponse {
     pub sequence: u16,
     pub algorithm: String,
     pub biz_tag: String,
+    /// UUID v8 全位段反解字段（缺省缺席，既有消费方零破坏）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dc_id: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_id_v8: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shard: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counter: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rand: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generated_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attribution_verified: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1402,6 +1431,7 @@ mod tests {
             group: "g".to_string(),
             biz_tag: "tag".to_string(),
             algorithm: String::new(),
+            attribution: None,
         };
         assert!(req.validate().is_ok());
     }
@@ -1414,6 +1444,7 @@ mod tests {
             group: "g".to_string(),
             biz_tag: "tag".to_string(),
             algorithm: String::new(),
+            attribution: None,
         };
         assert!(req.validate().is_err());
     }

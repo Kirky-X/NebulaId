@@ -2496,6 +2496,7 @@ mod tests {
             group: "g".to_string(),
             biz_tag: "t".to_string(),
             algorithm: String::new(),
+            attribution: None,
         };
         let result = handle_parse(State(state), Extension(Locale::En), Json(req)).await;
         assert!(result.is_err());
@@ -2512,6 +2513,7 @@ mod tests {
             group: "g".to_string(),
             biz_tag: "t".to_string(),
             algorithm: String::new(),
+            attribution: None,
         };
         let result = handle_parse(State(state), Extension(Locale::En), Json(req)).await;
         // Id::from_string fails on garbage -> InvalidIdString -> 400.
@@ -4056,6 +4058,7 @@ mod tests {
             group: "g".to_string(),
             biz_tag: "t".to_string(),
             algorithm: "segment".to_string(),
+            attribution: None,
         };
         let result = handle_parse(State(state), Extension(Locale::En), Json(req)).await;
         let resp = result.expect("合法 ID 的 parse 必须成功");
@@ -4075,6 +4078,7 @@ mod tests {
             group: "g".to_string(),
             biz_tag: "t".to_string(),
             algorithm: String::new(),
+            attribution: None,
         };
         let result = handle_parse(State(state), Extension(Locale::En), Json(req)).await;
         assert!(result.is_err(), "空 workspace 必须被校验层拒绝");

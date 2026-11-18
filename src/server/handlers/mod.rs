@@ -499,6 +499,7 @@ pub(crate) mod mock_tests {
             group: "test-group".to_string(),
             biz_tag: "test-biz".to_string(),
             algorithm: "segment".to_string(),
+            attribution: None,
         };
         let result = handlers.parse(req).await;
         assert!(result.is_ok());
@@ -518,6 +519,7 @@ pub(crate) mod mock_tests {
             group: "test-group".to_string(),
             biz_tag: "test-biz".to_string(),
             algorithm: "uuid_v8".to_string(),
+            attribution: None,
         };
         let result = handlers.parse(req).await;
         assert!(result.is_ok());
@@ -535,6 +537,7 @@ pub(crate) mod mock_tests {
             group: "test-group".to_string(),
             biz_tag: "test-biz".to_string(),
             algorithm: "segment".to_string(),
+            attribution: None,
         };
         let result = handlers.parse(req).await;
         assert!(result.is_err());
@@ -553,6 +556,7 @@ pub(crate) mod mock_tests {
             group: "test-group".to_string(),
             biz_tag: "test-biz".to_string(),
             algorithm: "snowflake".to_string(),
+            attribution: None,
         };
         let result = handlers.parse(req).await;
         assert!(result.is_ok());
@@ -570,6 +574,7 @@ pub(crate) mod mock_tests {
             group: "test-group".to_string(),
             biz_tag: "test-biz".to_string(),
             algorithm: String::new(),
+            attribution: None,
         };
         let result = handlers.parse(req).await;
         assert!(result.is_ok());

@@ -576,6 +576,7 @@ impl NebulaIdService for GrpcServer {
             group: String::new(),
             biz_tag: String::new(),
             algorithm: String::new(),
+            attribution: None,
         };
 
         match self.handlers.parse(parse_req).await {

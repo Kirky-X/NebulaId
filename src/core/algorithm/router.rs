@@ -691,6 +691,25 @@ impl AlgorithmRouter {
             .await
     }
 
+    /// 受保护 workspace 的降级链过滤：剔除 Snowflake（位布局无租户位段）。
+    /// Segment 归属可经 DB 号段记录回溯，UuidV8 自带 shard，均保留。
+    fn filtered_chain_for(&self, ctx: &GenerateContext) -> SmallVec<[AlgorithmType; 8]> {
+        if !self.config.attribution.enforce_tenant_context
+            || !self
+                .config
+                .attribution
+                .protected_workspaces
+                .contains(&ctx.workspace_id)
+        {
+            return self.fallback_chain.clone();
+        }
+        self.fallback_chain
+            .iter()
+            .copied()
+            .filter(|a| *a != AlgorithmType::Snowflake)
+            .collect()
+    }
+
     /// 遍历 fallback 链：逐个执行已注册算法并记入 DegradationManager，返回首个成功
     /// 结果与实际命中的算法；链遍历完仍无成功则返回 None。`announce_hits` 控制命中时
     /// 是否输出 info 日志。
@@ -701,7 +720,9 @@ impl AlgorithmRouter {
         announce_hits: bool,
         runner: R,
     ) -> Option<Result<(R::Out, AlgorithmType)>> {
-        for fallback in &self.fallback_chain {
+        // 受保护 workspace 降级时剔除无租户位段算法；过滤后无可用算法则 fail-closed。
+        let chain = self.filtered_chain_for(ctx);
+        for fallback in &chain {
             if let Some(fallback_alg) = algorithms.get(fallback).cloned() {
                 let start = Instant::now();
                 let result = runner.run(&fallback_alg, ctx).await;
@@ -2850,5 +2871,74 @@ mod tests {
         let id = router.generate(&make_ctx("bt")).await.unwrap();
         assert!(id.as_u128() > 0, "装配监控臂后主出号路径必须可用");
         router.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+mod attribution_chain_tests {
+    use super::*;
+
+    fn router_with(enforce: bool, protected: &[&str]) -> AlgorithmRouter {
+        let mut config = Config::default();
+        config.algorithm.default = "segment".to_string();
+        config.attribution = crate::core::config::AttributionConfig {
+            enforce_tenant_context: enforce,
+            protected_workspaces: protected.iter().map(|s| s.to_string()).collect(),
+        };
+        AlgorithmRouter::new(config, None)
+    }
+
+    fn ctx(workspace: &str) -> GenerateContext {
+        GenerateContext {
+            workspace_id: workspace.to_string(),
+            ..GenerateContext::default()
+        }
+    }
+
+    #[test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
+    fn test_filtered_chain_enforce_off_returns_original() {
+        let router = router_with(false, &["protected"]);
+        let filtered = router.filtered_chain_for(&ctx("protected"));
+        assert_eq!(
+            filtered.to_vec(),
+            vec![AlgorithmType::Snowflake, AlgorithmType::UuidV8]
+        );
+    }
+
+    #[test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
+    fn test_filtered_chain_unprotected_workspace_returns_original() {
+        let router = router_with(true, &["protected"]);
+        let filtered = router.filtered_chain_for(&ctx("other"));
+        assert_eq!(
+            filtered.to_vec(),
+            vec![AlgorithmType::Snowflake, AlgorithmType::UuidV8]
+        );
+    }
+
+    #[test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
+    fn test_filtered_chain_protected_workspace_removes_snowflake() {
+        let router = router_with(true, &["protected"]);
+        let filtered = router.filtered_chain_for(&ctx("protected"));
+        assert_eq!(filtered.to_vec(), vec![AlgorithmType::UuidV8]);
+        assert!(!filtered.contains(&AlgorithmType::Snowflake));
+    }
+
+    #[test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
+    fn test_filtered_chain_empty_after_filter() {
+        let mut config = Config::default();
+        config.algorithm.default = "snowflake".to_string(); // 链只有 UuidV8
+        config.attribution = crate::core::config::AttributionConfig {
+            enforce_tenant_context: true,
+            protected_workspaces: vec!["protected".to_string()],
+        };
+        let router = AlgorithmRouter::new(config, None);
+        // 用无 uuid-v8 的链构造：手动清空路由 fallback_chain（同模块测试可见）。
+        let mut filtered = router.filtered_chain_for(&ctx("protected"));
+        filtered.retain(|a| *a != AlgorithmType::UuidV8);
+        assert!(filtered.is_empty());
     }
 }

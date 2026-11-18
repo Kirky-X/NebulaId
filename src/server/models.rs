@@ -1590,3 +1590,30 @@ pub struct DryRunReportResponse {
     pub recommended_layout: Option<String>,
     pub note: Option<String>,
 }
+
+/// 容量视图响应（只读运维视图，挂认证路由不公开）。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CapacityResponse {
+    pub algorithms: Vec<AlgorithmCapacity>,
+    pub degradation: DegradationView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AlgorithmCapacity {
+    pub algorithm: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence_remaining_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock_drift_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock_backwards_total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p99_latency_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DegradationView {
+    pub primary_algorithm: String,
+    pub fallback_chain: Vec<String>,
+    pub current_state: String,
+}

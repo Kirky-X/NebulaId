@@ -364,6 +364,7 @@ pub async fn create_router_with_rate_limit(
         .route("/generate", post(handle_generate))
         .route("/generate/batch", post(handle_batch_generate))
         .route("/parse", post(handle_parse))
+        .route("/capacity", get(handle_capacity))
         // Workspace query endpoints
         .route("/workspaces", get(handle_list_workspaces))
         .route("/workspaces/{name}", get(handle_get_workspace))
@@ -756,6 +757,18 @@ async fn handle_dry_run(
     }))
 }
 
+/// 容量视图：认证后可读（User/Admin），未认证 401。
+async fn handle_capacity(
+    State(state): State<NebulaIdState>,
+    extensions_role: axum::Extension<crate::server::middleware::ApiKeyRole>,
+    Extension(locale): Extension<Locale>,
+) -> Result<Json<crate::server::models::CapacityResponse>, (StatusCode, Json<ErrorResponse>)> {
+    if extensions_role.0 == crate::server::middleware::ApiKeyRole::Anonymous {
+        return Err(auth_required_response(locale));
+    }
+    Ok(Json(state.handlers.capacity().await))
+}
+
 async fn handle_parse(
     State(state): State<NebulaIdState>,
     Extension(locale): Extension<Locale>,
@@ -864,6 +877,7 @@ async fn handle_api_info() -> Json<ApiInfoResponse> {
             "POST /api/v1/generate/batch - Batch generate IDs".to_string(),
             "POST /api/v1/generate/dry-run - Snowflake capacity dry-run (admin)".to_string(),
             "POST /api/v1/parse - Parse ID".to_string(),
+            "GET /api/v1/capacity - Capacity view (authenticated)".to_string(),
             "GET /api/v1/config - Get configuration".to_string(),
             "POST /api/v1/config/rate-limit - Update rate limit".to_string(),
             "POST /api/v1/config/logging - Update logging".to_string(),

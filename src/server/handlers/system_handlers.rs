@@ -4,9 +4,10 @@
 //! System / observability handlers：health、ready、metrics 与密钥轮换任务启动器。
 
 use crate::server::models::{
-    AlgorithmMetrics, ApiInfoResponse, DegradationMetrics, ErrorResponse, HealthResponse,
-    MetricsResponse, ReadyResponse, SecureConfigResponse, SetAlgorithmRequest,
-    SetAlgorithmResponse, UpdateConfigResponse, UpdateLoggingRequest, UpdateRateLimitRequest,
+    AlgorithmCapacity, AlgorithmMetrics, ApiInfoResponse, CapacityResponse, DegradationMetrics,
+    DegradationView, ErrorResponse, HealthResponse, MetricsResponse, ReadyResponse,
+    SecureConfigResponse, SetAlgorithmRequest, SetAlgorithmResponse, UpdateConfigResponse,
+    UpdateLoggingRequest, UpdateRateLimitRequest,
 };
 use std::sync::atomic::Ordering;
 
@@ -14,6 +15,37 @@ use std::sync::atomic::Ordering;
 use super::api_key_handlers::KeyRotationHandle;
 
 impl super::ApiHandlers {
+    /// 容量视图：聚合 core 的容量快照与降级链状态。
+    pub async fn capacity(&self) -> CapacityResponse {
+        let (raw_entries, raw_view) = self.id_generator.capacity_snapshot().await;
+        let algorithms = raw_entries
+            .into_iter()
+            .map(|e| AlgorithmCapacity {
+                algorithm: e.algorithm.to_string(),
+                sequence_remaining_ms: e.sequence_remaining_ms,
+                clock_drift_ms: e.clock_drift_ms,
+                clock_backwards_total: e.clock_backwards_total,
+                p99_latency_ms: e.p99_latency_ms,
+            })
+            .collect();
+        let degradation = match raw_view {
+            Some(v) => DegradationView {
+                primary_algorithm: v.primary_algorithm,
+                fallback_chain: v.fallback_chain,
+                current_state: v.current_state,
+            },
+            None => DegradationView {
+                primary_algorithm: String::new(),
+                fallback_chain: Vec::new(),
+                current_state: "unknown".to_string(),
+            },
+        };
+        CapacityResponse {
+            algorithms,
+            degradation,
+        }
+    }
+
     pub async fn health(&self) -> HealthResponse {
         let health_status = self.id_generator.health_check().await;
         HealthResponse {
@@ -1124,4 +1156,27 @@ mod tests {
             h.shutdown();
         }
     }
+    #[tokio::test]
+    async fn test_capacity_handler_returns_degradation_and_algorithm_array() {
+        let (handlers, _) = create_test_api_handlers();
+        let resp = handlers.capacity().await;
+        // MockIdGenerator 用 trait 默认空快照，degradation 落成 "unknown" 占位，
+        // 不伪造算法名；真实 AlgorithmRouter 由 T008 单测覆盖。
+        let json = serde_json::to_value(&resp).expect("序列化成功");
+        assert!(json.get("algorithms").is_some());
+        assert!(json.get("degradation").is_some());
+        assert!(json["degradation"].get("primary_algorithm").is_some());
+    }
 }
+
+/// OpenAPI 注解载体：`GET /api/v1/capacity`（实际 handler：`router::handle_capacity`）。
+#[utoipa::path(
+    get,
+    path = "/api/v1/capacity",
+    tag = "system",
+    responses(
+        (status = 200, description = "Capacity view", body = CapacityResponse),
+        (status = 401, description = "Missing/invalid API Key", body = ErrorResponse),
+    )
+)]
+pub fn capacity_docs() {}

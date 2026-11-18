@@ -137,17 +137,32 @@ impl Default for SnowflakeAlgorithmConfig {
     }
 }
 
+/// UUID v8 随机位段来源；Timer 为现状，Csprng 为 thread-local CSPRNG。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RandomSource {
+    #[default]
+    Timer,
+    Csprng,
+}
+
 /// UUID v8 configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UuidV8Config {
     /// Enable/disable UUID v8 generation
     pub enabled: bool,
+    /// 随机位段来源（缺省 Timer 逐位兼容现状）。
+    #[serde(default)]
+    pub random_source: RandomSource,
 }
 
 impl Default for UuidV8Config {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            random_source: RandomSource::Timer,
+        }
     }
 }
 
@@ -259,5 +274,14 @@ mod tests {
         let invalid: Result<SnowflakeAlgorithmConfig, _> =
             toml::from_str(&format!("{base}unpredictability = \"ultra\"\n"));
         assert!(invalid.is_err(), "未知档位必须报反序列化错误");
+    }
+    #[test]
+    fn test_random_source_deserialization() {
+        let default: UuidV8Config = toml::from_str("enabled = true\n").expect("缺省应可解析");
+        assert_eq!(default.random_source, RandomSource::Timer);
+
+        let csprng: UuidV8Config = toml::from_str("enabled = true\nrandom_source = \"csprng\"\n")
+            .expect("csprng 应可解析");
+        assert_eq!(csprng.random_source, RandomSource::Csprng);
     }
 }

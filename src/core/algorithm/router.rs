@@ -2053,6 +2053,81 @@ mod tests {
         assert_eq!(id.as_u128(), 42);
     }
 
+    /// 受保护 workspace 主算法失败、UuidV8 兜底成功：实际服务算法必须是 UuidV8，
+    /// 不得降级到无租户位段的 Snowflake（R-circuit-201）。
+    #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
+    async fn test_protected_workspace_fallback_uses_uuid_v8_not_snowflake() {
+        let mut config = Config::default();
+        config.attribution = crate::core::config::AttributionConfig {
+            enforce_tenant_context: true,
+            protected_workspaces: vec!["protected".to_string()],
+        };
+        let router = AlgorithmRouter::new(config, None);
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(
+                MockConfigurableAlgorithm::new(AlgorithmType::Segment).with_generate_failure(),
+            ),
+        );
+        // Snowflake 健康，但受保护 workspace 必须跳过它。
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        insert_mock(
+            &router,
+            AlgorithmType::UuidV8,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::UuidV8,
+            }),
+        );
+        let (_, algorithm) = router
+            .generate_reporting_algorithm(Some(AlgorithmType::Segment), "protected", "g", "bt")
+            .await
+            .expect("UuidV8 兜底应成功");
+        assert_eq!(algorithm, AlgorithmType::UuidV8);
+    }
+
+    /// 受保护 workspace 且 UuidV8 不可用：过滤后链空，请求报错，无 ID 产出（fail-closed）。
+    #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
+    async fn test_protected_workspace_all_tenant_algorithms_unavailable_fails_closed() {
+        let mut config = Config::default();
+        config.attribution = crate::core::config::AttributionConfig {
+            enforce_tenant_context: true,
+            protected_workspaces: vec!["protected".to_string()],
+        };
+        let router = AlgorithmRouter::new(config, None);
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(
+                MockConfigurableAlgorithm::new(AlgorithmType::Segment).with_generate_failure(),
+            ),
+        );
+        // 只有 Snowflake 健康：受保护 workspace 过滤后链空，不得产出无归属 ID。
+        insert_mock(
+            &router,
+            AlgorithmType::Snowflake,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Snowflake,
+            }),
+        );
+        let ctx = GenerateContext {
+            workspace_id: "protected".to_string(),
+            ..make_ctx("bt")
+        };
+        assert!(
+            router.generate(&ctx).await.is_err(),
+            "受保护 workspace 无可用租户算法时必须报错，不静默降级到 Snowflake"
+        );
+    }
+
     /// 降级兜底后必须报告兜底算法：请求 Segment 失败、UuidV8 成功时，
     /// `generate_reporting_algorithm` 返回 UuidV8 而非请求值 Segment。
     #[tokio::test]

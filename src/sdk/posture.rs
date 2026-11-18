@@ -52,7 +52,16 @@ pub fn assess(config: &Config) -> SecurityPostureReport {
         },
         PostureCheck {
             name: "unpredictability",
-            status: Undeclared,
+            status: {
+                use crate::core::config::{RandomSource, UnpredictabilityProfile};
+                if config.algorithm.snowflake.unpredictability == UnpredictabilityProfile::High
+                    || config.algorithm.uuid_v8.random_source == RandomSource::Csprng
+                {
+                    Enabled
+                } else {
+                    Undeclared
+                }
+            },
             detail: t!("sdk.posture.check.unpredictability.detail"),
         },
     ];
@@ -287,5 +296,44 @@ mod tests {
             .find(|c| c.name == "unpredictability")
             .unwrap();
         assert_eq!(check.status, PostureStatus::Undeclared);
+    }
+    /// 与 id-unpredictability-profile 联动：声明 High 或 Csprng 时 Enabled，
+    /// 全默认时仍 Undeclared（R-algorithm-302）。
+    #[test]
+    fn test_assess_unpredictability_reflects_declared_profile() {
+        use crate::core::config::{RandomSource, UnpredictabilityProfile};
+        let mut config = Config::default();
+        assert_eq!(
+            assess(&config)
+                .checks
+                .iter()
+                .find(|c| c.name == "unpredictability")
+                .unwrap()
+                .status,
+            PostureStatus::Undeclared
+        );
+
+        config.algorithm.snowflake.unpredictability = UnpredictabilityProfile::High;
+        assert_eq!(
+            assess(&config)
+                .checks
+                .iter()
+                .find(|c| c.name == "unpredictability")
+                .unwrap()
+                .status,
+            PostureStatus::Enabled
+        );
+
+        config.algorithm.snowflake.unpredictability = UnpredictabilityProfile::Basic;
+        config.algorithm.uuid_v8.random_source = RandomSource::Csprng;
+        assert_eq!(
+            assess(&config)
+                .checks
+                .iter()
+                .find(|c| c.name == "unpredictability")
+                .unwrap()
+                .status,
+            PostureStatus::Enabled
+        );
     }
 }

@@ -885,7 +885,13 @@ mod tests {
     fn test_resolve_startup_config_propagates_missing_field_error() {
         let original = Config::default();
         let toml_content = toml::to_string(&original).expect("序列化 Config 应成功");
-        let missing = toml_content.replace("[algorithm.uuid_v8]\nenabled = true\n", "");
+        // uuid_v8 段随配置契约扩展可含 random_source；用正则按段整段删除，
+        // 不依赖字段数量（R-algorithm-301）。
+        let missing = toml_content
+            .split("[algorithm.uuid_v8]")
+            .next()
+            .expect("必须存在 uuid_v8 段前的配置")
+            .to_string();
         assert_ne!(missing, toml_content, "测试前提：确实删除了整个段");
 
         let temp = tempfile::NamedTempFile::new().expect("创建临时文件应成功");

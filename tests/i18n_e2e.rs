@@ -224,3 +224,37 @@ async fn t042_5xx_database_error_does_not_leak_internal_string() {
     // zh-CN generic database error message
     assert_eq!(body.message, "数据库操作失败");
 }
+
+/// SDK 姿态报告的三态文案必须在 en/zh 两份 FTL 中对齐：任一键缺失会让
+/// `t!` 回退到键名，example 输出退化为原始键（R-sdk-kit-101）。
+#[test]
+fn t_sdk_posture_ftl_keys_present_in_both_bundles() {
+    const EN: &str = include_str!("../locales/en/messages.ftl");
+    const ZH: &str = include_str!("../locales/zh/messages.ftl");
+
+    let names = [
+        "auth",
+        "rate-limit",
+        "audit",
+        "tls",
+        "tenant-context",
+        "unpredictability",
+    ];
+    let mut keys = vec!["log-sdk-posture_announced".to_string()];
+    for name in names {
+        for state in ["enabled", "disabled", "undeclared"] {
+            keys.push(format!("sdk-posture-check-{name}-{state}"));
+        }
+    }
+
+    for key in &keys {
+        for (lang, bundle) in [("en", EN), ("zh", ZH)] {
+            assert!(
+                bundle
+                    .lines()
+                    .any(|line| line.starts_with(key) && line.contains(" = ")),
+                "{lang} FTL 缺少姿态键 {key}（三态文案必须双语对齐）"
+            );
+        }
+    }
+}

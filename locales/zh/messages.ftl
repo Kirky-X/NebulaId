@@ -695,6 +695,24 @@ sdk-posture-check-audit-detail = 仅当 server 审计链在场或向 kit 注入�
 sdk-posture-check-tls-detail = TLS 由 server 传输层提供；SDK 嵌入方自带传输层安全责任。
 sdk-posture-check-tenant-context-detail = UUID v8 携带 16 位租户 shard；启用 uuid-v8 feature 与配置即得租户上下文。
 sdk-posture-check-unpredictability-detail = 未声明不可预测性强度；Snowflake 序列号每毫秒从 0 起，可被外部观测。
+sdk-posture-check-auth-enabled = 认证已启用（garrison-auth 且 auth.enabled）。
+sdk-posture-check-auth-disabled = 认证不在场；纯算法形态无 API key 校验。
+sdk-posture-check-auth-undeclared = 未声明认证在场状态。
+sdk-posture-check-rate-limit-enabled = 限流已启用。
+sdk-posture-check-rate-limit-disabled = SDK 形态无限流；嵌入方自行限速。
+sdk-posture-check-rate-limit-undeclared = 未声明限流姿态。
+sdk-posture-check-audit-enabled = 发号事件写入审计链。
+sdk-posture-check-audit-disabled = 发号事件不写入任何审计链。
+sdk-posture-check-audit-undeclared = 未声明审计姿态。
+sdk-posture-check-tls-enabled = TLS 已启用。
+sdk-posture-check-tls-disabled = SDK 形态无 TLS；嵌入方自带传输层安全。
+sdk-posture-check-tls-undeclared = 未声明 TLS 姿态。
+sdk-posture-check-tenant-context-enabled = 租户上下文在场（uuid-v8 shard 已启用）。
+sdk-posture-check-tenant-context-disabled = 无租户上下文算法在场。
+sdk-posture-check-tenant-context-undeclared = 未声明租户上下文姿态。
+sdk-posture-check-unpredictability-enabled = 已声明并启用不可预测性档位。
+sdk-posture-check-unpredictability-disabled = 无不可预测性档位生效。
+sdk-posture-check-unpredictability-undeclared = 未声明不可预测性强度；序列号每毫秒从 0 起。
 
 # examples/sdk_server.rs —— SDK 服务器示例二进制：启动横幅路由表与
 # IdGenerator 未初始化的 panic 文案，均经 `t!` 取值（进程默认 locale）。

@@ -704,6 +704,24 @@ sdk-posture-check-audit-detail = Generation events are written to the audit chai
 sdk-posture-check-tls-detail = TLS is provided by the server transport layer; an SDK embedder owns transport security itself.
 sdk-posture-check-tenant-context-detail = UUID v8 carries a 16-bit tenant shard; enable the uuid-v8 feature and its config for tenant context.
 sdk-posture-check-unpredictability-detail = No unpredictability profile is declared; the snowflake sequence starts at 0 per millisecond and is observable.
+sdk-posture-check-auth-enabled = Authentication is active (garrison-auth and auth.enabled).
+sdk-posture-check-auth-disabled = Authentication is absent; pure-algorithm mode has no API key verification.
+sdk-posture-check-auth-undeclared = Authentication presence is not declared.
+sdk-posture-check-rate-limit-enabled = Rate limiting is active.
+sdk-posture-check-rate-limit-disabled = Rate limiting is absent in SDK mode; the embedder owns limits.
+sdk-posture-check-rate-limit-undeclared = Rate limiting posture is not declared.
+sdk-posture-check-audit-enabled = Generation events are written to the audit chain.
+sdk-posture-check-audit-disabled = Generation events are not written to any audit chain.
+sdk-posture-check-audit-undeclared = Audit posture is not declared.
+sdk-posture-check-tls-enabled = TLS is active.
+sdk-posture-check-tls-disabled = TLS is absent in SDK mode; the embedder owns transport security.
+sdk-posture-check-tls-undeclared = TLS posture is not declared.
+sdk-posture-check-tenant-context-enabled = Tenant context is present (uuid-v8 shard enabled).
+sdk-posture-check-tenant-context-disabled = No tenant context algorithm is active.
+sdk-posture-check-tenant-context-undeclared = Tenant context posture is not declared.
+sdk-posture-check-unpredictability-enabled = An unpredictability profile is declared and enforced.
+sdk-posture-check-unpredictability-disabled = No unpredictability profile is in effect.
+sdk-posture-check-unpredictability-undeclared = No unpredictability strength is declared; sequence starts at 0 per millisecond.
 
 # examples/sdk_server.rs — SDK-server example binary: startup banner route
 # table and the IdGenerator-not-initialized panic message. Both resolve

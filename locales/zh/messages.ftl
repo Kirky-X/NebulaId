@@ -210,6 +210,10 @@ error-core-config-app_config-key_hex_invalid = algorithm.obfuscation.key_hex 必
 # src/core/config/algorithm.rs
 error-core-config-algorithm-key_hex_invalid = algorithm.obfuscation.key_hex 必须为 16 个十六进制字符
 
+# src/core/config/attribution.rs + app_config.rs —— 归属强制配置校验
+error-core-config-attribution-empty_protected_list = attribution.enforce_tenant_context 为 true 但 protected_workspaces 为空；请至少配置一个受保护 workspace
+error-core-config-attribution-blank_workspace = attribution.protected_workspaces 含空白项；请移除
+
 # src/core/database/connection.rs
 log-core-database-connection-connecting = 正在连接 { $engine } 数据库，URL：{ $url }
 log-core-database-connection-established_successfully = 数据库连接建立成功

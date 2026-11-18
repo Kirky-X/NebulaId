@@ -188,6 +188,7 @@ impl Config {
         self.validate_app()?;
         self.validate_database()?;
         self.validate_rate_limit()?;
+        self.validate_attribution()?;
         self.validate_algorithm()?;
         self.validate_batch()?;
         self.validate_auth_secrets()?;
@@ -277,6 +278,29 @@ impl Config {
             }
         }
 
+        Ok(())
+    }
+
+    /// 归属强制配置：开关开启必须有非空且无空白项的名单，否则 fail-fast。
+    fn validate_attribution(&self) -> ConfigResult<()> {
+        let attribution = &self.attribution;
+        if !attribution.enforce_tenant_context {
+            return Ok(());
+        }
+        if attribution.protected_workspaces.is_empty() {
+            return Err(ConfigError::InvalidValue(t!(
+                "error.core.config.attribution.empty_protected_list"
+            )));
+        }
+        if attribution
+            .protected_workspaces
+            .iter()
+            .any(|ws| ws.trim().is_empty())
+        {
+            return Err(ConfigError::InvalidValue(t!(
+                "error.core.config.attribution.blank_workspace"
+            )));
+        }
         Ok(())
     }
 
@@ -2141,4 +2165,63 @@ fn hot_reload_auto_watch_default_and_merge() {
         still_on.hot_reload.auto_watch_enabled,
         "merge(false) 不得关闭已开启的开关"
     );
+}
+
+#[cfg(test)]
+mod attribution_validation_tests {
+    use super::*;
+
+    fn config_with_attribution(enforce: bool, workspaces: &[&str]) -> Config {
+        let mut config = Config::default();
+        config.attribution = AttributionConfig {
+            enforce_tenant_context: enforce,
+            protected_workspaces: workspaces.iter().map(|s| s.to_string()).collect(),
+        };
+        config
+    }
+
+    #[test]
+    fn test_validate_attribution_default_passes() {
+        let config = Config::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_attribution_enforce_with_empty_list_fails() {
+        let config = config_with_attribution(true, &[]);
+        let result = config.validate();
+        match result {
+            Err(ConfigError::InvalidValue(msg)) => {
+                assert!(
+                    msg.contains("attribution"),
+                    "消息须指向 attribution 配置段: {msg}"
+                );
+            }
+            _ => panic!("期望 InvalidValue"),
+        }
+    }
+
+    #[test]
+    fn test_validate_attribution_blank_workspace_fails() {
+        let config = config_with_attribution(true, &["ws-a", "  "]);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_attribution_all_blank_workspaces_fails() {
+        let config = config_with_attribution(true, &[" ", "\t"]);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_attribution_explicit_list_passes() {
+        let config = config_with_attribution(true, &["ws-a", "ws-b"]);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_attribution_blank_workspace_allowed_when_enforce_off() {
+        let config = config_with_attribution(false, &["  "]);
+        assert!(config.validate().is_ok());
+    }
 }

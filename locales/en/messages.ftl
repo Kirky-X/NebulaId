@@ -214,6 +214,10 @@ error-core-config-app_config-key_hex_invalid = algorithm.obfuscation.key_hex mus
 # src/core/config/algorithm.rs
 error-core-config-algorithm-key_hex_invalid = algorithm.obfuscation.key_hex must be 16 hex characters
 
+# src/core/config/attribution.rs + app_config.rs — attribution enforcement validation
+error-core-config-attribution-empty_protected_list = attribution.enforce_tenant_context is true but protected_workspaces is empty; configure at least one protected workspace
+error-core-config-attribution-blank_workspace = attribution.protected_workspaces contains a blank entry; remove it
+
 # src/core/database/connection.rs
 log-core-database-connection-connecting = Connecting to { $engine } database, URL: { $url }
 log-core-database-connection-established_successfully = Database connection established successfully

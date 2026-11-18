@@ -206,6 +206,10 @@ required-features = ["sdk"]
 name = "sdk_server"
 required-features = ["sdk", "http"]
 
+[[example]]
+name = "sdk_doctor"
+required-features = ["sdk"]
+
 [profile.release]
 opt-level = 3
 lto = "thin"

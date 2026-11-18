@@ -3,7 +3,8 @@
 
 use crate::core::algorithm::{
     AlgorithmBuilder, AlgorithmMetricsSnapshot, AuditEvent, AuditEventType, AuditResult,
-    DegradationManager, DynAuditLogger, GenerateContext, HealthStatus, IdAlgorithm, IdGenerator,
+    ClockResolution, DegradationManager, DynAuditLogger, GenerateContext, HealthStatus,
+    IdAlgorithm, IdGenerator,
 };
 use crate::core::config::Config;
 use crate::core::coordinator::DcFailoverController;
@@ -734,8 +735,13 @@ impl AlgorithmRouter {
         for fallback in &chain {
             if let Some(fallback_alg) = algorithms.get(fallback).cloned() {
                 let start = Instant::now();
+                let before_clock = fallback_alg.metrics().clock_backwards;
                 let result = runner.run(&fallback_alg, ctx).await;
-                self.observe(*fallback, start, &result);
+                let after_clock = fallback_alg.metrics().clock_backwards;
+                let clock_error = matches!(result, Err(CoreError::ClockMovedBackward { .. }));
+                if self.observe(*fallback, start, &result, before_clock, after_clock) {
+                    self.audit_clock_backwards(*fallback, clock_error).await;
+                }
                 match result {
                     Ok(value) => {
                         self.degradation_manager
@@ -788,24 +794,60 @@ impl AlgorithmRouter {
     /// 路由层唯一观测点：记录一次算法执行的延迟、成败与时钟回拨。
     /// HTTP/gRPC/SDK 三入口共用；`algorithm` 为实际服务算法，保证分位数正确归因。
     /// 成功计数按实际产出 ID 数累计（批量请求不是 1 个 ID）。
+    ///
+    /// 返回本次调用是否观测到算法内部 clock_backwards 计数增量，
+    /// 供调用方在成功分支（阈值内等待）也发出审计事件。
     fn observe<T: ObservedIds>(
         &self,
         algorithm: AlgorithmType,
         start: Instant,
         outcome: &Result<T>,
-    ) {
+        before_clock_backwards: u64,
+        after_clock_backwards: u64,
+    ) -> bool {
         let metrics = self.global_metrics.get_or_create_metrics(algorithm);
         metrics.record_latency(start.elapsed().as_nanos() as u64);
         self.global_metrics.increment_requests();
-        match outcome {
-            Ok(value) => metrics.increment_generated(value.observed_ids()),
+        let error_clock_backward = match outcome {
+            Ok(value) => {
+                metrics.increment_generated(value.observed_ids());
+                false
+            }
             Err(e) => {
                 metrics.increment_failed();
                 self.global_metrics.increment_errors();
                 if matches!(e, CoreError::ClockMovedBackward { .. }) {
                     metrics.record_clock_backward();
+                    true
+                } else {
+                    false
                 }
             }
+        };
+        error_clock_backward || after_clock_backwards > before_clock_backwards
+    }
+
+    /// 路由层单点时钟回拨审计：由 observe 的增量判定触发，算法实现零改动。
+    async fn audit_clock_backwards(&self, algorithm: AlgorithmType, outcome_clock_error: bool) {
+        if let Some(ref logger) = self.audit_logger {
+            let resolution = if outcome_clock_error {
+                ClockResolution::Errored
+            } else {
+                ClockResolution::Waited
+            };
+            logger
+                .log_clock_backwards(
+                    None,
+                    format!("{algorithm:?}"),
+                    serde_json::json!({
+                        "worker_id": self.config.app.worker_id,
+                        "dc_id": self.config.app.dc_id,
+                        "algorithm": format!("{algorithm:?}"),
+                        "drift_ms": self.global_metrics.get_or_create_metrics(algorithm).get_clock_backwards(),
+                    }),
+                    resolution,
+                )
+                .await;
         }
     }
 
@@ -874,8 +916,20 @@ impl AlgorithmRouter {
                 t!("log.core.algorithm.router.algorithm_found")
             );
             let start = Instant::now();
+            let before_clock = alg.metrics().clock_backwards;
             let result = alg.generate(ctx).await;
-            self.observe(effective_algorithm, start, &result);
+            let after_clock = alg.metrics().clock_backwards;
+            let clock_error = matches!(result, Err(CoreError::ClockMovedBackward { .. }));
+            if self.observe(
+                effective_algorithm,
+                start,
+                &result,
+                before_clock,
+                after_clock,
+            ) {
+                self.audit_clock_backwards(effective_algorithm, clock_error)
+                    .await;
+            }
             match result {
                 Ok(id) => {
                     self.degradation_manager
@@ -988,8 +1042,20 @@ impl AlgorithmRouter {
 
         if let Some(alg) = alg_opt {
             let start = Instant::now();
+            let before_clock = alg.metrics().clock_backwards;
             let result = alg.batch_generate(ctx, size).await;
-            self.observe(effective_algorithm, start, &result);
+            let after_clock = alg.metrics().clock_backwards;
+            let clock_error = matches!(result, Err(CoreError::ClockMovedBackward { .. }));
+            if self.observe(
+                effective_algorithm,
+                start,
+                &result,
+                before_clock,
+                after_clock,
+            ) {
+                self.audit_clock_backwards(effective_algorithm, clock_error)
+                    .await;
+            }
             match result {
                 Ok(batch) => {
                     self.degradation_manager
@@ -1270,6 +1336,9 @@ mod tests {
         fail_shutdown: bool,
         /// generate 返回 `ClockMovedBackward`（观测路径测试）
         clock_backward: bool,
+        /// generate 成功但内部记录一次回拨等待（Waited 分支测试）
+        clock_backward_waited: bool,
+        clock_backward_count: std::sync::atomic::AtomicU64,
         /// generate 前睡眠毫秒数，使延迟分位数可被观测
         delay_ms: u64,
         health_kind: MockHealthKind,
@@ -1290,6 +1359,8 @@ mod tests {
                 fail_batch: false,
                 fail_shutdown: false,
                 clock_backward: false,
+                clock_backward_waited: false,
+                clock_backward_count: std::sync::atomic::AtomicU64::new(0),
                 delay_ms: 0,
                 health_kind: MockHealthKind::Healthy,
             }
@@ -1310,6 +1381,10 @@ mod tests {
             self.clock_backward = true;
             self
         }
+        fn with_clock_backward_waited(mut self) -> Self {
+            self.clock_backward_waited = true;
+            self
+        }
         fn with_delay_ms(mut self, ms: u64) -> Self {
             self.delay_ms = ms;
             self
@@ -1323,6 +1398,9 @@ mod tests {
     #[async_trait]
     impl IdAlgorithm for MockConfigurableAlgorithm {
         async fn generate(&self, _ctx: &GenerateContext) -> Result<Id> {
+            if self.clock_backward_waited {
+                self.clock_backward_count.fetch_add(1, Ordering::Relaxed);
+            }
             if self.clock_backward {
                 return Err(CoreError::ClockMovedBackward { last_timestamp: 1 });
             }
@@ -1357,7 +1435,10 @@ mod tests {
             }
         }
         fn metrics(&self) -> AlgorithmMetricsSnapshot {
-            AlgorithmMetricsSnapshot::default()
+            AlgorithmMetricsSnapshot {
+                clock_backwards: self.clock_backward_count.load(Ordering::Relaxed),
+                ..AlgorithmMetricsSnapshot::default()
+            }
         }
         fn algorithm_type(&self) -> AlgorithmType {
             self.alg_type
@@ -2870,6 +2951,80 @@ mod tests {
         assert_eq!(id1.as_u128(), 1);
         assert_eq!(id2.as_u128(), 2);
         router.shutdown().await;
+    }
+
+    /// 超阈值报错场景：ClockBackwards 审计事件 resolution=Errored（R-audit-204）。
+    #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
+    async fn test_clock_backwards_audit_errored() {
+        let logger = recording_logger();
+        let router = AlgorithmRouter::new(Config::default(), Some(logger.clone()));
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(MockConfigurableAlgorithm::new(AlgorithmType::Segment).with_clock_backward()),
+        );
+        let err = router.generate(&make_ctx("bt")).await;
+        assert!(matches!(err, Err(CoreError::ClockMovedBackward { .. })));
+        let events = logger.events.lock().unwrap();
+        let clock_events: Vec<_> = events
+            .iter()
+            .filter(|e| e.event_type == AuditEventType::ClockBackwards)
+            .collect();
+        assert_eq!(clock_events.len(), 1);
+        let details = clock_events[0].details.as_ref().unwrap();
+        assert_eq!(details["resolution"], "Errored");
+        assert_eq!(details["details"]["algorithm"], "Segment");
+        assert!(details["details"].get("drift_ms").is_some());
+        assert!(details["details"].get("worker_id").is_some());
+        assert!(details["details"].get("dc_id").is_some());
+    }
+
+    /// 阈值内等待后成功：resolution=Waited（R-audit-204）。
+    #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
+    async fn test_clock_backwards_audit_waited() {
+        let logger = recording_logger();
+        let router = AlgorithmRouter::new(Config::default(), Some(logger.clone()));
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(
+                MockConfigurableAlgorithm::new(AlgorithmType::Segment).with_clock_backward_waited(),
+            ),
+        );
+        router
+            .generate(&make_ctx("bt"))
+            .await
+            .expect("等待后应成功");
+        let events = logger.events.lock().unwrap();
+        let clock_events: Vec<_> = events
+            .iter()
+            .filter(|e| e.event_type == AuditEventType::ClockBackwards)
+            .collect();
+        assert_eq!(clock_events.len(), 1);
+        let details = clock_events[0].details.as_ref().unwrap();
+        assert_eq!(details["resolution"], "Waited");
+    }
+
+    /// 无回拨的常规生成零新增时钟事件（R-audit-204）。
+    #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
+    async fn test_normal_generation_emits_no_clock_backwards_audit() {
+        let logger = recording_logger();
+        let router = AlgorithmRouter::new(Config::default(), Some(logger.clone()));
+        insert_mock(
+            &router,
+            AlgorithmType::Segment,
+            Arc::new(MockHealthyAlgorithm {
+                alg_type: AlgorithmType::Segment,
+            }),
+        );
+        router.generate(&make_ctx("bt")).await.expect("生成成功");
+        let events = logger.events.lock().unwrap();
+        assert!(!events
+            .iter()
+            .any(|e| e.event_type == AuditEventType::ClockBackwards));
     }
 
     // ===== 覆盖率攻坚补充（2026-11-17）：委托适配器 / reporting 面 / 公共带算法 API =====

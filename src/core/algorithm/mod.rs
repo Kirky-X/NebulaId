@@ -30,7 +30,9 @@ pub use traits::*;
 
 pub use router::AlgorithmRouter;
 
-pub use audit_trait::{AuditEvent, AuditEventType, AuditLogger, AuditResult, DynAuditLogger};
+pub use audit_trait::{
+    AuditEvent, AuditEventType, AuditLogger, AuditResult, ClockResolution, DynAuditLogger,
+};
 
 // CircuitBreakerState 唯一定义于 degradation_manager。
 pub use degradation_manager::{CircuitBreakerState, DegradationManager};

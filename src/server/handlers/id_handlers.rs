@@ -691,6 +691,61 @@ mod uuid_v8_parse_tests {
         uuid::Uuid::from_u128(0x0183_4567_89AB_8ABC_8DEF_0123_4567_89AB)
     }
 
+    /// API 契约：v8 parse 响应 JSON 含全部反解字段；既有 snowflake 响应无新字段（R-api-dx-401）。
+    #[tokio::test]
+    async fn test_parse_response_json_contract() {
+        use crate::server::handlers::mock_generator::MockIdGenerator;
+        use crate::server::models::{AttributionCandidate, ParseRequest};
+        use std::sync::Arc;
+
+        let hot_config = Arc::new(crate::server::config::HotReloadConfig::new(
+            crate::core::config::Config::default(),
+            "config/config.toml".to_string(),
+        ));
+        let router = Arc::new(crate::core::algorithm::AlgorithmRouter::new(
+            crate::core::config::Config::default(),
+            None,
+        ));
+        let config_service: Arc<dyn crate::server::config::management::ConfigManagementService> =
+            Arc::new(crate::server::config::management::ConfigManager::new(
+                hot_config, router,
+            ));
+        let handlers = crate::server::handlers::ApiHandlers::new(
+            Arc::new(MockIdGenerator::new()),
+            config_service,
+        );
+
+        // v8 形态 UUID（version nibble=8）
+        let v8 = uuid::Uuid::from_u128(0x0183_4567_89AB_8ABC_8DEF_0123_4567_89AB).to_string();
+        let resp = handlers
+            .parse(ParseRequest {
+                id: v8,
+                workspace: "w".to_string(),
+                group: "g".to_string(),
+                biz_tag: "t".to_string(),
+                algorithm: "uuid_v8".to_string(),
+                attribution: Some(AttributionCandidate {
+                    workspace: "w".to_string(),
+                    group: "g".to_string(),
+                    biz_tag: "t".to_string(),
+                }),
+            })
+            .await
+            .expect("parse 成功");
+        let json = serde_json::to_value(&resp.metadata).expect("序列化成功");
+        for field in [
+            "dc_id",
+            "worker_id_v8",
+            "shard",
+            "counter",
+            "rand",
+            "generated_at",
+            "attribution_verified",
+        ] {
+            assert!(json.get(field).is_some(), "v8 响应缺字段 {field}: {json}");
+        }
+    }
+
     #[tokio::test]
     async fn test_parse_without_attribution_omits_verified_field() {
         let config = crate::core::config::Config::default();

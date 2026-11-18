@@ -1371,4 +1371,53 @@ mod unpredictability_tests {
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
     }
+    /// High 档并发注册无重复、耗尽哨兵（seq == mask）不出现在产出 ID（R-snowflake-303）。
+    #[tokio::test]
+    async fn test_high_profile_concurrent_uniqueness_and_no_sentinel() {
+        let mut algo = SnowflakeAlgorithm::new(0, 3);
+        algo.config.unpredictability = UnpredictabilityProfile::High;
+        let layout = SnowflakeLayoutInfo::from_config(&algo.config);
+        let mask = algo.config.sequence_mask();
+        let algo = Arc::new(algo);
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let a = Arc::clone(&algo);
+            handles.push(tokio::spawn(async move {
+                let mut ids = Vec::new();
+                for _ in 0..50 {
+                    ids.push(a.generate_id().await.expect("生成成功").as_u128());
+                }
+                ids
+            }));
+        }
+        let mut all = Vec::new();
+        for h in handles {
+            all.extend(h.await.expect("任务成功"));
+        }
+        let unique: std::collections::HashSet<u128> = all.iter().copied().collect();
+        assert_eq!(unique.len(), all.len(), "并发下 ID 不得重复");
+        for id in &all {
+            assert_ne!(
+                u64::from(layout.parse(*id).sequence),
+                mask,
+                "耗尽哨兵不得出现在产出 ID"
+            );
+        }
+    }
+
+    /// High 档时钟回拨等待后仍正常发号（R-snowflake-304）；起点是恢复毫秒，
+    /// 该毫秒首序列号为 0 的既有不变式由回拨路径 pack_state(wait_ts, 0) 保证。
+    #[tokio::test]
+    async fn test_high_profile_clock_backward_recovery_still_generates() {
+        let mut algo = SnowflakeAlgorithm::new(0, 4);
+        algo.config.unpredictability = UnpredictabilityProfile::High;
+        let now = SnowflakeAlgorithm::get_timestamp();
+        algo.state
+            .store(algo.pack_state(now + 1, 0), Ordering::SeqCst);
+        let id = algo
+            .generate_id()
+            .await
+            .expect("回拨阈值内等待后应恢复发号");
+        assert!(id.as_u128() > 0);
+    }
 }

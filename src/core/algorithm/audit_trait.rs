@@ -30,6 +30,19 @@ pub enum AuditEventType {
     ApiKeyUpdated,
     ApiKeyDeleted,
     ApiKeyRegenerated,
+    /// 请求级降级命中：主算法不可用，本次生成由备用算法完成。
+    FallbackUsed,
+    /// 时钟回拨安全事件：Snowflake 生成路径检测到时钟倒退。
+    ClockBackwards,
+}
+
+/// 时钟回拨的处置结果：阈值内等待后继续，或超阈值报错。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClockResolution {
+    /// 阈值内等待后恢复，生成成功。
+    Waited,
+    /// 超阈值，生成失败并报 `CoreError::ClockMovedBackward`。
+    Errored,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +114,32 @@ pub trait AuditLogger: Send + Sync {
         )
         .with_details(serde_json::json!({
             "algorithm_type": algorithm_type
+        }));
+        self.log(event).await;
+    }
+
+    /// 时钟回拨事件：由路由层 observe 单点发射，记录幅度与处置结果。
+    async fn log_clock_backwards(
+        &self,
+        workspace_id: Option<String>,
+        algorithm: String,
+        details: serde_json::Value,
+        resolution: ClockResolution,
+    ) {
+        let event = AuditEvent::new(
+            AuditEventType::ClockBackwards,
+            workspace_id,
+            "clock_backwards".to_string(),
+            format!("algorithm:{algorithm}"),
+            if resolution == ClockResolution::Errored {
+                AuditResult::Failure
+            } else {
+                AuditResult::Success
+            },
+        )
+        .with_details(serde_json::json!({
+            "resolution": resolution,
+            "details": details,
         }));
         self.log(event).await;
     }
@@ -247,5 +286,51 @@ mod tests {
         assert_eq!(events[0].result, AuditResult::Success);
         assert_eq!(events[1].result, AuditResult::Failure);
         assert_eq!(events[2].result, AuditResult::Success);
+    }
+
+    /// 新增审计事件类型与时钟 resolutions 的 JSON roundtrip 必须无损：
+    /// server 审计链以 JSON 落盘，新值只增不改，既有事件不受影响（R-audit-201）。
+    #[test]
+    fn test_new_audit_event_types_serialize_roundtrip() {
+        for event_type in [
+            AuditEventType::FallbackUsed,
+            AuditEventType::ClockBackwards,
+            AuditEventType::IdGeneration,
+        ] {
+            let json = serde_json::to_string(&event_type).expect("serialize");
+            let back: AuditEventType = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, event_type);
+        }
+        for resolution in [ClockResolution::Waited, ClockResolution::Errored] {
+            let json = serde_json::to_string(&resolution).expect("serialize");
+            let back: ClockResolution = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(serde_json::to_string(&back).expect("reserialize"), json);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_default_log_clock_backwards_records_resolution() {
+        let recorded = logger();
+        recorded
+            .log_clock_backwards(
+                Some("ws".to_string()),
+                "snowflake".to_string(),
+                serde_json::json!({"drift_ms": 12}),
+                ClockResolution::Waited,
+            )
+            .await;
+        recorded
+            .log_clock_backwards(
+                Some("ws".to_string()),
+                "snowflake".to_string(),
+                serde_json::json!({"drift_ms": 2000}),
+                ClockResolution::Errored,
+            )
+            .await;
+        let events = recorded.events.lock().expect("lock");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].result, AuditResult::Success);
+        assert_eq!(events[1].result, AuditResult::Failure);
+        assert_eq!(events[1].details.as_ref().unwrap()["resolution"], "Errored");
     }
 }

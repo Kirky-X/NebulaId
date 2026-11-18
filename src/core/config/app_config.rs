@@ -415,6 +415,23 @@ impl Config {
             }
         }
 
+        // High 档契约：序列随机起点需要足够 worker/sequence 位宽才具备意义，
+        // 参数不足时 fail-fast，不给出"声明了但未启用"的中间态。
+        if self.algorithm.snowflake.unpredictability
+            == crate::core::config::UnpredictabilityProfile::High
+        {
+            if worker_bits < 8 {
+                return Err(ConfigError::InvalidValue(t!(
+                    "error.core.config.algorithm.high_requires_worker_bits"
+                )));
+            }
+            if self.algorithm.snowflake.sequence_bits < 6 {
+                return Err(ConfigError::InvalidValue(t!(
+                    "error.core.config.algorithm.high_requires_sequence_bits"
+                )));
+            }
+        }
+
         if self.algorithm.snowflake.clock_drift_threshold_ms == 0 {
             return Err(ConfigError::InvalidValue(t!(
                 "error.core.config.app_config.clock_drift_threshold_invalid"
@@ -2222,6 +2239,54 @@ mod attribution_validation_tests {
     #[test]
     fn test_validate_attribution_blank_workspace_allowed_when_enforce_off() {
         let config = config_with_attribution(false, &["  "]);
+        assert!(config.validate().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod unpredictability_validation_tests {
+    use super::*;
+    use crate::core::config::UnpredictabilityProfile;
+
+    fn config_with_high(worker_bits: u8, sequence_bits: u8) -> Config {
+        let mut config = Config::default();
+        config.algorithm.snowflake.unpredictability = UnpredictabilityProfile::High;
+        config.algorithm.snowflake.worker_id_bits = worker_bits;
+        config.algorithm.snowflake.sequence_bits = sequence_bits;
+        config
+    }
+
+    #[test]
+    fn test_high_profile_rejects_worker_bits_below_eight() {
+        let config = config_with_high(7, 10);
+        let result = config.validate();
+        match result {
+            Err(ConfigError::InvalidValue(msg)) => assert!(msg.contains("worker")),
+            _ => panic!("期望 InvalidValue"),
+        }
+    }
+
+    #[test]
+    fn test_high_profile_rejects_sequence_bits_below_six() {
+        let config = config_with_high(8, 5);
+        let result = config.validate();
+        match result {
+            Err(ConfigError::InvalidValue(msg)) => assert!(msg.contains("sequence")),
+            _ => panic!("期望 InvalidValue"),
+        }
+    }
+
+    #[test]
+    fn test_high_profile_accepts_boundary_values() {
+        let config = config_with_high(8, 6);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_basic_profile_ignores_bit_limits() {
+        let mut config = Config::default();
+        config.algorithm.snowflake.worker_id_bits = 7;
+        config.algorithm.snowflake.sequence_bits = 5;
         assert!(config.validate().is_ok());
     }
 }

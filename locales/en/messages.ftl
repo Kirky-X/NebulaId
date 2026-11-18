@@ -217,6 +217,9 @@ error-core-config-algorithm-key_hex_invalid = algorithm.obfuscation.key_hex must
 # src/core/config/attribution.rs + app_config.rs — attribution enforcement validation
 error-core-config-attribution-empty_protected_list = attribution.enforce_tenant_context is true but protected_workspaces is empty; configure at least one protected workspace
 error-core-config-attribution-blank_workspace = attribution.protected_workspaces contains a blank entry; remove it
+# Unpredictability High profile parameter gates
+error-core-config-algorithm-high_requires_worker_bits = unpredictability = "high" requires worker_id_bits >= 8
+error-core-config-algorithm-high_requires_sequence_bits = unpredictability = "high" requires sequence_bits >= 6
 
 # src/core/database/connection.rs
 log-core-database-connection-connecting = Connecting to { $engine } database, URL: { $url }

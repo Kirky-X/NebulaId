@@ -589,6 +589,19 @@ impl IdAlgorithm for SnowflakeAlgorithm {
         HealthStatus::Healthy
     }
 
+    fn clock_drift_ms(&self) -> Option<u64> {
+        Some(self.clock_drift_ms.load(Ordering::Relaxed))
+    }
+
+    fn sequence_remaining(&self) -> Option<u64> {
+        let state = self.state.load(Ordering::Acquire);
+        Some(
+            self.config
+                .sequence_mask()
+                .saturating_sub(self.state_sequence(state)),
+        )
+    }
+
     fn metrics(&self) -> AlgorithmMetricsSnapshot {
         AlgorithmMetricsSnapshot {
             total_generated: self.metrics.total_generated.load(Ordering::Relaxed),
@@ -1466,5 +1479,23 @@ mod high_capacity_tests {
         assert_eq!(batch.ids.len(), 200);
         let overflows = algo.metrics.sequence_overflows.load(Ordering::Relaxed);
         assert!(overflows > 0, "应观测到序列耗尽轮转计数");
+    }
+}
+
+#[cfg(all(test, feature = "snowflake"))]
+mod capacity_tests {
+    use super::*;
+
+    #[test]
+    fn test_sequence_remaining_within_mask() {
+        let algo = SnowflakeAlgorithm::new(0, 0);
+        let mask = algo.config.sequence_mask();
+        let remaining = IdAlgorithm::sequence_remaining(&algo).expect("有定义");
+        assert!(remaining <= mask);
+        algo.state.store(
+            algo.pack_state(SnowflakeAlgorithm::get_timestamp(), mask),
+            Ordering::SeqCst,
+        );
+        assert_eq!(IdAlgorithm::sequence_remaining(&algo), Some(0));
     }
 }

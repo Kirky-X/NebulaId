@@ -31,6 +31,34 @@ pub trait IdAlgorithm: Send + Sync {
 
     async fn shutdown(&self) -> Result<()>;
     // initialize 为 inherent method：`&mut self` 在 `dyn IdAlgorithm` 上调用受限。
+
+    /// 当前毫秒剩余序列号容量（仅 Snowflake 有定义；容量视图只读）。
+    fn sequence_remaining(&self) -> Option<u64> {
+        None
+    }
+
+    /// 当前时钟漂移毫秒数（仅 Snowflake 有定义；容量视图只读）。
+    fn clock_drift_ms(&self) -> Option<u64> {
+        None
+    }
+}
+
+/// 容量视图原始条目（core → server 传输，无 HTTP 类型依赖）。
+#[derive(Debug, Clone)]
+pub struct AlgorithmCapacityRaw {
+    pub algorithm: AlgorithmType,
+    pub sequence_remaining_ms: Option<u64>,
+    pub clock_drift_ms: Option<u64>,
+    pub clock_backwards_total: Option<u64>,
+    pub p99_latency_ms: Option<f64>,
+}
+
+/// 降级链视图（core → server 传输）。
+#[derive(Debug, Clone)]
+pub struct DegradationViewRaw {
+    pub primary_algorithm: String,
+    pub fallback_chain: Vec<String>,
+    pub current_state: String,
 }
 
 #[async_trait]
@@ -96,6 +124,11 @@ pub trait IdGenerator: Send + Sync {
     async fn get_primary_algorithm(&self) -> String;
 
     fn get_degradation_manager(&self) -> &Arc<DegradationManager>;
+
+    /// 容量视图快照（默认空实现；AlgorithmRouter 覆盖）。
+    async fn capacity_snapshot(&self) -> (Vec<AlgorithmCapacityRaw>, Option<DegradationViewRaw>) {
+        (Vec::new(), None)
+    }
 
     /// 当前生效的 Snowflake 位布局（解析知识唯一来源）。
     ///

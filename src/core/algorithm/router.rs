@@ -95,6 +95,15 @@ impl IdGenerator for AlgorithmRouter {
         &self.degradation_manager
     }
 
+    async fn capacity_snapshot(
+        &self,
+    ) -> (
+        Vec<crate::core::algorithm::traits::AlgorithmCapacityRaw>,
+        Option<crate::core::algorithm::traits::DegradationViewRaw>,
+    ) {
+        AlgorithmRouter::capacity_snapshot(self).await
+    }
+
     #[cfg(feature = "snowflake")]
     fn snowflake_layout(&self) -> Option<crate::core::algorithm::SnowflakeLayoutInfo> {
         Some(crate::core::algorithm::SnowflakeLayoutInfo::from_config(
@@ -1113,6 +1122,42 @@ impl AlgorithmRouter {
     pub async fn health_check(&self) -> Vec<(AlgorithmType, HealthStatus)> {
         let algs = self.algorithms.load_full();
         algs.iter().map(|(k, v)| (*k, v.health_check())).collect()
+    }
+
+    /// 容量视图原始快照：每启用算法一条 + 降级链状态。
+    pub async fn capacity_snapshot(
+        &self,
+    ) -> (
+        Vec<crate::core::algorithm::traits::AlgorithmCapacityRaw>,
+        Option<crate::core::algorithm::traits::DegradationViewRaw>,
+    ) {
+        use crate::core::algorithm::traits::{AlgorithmCapacityRaw, DegradationViewRaw};
+        let algorithms = self.algorithms.load_full();
+        let observed = self.global_metrics.get_all_snapshots();
+        let entries = algorithms
+            .iter()
+            .map(|(kind, alg)| {
+                let snapshot = observed.iter().find(|s| s.algorithm == *kind);
+                AlgorithmCapacityRaw {
+                    algorithm: *kind,
+                    sequence_remaining_ms: alg.sequence_remaining(),
+                    clock_drift_ms: alg.clock_drift_ms(),
+                    clock_backwards_total: snapshot.map(|s| s.clock_backwards),
+                    p99_latency_ms: snapshot.map(|s| s.p99_latency_ms),
+                }
+            })
+            .collect();
+        let manager = &self.degradation_manager;
+        let view = DegradationViewRaw {
+            primary_algorithm: format!("{:?}", manager.primary_algorithm()),
+            fallback_chain: manager
+                .fallback_chain()
+                .iter()
+                .map(|a| format!("{a:?}"))
+                .collect(),
+            current_state: format!("{:?}", manager.get_current_state()),
+        };
+        (entries, Some(view))
     }
 
     pub async fn metrics(&self) -> Vec<(AlgorithmType, AlgorithmMetricsSnapshot)> {
@@ -3390,5 +3435,19 @@ mod attribution_chain_tests {
         let mut filtered = router.filtered_chain_for(&ctx("protected"));
         filtered.retain(|a| *a != AlgorithmType::UuidV8);
         assert!(filtered.is_empty());
+    }
+}
+
+#[cfg(all(test, feature = "snowflake"))]
+mod capacity_snapshot_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_capacity_snapshot_returns_view() {
+        let router = AlgorithmRouter::new(Config::default(), None);
+        let (entries, view) = router.capacity_snapshot().await;
+        assert!(entries.iter().all(|e| e.sequence_remaining_ms.is_none()));
+        let view = view.expect("router 产出降级视图");
+        assert_eq!(view.primary_algorithm, "Segment");
     }
 }

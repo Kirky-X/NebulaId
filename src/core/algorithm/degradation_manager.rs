@@ -320,6 +320,16 @@ impl DegradationManager {
         );
     }
 
+    /// 当前主算法（容量视图只读）。
+    pub fn primary_algorithm(&self) -> AlgorithmType {
+        *self.primary_algorithm.read()
+    }
+
+    /// 当前降级链（容量视图只读）。
+    pub fn fallback_chain(&self) -> Vec<AlgorithmType> {
+        self.fallback_chain.read().clone()
+    }
+
     pub fn set_primary_algorithm(&self, alg_type: AlgorithmType) {
         *self.primary_algorithm.write() = alg_type;
         info!(

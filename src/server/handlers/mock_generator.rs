@@ -16,7 +16,7 @@ impl MockIdGenerator {
     pub fn new() -> Self {
         Self {
             counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
-            degradation_manager: Arc::new(DegradationManager::new(None, None)),
+            degradation_manager: Arc::new(DegradationManager::new(None, None, 0, 0)),
         }
     }
 }

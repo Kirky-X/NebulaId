@@ -525,7 +525,7 @@ async fn e2e_degradation_manager_full_degrade_recover_cycle() {
         fallback_chain: vec![AlgorithmType::Snowflake, AlgorithmType::UuidV8],
         ..Default::default()
     };
-    let manager = DegradationManager::new(Some(config), None);
+    let manager = DegradationManager::new(Some(config), None, 0, 0);
 
     let primary = Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment));
     let fallback = Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake));
@@ -578,7 +578,7 @@ async fn e2e_degradation_manager_all_algorithms_fail_enters_critical() {
         fallback_chain: vec![AlgorithmType::Snowflake],
         ..Default::default()
     };
-    let manager = DegradationManager::new(Some(config), None);
+    let manager = DegradationManager::new(Some(config), None, 0, 0);
 
     let primary = Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment));
     let fallback = Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake));

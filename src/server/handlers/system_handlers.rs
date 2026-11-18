@@ -426,7 +426,7 @@ mod tests {
             Self {
                 health,
                 primary_algorithm: "segment".to_string(),
-                degradation_manager: Arc::new(DegradationManager::new(None, None)),
+                degradation_manager: Arc::new(DegradationManager::new(None, None, 0, 0)),
             }
         }
     }

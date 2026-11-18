@@ -269,6 +269,9 @@ pub struct DegradationManager {
     running: AtomicBool,
     last_check: RwLock<Instant>,
     audit_logger: Option<DynAuditLogger>,
+    /// 熔断级审计事件的部署拓扑维度（来自 config.app）。
+    dc_id: u8,
+    worker_id: u64,
     /// watch channel：`stop_background_check` 用它通知后台 task 退出。
     shutdown_tx: parking_lot::Mutex<Option<tokio::sync::watch::Sender<bool>>>,
     /// 后台 task 的 JoinHandle，`stop_background_check` 可 await 它确认 task 已退出。
@@ -276,7 +279,12 @@ pub struct DegradationManager {
 }
 
 impl DegradationManager {
-    pub fn new(config: Option<DegradationConfig>, audit_logger: Option<DynAuditLogger>) -> Self {
+    pub fn new(
+        config: Option<DegradationConfig>,
+        audit_logger: Option<DynAuditLogger>,
+        dc_id: u8,
+        worker_id: u64,
+    ) -> Self {
         Self {
             config: config.unwrap_or_default(),
             algorithms: Arc::new(ArcSwap::from_pointee(HashMap::new())),
@@ -287,6 +295,8 @@ impl DegradationManager {
             running: AtomicBool::new(false),
             last_check: RwLock::new(Instant::now()),
             audit_logger,
+            dc_id,
+            worker_id,
             shutdown_tx: parking_lot::Mutex::new(None),
             background_task: parking_lot::Mutex::new(None),
         }
@@ -386,7 +396,9 @@ impl DegradationManager {
             let details = serde_json::json!({
                 "failure_count": failure_count,
                 "threshold": self.config.failure_threshold,
-                "algorithm_type": format!("{:?}", alg_type)
+                "algorithm_type": format!("{:?}", alg_type),
+                "dc_id": self.dc_id,
+                "worker_id": self.worker_id
             });
             logger
                 .log_degradation_event(
@@ -428,7 +440,9 @@ impl DegradationManager {
                 let details = serde_json::json!({
                     "success_count": success_count,
                     "threshold": self.config.recovery_threshold,
-                    "algorithm_type": format!("{:?}", alg_type)
+                    "algorithm_type": format!("{:?}", alg_type),
+                    "dc_id": self.dc_id,
+                    "worker_id": self.worker_id
                 });
                 logger
                     .log_degradation_event(
@@ -880,7 +894,7 @@ mod tests {
 
     #[test]
     fn test_degradation_manager_states() {
-        let manager = DegradationManager::new(None, None);
+        let manager = DegradationManager::new(None, None, 0, 0);
 
         assert_eq!(manager.get_current_state(), DegradationState::Normal);
 
@@ -1218,7 +1232,7 @@ mod tests {
             recovery_threshold: recovery,
             ..Default::default()
         };
-        DegradationManager::new(Some(config), None)
+        DegradationManager::new(Some(config), None, 0, 0)
     }
 
     /// 取回 `register_algorithm` 建立的 `AlgorithmHealthState`。
@@ -1239,7 +1253,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_determine_effective_algorithm_returns_normal_when_primary_healthy() {
-        let manager = DegradationManager::new(None, None);
+        let manager = DegradationManager::new(None, None, 0, 0);
         manager.set_primary_algorithm(AlgorithmType::Segment);
         manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
 
@@ -1255,7 +1269,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_determine_effective_algorithm_returns_degraded_when_primary_down() {
-        let manager = DegradationManager::new(None, None);
+        let manager = DegradationManager::new(None, None, 0, 0);
         manager.set_primary_algorithm(AlgorithmType::Segment);
         manager.set_fallback_chain(vec![AlgorithmType::Snowflake, AlgorithmType::UuidV8]);
 
@@ -1277,7 +1291,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_determine_effective_algorithm_returns_critical_when_all_down() {
-        let manager = DegradationManager::new(None, None);
+        let manager = DegradationManager::new(None, None, 0, 0);
         manager.set_primary_algorithm(AlgorithmType::Segment);
         manager.set_fallback_chain(vec![AlgorithmType::Snowflake, AlgorithmType::UuidV8]);
 
@@ -1304,7 +1318,7 @@ mod tests {
 
     #[test]
     fn test_get_algorithm_state_returns_some_for_registered() {
-        let manager = DegradationManager::new(None, None);
+        let manager = DegradationManager::new(None, None, 0, 0);
         manager.register_algorithm(
             AlgorithmType::Snowflake,
             Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
@@ -1321,7 +1335,7 @@ mod tests {
 
     #[test]
     fn test_get_algorithm_state_returns_none_for_unregistered() {
-        let manager = DegradationManager::new(None, None);
+        let manager = DegradationManager::new(None, None, 0, 0);
 
         let info = manager.get_algorithm_state(AlgorithmType::UuidV8);
         assert!(info.is_none());
@@ -1329,7 +1343,7 @@ mod tests {
 
     #[test]
     fn test_update_config_replaces_internal_config() {
-        let mut manager = DegradationManager::new(None, None);
+        let mut manager = DegradationManager::new(None, None, 0, 0);
         let new_config = DegradationConfig {
             failure_threshold: 99,
             enabled: false,
@@ -1359,7 +1373,7 @@ mod tests {
 
     #[test]
     fn test_manual_degrade_on_existing_algorithm_marks_state() {
-        let manager = DegradationManager::new(None, None);
+        let manager = DegradationManager::new(None, None, 0, 0);
         manager.register_algorithm(
             AlgorithmType::Snowflake,
             Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake)) as Arc<dyn IdAlgorithm>,
@@ -1376,7 +1390,7 @@ mod tests {
 
     #[test]
     fn test_manual_recover_on_nonexistent_is_no_op() {
-        let manager = DegradationManager::new(None, None);
+        let manager = DegradationManager::new(None, None, 0, 0);
         // 未注册 Snowflake → manual_recover 是 no-op，不 panic
         manager.manual_recover(AlgorithmType::Snowflake);
 
@@ -1385,7 +1399,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_record_generation_result_unknown_alg_is_no_op() {
-        let manager = DegradationManager::new(None, None);
+        let manager = DegradationManager::new(None, None, 0, 0);
         // 未注册 Segment → 不记录结果，不 panic
         manager
             .record_generation_result(AlgorithmType::Segment, false)
@@ -1546,7 +1560,7 @@ mod tests {
     #[tokio::test]
     async fn test_trigger_degradation_invokes_audit_logger() {
         let logger = Arc::new(CountingAuditLogger::default());
-        let manager = DegradationManager::new(None, Some(logger.clone() as DynAuditLogger));
+        let manager = DegradationManager::new(None, Some(logger.clone() as DynAuditLogger), 3, 7);
         manager.set_primary_algorithm(AlgorithmType::Segment);
         manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
         manager.register_algorithm(
@@ -1565,17 +1579,21 @@ mod tests {
                 .await;
         }
 
-        // 验证 audit logger 收到 DegradationEvent
+        // 验证 audit logger 收到 DegradationEvent 且携带 dc/worker 归属维度
         let events = logger.events.lock().unwrap();
-        assert!(events
+        let event = events
             .iter()
-            .any(|e| e.event_type == AuditEventType::DegradationEvent));
+            .find(|e| e.event_type == AuditEventType::DegradationEvent)
+            .expect("应发出降级事件");
+        let details = event.details.as_ref().unwrap();
+        assert_eq!(details["details"]["dc_id"], 3);
+        assert_eq!(details["details"]["worker_id"], 7);
     }
 
     #[tokio::test]
     async fn test_attempt_recovery_invokes_audit_logger() {
         let logger = Arc::new(CountingAuditLogger::default());
-        let manager = DegradationManager::new(None, Some(logger.clone() as DynAuditLogger));
+        let manager = DegradationManager::new(None, Some(logger.clone() as DynAuditLogger), 0, 0);
         manager.set_primary_algorithm(AlgorithmType::Segment);
         manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
         manager.register_algorithm(
@@ -1690,7 +1708,7 @@ mod tests {
             enable_circuit_breaker: false,
             ..Default::default()
         };
-        let manager = DegradationManager::new(Some(config), None);
+        let manager = DegradationManager::new(Some(config), None, 0, 0);
         manager.set_primary_algorithm(AlgorithmType::Segment);
         manager.set_fallback_chain(vec![AlgorithmType::Snowflake]);
         manager.register_algorithm(
@@ -1794,7 +1812,7 @@ mod tests {
             circuit_breaker_timeout_ms: 0, // 立刻超时
             ..Default::default()
         };
-        let manager = DegradationManager::new(Some(config), None);
+        let manager = DegradationManager::new(Some(config), None, 0, 0);
         manager.set_primary_algorithm(AlgorithmType::Segment);
         manager.register_algorithm(
             AlgorithmType::Segment,
@@ -1822,7 +1840,7 @@ mod tests {
             half_open_success_threshold: 5, // 较高阈值
             ..Default::default()
         };
-        let manager = DegradationManager::new(Some(config), None);
+        let manager = DegradationManager::new(Some(config), None, 0, 0);
         manager.set_primary_algorithm(AlgorithmType::Segment);
         manager.register_algorithm(
             AlgorithmType::Segment,
@@ -1855,7 +1873,7 @@ mod tests {
             half_open_success_threshold: 2,
             ..Default::default()
         };
-        let manager = DegradationManager::new(Some(config), None);
+        let manager = DegradationManager::new(Some(config), None, 0, 0);
         manager.set_primary_algorithm(AlgorithmType::Segment);
         manager.register_algorithm(
             AlgorithmType::Segment,
@@ -1953,7 +1971,7 @@ mod tests {
             check_interval_ms: 10,
             ..Default::default()
         };
-        let manager = Arc::new(DegradationManager::new(Some(config), None));
+        let manager = Arc::new(DegradationManager::new(Some(config), None, 0, 0));
         manager.set_primary_algorithm(AlgorithmType::Segment);
 
         manager.start_background_check();
@@ -1972,7 +1990,7 @@ mod tests {
             check_interval_ms: 1000,
             ..Default::default()
         };
-        let manager = Arc::new(DegradationManager::new(Some(config), None));
+        let manager = Arc::new(DegradationManager::new(Some(config), None, 0, 0));
         manager.set_primary_algorithm(AlgorithmType::Segment);
 
         manager.start_background_check();
@@ -1987,7 +2005,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stop_background_check_without_start_is_no_op() {
-        let manager = DegradationManager::new(None, None);
+        let manager = DegradationManager::new(None, None, 0, 0);
         // 未启动 → stop 是 no-op，不 panic
         manager.stop_background_check().await;
         assert!(!manager.running.load(Ordering::SeqCst));

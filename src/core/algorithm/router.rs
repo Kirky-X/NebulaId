@@ -312,7 +312,12 @@ impl AlgorithmRouter {
         }
 
         let primary_algorithm = config.algorithm.get_default_algorithm();
-        let degradation_manager = Arc::new(DegradationManager::new(None, audit_logger.clone()));
+        let degradation_manager = Arc::new(DegradationManager::new(
+            None,
+            audit_logger.clone(),
+            config.app.dc_id,
+            config.app.worker_id as u64,
+        ));
 
         degradation_manager.set_primary_algorithm(primary_algorithm);
         degradation_manager.set_fallback_chain(fallback_chain.to_vec());

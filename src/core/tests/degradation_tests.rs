@@ -184,7 +184,7 @@ async fn test_degradation_manager_algorithm_degradation() {
         ..Default::default()
     };
 
-    let manager = DegradationManager::new(Some(config), None);
+    let manager = DegradationManager::new(Some(config), None, 0, 0);
 
     let primary_alg = Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment));
     let fallback_alg = Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake));
@@ -235,7 +235,7 @@ async fn test_circuit_breaker_state_transitions() {
         ..Default::default()
     };
 
-    let manager = DegradationManager::new(Some(config), None);
+    let manager = DegradationManager::new(Some(config), None, 0, 0);
 
     let alg = Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment));
     manager.register_algorithm(AlgorithmType::Segment, alg.clone());
@@ -287,7 +287,7 @@ async fn test_fallback_algorithm_switching() {
         ..Default::default()
     };
 
-    let manager = DegradationManager::new(Some(config), None);
+    let manager = DegradationManager::new(Some(config), None, 0, 0);
 
     let primary_alg = Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment));
     let fallback1 = Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake));
@@ -340,7 +340,7 @@ async fn test_degradation_manager_health_monitoring() {
         ..Default::default()
     };
 
-    let manager = DegradationManager::new(Some(config), None);
+    let manager = DegradationManager::new(Some(config), None, 0, 0);
 
     let alg = Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment));
     manager.register_algorithm(AlgorithmType::Segment, alg.clone());
@@ -370,7 +370,7 @@ async fn test_degradation_manager_health_monitoring() {
 #[tokio::test]
 async fn test_algorithm_metrics_collection() {
     let config = DegradationConfig::default();
-    let manager = DegradationManager::new(Some(config), None);
+    let manager = DegradationManager::new(Some(config), None, 0, 0);
 
     let alg = Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment));
     manager.register_algorithm(AlgorithmType::Segment, alg.clone());
@@ -408,7 +408,7 @@ async fn test_circuit_breaker_timeout() {
         ..Default::default()
     };
 
-    let manager = DegradationManager::new(Some(config), None);
+    let manager = DegradationManager::new(Some(config), None, 0, 0);
 
     let alg = Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment));
     manager.register_algorithm(AlgorithmType::Segment, alg.clone());
@@ -458,7 +458,7 @@ async fn test_multiple_algorithm_degradation() {
         ..Default::default()
     };
 
-    let manager = DegradationManager::new(Some(config), None);
+    let manager = DegradationManager::new(Some(config), None, 0, 0);
 
     let alg1 = Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment));
     let alg2 = Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake));
@@ -550,7 +550,7 @@ async fn test_degradation_with_circuit_breaker_and_fallback() {
         ..Default::default()
     };
 
-    let manager = DegradationManager::new(Some(config), None);
+    let manager = DegradationManager::new(Some(config), None, 0, 0);
 
     let primary = Arc::new(MockIdAlgorithm::new(AlgorithmType::Segment));
     let fallback = Arc::new(MockIdAlgorithm::new(AlgorithmType::Snowflake));

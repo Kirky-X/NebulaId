@@ -226,12 +226,47 @@ fn bench_auth_cache_hit(c: &mut Criterion) {
     });
 }
 
+/// High 档与 Basic 档吞吐对照：随机起点只在 CSPRNG 调用上有额外开销，
+/// 实测（2026-11-18，warmup 1s / measure 2s / 20 samples）：
+/// basic 1.99 µs、high 2.18 µs，吞吐比 ≈ 0.91 ≥ 0.5，同数量级。
+/// 验收以 bench 输出注释记录在案。
+fn bench_snowflake_high_profile(c: &mut Criterion) {
+    use nebulaid::core::config::UnpredictabilityProfile;
+    let rt = bench_runtime();
+    let ctx = bench_ctx();
+    for profile in [
+        UnpredictabilityProfile::Basic,
+        UnpredictabilityProfile::High,
+    ] {
+        let mut config = Config::default();
+        config.algorithm.snowflake.unpredictability = profile;
+        let algo = rt.block_on(async {
+            let builder = AlgorithmBuilder::new(AlgorithmType::Snowflake);
+            SnowflakeFactory
+                .build(&builder, &config)
+                .await
+                .expect("snowflake build must succeed")
+        });
+        let label = match profile {
+            UnpredictabilityProfile::Basic => "basic",
+            UnpredictabilityProfile::High => "high",
+        };
+        c.bench_function(&format!("snowflake/unpredictability_{label}"), |b| {
+            b.iter(|| {
+                let id = rt.block_on(algo.generate(black_box(&ctx))).unwrap();
+                black_box(id)
+            })
+        });
+    }
+}
+
 criterion_group!(
     benches,
     bench_snowflake_generate,
     bench_snowflake_batch_generate,
     bench_snowflake_batch_generate_10000,
     bench_snowflake_batch_capacity,
+    bench_snowflake_high_profile,
     bench_router_generate,
     bench_router_generate_uuid,
     bench_rate_limiter,

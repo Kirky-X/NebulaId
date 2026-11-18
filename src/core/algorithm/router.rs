@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::core::algorithm::{
-    AlgorithmBuilder, AlgorithmMetricsSnapshot, DegradationManager, DynAuditLogger,
-    GenerateContext, HealthStatus, IdAlgorithm, IdGenerator,
+    AlgorithmBuilder, AlgorithmMetricsSnapshot, AuditEvent, AuditEventType, AuditResult,
+    DegradationManager, DynAuditLogger, GenerateContext, HealthStatus, IdAlgorithm, IdGenerator,
 };
 use crate::core::config::Config;
 use crate::core::coordinator::DcFailoverController;
@@ -198,6 +198,8 @@ impl FallbackRunner for BatchGenerateRun {
 
 pub struct AlgorithmRouter {
     config: Config,
+    /// 请求级审计（fallback / clock_backwards）与 DegradationManager 共享同一 logger。
+    audit_logger: Option<DynAuditLogger>,
     algorithms: Arc<ArcSwap<HashMap<AlgorithmType, Arc<dyn IdAlgorithm>>>>,
     fallback_chain: SmallVec<[AlgorithmType; 8]>,
     current_algorithm: Arc<ArcSwap<HashMap<String, AlgorithmType>>>,
@@ -310,13 +312,14 @@ impl AlgorithmRouter {
         }
 
         let primary_algorithm = config.algorithm.get_default_algorithm();
-        let degradation_manager = Arc::new(DegradationManager::new(None, audit_logger));
+        let degradation_manager = Arc::new(DegradationManager::new(None, audit_logger.clone()));
 
         degradation_manager.set_primary_algorithm(primary_algorithm);
         degradation_manager.set_fallback_chain(fallback_chain.to_vec());
 
         Self {
             config,
+            audit_logger,
             algorithms: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             fallback_chain,
             current_algorithm: Arc::new(ArcSwap::from_pointee(HashMap::new())),
@@ -717,6 +720,7 @@ impl AlgorithmRouter {
         &self,
         algorithms: &HashMap<AlgorithmType, Arc<dyn IdAlgorithm>>,
         ctx: &GenerateContext,
+        primary: AlgorithmType,
         announce_hits: bool,
         runner: R,
     ) -> Option<Result<(R::Out, AlgorithmType)>> {
@@ -738,6 +742,29 @@ impl AlgorithmRouter {
                                 "{}",
                                 t!("log.core.algorithm.router.fell_back_to_algorithm")
                             );
+                        }
+                        if let Some(ref logger) = self.audit_logger {
+                            logger
+                                .log(
+                                    AuditEvent::new(
+                                        AuditEventType::FallbackUsed,
+                                        Some(ctx.workspace_id.clone()),
+                                        "fallback_generate".to_string(),
+                                        format!("{fallback:?}"),
+                                        AuditResult::Success,
+                                    )
+                                    .with_details(
+                                        serde_json::json!({
+                                            "group_id": ctx.group_id,
+                                            "biz_tag": ctx.biz_tag,
+                                            "primary_algorithm": format!("{primary:?}"),
+                                            "actual_algorithm": format!("{fallback:?}"),
+                                            "dc": ctx.dc,
+                                            "reason": "primary_unavailable",
+                                        }),
+                                    ),
+                                )
+                                .await;
                         }
                         return Some(Ok((value, *fallback)));
                     }
@@ -875,7 +902,13 @@ impl AlgorithmRouter {
                         t!("log.core.algorithm.router.algorithm_failed_fallback")
                     );
                     if let Some(res) = self
-                        .try_fallback_chain(&algorithms, ctx, true, GenerateRun)
+                        .try_fallback_chain(
+                            &algorithms,
+                            ctx,
+                            effective_algorithm,
+                            true,
+                            GenerateRun,
+                        )
                         .await
                     {
                         return res;
@@ -893,7 +926,7 @@ impl AlgorithmRouter {
         );
 
         match self
-            .try_fallback_chain(&algorithms, ctx, false, GenerateRun)
+            .try_fallback_chain(&algorithms, ctx, effective_algorithm, false, GenerateRun)
             .await
         {
             Some(res) => res,
@@ -973,7 +1006,13 @@ impl AlgorithmRouter {
                         .await;
                     if let Some(res) = self
                         // 批量与单条日志对称：主算法失败后的回退命中也要广播。
-                        .try_fallback_chain(&algorithms, ctx, true, BatchGenerateRun(size))
+                        .try_fallback_chain(
+                            &algorithms,
+                            ctx,
+                            effective_algorithm,
+                            true,
+                            BatchGenerateRun(size),
+                        )
                         .await
                     {
                         return res.map(|(batch, _)| batch);
@@ -984,7 +1023,13 @@ impl AlgorithmRouter {
         }
 
         match self
-            .try_fallback_chain(&algorithms, ctx, false, BatchGenerateRun(size))
+            .try_fallback_chain(
+                &algorithms,
+                ctx,
+                effective_algorithm,
+                false,
+                BatchGenerateRun(size),
+            )
             .await
         {
             Some(res) => res.map(|(batch, _)| batch),
@@ -1052,6 +1097,7 @@ impl AlgorithmRouter {
 #[cfg(all(test, feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
 mod tests {
     use super::*;
+    use crate::core::algorithm::audit_trait::{AuditEvent, AuditEventType, AuditLogger};
     use crate::core::algorithm::degradation_manager::{
         CircuitBreakerState, DegradationConfig, DegradationState,
     };
@@ -1059,6 +1105,23 @@ mod tests {
     use async_trait::async_trait;
     use std::collections::HashSet;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingLogger {
+        events: Mutex<Vec<AuditEvent>>,
+    }
+
+    #[async_trait]
+    impl AuditLogger for RecordingLogger {
+        async fn log(&self, event: AuditEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    fn recording_logger() -> Arc<RecordingLogger> {
+        Arc::new(RecordingLogger::default())
+    }
 
     #[test]
     #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
@@ -2947,8 +3010,129 @@ mod tests {
         assert!(id.as_u128() > 0, "装配监控臂后主出号路径必须可用");
         router.shutdown().await;
     }
-}
 
+    #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
+    async fn test_fallback_used_audit_carries_attribution() {
+        let recorder = recording_logger();
+        let mut config = Config::default();
+        config.app.dc_id = 3;
+        let router = AlgorithmRouter::new(config, Some(recorder.clone()));
+        router.algorithms.rcu(|old| {
+            let mut new: HashMap<_, _> = (**old).clone();
+            new.insert(
+                AlgorithmType::Segment,
+                Arc::new(
+                    MockConfigurableAlgorithm::new(AlgorithmType::Segment).with_generate_failure(),
+                ) as Arc<dyn IdAlgorithm>,
+            );
+            new.insert(
+                AlgorithmType::Snowflake,
+                Arc::new(MockHealthyAlgorithm {
+                    alg_type: AlgorithmType::Snowflake,
+                }) as Arc<dyn IdAlgorithm>,
+            );
+            Arc::new(new)
+        });
+        let ctx = GenerateContext {
+            workspace_id: "ws-a".to_string(),
+            group_id: "grp".to_string(),
+            biz_tag: "order".to_string(),
+            dc: 3,
+            ..GenerateContext::default()
+        };
+        let result = router
+            .try_fallback_chain(
+                &router.algorithms.load_full(),
+                &ctx,
+                AlgorithmType::Segment,
+                false,
+                GenerateRun,
+            )
+            .await;
+        assert!(result.is_some());
+
+        let events = recorder.events.lock().unwrap();
+        let fallback_events: Vec<_> = events
+            .iter()
+            .filter(|e| e.event_type == AuditEventType::FallbackUsed)
+            .collect();
+        assert_eq!(fallback_events.len(), 1, "每次 fallback 命中恰发一条事件");
+        let event = fallback_events[0];
+        assert_eq!(event.workspace_id.as_deref(), Some("ws-a"));
+        let details = event.details.as_ref().unwrap();
+        assert_eq!(details["group_id"], "grp");
+        assert_eq!(details["biz_tag"], "order");
+        assert_eq!(details["actual_algorithm"], "Snowflake");
+        assert_eq!(details["reason"], "primary_unavailable");
+        assert_eq!(details["dc"], 3);
+        assert!(details.get("primary_algorithm").is_some());
+    }
+
+    /// 批量路径经同一 try_fallback_chain 发射 FallbackUsed（R-audit-202）。
+    #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
+    async fn test_batch_fallback_also_emits_audit_event() {
+        let recorder = recording_logger();
+        let router = AlgorithmRouter::new(Config::default(), Some(recorder.clone()));
+        router.algorithms.rcu(|old| {
+            let mut new: HashMap<_, _> = (**old).clone();
+            new.insert(
+                AlgorithmType::Segment,
+                Arc::new(
+                    MockConfigurableAlgorithm::new(AlgorithmType::Segment)
+                        .with_generate_failure()
+                        .with_batch_failure(),
+                ) as Arc<dyn IdAlgorithm>,
+            );
+            new.insert(
+                AlgorithmType::Snowflake,
+                Arc::new(MockHealthyAlgorithm {
+                    alg_type: AlgorithmType::Snowflake,
+                }) as Arc<dyn IdAlgorithm>,
+            );
+            Arc::new(new)
+        });
+        let result = router
+            .batch_generate_with_algorithm(AlgorithmType::Segment, "ws", "g", "bt", 3)
+            .await;
+        assert!(result.is_ok());
+        let events = recorder.events.lock().unwrap();
+        assert!(events
+            .iter()
+            .any(|e| e.event_type == AuditEventType::FallbackUsed));
+    }
+
+    #[tokio::test]
+    #[cfg(all(feature = "segment", feature = "snowflake", feature = "uuid-v8"))]
+    async fn test_primary_success_emits_no_fallback_audit() {
+        let recorder = recording_logger();
+        let router = AlgorithmRouter::new(Config::default(), Some(recorder.clone()));
+        router.algorithms.rcu(|old| {
+            let mut new: HashMap<_, _> = (**old).clone();
+            new.insert(
+                AlgorithmType::Segment,
+                Arc::new(MockHealthyAlgorithm {
+                    alg_type: AlgorithmType::Segment,
+                }) as Arc<dyn IdAlgorithm>,
+            );
+            Arc::new(new)
+        });
+        let ctx = GenerateContext {
+            workspace_id: "ws".to_string(),
+            ..GenerateContext::default()
+        };
+        let id = router.generate(&ctx).await.expect("主算法成功");
+        assert_eq!(id.as_u128(), 42);
+        let events = recorder.events.lock().unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.event_type == AuditEventType::FallbackUsed),
+            "主算法直接成功不得发 FallbackUsed"
+        );
+    }
+}
 #[cfg(test)]
 mod attribution_chain_tests {
     use super::*;

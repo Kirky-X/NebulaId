@@ -115,6 +115,20 @@ impl UuidV8LayoutInfo {
             rand,
         }
     }
+
+    /// 归属候选验证：重算 shard 与解析值比对。三元组全空时无法验证（None）——
+    /// shard 是 FNV-1a 单向哈希，不做明文还原。
+    pub fn verify_attribution(
+        parsed: &ParsedUuidV8Id,
+        workspace: &str,
+        group: &str,
+        biz_tag: &str,
+    ) -> Option<bool> {
+        if workspace.is_empty() && group.is_empty() && biz_tag.is_empty() {
+            return None;
+        }
+        Some(shard_of(workspace, group, biz_tag) as u16 == parsed.shard)
+    }
 }
 
 /// 时间有序 v8 UUID 算法实现。
@@ -592,5 +606,23 @@ mod layout_parse_tests {
             assert!(parsed.shard <= SHARD_MASK as u16);
             assert!(parsed.rand <= RAND_MASK as u32);
         }
+    }
+    #[test]
+    fn test_verify_attribution_candidate_validation() {
+        let parsed = UuidV8LayoutInfo::parse(u128::MAX);
+        let mut with_shard = parsed.clone();
+        with_shard.shard = shard_of("ws", "grp", "bt") as u16;
+        assert_eq!(
+            UuidV8LayoutInfo::verify_attribution(&with_shard, "ws", "grp", "bt"),
+            Some(true)
+        );
+        assert_eq!(
+            UuidV8LayoutInfo::verify_attribution(&with_shard, "ws", "grp", "other"),
+            Some(false)
+        );
+        assert_eq!(
+            UuidV8LayoutInfo::verify_attribution(&with_shard, "", "", ""),
+            None
+        );
     }
 }

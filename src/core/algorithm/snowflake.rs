@@ -1421,3 +1421,50 @@ mod unpredictability_tests {
         assert!(id.as_u128() > 0);
     }
 }
+
+#[cfg(all(test, feature = "snowflake"))]
+mod high_capacity_tests {
+    use super::*;
+    use crate::core::config::UnpredictabilityProfile;
+
+    /// sequence_bits=6（mask=63）+ High 随机起点：高 count 请求跨毫秒轮转，
+    /// 不报错、不重复、耗尽哨兵不出现在产出 ID（R-snowflake-304）。
+    #[tokio::test]
+    async fn test_high_profile_small_sequence_rotates_without_error() {
+        let mut algo = SnowflakeAlgorithm::new(0, 5);
+        algo.config.sequence_bits = 6;
+        algo.config.unpredictability = UnpredictabilityProfile::High;
+        let mask = algo.config.sequence_mask();
+        assert_eq!(mask, 63);
+
+        let ctx = GenerateContext::default();
+        let mut all = Vec::new();
+        for _ in 0..200 {
+            let batch = algo.batch_generate(&ctx, 1).await.expect("批量生成成功");
+            all.push(batch.ids[0].as_u128());
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        let unique: std::collections::HashSet<u128> = all.iter().copied().collect();
+        assert_eq!(unique.len(), all.len(), "轮转后 ID 不得重复");
+        let layout = SnowflakeLayoutInfo::from_config(&algo.config);
+        assert!(all
+            .iter()
+            .all(|id| u64::from(layout.parse(*id).sequence) < mask));
+    }
+
+    #[tokio::test]
+    async fn test_high_profile_sequence_overflow_counter_available() {
+        let mut algo = SnowflakeAlgorithm::new(0, 6);
+        algo.config.sequence_bits = 6;
+        algo.config.unpredictability = UnpredictabilityProfile::High;
+        // 单毫秒内请求远超 mask：部分请求触发同毫秒耗尽轮转；计数器不 panic。
+        let ctx = GenerateContext::default();
+        let batch = algo
+            .batch_generate(&ctx, 200)
+            .await
+            .expect("超容量请求应分批轮转");
+        assert_eq!(batch.ids.len(), 200);
+        let overflows = algo.metrics.sequence_overflows.load(Ordering::Relaxed);
+        assert!(overflows > 0, "应观测到序列耗尽轮转计数");
+    }
+}

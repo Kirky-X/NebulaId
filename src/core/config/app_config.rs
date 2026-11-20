@@ -2195,12 +2195,13 @@ mod attribution_validation_tests {
     use super::*;
 
     fn config_with_attribution(enforce: bool, workspaces: &[&str]) -> Config {
-        let mut config = Config::default();
-        config.attribution = AttributionConfig {
-            enforce_tenant_context: enforce,
-            protected_workspaces: workspaces.iter().map(|s| s.to_string()).collect(),
-        };
-        config
+        Config {
+            attribution: AttributionConfig {
+                enforce_tenant_context: enforce,
+                protected_workspaces: workspaces.iter().map(|s| s.to_string()).collect(),
+            },
+            ..Default::default()
+        }
     }
 
     #[test]

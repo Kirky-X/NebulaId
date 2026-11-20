@@ -107,8 +107,10 @@ mod tests {
     use super::*;
 
     fn layout(sequence_bits: u8) -> SnowflakeLayoutInfo {
-        let mut config = crate::core::config::SnowflakeAlgorithmConfig::default();
-        config.sequence_bits = sequence_bits;
+        let config = crate::core::config::SnowflakeAlgorithmConfig {
+            sequence_bits,
+            ..Default::default()
+        };
         SnowflakeLayoutInfo::from_config(&config)
     }
 
